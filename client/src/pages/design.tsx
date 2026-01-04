@@ -269,7 +269,7 @@ export default function DesignPage() {
   const selectedSizeConfig = config?.sizes.find(s => s.id === selectedSize);
   const selectedFrameColorConfig = config?.frameColors.find(f => f.id === selectedFrameColor);
 
-  const ControlsPanel = () => (
+  const controlsContent = (
     <div className="space-y-3 lg:space-y-4">
       <Card>
         <CardHeader className="py-2 lg:py-3">
@@ -413,7 +413,7 @@ export default function DesignPage() {
     </div>
   );
 
-  const PreviewPanel = () => (
+  const previewContent = (
     <div className="space-y-3">
       {generatedDesign?.generatedImageUrl && (
         <div className="flex items-center gap-3 p-2 bg-muted/50 rounded-md">
@@ -551,10 +551,10 @@ export default function DesignPage() {
       <main className="hidden lg:flex flex-1 overflow-hidden">
         <div className="container mx-auto px-4 py-4 flex gap-6 h-full">
           <div className="w-1/2 overflow-y-auto pr-2">
-            <ControlsPanel />
+            {controlsContent}
           </div>
           <div className="w-1/2 flex flex-col">
-            <PreviewPanel />
+            {previewContent}
           </div>
         </div>
       </main>
@@ -572,10 +572,10 @@ export default function DesignPage() {
             style={{ transform: `translateX(-${mobileSlide * 100}%)` }}
           >
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4">
-              <ControlsPanel />
+              {controlsContent}
             </div>
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4">
-              <PreviewPanel />
+              {previewContent}
             </div>
           </div>
         </div>
