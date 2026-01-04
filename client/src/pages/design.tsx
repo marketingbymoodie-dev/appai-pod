@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move } from "lucide-react";
+import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset } from "@shared/schema";
 
 interface Config {
@@ -38,9 +38,12 @@ export default function DesignPage() {
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [mobileSlide, setMobileSlide] = useState(0);
+  const [touchStart, setTouchStart] = useState<number | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
+  const carouselRef = useRef<HTMLDivElement>(null);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (!generatedDesign?.generatedImageUrl) return;
@@ -66,6 +69,24 @@ export default function DesignPage() {
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
   }, []);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    setTouchStart(e.touches[0].clientX);
+  }, []);
+
+  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (touchStart === null) return;
+    const touchEnd = e.changedTouches[0].clientX;
+    const diff = touchStart - touchEnd;
+    const threshold = 50;
+    
+    if (diff > threshold && mobileSlide < 1) {
+      setMobileSlide(1);
+    } else if (diff < -threshold && mobileSlide > 0) {
+      setMobileSlide(0);
+    }
+    setTouchStart(null);
+  }, [touchStart, mobileSlide]);
 
   const { data: config } = useQuery<Config>({
     queryKey: ["/api/config"],
@@ -248,21 +269,275 @@ export default function DesignPage() {
   const selectedSizeConfig = config?.sizes.find(s => s.id === selectedSize);
   const selectedFrameColorConfig = config?.frameColors.find(f => f.id === selectedFrameColor);
 
+  const ControlsPanel = () => (
+    <div className="space-y-3 lg:space-y-4">
+      <Card>
+        <CardHeader className="py-2 lg:py-3">
+          <CardTitle className="text-sm lg:text-base">1. Select Size</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 pb-3">
+          <div className="grid grid-cols-3 gap-2">
+            {config?.sizes.map((size) => (
+              <Button
+                key={size.id}
+                variant={selectedSize === size.id ? "default" : "outline"}
+                className="h-auto py-2 flex flex-col toggle-elevate text-xs lg:text-sm"
+                onClick={() => handleSizeChange(size.id)}
+                data-testid={`button-size-${size.id}`}
+              >
+                <span className="font-medium">{size.name}</span>
+                <span className="text-[10px] lg:text-xs opacity-70">{size.aspectRatio}</span>
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="py-2 lg:py-3">
+          <CardTitle className="text-sm lg:text-base">2. Frame Color</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 pb-3">
+          <div className="flex gap-2">
+            {config?.frameColors.map((color) => (
+              <button
+                key={color.id}
+                className={`w-10 h-10 lg:w-12 lg:h-12 rounded-md border-2 transition-all ${
+                  selectedFrameColor === color.id
+                    ? "border-primary ring-2 ring-primary ring-offset-2"
+                    : "border-muted"
+                }`}
+                style={{ backgroundColor: color.hex }}
+                onClick={() => handleFrameColorChange(color.id)}
+                title={color.name}
+                data-testid={`button-frame-${color.id}`}
+              />
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="py-2 lg:py-3">
+          <CardTitle className="text-sm lg:text-base">3. Style Preset</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 pb-3">
+          <Select value={selectedStyle} onValueChange={setSelectedStyle}>
+            <SelectTrigger data-testid="select-style" className="h-9">
+              <SelectValue placeholder="Choose a style" />
+            </SelectTrigger>
+            <SelectContent>
+              {config?.stylePresets.map((style) => (
+                <SelectItem key={style.id} value={style.id}>
+                  {style.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="py-2 lg:py-3">
+          <CardTitle className="text-sm lg:text-base">4. Describe Your Artwork</CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0 pb-3 space-y-3">
+          <Textarea
+            id="prompt"
+            placeholder="A serene mountain landscape at sunset..."
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            className="min-h-[60px] lg:min-h-[80px] text-sm"
+            data-testid="input-prompt"
+          />
+          
+          <div className="flex items-center gap-2">
+            {referenceImage ? (
+              <div className="relative inline-block">
+                <img
+                  src={referenceImage}
+                  alt="Reference"
+                  className="h-12 w-12 object-cover rounded-md"
+                />
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  className="absolute -top-1 -right-1 h-5 w-5"
+                  onClick={() => setReferenceImage(null)}
+                  data-testid="button-remove-reference"
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                data-testid="button-upload-reference"
+              >
+                <Upload className="h-3 w-3 mr-1" />
+                Reference
+              </Button>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleFileUpload}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Button
+        size="default"
+        className="w-full"
+        onClick={handleGenerate}
+        disabled={generateMutation.isPending}
+        data-testid="button-generate"
+      >
+        {generateMutation.isPending ? (
+          <>
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            Generating...
+          </>
+        ) : (
+          <>
+            <Sparkles className="h-4 w-4 mr-2" />
+            Generate Artwork (1 Credit)
+          </>
+        )}
+      </Button>
+    </div>
+  );
+
+  const PreviewPanel = () => (
+    <div className="space-y-3">
+      {generatedDesign?.generatedImageUrl && (
+        <div className="flex items-center gap-3 p-2 bg-muted/50 rounded-md">
+          <div className="flex items-center gap-2 flex-1">
+            <ZoomIn className="h-4 w-4 text-muted-foreground shrink-0" />
+            <Slider
+              value={[imageScale]}
+              onValueChange={([value]) => setImageScale(value)}
+              min={50}
+              max={200}
+              step={5}
+              className="flex-1"
+              data-testid="slider-scale"
+            />
+            <span className="text-xs text-muted-foreground w-10">{imageScale}%</span>
+          </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={resetTransform}
+            data-testid="button-reset-transform"
+          >
+            Reset
+          </Button>
+        </div>
+      )}
+
+      <div 
+        ref={previewContainerRef}
+        className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move' : ''}`}
+        style={{ 
+          aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
+          maxHeight: "calc(100vh - 280px)",
+        }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <div
+          className="absolute inset-2 rounded-sm flex items-center justify-center"
+          style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a" }}
+        >
+          <div className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden">
+            {generateMutation.isPending ? (
+              <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-8 w-8 animate-spin" />
+                <span className="text-xs">Creating...</span>
+              </div>
+            ) : generatedDesign?.generatedImageUrl ? (
+              <img
+                src={generatedDesign.generatedImageUrl}
+                alt="Generated artwork"
+                className="select-none pointer-events-none absolute"
+                style={{
+                  width: `${imageScale}%`,
+                  height: `${imageScale}%`,
+                  objectFit: 'cover',
+                  left: `${imagePosition.x}%`,
+                  top: `${imagePosition.y}%`,
+                  transform: 'translate(-50%, -50%)',
+                }}
+                draggable={false}
+                data-testid="img-generated"
+              />
+            ) : (
+              <div className="text-center text-muted-foreground p-4">
+                <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p className="text-xs">Your artwork will appear here</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {selectedSizeConfig && (
+        <div className="text-center">
+          <p className="text-xs text-muted-foreground">
+            {selectedSizeConfig.name} - {selectedFrameColorConfig?.name} Frame
+          </p>
+          {selectedSizeConfig.needsSafeZone && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+              This size may crop edges. Use zoom to adjust framing.
+            </p>
+          )}
+        </div>
+      )}
+
+      {generatedDesign && (
+        <div className="flex gap-2">
+          <Button 
+            variant="outline" 
+            className="flex-1" 
+            onClick={handleSaveDesign}
+            disabled={saveMutation.isPending}
+            data-testid="button-save"
+          >
+            <Save className="h-4 w-4 mr-2" />
+            {saveMutation.isPending ? "Saving..." : "Save"}
+          </Button>
+          <Button className="flex-1" data-testid="button-order">
+            <ShoppingCart className="h-4 w-4 mr-2" />
+            Order Print
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b sticky top-0 bg-background z-50">
-        <div className="container mx-auto px-4 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
+      <header className="border-b bg-background z-50 shrink-0">
+        <div className="container mx-auto px-3 py-2 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
             <Link href="/">
               <Button variant="ghost" size="icon" data-testid="button-back">
                 <ArrowLeft className="h-5 w-5" />
               </Button>
             </Link>
-            <h1 className="text-lg font-semibold">Create Design</h1>
+            <h1 className="text-base font-semibold">Create Design</h1>
           </div>
           <div className="flex items-center gap-4">
             {customerLoading ? (
-              <Skeleton className="h-6 w-24" />
+              <Skeleton className="h-5 w-20" />
             ) : (
               <span className="text-sm text-muted-foreground" data-testid="text-credits">
                 {customer?.credits ?? 0} credits
@@ -272,288 +547,73 @@ export default function DesignPage() {
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-6">
-        <div className="grid gap-6 lg:grid-cols-2">
-          <div className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>1. Select Size</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {config?.sizes.map((size) => (
-                    <Button
-                      key={size.id}
-                      variant={selectedSize === size.id ? "default" : "outline"}
-                      className="h-auto py-3 flex flex-col toggle-elevate"
-                      onClick={() => handleSizeChange(size.id)}
-                      data-testid={`button-size-${size.id}`}
-                    >
-                      <span className="font-medium">{size.name}</span>
-                      <span className="text-xs opacity-70">{size.aspectRatio}</span>
-                    </Button>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>2. Frame Color</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex gap-3">
-                  {config?.frameColors.map((color) => (
-                    <button
-                      key={color.id}
-                      className={`w-12 h-12 rounded-md border-2 transition-all ${
-                        selectedFrameColor === color.id
-                          ? "border-primary ring-2 ring-primary ring-offset-2"
-                          : "border-muted"
-                      }`}
-                      style={{ backgroundColor: color.hex }}
-                      onClick={() => handleFrameColorChange(color.id)}
-                      title={color.name}
-                      data-testid={`button-frame-${color.id}`}
-                    />
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>3. Style Preset</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Select value={selectedStyle} onValueChange={setSelectedStyle}>
-                  <SelectTrigger data-testid="select-style">
-                    <SelectValue placeholder="Choose a style" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {config?.stylePresets.map((style) => (
-                      <SelectItem key={style.id} value={style.id}>
-                        {style.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>4. Describe Your Artwork</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label htmlFor="prompt">What do you want to create?</Label>
-                  <Textarea
-                    id="prompt"
-                    placeholder="A serene mountain landscape at sunset with a calm lake in the foreground..."
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    className="mt-2 min-h-[100px]"
-                    data-testid="input-prompt"
-                  />
-                </div>
-                
-                <div>
-                  <Label>Reference Image (Optional)</Label>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    Upload an image for the AI to use as inspiration
-                  </p>
-                  
-                  {referenceImage ? (
-                    <div className="relative inline-block">
-                      <img
-                        src={referenceImage}
-                        alt="Reference"
-                        className="max-h-32 rounded-md"
-                      />
-                      <Button
-                        variant="destructive"
-                        size="icon"
-                        className="absolute -top-2 -right-2 h-6 w-6"
-                        onClick={() => setReferenceImage(null)}
-                        data-testid="button-remove-reference"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      onClick={() => fileInputRef.current?.click()}
-                      data-testid="button-upload-reference"
-                    >
-                      <Upload className="h-4 w-4 mr-2" />
-                      Upload Reference
-                    </Button>
-                  )}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleFileUpload}
-                  />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Button
-              size="lg"
-              className="w-full"
-              onClick={handleGenerate}
-              disabled={generateMutation.isPending}
-              data-testid="button-generate"
-            >
-              {generateMutation.isPending ? (
-                <>
-                  <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="h-5 w-5 mr-2" />
-                  Generate Artwork (1 Credit)
-                </>
-              )}
-            </Button>
-
-            {(customer?.credits ?? 0) <= 0 && (
-              <p className="text-sm text-destructive text-center">
-                You're out of credits. Purchase more to continue creating.
-              </p>
-            )}
+      {/* Desktop Layout */}
+      <main className="hidden lg:flex flex-1 overflow-hidden">
+        <div className="container mx-auto px-4 py-4 flex gap-6 h-full">
+          <div className="w-1/2 overflow-y-auto pr-2">
+            <ControlsPanel />
           </div>
-
-          <div className="lg:sticky lg:top-20 lg:self-start space-y-4">
-            {generatedDesign?.generatedImageUrl && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Move className="h-4 w-4" />
-                    Adjust Image Position
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-4">
-                      <Label className="flex items-center gap-2">
-                        <ZoomIn className="h-4 w-4" />
-                        Zoom
-                      </Label>
-                      <span className="text-sm text-muted-foreground">{imageScale}%</span>
-                    </div>
-                    <Slider
-                      value={[imageScale]}
-                      onValueChange={([value]) => setImageScale(value)}
-                      min={50}
-                      max={200}
-                      step={5}
-                      data-testid="slider-scale"
-                    />
-                  </div>
-                  
-                  <div className="flex items-center gap-2">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={resetTransform}
-                      className="flex-1"
-                      data-testid="button-reset-transform"
-                    >
-                      Reset
-                    </Button>
-                    <p className="text-xs text-muted-foreground flex-1">
-                      Drag the image below to reposition
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <Card className="overflow-hidden">
-              <CardHeader>
-                <CardTitle>Preview</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div 
-                  ref={previewContainerRef}
-                  className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move' : ''}`}
-                  style={{ 
-                    aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
-                  }}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseUp}
-                >
-                  <div
-                    className="absolute inset-2 rounded-sm flex items-center justify-center"
-                    style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a" }}
-                  >
-                    <div className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden">
-                      {generateMutation.isPending ? (
-                        <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                          <Loader2 className="h-12 w-12 animate-spin" />
-                          <span className="text-sm">Creating your artwork...</span>
-                        </div>
-                      ) : generatedDesign?.generatedImageUrl ? (
-                        <img
-                          src={generatedDesign.generatedImageUrl}
-                          alt="Generated artwork"
-                          className="select-none pointer-events-none absolute"
-                          style={{
-                            width: `${imageScale}%`,
-                            height: `${imageScale}%`,
-                            objectFit: 'cover',
-                            left: `${imagePosition.x}%`,
-                            top: `${imagePosition.y}%`,
-                            transform: 'translate(-50%, -50%)',
-                          }}
-                          draggable={false}
-                          data-testid="img-generated"
-                        />
-                      ) : (
-                        <div className="text-center text-muted-foreground p-4">
-                          <Sparkles className="h-12 w-12 mx-auto mb-3 opacity-50" />
-                          <p className="text-sm">Your artwork will appear here</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {selectedSizeConfig && (
-                  <p className="text-center text-sm text-muted-foreground mt-4">
-                    {selectedSizeConfig.name} - {selectedFrameColorConfig?.name} Frame
-                  </p>
-                )}
-
-                {generatedDesign && (
-                  <div className="mt-4 flex gap-3">
-                    <Button 
-                      variant="outline" 
-                      className="flex-1" 
-                      onClick={handleSaveDesign}
-                      disabled={saveMutation.isPending}
-                      data-testid="button-save"
-                    >
-                      <Save className="h-4 w-4 mr-2" />
-                      {saveMutation.isPending ? "Saving..." : "Save"}
-                    </Button>
-                    <Button className="flex-1" data-testid="button-order">
-                      <ShoppingCart className="h-4 w-4 mr-2" />
-                      Order Print
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+          <div className="w-1/2 flex flex-col">
+            <PreviewPanel />
           </div>
+        </div>
+      </main>
+
+      {/* Mobile Layout - Swipeable */}
+      <main className="lg:hidden flex-1 overflow-hidden flex flex-col">
+        <div 
+          ref={carouselRef}
+          className="flex-1 relative overflow-hidden"
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
+          <div 
+            className="flex h-full transition-transform duration-300 ease-out"
+            style={{ transform: `translateX(-${mobileSlide * 100}%)` }}
+          >
+            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4">
+              <ControlsPanel />
+            </div>
+            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4">
+              <PreviewPanel />
+            </div>
+          </div>
+        </div>
+        
+        {/* Mobile Navigation Indicators */}
+        <div className="shrink-0 border-t bg-background p-3 flex items-center justify-center gap-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileSlide(0)}
+            disabled={mobileSlide === 0}
+            className={mobileSlide === 0 ? "opacity-30" : ""}
+            data-testid="button-prev-slide"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setMobileSlide(0)}
+              className={`w-2 h-2 rounded-full transition-colors ${mobileSlide === 0 ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+              data-testid="indicator-controls"
+            />
+            <button
+              onClick={() => setMobileSlide(1)}
+              className={`w-2 h-2 rounded-full transition-colors ${mobileSlide === 1 ? 'bg-primary' : 'bg-muted-foreground/30'}`}
+              data-testid="indicator-preview"
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileSlide(1)}
+            disabled={mobileSlide === 1}
+            className={mobileSlide === 1 ? "opacity-30" : ""}
+            data-testid="button-next-slide"
+          >
+            <ChevronRight className="h-5 w-5" />
+          </Button>
         </div>
       </main>
     </div>
