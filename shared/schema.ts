@@ -127,6 +127,62 @@ export const insertGenerationLogSchema = createInsertSchema(generationLogs).omit
 export type GenerationLog = typeof generationLogs.$inferSelect;
 export type InsertGenerationLog = z.infer<typeof insertGenerationLogSchema>;
 
+// Coupon codes for credits
+export const coupons = pgTable("coupons", {
+  id: serial("id").primaryKey(),
+  merchantId: varchar("merchant_id").notNull(),
+  code: varchar("code", { length: 50 }).notNull().unique(),
+  creditAmount: integer("credit_amount").notNull(),
+  maxUses: integer("max_uses"),
+  usedCount: integer("used_count").notNull().default(0),
+  isActive: boolean("is_active").notNull().default(true),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertCouponSchema = createInsertSchema(coupons).omit({
+  id: true,
+  usedCount: true,
+  createdAt: true,
+});
+export type Coupon = typeof coupons.$inferSelect;
+export type InsertCoupon = z.infer<typeof insertCouponSchema>;
+
+// Coupon redemptions tracking
+export const couponRedemptions = pgTable("coupon_redemptions", {
+  id: serial("id").primaryKey(),
+  couponId: integer("coupon_id").notNull(),
+  customerId: varchar("customer_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertCouponRedemptionSchema = createInsertSchema(couponRedemptions).omit({
+  id: true,
+  createdAt: true,
+});
+export type CouponRedemption = typeof couponRedemptions.$inferSelect;
+export type InsertCouponRedemption = z.infer<typeof insertCouponRedemptionSchema>;
+
+// Merchant style presets (customizable)
+export const stylePresets = pgTable("style_presets", {
+  id: serial("id").primaryKey(),
+  merchantId: varchar("merchant_id").notNull(),
+  name: text("name").notNull(),
+  promptPrefix: text("prompt_prefix").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertStylePresetSchema = createInsertSchema(stylePresets).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type StylePresetDB = typeof stylePresets.$inferSelect;
+export type InsertStylePreset = z.infer<typeof insertStylePresetSchema>;
+
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
   id: serial("id").primaryKey(),

@@ -5,6 +5,9 @@ import {
   orders, type Order, type InsertOrder,
   generationLogs, type GenerationLog, type InsertGenerationLog,
   creditTransactions, type CreditTransaction, type InsertCreditTransaction,
+  coupons, type Coupon, type InsertCoupon,
+  couponRedemptions, type CouponRedemption, type InsertCouponRedemption,
+  stylePresets, type StylePresetDB, type InsertStylePreset,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql } from "drizzle-orm";
@@ -47,6 +50,26 @@ export interface IStorage {
   // Credit Transactions
   createCreditTransaction(transaction: InsertCreditTransaction): Promise<CreditTransaction>;
   getCreditTransactionsByCustomer(customerId: string): Promise<CreditTransaction[]>;
+  
+  // Coupons
+  getCoupon(id: number): Promise<Coupon | undefined>;
+  getCouponByCode(code: string): Promise<Coupon | undefined>;
+  getCouponsByMerchant(merchantId: string): Promise<Coupon[]>;
+  createCoupon(coupon: InsertCoupon): Promise<Coupon>;
+  updateCoupon(id: number, updates: Partial<Coupon>): Promise<Coupon | undefined>;
+  deleteCoupon(id: number): Promise<void>;
+  
+  // Coupon Redemptions
+  getCouponRedemption(couponId: number, customerId: string): Promise<CouponRedemption | undefined>;
+  createCouponRedemption(redemption: InsertCouponRedemption): Promise<CouponRedemption>;
+  
+  // Style Presets
+  getStylePreset(id: number): Promise<StylePresetDB | undefined>;
+  getStylePresetsByMerchant(merchantId: string): Promise<StylePresetDB[]>;
+  getActiveStylePresetsByMerchant(merchantId: string): Promise<StylePresetDB[]>;
+  createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB>;
+  updateStylePreset(id: number, updates: Partial<StylePresetDB>): Promise<StylePresetDB | undefined>;
+  deleteStylePreset(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -193,6 +216,90 @@ export class DatabaseStorage implements IStorage {
 
   async getCreditTransactionsByCustomer(customerId: string): Promise<CreditTransaction[]> {
     return db.select().from(creditTransactions).where(eq(creditTransactions.customerId, customerId)).orderBy(desc(creditTransactions.createdAt));
+  }
+
+  // Coupons
+  async getCoupon(id: number): Promise<Coupon | undefined> {
+    const [coupon] = await db.select().from(coupons).where(eq(coupons.id, id));
+    return coupon;
+  }
+
+  async getCouponByCode(code: string): Promise<Coupon | undefined> {
+    const [coupon] = await db.select().from(coupons).where(eq(coupons.code, code.toUpperCase()));
+    return coupon;
+  }
+
+  async getCouponsByMerchant(merchantId: string): Promise<Coupon[]> {
+    return db.select().from(coupons).where(eq(coupons.merchantId, merchantId)).orderBy(desc(coupons.createdAt));
+  }
+
+  async createCoupon(coupon: InsertCoupon): Promise<Coupon> {
+    const [newCoupon] = await db.insert(coupons).values({
+      ...coupon,
+      code: coupon.code.toUpperCase(),
+    }).returning();
+    return newCoupon;
+  }
+
+  async updateCoupon(id: number, updates: Partial<Coupon>): Promise<Coupon | undefined> {
+    const updateData = updates.code ? { ...updates, code: updates.code.toUpperCase() } : updates;
+    const [updated] = await db
+      .update(coupons)
+      .set(updateData)
+      .where(eq(coupons.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteCoupon(id: number): Promise<void> {
+    await db.delete(coupons).where(eq(coupons.id, id));
+  }
+
+  // Coupon Redemptions
+  async getCouponRedemption(couponId: number, customerId: string): Promise<CouponRedemption | undefined> {
+    const [redemption] = await db.select().from(couponRedemptions).where(
+      and(eq(couponRedemptions.couponId, couponId), eq(couponRedemptions.customerId, customerId))
+    );
+    return redemption;
+  }
+
+  async createCouponRedemption(redemption: InsertCouponRedemption): Promise<CouponRedemption> {
+    const [newRedemption] = await db.insert(couponRedemptions).values(redemption).returning();
+    return newRedemption;
+  }
+
+  // Style Presets
+  async getStylePreset(id: number): Promise<StylePresetDB | undefined> {
+    const [preset] = await db.select().from(stylePresets).where(eq(stylePresets.id, id));
+    return preset;
+  }
+
+  async getStylePresetsByMerchant(merchantId: string): Promise<StylePresetDB[]> {
+    return db.select().from(stylePresets).where(eq(stylePresets.merchantId, merchantId)).orderBy(stylePresets.sortOrder);
+  }
+
+  async getActiveStylePresetsByMerchant(merchantId: string): Promise<StylePresetDB[]> {
+    return db.select().from(stylePresets).where(
+      and(eq(stylePresets.merchantId, merchantId), eq(stylePresets.isActive, true))
+    ).orderBy(stylePresets.sortOrder);
+  }
+
+  async createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB> {
+    const [newPreset] = await db.insert(stylePresets).values(preset).returning();
+    return newPreset;
+  }
+
+  async updateStylePreset(id: number, updates: Partial<StylePresetDB>): Promise<StylePresetDB | undefined> {
+    const [updated] = await db
+      .update(stylePresets)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(stylePresets.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteStylePreset(id: number): Promise<void> {
+    await db.delete(stylePresets).where(eq(stylePresets.id, id));
   }
 }
 
