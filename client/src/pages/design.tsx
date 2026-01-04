@@ -82,9 +82,12 @@ export default function DesignPage() {
       return response.json();
     },
     onSuccess: (data) => {
-      setGeneratedDesign(data.design);
-      setImageScale(100);
-      setImagePosition({ x: 50, y: 50 });
+      const design = data.design;
+      setGeneratedDesign(design);
+      setSelectedSize(design.size);
+      setSelectedFrameColor(design.frameColor);
+      setImageScale(design.transformScale ?? 100);
+      setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
       queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
       toast({
@@ -116,6 +119,12 @@ export default function DesignPage() {
     },
     onSuccess: (data) => {
       setGeneratedDesign(data);
+      if (data.size) setSelectedSize(data.size);
+      if (data.frameColor) setSelectedFrameColor(data.frameColor);
+      if (data.transformScale !== undefined) setImageScale(data.transformScale);
+      if (data.transformX !== undefined && data.transformY !== undefined) {
+        setImagePosition({ x: data.transformX, y: data.transformY });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
     },
     onError: (error: any) => {
@@ -499,15 +508,19 @@ export default function DesignPage() {
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Move className="h-4 w-4" />
-                    Adjust Printable Area
+                    Adjust Image Position
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
+                  <p className="text-xs text-muted-foreground">
+                    Control how your artwork is cropped and positioned within the {selectedSizeConfig?.name || "selected"} print area.
+                  </p>
+                  
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-4">
                       <Label className="flex items-center gap-2">
                         <ZoomIn className="h-4 w-4" />
-                        Size
+                        Zoom
                       </Label>
                       <span className="text-sm text-muted-foreground">{imageScale}%</span>
                     </div>
@@ -519,10 +532,13 @@ export default function DesignPage() {
                       step={5}
                       data-testid="slider-scale"
                     />
+                    <p className="text-xs text-muted-foreground">
+                      Smaller values show more of the image, larger values crop in closer.
+                    </p>
                   </div>
                   
                   <p className="text-xs text-muted-foreground">
-                    Drag the image to reposition it within the print area
+                    Drag the image above to reposition it within the frame.
                   </p>
                   
                   <Button 
