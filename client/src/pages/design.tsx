@@ -60,8 +60,8 @@ export default function DesignPage() {
     const deltaY = ((e.clientY - dragStart.y) / rect.height) * 100;
     
     setImagePosition(prev => ({
-      x: Math.max(0, Math.min(100, prev.x + deltaX)),
-      y: Math.max(0, Math.min(100, prev.y + deltaY)),
+      x: Math.max(-50, Math.min(150, prev.x + deltaX)),
+      y: Math.max(-50, Math.min(150, prev.y + deltaY)),
     }));
     setDragStart({ x: e.clientX, y: e.clientY });
   }, [isDragging, dragStart]);
