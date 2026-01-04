@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,8 +11,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
-import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle } from "lucide-react";
-import type { Merchant } from "@shared/schema";
+import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import type { Merchant, Coupon, StylePresetDB } from "@shared/schema";
 
 interface GenerationStats {
   total: number;
@@ -29,6 +31,16 @@ export default function AdminPage() {
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
 
+  const [couponDialogOpen, setCouponDialogOpen] = useState(false);
+  const [newCouponCode, setNewCouponCode] = useState("");
+  const [newCouponCredits, setNewCouponCredits] = useState("5");
+  const [newCouponMaxUses, setNewCouponMaxUses] = useState("");
+
+  const [styleDialogOpen, setStyleDialogOpen] = useState(false);
+  const [editingStyle, setEditingStyle] = useState<StylePresetDB | null>(null);
+  const [styleName, setStyleName] = useState("");
+  const [stylePrompt, setStylePrompt] = useState("");
+
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
     enabled: isAuthenticated,
@@ -37,6 +49,112 @@ export default function AdminPage() {
   const { data: stats } = useQuery<GenerationStats>({
     queryKey: ["/api/admin/stats"],
     enabled: isAuthenticated && !!merchant,
+  });
+
+  const { data: coupons, isLoading: couponsLoading } = useQuery<Coupon[]>({
+    queryKey: ["/api/admin/coupons"],
+    enabled: isAuthenticated,
+  });
+
+  const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
+    queryKey: ["/api/admin/styles"],
+    enabled: isAuthenticated,
+  });
+
+  const seedStylesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/admin/styles/seed");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+    },
+  });
+
+  useEffect(() => {
+    if (isAuthenticated && styles && styles.length === 0) {
+      seedStylesMutation.mutate();
+    }
+  }, [isAuthenticated, styles]);
+
+  const createCouponMutation = useMutation({
+    mutationFn: async (data: { code: string; creditAmount: number; maxUses?: number }) => {
+      const response = await apiRequest("POST", "/api/admin/coupons", data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/coupons"] });
+      setCouponDialogOpen(false);
+      setNewCouponCode("");
+      setNewCouponCredits("5");
+      setNewCouponMaxUses("");
+      toast({ title: "Coupon created", description: "Your coupon code is ready to use." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create coupon", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const toggleCouponMutation = useMutation({
+    mutationFn: async ({ id, isActive }: { id: number; isActive: boolean }) => {
+      const response = await apiRequest("PATCH", `/api/admin/coupons/${id}`, { isActive });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/coupons"] });
+    },
+  });
+
+  const deleteCouponMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/admin/coupons/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/coupons"] });
+      toast({ title: "Coupon deleted" });
+    },
+  });
+
+  const createStyleMutation = useMutation({
+    mutationFn: async (data: { name: string; promptPrefix: string }) => {
+      const response = await apiRequest("POST", "/api/admin/styles", data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      setStyleDialogOpen(false);
+      setStyleName("");
+      setStylePrompt("");
+      toast({ title: "Style created" });
+    },
+    onError: () => {
+      toast({ title: "Failed to create style", variant: "destructive" });
+    },
+  });
+
+  const updateStyleMutation = useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; name?: string; promptPrefix?: string; isActive?: boolean }) => {
+      const response = await apiRequest("PATCH", `/api/admin/styles/${id}`, data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      setEditingStyle(null);
+      setStyleDialogOpen(false);
+      setStyleName("");
+      setStylePrompt("");
+      toast({ title: "Style updated" });
+    },
+  });
+
+  const deleteStyleMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/admin/styles/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      toast({ title: "Style deleted" });
+    },
   });
 
   const saveMutation = useMutation({
@@ -97,10 +215,18 @@ export default function AdminPage() {
 
       <main className="container mx-auto px-4 py-6">
         <Tabs defaultValue="settings">
-          <TabsList className="mb-6">
+          <TabsList className="mb-6 flex-wrap gap-1">
             <TabsTrigger value="settings" data-testid="tab-settings">
               <Settings className="h-4 w-4 mr-2" />
               Settings
+            </TabsTrigger>
+            <TabsTrigger value="coupons" data-testid="tab-coupons">
+              <Ticket className="h-4 w-4 mr-2" />
+              Coupons
+            </TabsTrigger>
+            <TabsTrigger value="styles" data-testid="tab-styles">
+              <Palette className="h-4 w-4 mr-2" />
+              Styles
             </TabsTrigger>
             <TabsTrigger value="stats" data-testid="tab-stats">
               <BarChart3 className="h-4 w-4 mr-2" />
@@ -232,6 +358,260 @@ export default function AdminPage() {
                 <Save className="h-4 w-4 mr-2" />
                 {saveMutation.isPending ? "Saving..." : "Save Settings"}
               </Button>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="coupons">
+            <div className="max-w-3xl">
+              <div className="flex items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold">Coupon Codes</h2>
+                  <p className="text-sm text-muted-foreground">Create codes to give customers free credits</p>
+                </div>
+                <Dialog open={couponDialogOpen} onOpenChange={setCouponDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button data-testid="button-create-coupon">
+                      <Plus className="h-4 w-4 mr-2" />
+                      Create Coupon
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Create Coupon Code</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 mt-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="coupon-code">Code</Label>
+                        <Input
+                          id="coupon-code"
+                          placeholder="e.g., WELCOME10"
+                          value={newCouponCode}
+                          onChange={(e) => setNewCouponCode(e.target.value.toUpperCase())}
+                          data-testid="input-coupon-code"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="coupon-credits">Credits to Give</Label>
+                        <Input
+                          id="coupon-credits"
+                          type="number"
+                          min="1"
+                          value={newCouponCredits}
+                          onChange={(e) => setNewCouponCredits(e.target.value)}
+                          data-testid="input-coupon-credits"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="coupon-max-uses">Max Uses (optional)</Label>
+                        <Input
+                          id="coupon-max-uses"
+                          type="number"
+                          min="1"
+                          placeholder="Unlimited"
+                          value={newCouponMaxUses}
+                          onChange={(e) => setNewCouponMaxUses(e.target.value)}
+                          data-testid="input-coupon-max-uses"
+                        />
+                      </div>
+                      <Button
+                        className="w-full"
+                        onClick={() => createCouponMutation.mutate({
+                          code: newCouponCode,
+                          creditAmount: parseInt(newCouponCredits),
+                          maxUses: newCouponMaxUses ? parseInt(newCouponMaxUses) : undefined,
+                        })}
+                        disabled={!newCouponCode || !newCouponCredits || createCouponMutation.isPending}
+                        data-testid="button-submit-coupon"
+                      >
+                        {createCouponMutation.isPending ? "Creating..." : "Create Coupon"}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+
+              {couponsLoading ? (
+                <Skeleton className="h-48 w-full" />
+              ) : coupons && coupons.length > 0 ? (
+                <div className="space-y-3">
+                  {coupons.map((coupon) => (
+                    <Card key={coupon.id} data-testid={`card-coupon-${coupon.id}`}>
+                      <CardContent className="flex items-center justify-between gap-4 py-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <code className="font-mono font-bold text-lg" data-testid={`text-coupon-code-${coupon.id}`}>{coupon.code}</code>
+                            {!coupon.isActive && (
+                              <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">Disabled</span>
+                            )}
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {coupon.creditAmount} credits | Used: {coupon.usedCount}{coupon.maxUses ? ` / ${coupon.maxUses}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={coupon.isActive}
+                            onCheckedChange={(checked) => toggleCouponMutation.mutate({ id: coupon.id, isActive: checked })}
+                            data-testid={`switch-coupon-${coupon.id}`}
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => deleteCouponMutation.mutate(coupon.id)}
+                            data-testid={`button-delete-coupon-${coupon.id}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              ) : (
+                <Card>
+                  <CardContent className="py-8 text-center">
+                    <Ticket className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground">No coupons yet. Create your first coupon code above.</p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="styles">
+            <div className="max-w-3xl">
+              <div className="flex items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold">Style Presets</h2>
+                  <p className="text-sm text-muted-foreground">Customize art styles available to customers</p>
+                </div>
+                <Dialog open={styleDialogOpen} onOpenChange={(open) => {
+                  setStyleDialogOpen(open);
+                  if (!open) {
+                    setEditingStyle(null);
+                    setStyleName("");
+                    setStylePrompt("");
+                  }
+                }}>
+                  <DialogTrigger asChild>
+                    <Button data-testid="button-create-style">
+                      <Plus className="h-4 w-4 mr-2" />
+                      New Style
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>{editingStyle ? "Edit Style" : "Create Style"}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 mt-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="style-name">Style Name</Label>
+                        <Input
+                          id="style-name"
+                          placeholder="e.g., Watercolor Dreams"
+                          value={styleName}
+                          onChange={(e) => setStyleName(e.target.value)}
+                          data-testid="input-style-name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="style-prompt">Prompt Prefix</Label>
+                        <Textarea
+                          id="style-prompt"
+                          placeholder="e.g., A beautiful watercolor painting of..."
+                          value={stylePrompt}
+                          onChange={(e) => setStylePrompt(e.target.value)}
+                          rows={3}
+                          data-testid="input-style-prompt"
+                        />
+                        <p className="text-xs text-muted-foreground">This text is prepended to customer prompts</p>
+                      </div>
+                      <Button
+                        className="w-full"
+                        onClick={() => {
+                          if (editingStyle) {
+                            updateStyleMutation.mutate({
+                              id: editingStyle.id,
+                              name: styleName,
+                              promptPrefix: stylePrompt,
+                            });
+                          } else {
+                            createStyleMutation.mutate({
+                              name: styleName,
+                              promptPrefix: stylePrompt,
+                            });
+                          }
+                        }}
+                        disabled={!styleName || (editingStyle ? updateStyleMutation.isPending : createStyleMutation.isPending)}
+                        data-testid="button-submit-style"
+                      >
+                        {editingStyle
+                          ? (updateStyleMutation.isPending ? "Saving..." : "Save Changes")
+                          : (createStyleMutation.isPending ? "Creating..." : "Create Style")}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+
+              {stylesLoading ? (
+                <Skeleton className="h-48 w-full" />
+              ) : styles && styles.length > 0 ? (
+                <div className="space-y-3">
+                  {styles.map((style) => (
+                    <Card key={style.id} data-testid={`card-style-${style.id}`}>
+                      <CardContent className="flex items-center justify-between gap-4 py-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <span className="font-medium" data-testid={`text-style-name-${style.id}`}>{style.name}</span>
+                            {!style.isActive && (
+                              <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">Hidden</span>
+                            )}
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-1 truncate">
+                            {style.promptPrefix || "(No prompt prefix)"}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={style.isActive}
+                            onCheckedChange={(checked) => updateStyleMutation.mutate({ id: style.id, isActive: checked })}
+                            data-testid={`switch-style-${style.id}`}
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setEditingStyle(style);
+                              setStyleName(style.name);
+                              setStylePrompt(style.promptPrefix);
+                              setStyleDialogOpen(true);
+                            }}
+                            data-testid={`button-edit-style-${style.id}`}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => deleteStyleMutation.mutate(style.id)}
+                            data-testid={`button-delete-style-${style.id}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              ) : (
+                <Card>
+                  <CardContent className="py-8 text-center">
+                    <Palette className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground">Loading default styles...</p>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </TabsContent>
 
