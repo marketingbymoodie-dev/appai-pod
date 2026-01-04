@@ -36,39 +36,41 @@ export default function DesignPage() {
   
   const [imageScale, setImageScale] = useState(100);
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [mobileSlide, setMobileSlide] = useState(0);
   const [touchStart, setTouchStart] = useState<number | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const carouselRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.MouseEvent) => {
     if (!generatedDesign?.generatedImageUrl) return;
-    setIsDragging(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
-  }, [generatedDesign]);
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+  };
 
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDragging || !previewContainerRef.current) return;
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDraggingRef.current || !previewContainerRef.current) return;
+    e.preventDefault();
     
     const container = previewContainerRef.current;
     const rect = container.getBoundingClientRect();
-    const deltaX = ((e.clientX - dragStart.x) / rect.width) * 100;
-    const deltaY = ((e.clientY - dragStart.y) / rect.height) * 100;
+    const deltaX = ((e.clientX - dragStartRef.current.x) / rect.width) * 100;
+    const deltaY = ((e.clientY - dragStartRef.current.y) / rect.height) * 100;
     
     setImagePosition(prev => ({
       x: Math.max(-50, Math.min(150, prev.x + deltaX)),
       y: Math.max(-50, Math.min(150, prev.y + deltaY)),
     }));
-    setDragStart({ x: e.clientX, y: e.clientY });
-  }, [isDragging, dragStart]);
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+  };
 
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
-  }, []);
+  const handleMouseUp = () => {
+    isDraggingRef.current = false;
+  };
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     setTouchStart(e.touches[0].clientX);
