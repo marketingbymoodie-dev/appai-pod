@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,12 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save } from "lucide-react";
+import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move } from "lucide-react";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset } from "@shared/schema";
 
 interface Config {
@@ -33,7 +34,13 @@ export default function DesignPage() {
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<Design | null>(null);
   
+  const [imageScale, setImageScale] = useState(100);
+  const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
 
   const { data: config } = useQuery<Config>({
     queryKey: ["/api/config"],
@@ -51,6 +58,8 @@ export default function DesignPage() {
     },
     onSuccess: (data) => {
       setGeneratedDesign(data.design);
+      setImageScale(100);
+      setImagePosition({ x: 50, y: 50 });
       queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
       toast({
@@ -62,6 +71,32 @@ export default function DesignPage() {
       toast({
         title: "Generation failed",
         description: error.message || "Failed to generate artwork",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const saveMutation = useMutation({
+    mutationFn: async (data: { designId: number; transformScale: number; transformX: number; transformY: number }) => {
+      const response = await apiRequest("PATCH", `/api/designs/${data.designId}`, {
+        transformScale: data.transformScale,
+        transformX: data.transformX,
+        transformY: data.transformY,
+      });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setGeneratedDesign(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
+      toast({
+        title: "Design saved!",
+        description: "Your artwork adjustments have been saved.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Save failed",
+        description: error.message || "Failed to save design",
         variant: "destructive",
       });
     },
@@ -97,6 +132,36 @@ export default function DesignPage() {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!generatedDesign?.generatedImageUrl) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+  }, [generatedDesign]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging || !previewContainerRef.current) return;
+    
+    const container = previewContainerRef.current;
+    const rect = container.getBoundingClientRect();
+    const deltaX = ((e.clientX - dragStart.x) / rect.width) * 100;
+    const deltaY = ((e.clientY - dragStart.y) / rect.height) * 100;
+    
+    setImagePosition(prev => ({
+      x: Math.max(0, Math.min(100, prev.x + deltaX)),
+      y: Math.max(0, Math.min(100, prev.y + deltaY)),
+    }));
+    setDragStart({ x: e.clientX, y: e.clientY });
+  }, [isDragging, dragStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const resetTransform = () => {
+    setImageScale(100);
+    setImagePosition({ x: 50, y: 50 });
   };
 
   const handleGenerate = () => {
@@ -310,17 +375,22 @@ export default function DesignPage() {
             )}
           </div>
 
-          <div className="lg:sticky lg:top-20 lg:self-start">
+          <div className="lg:sticky lg:top-20 lg:self-start space-y-4">
             <Card className="overflow-hidden">
               <CardHeader>
                 <CardTitle>Preview</CardTitle>
               </CardHeader>
               <CardContent>
                 <div 
-                  className="relative bg-muted rounded-md overflow-hidden flex items-center justify-center"
+                  ref={previewContainerRef}
+                  className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move' : ''}`}
                   style={{ 
                     aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
                   }}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
                 >
                   <div
                     className="absolute inset-2 rounded-sm flex items-center justify-center"
@@ -336,7 +406,16 @@ export default function DesignPage() {
                         <img
                           src={generatedDesign.generatedImageUrl}
                           alt="Generated artwork"
-                          className="w-full h-full object-cover"
+                          className="select-none pointer-events-none absolute"
+                          style={{
+                            width: `${imageScale}%`,
+                            height: `${imageScale}%`,
+                            objectFit: 'cover',
+                            left: `${imagePosition.x}%`,
+                            top: `${imagePosition.y}%`,
+                            transform: 'translate(-50%, -50%)',
+                          }}
+                          draggable={false}
                           data-testid="img-generated"
                         />
                       ) : (
@@ -357,9 +436,20 @@ export default function DesignPage() {
 
                 {generatedDesign && (
                   <div className="mt-4 flex gap-3">
-                    <Button variant="outline" className="flex-1" data-testid="button-save">
+                    <Button 
+                      variant="outline" 
+                      className="flex-1" 
+                      onClick={() => saveMutation.mutate({
+                        designId: generatedDesign.id,
+                        transformScale: imageScale,
+                        transformX: imagePosition.x,
+                        transformY: imagePosition.y,
+                      })}
+                      disabled={saveMutation.isPending}
+                      data-testid="button-save"
+                    >
                       <Save className="h-4 w-4 mr-2" />
-                      Save
+                      {saveMutation.isPending ? "Saving..." : "Save"}
                     </Button>
                     <Button className="flex-1" data-testid="button-order">
                       <ShoppingCart className="h-4 w-4 mr-2" />
@@ -369,6 +459,50 @@ export default function DesignPage() {
                 )}
               </CardContent>
             </Card>
+
+            {generatedDesign?.generatedImageUrl && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Move className="h-4 w-4" />
+                    Adjust Printable Area
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-4">
+                      <Label className="flex items-center gap-2">
+                        <ZoomIn className="h-4 w-4" />
+                        Size
+                      </Label>
+                      <span className="text-sm text-muted-foreground">{imageScale}%</span>
+                    </div>
+                    <Slider
+                      value={[imageScale]}
+                      onValueChange={([value]) => setImageScale(value)}
+                      min={50}
+                      max={200}
+                      step={5}
+                      data-testid="slider-scale"
+                    />
+                  </div>
+                  
+                  <p className="text-xs text-muted-foreground">
+                    Drag the image to reposition it within the print area
+                  </p>
+                  
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={resetTransform}
+                    className="w-full"
+                    data-testid="button-reset-transform"
+                  >
+                    Reset Position
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </main>

@@ -81,6 +81,38 @@ export async function registerRoutes(
     }
   });
 
+  // Update design transforms
+  app.patch("/api/designs/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const designId = parseInt(req.params.id);
+      const { transformScale, transformX, transformY } = req.body;
+      
+      const design = await storage.getDesign(designId);
+      if (!design) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+
+      const customer = await storage.getCustomerByUserId(userId);
+      if (!customer || design.customerId !== customer.id) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+
+      const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
+
+      const updated = await storage.updateDesign(designId, {
+        transformScale: clamp(transformScale ?? design.transformScale ?? 100, 50, 200),
+        transformX: clamp(transformX ?? design.transformX ?? 50, 0, 100),
+        transformY: clamp(transformY ?? design.transformY ?? 50, 0, 100),
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating design:", error);
+      res.status(500).json({ error: "Failed to update design" });
+    }
+  });
+
   // Generate artwork
   app.post("/api/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
