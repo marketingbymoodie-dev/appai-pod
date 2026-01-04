@@ -51,34 +51,51 @@ export default function DesignPage() {
     e.stopPropagation();
     isDraggingRef.current = true;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
+    console.log("MOUSEDOWN", { clientX: e.clientX, clientY: e.clientY });
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDraggingRef.current || !previewContainerRef.current) return;
+    if (!isDraggingRef.current) {
+      return;
+    }
+    if (!previewContainerRef.current) {
+      console.log("NO CONTAINER REF");
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     
     const container = previewContainerRef.current;
     const rect = container.getBoundingClientRect();
+    console.log("MOUSEMOVE", { width: rect.width, height: rect.height, clientX: e.clientX, clientY: e.clientY });
     
-    if (rect.width === 0 || rect.height === 0) return;
+    if (rect.width === 0 || rect.height === 0) {
+      console.log("ZERO DIMENSIONS");
+      return;
+    }
     
     const dx = e.clientX - dragStartRef.current.x;
     const dy = e.clientY - dragStartRef.current.y;
+    console.log("DELTAS", { dx, dy });
     
     if (dx === 0 && dy === 0) return;
     
     const deltaX = (dx / rect.width) * 100;
     const deltaY = (dy / rect.height) * 100;
     
-    setImagePosition(prev => ({
-      x: Math.max(-50, Math.min(150, prev.x + deltaX)),
-      y: Math.max(-50, Math.min(150, prev.y + deltaY)),
-    }));
+    setImagePosition(prev => {
+      const newPos = {
+        x: Math.max(-50, Math.min(150, prev.x + deltaX)),
+        y: Math.max(-50, Math.min(150, prev.y + deltaY)),
+      };
+      console.log("NEW POS", newPos);
+      return newPos;
+    });
     dragStartRef.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleMouseUp = () => {
+    console.log("MOUSEUP");
     isDraggingRef.current = false;
   };
 
