@@ -161,6 +161,7 @@ export const FRAME_COLORS = [
 
 export const STYLE_PRESETS = [
   { id: "none", name: "No Style (Custom Prompt)", promptPrefix: "" },
+  { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop. The portrait should look like a classic oil painting of nobility. Do not include any picture frame, border, or drop shadow in the image. The image will be printed and framed separately. Create" },
   { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful watercolor painting of" },
   { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic oil painting in the style of impressionism of" },
   { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant pop art illustration in the style of Andy Warhol of" },
