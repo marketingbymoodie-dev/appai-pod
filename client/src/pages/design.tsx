@@ -444,7 +444,7 @@ export default function DesignPage() {
                     className="absolute inset-2 rounded-sm flex items-center justify-center"
                     style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a" }}
                   >
-                    <div className="bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden">
+                    <div className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden">
                       {generateMutation.isPending ? (
                         <div className="flex flex-col items-center gap-3 text-muted-foreground">
                           <Loader2 className="h-12 w-12 animate-spin" />
