@@ -112,18 +112,23 @@ export default function DesignPage() {
       transformY?: number;
       size?: string;
       frameColor?: string;
+      syncTransform?: boolean;
     }) => {
-      const { designId, ...updateData } = data;
+      const { designId, syncTransform, ...updateData } = data;
       const response = await apiRequest("PATCH", `/api/designs/${designId}`, updateData);
-      return response.json();
+      const result = await response.json();
+      return { ...result, _syncTransform: syncTransform };
     },
     onSuccess: (data) => {
-      setGeneratedDesign(data);
-      if (data.size) setSelectedSize(data.size);
-      if (data.frameColor) setSelectedFrameColor(data.frameColor);
-      if (data.transformScale !== undefined) setImageScale(data.transformScale);
-      if (data.transformX !== undefined && data.transformY !== undefined) {
-        setImagePosition({ x: data.transformX, y: data.transformY });
+      const { _syncTransform, ...design } = data;
+      setGeneratedDesign(design);
+      if (design.size) setSelectedSize(design.size);
+      if (design.frameColor) setSelectedFrameColor(design.frameColor);
+      if (_syncTransform) {
+        if (design.transformScale !== undefined) setImageScale(design.transformScale);
+        if (design.transformX !== undefined && design.transformY !== undefined) {
+          setImagePosition({ x: design.transformX, y: design.transformY });
+        }
       }
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
     },
@@ -194,6 +199,7 @@ export default function DesignPage() {
       transformScale: imageScale,
       transformX: imagePosition.x,
       transformY: imagePosition.y,
+      syncTransform: true,
     }, {
       onSuccess: () => {
         toast({
