@@ -48,27 +48,37 @@ export default function DesignPage() {
   const handleMouseDown = (e: React.MouseEvent) => {
     if (!generatedDesign?.generatedImageUrl) return;
     e.preventDefault();
+    e.stopPropagation();
     isDraggingRef.current = true;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
+    console.log("Mouse down - starting drag", { x: e.clientX, y: e.clientY });
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!isDraggingRef.current || !previewContainerRef.current) return;
     e.preventDefault();
+    e.stopPropagation();
     
     const container = previewContainerRef.current;
     const rect = container.getBoundingClientRect();
     const deltaX = ((e.clientX - dragStartRef.current.x) / rect.width) * 100;
     const deltaY = ((e.clientY - dragStartRef.current.y) / rect.height) * 100;
     
-    setImagePosition(prev => ({
-      x: Math.max(-50, Math.min(150, prev.x + deltaX)),
-      y: Math.max(-50, Math.min(150, prev.y + deltaY)),
-    }));
+    console.log("Mouse move - dragging", { deltaX, deltaY, isDragging: isDraggingRef.current });
+    
+    setImagePosition(prev => {
+      const newPos = {
+        x: Math.max(-50, Math.min(150, prev.x + deltaX)),
+        y: Math.max(-50, Math.min(150, prev.y + deltaY)),
+      };
+      console.log("New position", newPos);
+      return newPos;
+    });
     dragStartRef.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleMouseUp = () => {
+    console.log("Mouse up - ending drag");
     isDraggingRef.current = false;
   };
 
