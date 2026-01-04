@@ -181,6 +181,14 @@ export default function DesignPage() {
       });
       return;
     }
+    if ((customer?.credits ?? 0) <= 0) {
+      toast({
+        title: "No credits",
+        description: "Purchase more credits to continue creating",
+        variant: "destructive",
+      });
+      return;
+    }
 
     generateMutation.mutate({
       prompt: prompt.trim(),
@@ -352,7 +360,7 @@ export default function DesignPage() {
               size="lg"
               className="w-full"
               onClick={handleGenerate}
-              disabled={!selectedSize || !prompt.trim() || generateMutation.isPending || (customer?.credits ?? 0) <= 0}
+              disabled={generateMutation.isPending}
               data-testid="button-generate"
             >
               {generateMutation.isPending ? (
