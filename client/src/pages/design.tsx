@@ -40,63 +40,48 @@ export default function DesignPage() {
   const [touchStart, setTouchStart] = useState<number | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const previewContainerRef = useRef<HTMLDivElement>(null);
   const carouselRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const dragContainerRef = useRef<HTMLDivElement | null>(null);
+  
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!generatedDesign?.generatedImageUrl) return;
     e.preventDefault();
     e.stopPropagation();
     isDraggingRef.current = true;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
-    console.log("MOUSEDOWN", { clientX: e.clientX, clientY: e.clientY });
+    dragContainerRef.current = e.currentTarget;
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDraggingRef.current) {
-      return;
-    }
-    if (!previewContainerRef.current) {
-      console.log("NO CONTAINER REF");
-      return;
-    }
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current || !dragContainerRef.current) return;
     e.preventDefault();
     e.stopPropagation();
     
-    const container = previewContainerRef.current;
-    const rect = container.getBoundingClientRect();
-    console.log("MOUSEMOVE", { width: rect.width, height: rect.height, clientX: e.clientX, clientY: e.clientY });
+    const rect = dragContainerRef.current.getBoundingClientRect();
     
-    if (rect.width === 0 || rect.height === 0) {
-      console.log("ZERO DIMENSIONS");
-      return;
-    }
+    if (rect.width === 0 || rect.height === 0) return;
     
     const dx = e.clientX - dragStartRef.current.x;
     const dy = e.clientY - dragStartRef.current.y;
-    console.log("DELTAS", { dx, dy });
     
     if (dx === 0 && dy === 0) return;
     
     const deltaX = (dx / rect.width) * 100;
     const deltaY = (dy / rect.height) * 100;
     
-    setImagePosition(prev => {
-      const newPos = {
-        x: Math.max(-50, Math.min(150, prev.x + deltaX)),
-        y: Math.max(-50, Math.min(150, prev.y + deltaY)),
-      };
-      console.log("NEW POS", newPos);
-      return newPos;
-    });
+    setImagePosition(prev => ({
+      x: Math.max(-50, Math.min(150, prev.x + deltaX)),
+      y: Math.max(-50, Math.min(150, prev.y + deltaY)),
+    }));
     dragStartRef.current = { x: e.clientX, y: e.clientY };
   };
 
   const handleMouseUp = () => {
-    console.log("MOUSEUP");
     isDraggingRef.current = false;
+    dragContainerRef.current = null;
   };
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -471,7 +456,6 @@ export default function DesignPage() {
       )}
 
       <div 
-        ref={previewContainerRef}
         className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
         style={{ 
           aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
