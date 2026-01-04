@@ -172,6 +172,9 @@ export async function registerRoutes(
         fullPrompt += ". Vertical portrait composition, suitable for framed wall art.";
       }
 
+      // Add safe zone guidance - keep important elements away from edges for framing
+      fullPrompt += " IMPORTANT: Keep all text, faces, and important visual elements within the central 75% of the image to ensure nothing is cut off when framed.";
+
       // Generate image using Nano Banana
       const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
       
