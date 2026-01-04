@@ -443,7 +443,7 @@ export default function DesignPage() {
 
       <div 
         ref={previewContainerRef}
-        className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move' : ''}`}
+        className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
         style={{ 
           aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
           maxHeight: "calc(100vh - 280px)",
@@ -454,12 +454,15 @@ export default function DesignPage() {
         onMouseLeave={handleMouseUp}
       >
         <div
-          className="absolute inset-2 rounded-sm flex items-center justify-center pointer-events-none"
-          style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a" }}
+          className="absolute inset-2 rounded-sm flex items-center justify-center"
+          style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none' }}
         >
-          <div className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden">
+          <div 
+            className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden"
+            style={{ pointerEvents: 'none' }}
+          >
             {generateMutation.isPending ? (
-              <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <div className="flex flex-col items-center gap-2 text-muted-foreground" style={{ pointerEvents: 'none' }}>
                 <Loader2 className="h-8 w-8 animate-spin" />
                 <span className="text-xs">Creating...</span>
               </div>
@@ -475,12 +478,13 @@ export default function DesignPage() {
                   left: `${imagePosition.x}%`,
                   top: `${imagePosition.y}%`,
                   transform: 'translate(-50%, -50%)',
+                  pointerEvents: 'none',
                 }}
                 draggable={false}
                 data-testid="img-generated"
               />
             ) : (
-              <div className="text-center text-muted-foreground p-4">
+              <div className="text-center text-muted-foreground p-4" style={{ pointerEvents: 'none' }}>
                 <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
                 <p className="text-xs">Your artwork will appear here</p>
               </div>
