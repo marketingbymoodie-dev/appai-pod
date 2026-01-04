@@ -42,6 +42,31 @@ export default function DesignPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
 
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!generatedDesign?.generatedImageUrl) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+  }, [generatedDesign]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging || !previewContainerRef.current) return;
+    
+    const container = previewContainerRef.current;
+    const rect = container.getBoundingClientRect();
+    const deltaX = ((e.clientX - dragStart.x) / rect.width) * 100;
+    const deltaY = ((e.clientY - dragStart.y) / rect.height) * 100;
+    
+    setImagePosition(prev => ({
+      x: Math.max(0, Math.min(100, prev.x + deltaX)),
+      y: Math.max(0, Math.min(100, prev.y + deltaY)),
+    }));
+    setDragStart({ x: e.clientX, y: e.clientY });
+  }, [isDragging, dragStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
   const { data: config } = useQuery<Config>({
     queryKey: ["/api/config"],
   });
@@ -133,31 +158,6 @@ export default function DesignPage() {
       reader.readAsDataURL(file);
     }
   };
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!generatedDesign?.generatedImageUrl) return;
-    setIsDragging(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
-  }, [generatedDesign]);
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isDragging || !previewContainerRef.current) return;
-    
-    const container = previewContainerRef.current;
-    const rect = container.getBoundingClientRect();
-    const deltaX = ((e.clientX - dragStart.x) / rect.width) * 100;
-    const deltaY = ((e.clientY - dragStart.y) / rect.height) * 100;
-    
-    setImagePosition(prev => ({
-      x: Math.max(0, Math.min(100, prev.x + deltaX)),
-      y: Math.max(0, Math.min(100, prev.y + deltaY)),
-    }));
-    setDragStart({ x: e.clientX, y: e.clientY });
-  }, [isDragging, dragStart]);
-
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
-  }, []);
 
   const resetTransform = () => {
     setImageScale(100);
