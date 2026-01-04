@@ -1,18 +1,51 @@
+import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useQuery } from "@tanstack/react-query";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
-import { Palette, Image, ShoppingCart, Sparkles, Settings } from "lucide-react";
+import { Palette, Image, ShoppingCart, Sparkles, Settings, Ticket } from "lucide-react";
 import type { Customer } from "@shared/schema";
 
 export default function Home() {
   const { user, isLoading: authLoading, isAuthenticated } = useAuth();
+  const { toast } = useToast();
+  
+  const [couponDialogOpen, setCouponDialogOpen] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
 
   const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
     queryKey: ["/api/customer"],
     enabled: isAuthenticated,
+  });
+
+  const redeemCouponMutation = useMutation({
+    mutationFn: async (code: string) => {
+      const response = await apiRequest("POST", "/api/coupons/redeem", { code });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
+      setCouponDialogOpen(false);
+      setCouponCode("");
+      toast({
+        title: "Coupon redeemed!",
+        description: `You received ${data.creditsAdded} credits. New balance: ${data.newBalance}`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Invalid coupon",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
   });
 
   if (authLoading) {
@@ -126,9 +159,44 @@ export default function Home() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button data-testid="button-buy-credits">
-                Buy 5 Credits for $1
-              </Button>
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button data-testid="button-buy-credits">
+                  Buy 5 Credits for $1
+                </Button>
+                <Dialog open={couponDialogOpen} onOpenChange={setCouponDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button variant="outline" data-testid="button-redeem-coupon">
+                      <Ticket className="h-4 w-4 mr-2" />
+                      Redeem Coupon
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Redeem Coupon Code</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 mt-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="coupon-input">Enter your coupon code</Label>
+                        <Input
+                          id="coupon-input"
+                          placeholder="e.g., WELCOME10"
+                          value={couponCode}
+                          onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                          data-testid="input-redeem-coupon"
+                        />
+                      </div>
+                      <Button
+                        className="w-full"
+                        onClick={() => redeemCouponMutation.mutate(couponCode)}
+                        disabled={!couponCode || redeemCouponMutation.isPending}
+                        data-testid="button-submit-redeem"
+                      >
+                        {redeemCouponMutation.isPending ? "Redeeming..." : "Redeem"}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
               <p className="text-xs text-muted-foreground mt-2">
                 Credits spent are refunded up to $1 when you place an order!
               </p>
