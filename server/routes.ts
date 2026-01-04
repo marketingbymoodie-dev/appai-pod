@@ -1,16 +1,483 @@
-import type { Express } from "express";
+import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
+import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
+import { Modality } from "@google/genai";
+import { ai } from "./replit_integrations/image/client";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // put application routes here
-  // prefix all routes with /api
+  await setupAuth(app);
+  registerAuthRoutes(app);
 
-  // use storage to perform CRUD operations on the storage interface
-  // e.g. storage.insertUser(user) or storage.getUserByUsername(username)
+  // Get product configuration
+  app.get("/api/config", (_req: Request, res: Response) => {
+    res.json({
+      sizes: PRINT_SIZES,
+      frameColors: FRAME_COLORS,
+      stylePresets: STYLE_PRESETS,
+      blueprintId: 540,
+    });
+  });
+
+  // Get or create customer profile
+  app.get("/api/customer", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      let customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        customer = await storage.createCustomer({
+          userId,
+          credits: 5,
+          freeGenerationsUsed: 0,
+          totalGenerations: 0,
+          totalSpent: "0.00",
+        });
+      }
+      
+      res.json(customer);
+    } catch (error) {
+      console.error("Error fetching customer:", error);
+      res.status(500).json({ error: "Failed to fetch customer" });
+    }
+  });
+
+  // Get customer's designs
+  app.get("/api/designs", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        return res.json([]);
+      }
+      
+      const designs = await storage.getDesignsByCustomer(customer.id);
+      res.json(designs);
+    } catch (error) {
+      console.error("Error fetching designs:", error);
+      res.status(500).json({ error: "Failed to fetch designs" });
+    }
+  });
+
+  // Get single design
+  app.get("/api/designs/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const designId = parseInt(req.params.id);
+      const design = await storage.getDesign(designId);
+      
+      if (!design) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+      
+      res.json(design);
+    } catch (error) {
+      console.error("Error fetching design:", error);
+      res.status(500).json({ error: "Failed to fetch design" });
+    }
+  });
+
+  // Generate artwork
+  app.post("/api/generate", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      let customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        customer = await storage.createCustomer({
+          userId,
+          credits: 5,
+          freeGenerationsUsed: 0,
+          totalGenerations: 0,
+          totalSpent: "0.00",
+        });
+      }
+
+      // Check credits
+      if (customer.credits <= 0) {
+        return res.status(400).json({ 
+          error: "No credits remaining. Please purchase more credits.",
+          needsCredits: true 
+        });
+      }
+
+      const { prompt, stylePreset, size, frameColor, referenceImage } = req.body;
+
+      if (!prompt || !size) {
+        return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Find size config
+      const sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      if (!sizeConfig) {
+        return res.status(400).json({ error: "Invalid size" });
+      }
+
+      // Build prompt with style
+      const styleConfig = STYLE_PRESETS.find(s => s.id === stylePreset);
+      let fullPrompt = prompt;
+      if (styleConfig && styleConfig.promptPrefix) {
+        fullPrompt = `${styleConfig.promptPrefix} ${prompt}`;
+      }
+
+      // Add aspect ratio guidance
+      if (sizeConfig.aspectRatio === "1:1") {
+        fullPrompt += ". Square composition, centered subject.";
+      } else {
+        fullPrompt += ". Vertical portrait composition, suitable for framed wall art.";
+      }
+
+      // Generate image using Nano Banana
+      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
+      
+      // Add reference image if provided
+      if (referenceImage) {
+        const base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        contents[0].parts.unshift({
+          inlineData: {
+            mimeType: "image/png",
+            data: base64Data,
+          },
+        });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-image",
+        contents,
+        config: {
+          responseModalities: [Modality.TEXT, Modality.IMAGE],
+        },
+      });
+
+      const candidate = response.candidates?.[0];
+      const imagePart = candidate?.content?.parts?.find(
+        (part: any) => part.inlineData
+      );
+
+      if (!imagePart?.inlineData?.data) {
+        await storage.createGenerationLog({
+          customerId: customer.id,
+          promptLength: prompt.length,
+          hadReferenceImage: !!referenceImage,
+          stylePreset,
+          size,
+          success: false,
+          errorMessage: "No image data in response",
+        });
+        return res.status(500).json({ error: "Failed to generate image" });
+      }
+
+      const mimeType = imagePart.inlineData.mimeType || "image/png";
+      const generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+
+      // Create design record
+      const design = await storage.createDesign({
+        customerId: customer.id,
+        prompt,
+        stylePreset: stylePreset || null,
+        referenceImageUrl: referenceImage ? "uploaded" : null,
+        generatedImageUrl,
+        size,
+        frameColor: frameColor || "black",
+        aspectRatio: sizeConfig.aspectRatio,
+        status: "completed",
+      });
+
+      // Deduct credit
+      await storage.updateCustomer(customer.id, {
+        credits: customer.credits - 1,
+        totalGenerations: customer.totalGenerations + 1,
+      });
+
+      // Log generation
+      await storage.createGenerationLog({
+        customerId: customer.id,
+        designId: design.id,
+        promptLength: prompt.length,
+        hadReferenceImage: !!referenceImage,
+        stylePreset,
+        size,
+        success: true,
+      });
+
+      // Create credit transaction
+      await storage.createCreditTransaction({
+        customerId: customer.id,
+        type: "generation",
+        amount: -1,
+        description: `Generated artwork: ${prompt.substring(0, 50)}...`,
+      });
+
+      res.json({
+        design,
+        creditsRemaining: customer.credits - 1,
+      });
+    } catch (error) {
+      console.error("Error generating artwork:", error);
+      res.status(500).json({ error: "Failed to generate artwork" });
+    }
+  });
+
+  // Delete design
+  app.delete("/api/designs/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const designId = parseInt(req.params.id);
+      const userId = req.user.claims.sub;
+      const customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const design = await storage.getDesign(designId);
+      if (!design || design.customerId !== customer.id) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+
+      await storage.deleteDesign(designId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting design:", error);
+      res.status(500).json({ error: "Failed to delete design" });
+    }
+  });
+
+  // Purchase credits
+  app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { package: creditPackage } = req.body;
+      
+      let customer = await storage.getCustomerByUserId(userId);
+      if (!customer) {
+        customer = await storage.createCustomer({
+          userId,
+          credits: 5,
+          freeGenerationsUsed: 0,
+          totalGenerations: 0,
+          totalSpent: "0.00",
+        });
+      }
+
+      // Credit packages: $1 for 5 credits
+      let creditsToAdd = 0;
+      let priceInCents = 0;
+      
+      if (creditPackage === "5") {
+        creditsToAdd = 5;
+        priceInCents = 100; // $1.00
+      } else {
+        return res.status(400).json({ error: "Invalid credit package" });
+      }
+
+      // Update customer credits
+      const newCredits = customer.credits + creditsToAdd;
+      const newTotalSpent = parseFloat(customer.totalSpent) + (priceInCents / 100);
+      
+      await storage.updateCustomer(customer.id, {
+        credits: newCredits,
+        totalSpent: newTotalSpent.toFixed(2),
+      });
+
+      // Log transaction
+      await storage.createCreditTransaction({
+        customerId: customer.id,
+        type: "purchase",
+        amount: creditsToAdd,
+        priceInCents,
+        description: `Purchased ${creditsToAdd} credits`,
+      });
+
+      res.json({
+        success: true,
+        credits: newCredits,
+        charged: priceInCents,
+      });
+    } catch (error) {
+      console.error("Error purchasing credits:", error);
+      res.status(500).json({ error: "Failed to purchase credits" });
+    }
+  });
+
+  // Get credit transactions
+  app.get("/api/credits/transactions", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        return res.json([]);
+      }
+
+      const transactions = await storage.getCreditTransactionsByCustomer(customer.id);
+      res.json(transactions);
+    } catch (error) {
+      console.error("Error fetching transactions:", error);
+      res.status(500).json({ error: "Failed to fetch transactions" });
+    }
+  });
+
+  // Get customer orders
+  app.get("/api/orders", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        return res.json([]);
+      }
+
+      const orders = await storage.getOrdersByCustomer(customer.id);
+      res.json(orders);
+    } catch (error) {
+      console.error("Error fetching orders:", error);
+      res.status(500).json({ error: "Failed to fetch orders" });
+    }
+  });
+
+  // Create order (add to cart / checkout)
+  app.post("/api/orders", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { designId, shippingAddress } = req.body;
+      
+      const customer = await storage.getCustomerByUserId(userId);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const design = await storage.getDesign(designId);
+      if (!design || design.customerId !== customer.id) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+
+      // Calculate credit refund (max $1.00 = 100 cents)
+      const transactions = await storage.getCreditTransactionsByCustomer(customer.id);
+      const purchasedCreditsSpent = transactions
+        .filter(t => t.type === "purchase")
+        .reduce((sum, t) => sum + (t.priceInCents || 0), 0);
+      
+      const creditRefundInCents = Math.min(purchasedCreditsSpent, 100);
+
+      // Get price based on size (mock prices for now - would come from Printify API)
+      const sizeConfig = PRINT_SIZES.find(s => s.id === design.size);
+      const basePrices: Record<string, number> = {
+        "11x14": 3999,
+        "12x16": 4499,
+        "16x20": 5499,
+        "16x24": 5999,
+        "20x30": 7999,
+        "16x16": 4999,
+      };
+      const priceInCents = basePrices[design.size] || 4999;
+      const shippingInCents = 899; // $8.99 flat rate USA
+
+      const order = await storage.createOrder({
+        designId: design.id,
+        customerId: customer.id,
+        status: "pending",
+        size: design.size,
+        frameColor: design.frameColor,
+        quantity: 1,
+        priceInCents,
+        shippingInCents,
+        creditRefundInCents,
+        shippingAddress: JSON.stringify(shippingAddress),
+      });
+
+      res.json({
+        order,
+        totalInCents: priceInCents + shippingInCents - creditRefundInCents,
+      });
+    } catch (error) {
+      console.error("Error creating order:", error);
+      res.status(500).json({ error: "Failed to create order" });
+    }
+  });
+
+  // ==================== MERCHANT ADMIN ENDPOINTS ====================
+
+  // Get or create merchant profile
+  app.get("/api/merchant", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      let merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        merchant = await storage.createMerchant({
+          userId,
+          useBuiltInNanoBanana: true,
+          subscriptionTier: "free",
+          monthlyGenerationLimit: 100,
+          generationsThisMonth: 0,
+        });
+      }
+      
+      res.json(merchant);
+    } catch (error) {
+      console.error("Error fetching merchant:", error);
+      res.status(500).json({ error: "Failed to fetch merchant" });
+    }
+  });
+
+  // Update merchant settings
+  app.put("/api/merchant", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      let merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        merchant = await storage.createMerchant({
+          userId,
+          useBuiltInNanoBanana: true,
+          subscriptionTier: "free",
+          monthlyGenerationLimit: 100,
+          generationsThisMonth: 0,
+        });
+      }
+
+      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken } = req.body;
+      
+      const updated = await storage.updateMerchant(merchant.id, {
+        printifyApiToken: printifyApiToken || merchant.printifyApiToken,
+        printifyShopId: printifyShopId || merchant.printifyShopId,
+        useBuiltInNanoBanana: useBuiltInNanoBanana !== undefined ? useBuiltInNanoBanana : merchant.useBuiltInNanoBanana,
+        customNanoBananaToken: customNanoBananaToken || merchant.customNanoBananaToken,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating merchant:", error);
+      res.status(500).json({ error: "Failed to update merchant" });
+    }
+  });
+
+  // Get merchant generation stats
+  app.get("/api/admin/stats", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.json({ total: 0, successful: 0, failed: 0 });
+      }
+
+      // Get stats for the last 30 days
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - 30);
+
+      const stats = await storage.getGenerationStats(merchant.id, startDate, endDate);
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching stats:", error);
+      res.status(500).json({ error: "Failed to fetch stats" });
+    }
+  });
 
   return httpServer;
 }
