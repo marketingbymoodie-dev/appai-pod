@@ -511,5 +511,336 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== COUPON MANAGEMENT ====================
+
+  // Get merchant's coupons
+  app.get("/api/admin/coupons", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.json([]);
+      }
+
+      const coupons = await storage.getCouponsByMerchant(merchant.id);
+      res.json(coupons);
+    } catch (error) {
+      console.error("Error fetching coupons:", error);
+      res.status(500).json({ error: "Failed to fetch coupons" });
+    }
+  });
+
+  // Create coupon
+  app.post("/api/admin/coupons", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const { code, creditAmount, maxUses, expiresAt } = req.body;
+      
+      if (!code || !creditAmount) {
+        return res.status(400).json({ error: "Code and credit amount are required" });
+      }
+
+      // Check if code already exists
+      const existingCoupon = await storage.getCouponByCode(code);
+      if (existingCoupon) {
+        return res.status(400).json({ error: "Coupon code already exists" });
+      }
+
+      const coupon = await storage.createCoupon({
+        merchantId: merchant.id,
+        code,
+        creditAmount: parseInt(creditAmount),
+        maxUses: maxUses ? parseInt(maxUses) : null,
+        isActive: true,
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+      });
+
+      res.json(coupon);
+    } catch (error) {
+      console.error("Error creating coupon:", error);
+      res.status(500).json({ error: "Failed to create coupon" });
+    }
+  });
+
+  // Update coupon
+  app.patch("/api/admin/coupons/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const couponId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const coupon = await storage.getCoupon(couponId);
+      if (!coupon || coupon.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Coupon not found" });
+      }
+
+      const { isActive, maxUses, expiresAt } = req.body;
+      
+      const updated = await storage.updateCoupon(couponId, {
+        isActive: isActive !== undefined ? isActive : coupon.isActive,
+        maxUses: maxUses !== undefined ? maxUses : coupon.maxUses,
+        expiresAt: expiresAt ? new Date(expiresAt) : coupon.expiresAt,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating coupon:", error);
+      res.status(500).json({ error: "Failed to update coupon" });
+    }
+  });
+
+  // Delete coupon
+  app.delete("/api/admin/coupons/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const couponId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const coupon = await storage.getCoupon(couponId);
+      if (!coupon || coupon.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Coupon not found" });
+      }
+
+      await storage.deleteCoupon(couponId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting coupon:", error);
+      res.status(500).json({ error: "Failed to delete coupon" });
+    }
+  });
+
+  // Redeem coupon (customer endpoint)
+  app.post("/api/coupons/redeem", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { code } = req.body;
+      
+      if (!code) {
+        return res.status(400).json({ error: "Coupon code is required" });
+      }
+
+      const customer = await storage.getCustomerByUserId(userId);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      const coupon = await storage.getCouponByCode(code);
+      if (!coupon) {
+        return res.status(404).json({ error: "Invalid coupon code" });
+      }
+
+      if (!coupon.isActive) {
+        return res.status(400).json({ error: "Coupon is no longer active" });
+      }
+
+      if (coupon.expiresAt && new Date() > coupon.expiresAt) {
+        return res.status(400).json({ error: "Coupon has expired" });
+      }
+
+      if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
+        return res.status(400).json({ error: "Coupon has reached maximum uses" });
+      }
+
+      // Check if customer already used this coupon
+      const existingRedemption = await storage.getCouponRedemption(coupon.id, customer.id);
+      if (existingRedemption) {
+        return res.status(400).json({ error: "You have already used this coupon" });
+      }
+
+      // Add credits to customer
+      await storage.updateCustomer(customer.id, {
+        credits: customer.credits + coupon.creditAmount,
+      });
+
+      // Record redemption
+      await storage.createCouponRedemption({
+        couponId: coupon.id,
+        customerId: customer.id,
+      });
+
+      // Update coupon usage count
+      await storage.updateCoupon(coupon.id, {
+        usedCount: coupon.usedCount + 1,
+      });
+
+      // Log credit transaction
+      await storage.createCreditTransaction({
+        customerId: customer.id,
+        type: "coupon",
+        amount: coupon.creditAmount,
+        description: `Redeemed coupon: ${coupon.code}`,
+      });
+
+      res.json({
+        success: true,
+        creditsAdded: coupon.creditAmount,
+        newBalance: customer.credits + coupon.creditAmount,
+      });
+    } catch (error) {
+      console.error("Error redeeming coupon:", error);
+      res.status(500).json({ error: "Failed to redeem coupon" });
+    }
+  });
+
+  // ==================== STYLE PRESET MANAGEMENT ====================
+
+  // Get merchant's style presets
+  app.get("/api/admin/styles", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.json([]);
+      }
+
+      const presets = await storage.getStylePresetsByMerchant(merchant.id);
+      res.json(presets);
+    } catch (error) {
+      console.error("Error fetching style presets:", error);
+      res.status(500).json({ error: "Failed to fetch style presets" });
+    }
+  });
+
+  // Create style preset
+  app.post("/api/admin/styles", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const { name, promptPrefix, isActive, sortOrder } = req.body;
+      
+      if (!name) {
+        return res.status(400).json({ error: "Style name is required" });
+      }
+
+      const preset = await storage.createStylePreset({
+        merchantId: merchant.id,
+        name,
+        promptPrefix: promptPrefix || "",
+        isActive: isActive !== undefined ? isActive : true,
+        sortOrder: sortOrder || 0,
+      });
+
+      res.json(preset);
+    } catch (error) {
+      console.error("Error creating style preset:", error);
+      res.status(500).json({ error: "Failed to create style preset" });
+    }
+  });
+
+  // Update style preset
+  app.patch("/api/admin/styles/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const presetId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const preset = await storage.getStylePreset(presetId);
+      if (!preset || preset.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Style preset not found" });
+      }
+
+      const { name, promptPrefix, isActive, sortOrder } = req.body;
+      
+      const updated = await storage.updateStylePreset(presetId, {
+        name: name !== undefined ? name : preset.name,
+        promptPrefix: promptPrefix !== undefined ? promptPrefix : preset.promptPrefix,
+        isActive: isActive !== undefined ? isActive : preset.isActive,
+        sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating style preset:", error);
+      res.status(500).json({ error: "Failed to update style preset" });
+    }
+  });
+
+  // Delete style preset
+  app.delete("/api/admin/styles/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const presetId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const preset = await storage.getStylePreset(presetId);
+      if (!preset || preset.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Style preset not found" });
+      }
+
+      await storage.deleteStylePreset(presetId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting style preset:", error);
+      res.status(500).json({ error: "Failed to delete style preset" });
+    }
+  });
+
+  // Seed default styles for merchant (on first admin load)
+  app.post("/api/admin/styles/seed", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      // Check if merchant already has styles
+      const existingStyles = await storage.getStylePresetsByMerchant(merchant.id);
+      if (existingStyles.length > 0) {
+        return res.json({ message: "Styles already seeded", styles: existingStyles });
+      }
+
+      // Seed default styles
+      const defaultStyles = STYLE_PRESETS.map((style, index) => ({
+        merchantId: merchant.id,
+        name: style.name,
+        promptPrefix: style.promptPrefix,
+        isActive: true,
+        sortOrder: index,
+      }));
+
+      const createdStyles = [];
+      for (const style of defaultStyles) {
+        const created = await storage.createStylePreset(style);
+        createdStyles.push(created);
+      }
+
+      res.json({ message: "Default styles seeded", styles: createdStyles });
+    } catch (error) {
+      console.error("Error seeding styles:", error);
+      res.status(500).json({ error: "Failed to seed styles" });
+    }
+  });
+
   return httpServer;
 }
