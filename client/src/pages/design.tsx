@@ -467,11 +467,11 @@ export default function DesignPage() {
         onMouseLeave={handleMouseUp}
       >
         <div
-          className="absolute inset-[4%] rounded-sm flex items-center justify-center"
+          className="absolute inset-3 rounded-sm flex items-center justify-center"
           style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none' }}
         >
           <div 
-            className="relative bg-white dark:bg-gray-200 w-[85%] h-[85%] rounded-sm flex items-center justify-center overflow-hidden"
+            className="absolute inset-4 bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
             style={{ pointerEvents: 'none' }}
           >
             {generateMutation.isPending ? (
