@@ -203,22 +203,19 @@ export type CreditTransaction = typeof creditTransactions.$inferSelect;
 export type InsertCreditTransaction = z.infer<typeof insertCreditTransactionSchema>;
 
 // Product size configurations for Blueprint 540
-// needsSafeZone: true when print aspect ratio differs from generation aspect ratio (requires cropping)
+// Each size generates at its true aspect ratio for proper framing
 export const PRINT_SIZES = [
-  { id: "11x14", name: '11" x 14"', width: 11, height: 14, aspectRatio: "3:4", genWidth: 768, genHeight: 1024, needsSafeZone: true },
-  { id: "12x16", name: '12" x 16"', width: 12, height: 16, aspectRatio: "3:4", genWidth: 768, genHeight: 1024, needsSafeZone: false },
-  { id: "16x20", name: '16" x 20"', width: 16, height: 20, aspectRatio: "3:4", genWidth: 768, genHeight: 1024, needsSafeZone: true },
-  { id: "16x24", name: '16" x 24"', width: 16, height: 24, aspectRatio: "3:4", genWidth: 768, genHeight: 1024, needsSafeZone: true },
-  { id: "20x30", name: '20" x 30"', width: 20, height: 30, aspectRatio: "3:4", genWidth: 768, genHeight: 1024, needsSafeZone: true },
-  { id: "16x16", name: '16" x 16"', width: 16, height: 16, aspectRatio: "1:1", genWidth: 1024, genHeight: 1024, needsSafeZone: false },
+  { id: "11x14", name: '11" x 14"', width: 11, height: 14, aspectRatio: "11:14", genWidth: 880, genHeight: 1120 },
+  { id: "12x16", name: '12" x 16"', width: 12, height: 16, aspectRatio: "3:4", genWidth: 768, genHeight: 1024 },
+  { id: "16x20", name: '16" x 20"', width: 16, height: 20, aspectRatio: "4:5", genWidth: 896, genHeight: 1120 },
+  { id: "16x24", name: '16" x 24"', width: 16, height: 24, aspectRatio: "2:3", genWidth: 768, genHeight: 1152 },
+  { id: "20x30", name: '20" x 30"', width: 20, height: 30, aspectRatio: "2:3", genWidth: 768, genHeight: 1152 },
+  { id: "16x16", name: '16" x 16"', width: 16, height: 16, aspectRatio: "1:1", genWidth: 1024, genHeight: 1024 },
 ] as const;
-
-export const SAFE_ZONE_PROMPT = "IMPORTANT: Keep all key subjects, faces, and important visual elements within the central 60% of the image to ensure they remain visible when the image is cropped for printing.";
 
 export const FRAME_COLORS = [
   { id: "black", name: "Black", hex: "#1a1a1a" },
   { id: "white", name: "White", hex: "#f5f5f5" },
-  { id: "walnut", name: "Walnut", hex: "#5c4033" },
 ] as const;
 
 export const STYLE_PRESETS = [

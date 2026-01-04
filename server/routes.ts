@@ -2,7 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
-import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, SAFE_ZONE_PROMPT, type InsertDesign } from "@shared/schema";
+import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
 import { Modality } from "@google/genai";
 import { ai } from "./replit_integrations/image/client";
 
@@ -170,11 +170,6 @@ export async function registerRoutes(
         fullPrompt += ". Square composition, centered subject.";
       } else {
         fullPrompt += ". Vertical portrait composition, suitable for framed wall art.";
-      }
-
-      // Add safe zone guidance for sizes with aspect ratio mismatch (will be cropped)
-      if (sizeConfig.needsSafeZone) {
-        fullPrompt += ` ${SAFE_ZONE_PROMPT}`;
       }
 
       // Generate image using Nano Banana

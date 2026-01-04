@@ -467,11 +467,11 @@ export default function DesignPage() {
         onMouseLeave={handleMouseUp}
       >
         <div
-          className="absolute inset-2 rounded-sm flex items-center justify-center"
+          className="absolute inset-[4%] rounded-sm flex items-center justify-center"
           style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none' }}
         >
           <div 
-            className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden"
+            className="relative bg-white dark:bg-gray-200 w-[85%] h-[85%] rounded-sm flex items-center justify-center overflow-hidden"
             style={{ pointerEvents: 'none' }}
           >
             {generateMutation.isPending ? (
@@ -511,11 +511,6 @@ export default function DesignPage() {
           <p className="text-xs text-muted-foreground">
             {selectedSizeConfig.name} - {selectedFrameColorConfig?.name} Frame
           </p>
-          {selectedSizeConfig.needsSafeZone && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-              This size may crop edges. Use zoom to adjust framing.
-            </p>
-          )}
         </div>
       )}
 
