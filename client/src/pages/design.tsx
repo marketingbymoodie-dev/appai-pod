@@ -430,6 +430,51 @@ export default function DesignPage() {
           </div>
 
           <div className="lg:sticky lg:top-20 lg:self-start space-y-4">
+            {generatedDesign?.generatedImageUrl && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Move className="h-4 w-4" />
+                    Adjust Image Position
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-4">
+                      <Label className="flex items-center gap-2">
+                        <ZoomIn className="h-4 w-4" />
+                        Zoom
+                      </Label>
+                      <span className="text-sm text-muted-foreground">{imageScale}%</span>
+                    </div>
+                    <Slider
+                      value={[imageScale]}
+                      onValueChange={([value]) => setImageScale(value)}
+                      min={50}
+                      max={200}
+                      step={5}
+                      data-testid="slider-scale"
+                    />
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={resetTransform}
+                      className="flex-1"
+                      data-testid="button-reset-transform"
+                    >
+                      Reset
+                    </Button>
+                    <p className="text-xs text-muted-foreground flex-1">
+                      Drag the image below to reposition
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             <Card className="overflow-hidden">
               <CardHeader>
                 <CardTitle>Preview</CardTitle>
@@ -508,57 +553,6 @@ export default function DesignPage() {
                 )}
               </CardContent>
             </Card>
-
-            {generatedDesign?.generatedImageUrl && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Move className="h-4 w-4" />
-                    Adjust Image Position
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-xs text-muted-foreground">
-                    Control how your artwork is cropped and positioned within the {selectedSizeConfig?.name || "selected"} print area.
-                  </p>
-                  
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-4">
-                      <Label className="flex items-center gap-2">
-                        <ZoomIn className="h-4 w-4" />
-                        Zoom
-                      </Label>
-                      <span className="text-sm text-muted-foreground">{imageScale}%</span>
-                    </div>
-                    <Slider
-                      value={[imageScale]}
-                      onValueChange={([value]) => setImageScale(value)}
-                      min={50}
-                      max={200}
-                      step={5}
-                      data-testid="slider-scale"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Smaller values show more of the image, larger values crop in closer.
-                    </p>
-                  </div>
-                  
-                  <p className="text-xs text-muted-foreground">
-                    Drag the image above to reposition it within the frame.
-                  </p>
-                  
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={resetTransform}
-                    className="w-full"
-                    data-testid="button-reset-transform"
-                  >
-                    Reset Position
-                  </Button>
-                </CardContent>
-              </Card>
-            )}
           </div>
         </div>
       </main>
