@@ -102,21 +102,21 @@ export default function DesignPage() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: async (data: { designId: number; transformScale: number; transformX: number; transformY: number }) => {
-      const response = await apiRequest("PATCH", `/api/designs/${data.designId}`, {
-        transformScale: data.transformScale,
-        transformX: data.transformX,
-        transformY: data.transformY,
-      });
+    mutationFn: async (data: { 
+      designId: number; 
+      transformScale?: number; 
+      transformX?: number; 
+      transformY?: number;
+      size?: string;
+      frameColor?: string;
+    }) => {
+      const { designId, ...updateData } = data;
+      const response = await apiRequest("PATCH", `/api/designs/${designId}`, updateData);
       return response.json();
     },
     onSuccess: (data) => {
       setGeneratedDesign(data);
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
-      toast({
-        title: "Design saved!",
-        description: "Your artwork adjustments have been saved.",
-      });
     },
     onError: (error: any) => {
       toast({
@@ -162,6 +162,37 @@ export default function DesignPage() {
   const resetTransform = () => {
     setImageScale(100);
     setImagePosition({ x: 50, y: 50 });
+  };
+
+  const handleSizeChange = (newSize: string) => {
+    setSelectedSize(newSize);
+    if (generatedDesign) {
+      saveMutation.mutate({ designId: generatedDesign.id, size: newSize });
+    }
+  };
+
+  const handleFrameColorChange = (newColor: string) => {
+    setSelectedFrameColor(newColor);
+    if (generatedDesign) {
+      saveMutation.mutate({ designId: generatedDesign.id, frameColor: newColor });
+    }
+  };
+
+  const handleSaveDesign = () => {
+    if (!generatedDesign) return;
+    saveMutation.mutate({
+      designId: generatedDesign.id,
+      transformScale: imageScale,
+      transformX: imagePosition.x,
+      transformY: imagePosition.y,
+    }, {
+      onSuccess: () => {
+        toast({
+          title: "Design saved!",
+          description: "Your artwork adjustments have been saved.",
+        });
+      }
+    });
   };
 
   const handleGenerate = () => {
@@ -240,7 +271,7 @@ export default function DesignPage() {
                       key={size.id}
                       variant={selectedSize === size.id ? "default" : "outline"}
                       className="h-auto py-3 flex flex-col toggle-elevate"
-                      onClick={() => setSelectedSize(size.id)}
+                      onClick={() => handleSizeChange(size.id)}
                       data-testid={`button-size-${size.id}`}
                     >
                       <span className="font-medium">{size.name}</span>
@@ -266,7 +297,7 @@ export default function DesignPage() {
                           : "border-muted"
                       }`}
                       style={{ backgroundColor: color.hex }}
-                      onClick={() => setSelectedFrameColor(color.id)}
+                      onClick={() => handleFrameColorChange(color.id)}
                       title={color.name}
                       data-testid={`button-frame-${color.id}`}
                     />
@@ -447,12 +478,7 @@ export default function DesignPage() {
                     <Button 
                       variant="outline" 
                       className="flex-1" 
-                      onClick={() => saveMutation.mutate({
-                        designId: generatedDesign.id,
-                        transformScale: imageScale,
-                        transformX: imagePosition.x,
-                        transformY: imagePosition.y,
-                      })}
+                      onClick={handleSaveDesign}
                       disabled={saveMutation.isPending}
                       data-testid="button-save"
                     >

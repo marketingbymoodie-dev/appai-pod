@@ -86,7 +86,7 @@ export async function registerRoutes(
     try {
       const userId = req.user.claims.sub;
       const designId = parseInt(req.params.id);
-      const { transformScale, transformX, transformY } = req.body;
+      const { transformScale, transformX, transformY, size, frameColor } = req.body;
       
       const design = await storage.getDesign(designId);
       if (!design) {
@@ -100,11 +100,20 @@ export async function registerRoutes(
 
       const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 
-      const updated = await storage.updateDesign(designId, {
+      const updateData: Partial<typeof design> = {
         transformScale: clamp(transformScale ?? design.transformScale ?? 100, 50, 200),
         transformX: clamp(transformX ?? design.transformX ?? 50, 0, 100),
         transformY: clamp(transformY ?? design.transformY ?? 50, 0, 100),
-      });
+      };
+
+      if (size !== undefined) {
+        updateData.size = size;
+      }
+      if (frameColor !== undefined) {
+        updateData.frameColor = frameColor;
+      }
+
+      const updated = await storage.updateDesign(designId, updateData);
 
       res.json(updated);
     } catch (error) {
