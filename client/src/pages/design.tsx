@@ -454,7 +454,7 @@ export default function DesignPage() {
         onMouseLeave={handleMouseUp}
       >
         <div
-          className="absolute inset-2 rounded-sm flex items-center justify-center"
+          className="absolute inset-2 rounded-sm flex items-center justify-center pointer-events-none"
           style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a" }}
         >
           <div className="relative bg-white dark:bg-gray-200 w-[calc(100%-16px)] h-[calc(100%-16px)] rounded-sm flex items-center justify-center overflow-hidden">
@@ -467,7 +467,7 @@ export default function DesignPage() {
               <img
                 src={generatedDesign.generatedImageUrl}
                 alt="Generated artwork"
-                className="select-none pointer-events-none absolute"
+                className="select-none absolute"
                 style={{
                   width: `${imageScale}%`,
                   height: `${imageScale}%`,
