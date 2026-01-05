@@ -661,10 +661,15 @@ export default function DesignPage() {
     </div>
   );
 
-  const thickerFrameSizes = ["11x14", "12x16", "16x16"];
-  const useThickerFrame = thickerFrameSizes.includes(selectedSize);
-  const outerInset = useThickerFrame ? '0.625rem' : '0.75rem';
-  const innerInset = useThickerFrame ? '1.25rem' : '1rem';
+  const getFrameInsets = () => {
+    if (selectedSize === "11x14") {
+      return { outer: '0.5rem', inner: '1.5rem' };
+    } else if (["12x16", "16x16"].includes(selectedSize)) {
+      return { outer: '0.625rem', inner: '1.25rem' };
+    }
+    return { outer: '0.75rem', inner: '1rem' };
+  };
+  const frameInsets = getFrameInsets();
 
   const previewMockup = (
     <div 
@@ -676,11 +681,11 @@ export default function DesignPage() {
     >
       <div
         className="absolute rounded-sm flex items-center justify-center"
-        style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none', inset: outerInset }}
+        style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none', inset: frameInsets.outer }}
       >
         <div 
           className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
-          style={{ pointerEvents: 'none', inset: innerInset }}
+          style={{ pointerEvents: 'none', inset: frameInsets.inner }}
         >
           {generateMutation.isPending ? (
             <div className="flex flex-col items-center gap-2 text-muted-foreground" style={{ pointerEvents: 'none' }}>
