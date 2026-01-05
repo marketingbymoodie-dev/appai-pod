@@ -80,6 +80,8 @@ export default function DesignPage() {
   const [calibrationMode, setCalibrationMode] = useState(false);
   const [calibrationArea, setCalibrationArea] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
   const calibrationRef = useRef<HTMLDivElement>(null);
+  const mockupImgRef = useRef<HTMLImageElement>(null);
+  const [mockupDimensions, setMockupDimensions] = useState<{ width: number; height: number } | null>(null);
   const isCalibrationDragging = useRef(false);
   const calibrationDragStart = useRef({ x: 0, y: 0, top: 0, left: 0 });
   const isCalibrationResizing = useRef(false);
@@ -711,6 +713,47 @@ export default function DesignPage() {
   // Get the frame area to use (calibration or default)
   const activeFrameArea = calibrationMode && calibrationArea ? calibrationArea : currentLifestyle?.frameArea;
 
+  // Calculate corrected overlay dimensions that maintain print aspect ratio
+  // The issue: width% and height% map to different pixel lengths if container isn't square
+  // Solution: Adjust height% to maintain correct visual aspect ratio based on container dimensions
+  const getCorrectedFrameStyle = () => {
+    if (!activeFrameArea) return {};
+    
+    const img = mockupImgRef.current;
+    if (!img || img.clientWidth === 0 || img.clientHeight === 0) {
+      return {
+        top: `${activeFrameArea.top}%`,
+        left: `${activeFrameArea.left}%`,
+        width: `${activeFrameArea.width}%`,
+        height: `${activeFrameArea.height}%`,
+      };
+    }
+    
+    const containerWidth = img.clientWidth;
+    const containerHeight = img.clientHeight;
+    
+    // Get the print aspect ratio (width / height, e.g., 1 for square)
+    const printAspectRatio = selectedSizeConfig 
+      ? selectedSizeConfig.width / selectedSizeConfig.height 
+      : 3 / 4;
+    
+    // Calculate width in pixels from percentage
+    const widthPx = (activeFrameArea.width / 100) * containerWidth;
+    
+    // Calculate the height in pixels that maintains the print aspect ratio
+    const heightPx = widthPx / printAspectRatio;
+    
+    // Convert height back to percentage of container height
+    const correctedHeightPercent = (heightPx / containerHeight) * 100;
+    
+    return {
+      top: `${activeFrameArea.top}%`,
+      left: `${activeFrameArea.left}%`,
+      width: `${activeFrameArea.width}%`,
+      height: `${correctedHeightPercent}%`,
+    };
+  };
+
   const lifestyleMockup = currentLifestyle && (
     <div 
       ref={calibrationRef}
@@ -720,19 +763,19 @@ export default function DesignPage() {
       onMouseLeave={calibrationMode ? handleCalibrationMouseUp : undefined}
     >
       <img
+        ref={mockupImgRef}
         src={currentLifestyle.src}
         alt="Lifestyle mockup"
         className="w-full h-full object-contain rounded-md"
+        onLoad={(e) => {
+          const img = e.currentTarget;
+          setMockupDimensions({ width: img.clientWidth, height: img.clientHeight });
+        }}
       />
       {activeFrameArea && (
         <div
           className={`absolute ${calibrationMode ? 'border-2 border-dashed border-blue-500 cursor-move' : 'overflow-hidden'}`}
-          style={{
-            top: `${activeFrameArea.top}%`,
-            left: `${activeFrameArea.left}%`,
-            width: `${activeFrameArea.width}%`,
-            height: `${activeFrameArea.height}%`,
-          }}
+          style={getCorrectedFrameStyle()}
           onMouseDown={calibrationMode ? handleCalibrationMouseDown : undefined}
         >
           {generatedDesign?.generatedImageUrl && (
