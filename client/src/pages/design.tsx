@@ -551,7 +551,7 @@ export default function DesignPage() {
         style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none' }}
       >
         <div 
-          className="absolute inset-4 bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center"
+          className="absolute inset-4 bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
           style={{ pointerEvents: 'none' }}
         >
           {generateMutation.isPending ? (
