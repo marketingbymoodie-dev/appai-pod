@@ -38,6 +38,8 @@ export default function DesignPage() {
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
   const [mobileSlide, setMobileSlide] = useState(0);
   const [touchStart, setTouchStart] = useState<number | null>(null);
+  const [tweakPrompt, setTweakPrompt] = useState("");
+  const [showTweak, setShowTweak] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const carouselRef = useRef<HTMLDivElement>(null);
@@ -268,6 +270,41 @@ export default function DesignPage() {
     });
   };
 
+  const handleTweak = () => {
+    if (!tweakPrompt.trim()) {
+      toast({
+        title: "Tweak description required",
+        description: "Please describe what you want to change",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!generatedDesign?.generatedImageUrl) return;
+    if ((customer?.credits ?? 0) <= 0) {
+      toast({
+        title: "No credits",
+        description: "Purchase more credits to continue",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const tweakFullPrompt = `${prompt.trim()}. Modification: ${tweakPrompt.trim()}`;
+    
+    generateMutation.mutate({
+      prompt: tweakFullPrompt,
+      stylePreset: selectedStyle,
+      size: selectedSize,
+      frameColor: selectedFrameColor,
+      referenceImage: generatedDesign.generatedImageUrl,
+    }, {
+      onSuccess: () => {
+        setTweakPrompt("");
+        setShowTweak(false);
+      }
+    });
+  };
+
   const selectedSizeConfig = config?.sizes.find(s => s.id === selectedSize);
   const selectedFrameColorConfig = config?.frameColors.find(f => f.id === selectedFrameColor);
 
@@ -383,25 +420,68 @@ export default function DesignPage() {
   );
 
   const generateButton = (
-    <Button
-      size="default"
-      className="w-full"
-      onClick={handleGenerate}
-      disabled={generateMutation.isPending}
-      data-testid="button-generate"
-    >
-      {generateMutation.isPending ? (
-        <>
-          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          Generating...
-        </>
-      ) : (
-        <>
-          <Sparkles className="h-4 w-4 mr-2" />
-          Generate (1 Credit)
-        </>
+    <div className="space-y-2">
+      <Button
+        size="default"
+        className="w-full"
+        onClick={handleGenerate}
+        disabled={generateMutation.isPending}
+        data-testid="button-generate"
+      >
+        {generateMutation.isPending ? (
+          <>
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            Generating...
+          </>
+        ) : (
+          <>
+            <Sparkles className="h-4 w-4 mr-2" />
+            Generate (1 Credit)
+          </>
+        )}
+      </Button>
+      {generatedDesign?.generatedImageUrl && !showTweak && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={() => setShowTweak(true)}
+          data-testid="button-show-tweak"
+        >
+          Tweak This Image
+        </Button>
       )}
-    </Button>
+      {showTweak && (
+        <div className="space-y-2 p-2 bg-muted/50 rounded-md">
+          <Textarea
+            placeholder="e.g., Remove the text, change the sky to night, add more clouds..."
+            value={tweakPrompt}
+            onChange={(e) => setTweakPrompt(e.target.value)}
+            className="min-h-[60px] text-sm"
+            data-testid="input-tweak"
+          />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              className="flex-1"
+              onClick={handleTweak}
+              disabled={generateMutation.isPending}
+              data-testid="button-tweak"
+            >
+              {generateMutation.isPending ? "Tweaking..." : "Apply Tweak (1 Credit)"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => { setShowTweak(false); setTweakPrompt(""); }}
+              data-testid="button-cancel-tweak"
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 
   const zoomControls = generatedDesign?.generatedImageUrl && (
@@ -458,10 +538,7 @@ export default function DesignPage() {
 
   const previewMockup = (
     <div 
-      className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
-      style={{ 
-        aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
-      }}
+      className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center w-full h-full ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -534,9 +611,9 @@ export default function DesignPage() {
 
       {/* Desktop Layout - Two columns */}
       <main className="hidden lg:flex flex-1 overflow-hidden">
-        <div className="w-full max-w-6xl mx-auto px-6 py-4 flex gap-8 h-full">
+        <div className="w-full max-w-5xl mx-auto px-4 py-2 flex gap-6 h-full">
           {/* Left column: Controls */}
-          <div className="w-80 shrink-0 overflow-y-auto space-y-5">
+          <div className="w-72 shrink-0 space-y-3">
             {styleSelector}
             {sizeSelector}
             {frameColorSelector}
@@ -545,13 +622,13 @@ export default function DesignPage() {
           </div>
           
           {/* Right: Preview mockup with zoom controls */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            <div className="flex-1 flex items-start justify-center min-h-0 py-2 overflow-y-auto">
-              <div className="w-full max-w-sm">
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
+              <div className="max-h-full max-w-full w-64" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
                 {previewMockup}
               </div>
             </div>
-            <div className="shrink-0 pt-4 space-y-4">
+            <div className="shrink-0 pt-2 space-y-2">
               {zoomControls}
               {actionButtons}
             </div>
@@ -585,7 +662,9 @@ export default function DesignPage() {
               {sizeSelector}
               {frameColorSelector}
               {zoomControls}
-              {previewMockup}
+              <div className="w-full" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
+                {previewMockup}
+              </div>
               {actionButtons}
             </div>
           </div>
