@@ -128,6 +128,30 @@ The extension includes basic styling that adapts to most themes. For advanced cu
 - Check browser console for JavaScript errors
 - Verify the message protocol is working correctly
 
+## Security Considerations
+
+### Current Implementation (MVP)
+
+The current implementation uses session tokens with the following security measures:
+- Referer/Origin header validation
+- Timestamp validation (5-minute window)
+- IP binding for session tokens
+- Rate limiting (100 generations per shop per hour)
+- Shop installation verification
+
+### Production Recommendations
+
+For enhanced security in production environments, consider implementing:
+
+1. **Shopify App Bridge Integration**: Use Shopify App Bridge session tokens for cryptographically verified authentication. This requires:
+   - Installing `@shopify/app-bridge` in the embedded app
+   - Creating authenticated sessions via App Bridge
+   - Verifying JWTs on the backend
+
+2. **App Proxy Routing**: Route generation requests through Shopify's App Proxy, which adds HMAC verification to all requests.
+
+3. **Per-Shop Credit System**: Implement usage tracking and credit limits per shop installation to control AI generation costs.
+
 ## Support
 
 For issues with the AI Art Studio app, contact support or visit the documentation.

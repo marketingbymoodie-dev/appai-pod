@@ -52,6 +52,7 @@ Core database tables:
 - `generation_logs` - AI generation tracking
 - `credit_transactions` - Credit purchase/usage history
 - `conversations` and `messages` - Chat functionality
+- `shopify_installations` - Shopify OAuth tokens and shop data
 
 ### AI Integration
 - **Provider**: Google Gemini via Replit AI Integrations
@@ -84,3 +85,32 @@ Core database tables:
 - Development: `npm run dev` (uses tsx for TypeScript execution)
 - Production: `npm run build` then `npm start` (bundles with esbuild)
 - Database sync: `npm run db:push` (Drizzle Kit push)
+
+## Shopify Integration
+
+### Overview
+The app integrates with Shopify via a Theme App Extension that embeds the AI design studio directly on product pages.
+
+### Components
+- **OAuth Flow**: `server/shopify.ts` - Handles Shopify app installation and token management
+- **Theme Extension**: `extensions/theme-extension/` - Liquid blocks for embedding design studio
+- **Embedded Design Page**: `client/src/pages/embed-design.tsx` - React page loaded in Shopify iframe
+- **Session Management**: Session tokens with shop verification and rate limiting
+
+### Configuration
+Required environment variables for Shopify integration:
+- `SHOPIFY_API_KEY` - Shopify app API key
+- `SHOPIFY_API_SECRET` - Shopify app API secret
+
+### Theme Extension Deployment
+Deploy the theme extension using Shopify CLI:
+```bash
+cd extensions/theme-extension
+shopify app extension push
+```
+
+### Security Model
+- Session tokens with referer validation and timestamp checks
+- Rate limiting: 100 generations per shop per hour
+- Shop installation verification for all requests
+- For enhanced security, implement Shopify App Bridge (see README in extensions folder)

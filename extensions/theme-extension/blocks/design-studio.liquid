@@ -186,19 +186,18 @@
 
     const shopDomain = window.Shopify?.shop || window.location.hostname;
     
-    const params = new URLSearchParams({
-      embedded: 'true',
-      shopify: 'true',
-      shop: shopDomain,
-      productId: productId,
-      productHandle: productHandle,
-      productTitle: encodeURIComponent(productTitle),
-      showPresets: showPresets.toString(),
-      sizes: sizeOptions.join(','),
-      frameColors: frameColorOptions.join(','),
-      selectedVariant: selectedVariant,
-      variants: encodeURIComponent(JSON.stringify(variants))
-    });
+    const params = new URLSearchParams();
+    params.set('embedded', 'true');
+    params.set('shopify', 'true');
+    params.set('shop', shopDomain);
+    params.set('productId', productId);
+    params.set('productHandle', productHandle);
+    params.set('productTitle', productTitle);
+    params.set('showPresets', showPresets.toString());
+    params.set('sizes', sizeOptions.join(','));
+    params.set('frameColors', frameColorOptions.join(','));
+    params.set('selectedVariant', selectedVariant);
+    params.set('variants', JSON.stringify(variants));
 
     const iframe = document.createElement('iframe');
     iframe.src = `${appUrl}/embed/design?${params.toString()}`;

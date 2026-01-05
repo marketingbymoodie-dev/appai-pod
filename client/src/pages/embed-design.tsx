@@ -55,6 +55,30 @@ export default function EmbedDesign() {
   const stylePresets: StylePreset[] = config?.stylePresets || [];
 
   const shopDomain = searchParams.get("shop") || "";
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isShopify && shopDomain) {
+      fetch("/api/shopify/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop: shopDomain,
+          productId: productId,
+          timestamp: Date.now().toString(),
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.sessionToken) {
+            setSessionToken(data.sessionToken);
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to get session token:", error);
+        });
+    }
+  }, [isShopify, shopDomain, productId]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -64,6 +88,7 @@ export default function EmbedDesign() {
       stylePreset?: string;
       referenceImage?: string;
       shop?: string;
+      sessionToken?: string;
     }) => {
       const endpoint = isShopify ? "/api/shopify/generate" : "/api/generate";
       const response = await fetch(endpoint, {
@@ -135,16 +160,21 @@ export default function EmbedDesign() {
       stylePreset: selectedPreset || undefined,
       referenceImage: referenceImageBase64,
       shop: isShopify ? shopDomain : undefined,
+      sessionToken: isShopify ? sessionToken || undefined : undefined,
     });
   };
 
   const [variants, setVariants] = useState<any[]>([]);
+  const [variantError, setVariantError] = useState<string | null>(null);
 
   useEffect(() => {
     try {
       const variantsData = searchParams.get("variants");
       if (variantsData) {
-        setVariants(JSON.parse(decodeURIComponent(variantsData)));
+        const parsed = JSON.parse(variantsData);
+        if (Array.isArray(parsed)) {
+          setVariants(parsed);
+        }
       }
     } catch (e) {
       console.error("Failed to parse variants:", e);
@@ -154,12 +184,30 @@ export default function EmbedDesign() {
   const findVariantId = (): string | null => {
     if (!isShopify) return null;
     
-    if (variants.length > 0) {
+    if (variants.length > 0 && (selectedSize || selectedFrameColor)) {
       const matchedVariant = variants.find((v: any) => {
-        const sizeMatch = !selectedSize || v.option1 === selectedSize || v.option2 === selectedSize;
-        const colorMatch = !selectedFrameColor || v.option1 === selectedFrameColor || v.option2 === selectedFrameColor;
+        const options = [v.option1, v.option2, v.option3].filter(Boolean);
+        
+        let sizeMatch = true;
+        let colorMatch = true;
+        
+        if (selectedSize) {
+          sizeMatch = options.some(opt => 
+            opt?.toLowerCase().includes(selectedSize.toLowerCase()) ||
+            selectedSize.toLowerCase().includes(opt?.toLowerCase())
+          );
+        }
+        
+        if (selectedFrameColor) {
+          colorMatch = options.some(opt => 
+            opt?.toLowerCase().includes(selectedFrameColor.toLowerCase()) ||
+            selectedFrameColor.toLowerCase().includes(opt?.toLowerCase())
+          );
+        }
+        
         return sizeMatch && colorMatch;
       });
+      
       if (matchedVariant) {
         return matchedVariant.id?.toString() || null;
       }
@@ -171,9 +219,15 @@ export default function EmbedDesign() {
   const handleAddToCart = () => {
     if (!generatedDesign || !isShopify) return;
     
-    setIsAddingToCart(true);
-    
     const variantId = findVariantId();
+    
+    if (!variantId) {
+      setVariantError("Unable to find matching product variant. Please select a valid size and frame color combination.");
+      return;
+    }
+    
+    setVariantError(null);
+    setIsAddingToCart(true);
     
     window.parent.postMessage({
       type: "ai-art-studio:add-to-cart",
@@ -377,6 +431,12 @@ export default function EmbedDesign() {
                   data-testid="img-generated"
                 />
               </div>
+              
+              {variantError && (
+                <p className="text-destructive text-sm" data-testid="text-variant-error">
+                  {variantError}
+                </p>
+              )}
               
               <div className="flex gap-2">
                 <Button

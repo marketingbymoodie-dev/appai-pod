@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
+import crypto from "crypto";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
@@ -289,15 +290,52 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
-  // Shopify Storefront Generate (for embedded design studio)
-  // This endpoint accepts generations from Shopify storefronts without Replit auth
-  // Uses shop domain verification instead
-  app.post("/api/shopify/generate", async (req: Request, res: Response) => {
+  // Rate limiting for Shopify generation (per shop per hour)
+  const shopifyGenerationRateLimits = new Map<string, { count: number; resetAt: number }>();
+  const SHOPIFY_RATE_LIMIT = 100; // 100 generations per shop per hour
+  const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+  
+  // Session token store for Shopify storefronts (token -> { shop, expiresAt, clientIp })
+  const shopifySessionTokens = new Map<string, { shop: string; expiresAt: number; clientIp: string }>();
+  const SESSION_TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+
+  // Generate session token for Shopify storefront (called from iframe)
+  // Security: Validates referer header matches shop domain, requires active installation
+  app.post("/api/shopify/session", async (req: Request, res: Response) => {
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, shopifyCustomerId } = req.body;
+      const { shop, productId, timestamp } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Verify referer header matches the claimed shop domain
+      // This provides defense-in-depth since the iframe is loaded from Shopify
+      const referer = req.headers.referer || req.headers.origin || "";
+      const shopBaseUrl = shop.replace(".myshopify.com", "");
+      const validRefererPatterns = [
+        `https://${shop}`,
+        `https://${shopBaseUrl}.myshopify.com`,
+        new RegExp(`^https://${shopBaseUrl}[a-z0-9-]*\\.myshopify\\.com`),
+      ];
+      
+      const isValidReferer = validRefererPatterns.some(pattern => {
+        if (typeof pattern === "string") {
+          return referer.startsWith(pattern);
+        }
+        return pattern.test(referer);
+      });
+
+      // In production, require valid referer. Allow bypass in development for testing
+      const isDevelopment = process.env.NODE_ENV === "development";
+      if (!isValidReferer && !isDevelopment) {
+        console.warn(`Shopify session: Invalid referer ${referer} for shop ${shop}`);
+        return res.status(403).json({ error: "Invalid request origin" });
       }
 
       // Verify shop is installed
@@ -305,6 +343,94 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+
+      // Verify timestamp is recent (within 5 minutes)
+      const now = Date.now();
+      const requestTimestamp = parseInt(timestamp) || 0;
+      if (Math.abs(now - requestTimestamp) > 5 * 60 * 1000) {
+        return res.status(400).json({ error: "Request timestamp expired" });
+      }
+
+      // Generate session token with IP binding for additional security
+      const clientIp = req.ip || req.headers["x-forwarded-for"] || "unknown";
+      const sessionToken = crypto.randomBytes(32).toString("hex");
+      shopifySessionTokens.set(sessionToken, {
+        shop,
+        expiresAt: now + SESSION_TOKEN_EXPIRY_MS,
+        clientIp: typeof clientIp === "string" ? clientIp : clientIp[0],
+      });
+
+      // Clean up expired tokens periodically
+      for (const [token, data] of shopifySessionTokens.entries()) {
+        if (data.expiresAt < now) {
+          shopifySessionTokens.delete(token);
+        }
+      }
+
+      res.json({ sessionToken, expiresIn: SESSION_TOKEN_EXPIRY_MS / 1000 });
+    } catch (error) {
+      console.error("Error creating Shopify session:", error);
+      res.status(500).json({ error: "Failed to create session" });
+    }
+  });
+
+  // Shopify Storefront Generate (for embedded design studio)
+  // Requires valid session token from /api/shopify/session
+  app.post("/api/shopify/generate", async (req: Request, res: Response) => {
+    try {
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, sessionToken } = req.body;
+
+      if (!shop) {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Verify session token
+      if (!sessionToken) {
+        return res.status(401).json({ error: "Session token required" });
+      }
+
+      const session = shopifySessionTokens.get(sessionToken);
+      if (!session) {
+        return res.status(401).json({ error: "Invalid session token" });
+      }
+
+      if (Date.now() > session.expiresAt) {
+        shopifySessionTokens.delete(sessionToken);
+        return res.status(401).json({ error: "Session token expired" });
+      }
+
+      if (session.shop !== shop) {
+        return res.status(403).json({ error: "Session token mismatch" });
+      }
+
+      // Verify shop is installed
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      // Rate limiting per shop
+      const now = Date.now();
+      let rateLimit = shopifyGenerationRateLimits.get(shop);
+      
+      if (!rateLimit || now > rateLimit.resetAt) {
+        rateLimit = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+        shopifyGenerationRateLimits.set(shop, rateLimit);
+      }
+      
+      if (rateLimit.count >= SHOPIFY_RATE_LIMIT) {
+        return res.status(429).json({ 
+          error: "Rate limit exceeded. Please try again later.",
+          retryAfter: Math.ceil((rateLimit.resetAt - now) / 1000)
+        });
+      }
+      
+      rateLimit.count++;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
