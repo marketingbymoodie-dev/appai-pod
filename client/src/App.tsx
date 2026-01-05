@@ -8,6 +8,7 @@ import DesignPage from "@/pages/design";
 import DesignsPage from "@/pages/designs";
 import OrdersPage from "@/pages/orders";
 import AdminPage from "@/pages/admin";
+import EmbedDesign from "@/pages/embed-design";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -18,6 +19,7 @@ function Router() {
       <Route path="/designs" component={DesignsPage} />
       <Route path="/orders" component={OrdersPage} />
       <Route path="/admin" component={AdminPage} />
+      <Route path="/embed/design" component={EmbedDesign} />
       <Route component={NotFound} />
     </Switch>
   );

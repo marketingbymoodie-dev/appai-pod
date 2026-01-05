@@ -1,0 +1,13 @@
+api_version = "2024-01"
+
+[[extensions]]
+type = "theme"
+name = "AI Art Studio"
+handle = "ai-art-studio"
+
+  [extensions.capabilities]
+  block_progress = false
+
+  [[extensions.targeting]]
+    module = "./blocks/design-studio.liquid"
+    target = "section"

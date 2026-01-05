@@ -289,6 +289,101 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Shopify Storefront Generate (for embedded design studio)
+  // This endpoint accepts generations from Shopify storefronts without Replit auth
+  // Uses shop domain verification instead
+  app.post("/api/shopify/generate", async (req: Request, res: Response) => {
+    try {
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, shopifyCustomerId } = req.body;
+
+      if (!shop) {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+
+      // Verify shop is installed
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      if (!prompt || !size) {
+        return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Find size config - use default if not matching internal sizes
+      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      if (!sizeConfig) {
+        // Use medium as default for Shopify custom sizes
+        sizeConfig = PRINT_SIZES.find(s => s.id === "medium") || PRINT_SIZES[0];
+      }
+
+      // Build prompt with style
+      const styleConfig = STYLE_PRESETS.find(s => s.id === stylePreset);
+      let fullPrompt = prompt;
+      if (styleConfig && styleConfig.promptPrefix) {
+        fullPrompt = `${styleConfig.promptPrefix} ${prompt}`;
+      }
+
+      // CRITICAL: Full-bleed requirements for ALL generations
+      const sizingRequirements = `
+
+MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
+1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
+2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
+3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image.
+4. COMPOSITION: ${sizeConfig.aspectRatio === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${sizeConfig.aspectRatio} composition`} - the artwork fills the entire canvas.
+5. SAFE ZONE: Keep all important elements within the central 75% of the image.
+6. BACKGROUND: The background/scene must extend fully to all four edges.
+7. PRINT-READY: This is for high-quality printing - create a complete, finished artwork.
+`;
+
+      fullPrompt += sizingRequirements;
+
+      // Generate image
+      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
+      
+      if (referenceImage) {
+        const base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        contents[0].parts.unshift({
+          inlineData: {
+            mimeType: "image/png",
+            data: base64Data,
+          },
+        });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-image",
+        contents,
+        config: {
+          responseModalities: [Modality.TEXT, Modality.IMAGE],
+        },
+      });
+
+      const candidate = response.candidates?.[0];
+      const imagePart = candidate?.content?.parts?.find(
+        (part: any) => part.inlineData
+      );
+
+      if (!imagePart?.inlineData?.data) {
+        return res.status(500).json({ error: "Failed to generate image" });
+      }
+
+      const mimeType = imagePart.inlineData.mimeType || "image/png";
+      const generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+      res.json({
+        imageUrl: generatedImageUrl,
+        designId,
+        prompt,
+      });
+    } catch (error) {
+      console.error("Error generating Shopify artwork:", error);
+      res.status(500).json({ error: "Failed to generate artwork" });
+    }
+  });
+
   // Delete design
   app.delete("/api/designs/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -838,6 +933,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       res.status(500).json({ error: "Failed to delete style preset" });
     }
   });
+
 
   // Seed default styles for merchant (on first admin load)
   app.post("/api/admin/styles/seed", isAuthenticated, async (req: any, res: Response) => {
