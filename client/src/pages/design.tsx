@@ -947,7 +947,8 @@ export default function DesignPage() {
                 </div>
               </div>
               <div className="mt-1 h-6 flex items-center justify-center">
-                {currentLifestyle && calibrationPanel}
+                {/* Calibration panel hidden - enable when needed for positioning adjustments */}
+                {/* {currentLifestyle && calibrationPanel} */}
               </div>
             </div>
           </div>
