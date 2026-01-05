@@ -36,8 +36,8 @@ const lifestyleMockups: Record<string, Record<string, { src: string; frameArea: 
     white: { src: lifestyle12x16wht, frameArea: { top: 10, left: 30, width: 40, height: 52 } },
   },
   "16x16": {
-    black: { src: lifestyle16x16blk, frameArea: { top: 10, left: 26, width: 48, height: 48 } },
-    white: { src: lifestyle16x16wht, frameArea: { top: 10, left: 26, width: 48, height: 48 } },
+    black: { src: lifestyle16x16blk, frameArea: { top: 15, left: 8, width: 42, height: 42 } },
+    white: { src: lifestyle16x16wht, frameArea: { top: 15, left: 8, width: 42, height: 42 } },
   },
   "16x20": {
     black: { src: lifestyle16x20blk, frameArea: { top: 13, left: 32, width: 36, height: 44 } },
@@ -703,8 +703,15 @@ export default function DesignPage() {
             {/* Center: Front view */}
             <div className="flex-1 flex flex-col items-center min-w-0">
               <h3 className="text-sm font-medium mb-2">Front</h3>
-              <div className="flex-1 flex items-center justify-center min-h-0 w-full">
-                <div className="max-h-full h-full max-w-full" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
+              <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
+                <div 
+                  className="max-h-full max-w-full"
+                  style={{ 
+                    aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
+                    width: selectedSizeConfig && selectedSizeConfig.width >= selectedSizeConfig.height ? '100%' : 'auto',
+                    height: selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width ? '100%' : 'auto',
+                  }}
+                >
                   {previewMockup}
                 </div>
               </div>
