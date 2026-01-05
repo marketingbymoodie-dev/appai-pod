@@ -739,14 +739,9 @@ export default function DesignPage() {
             <img
               src={generatedDesign.generatedImageUrl}
               alt="Artwork in lifestyle"
-              className={`absolute ${calibrationMode ? 'opacity-70' : ''}`}
+              className={`absolute inset-0 w-full h-full ${calibrationMode ? 'opacity-70' : ''}`}
               style={{
-                width: `${imageScale}%`,
-                height: `${imageScale}%`,
                 objectFit: 'cover',
-                left: `${imagePosition.x}%`,
-                top: `${imagePosition.y}%`,
-                transform: 'translate(-50%, -50%)',
               }}
             />
           )}
