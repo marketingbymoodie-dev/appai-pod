@@ -42,6 +42,24 @@ export const merchants = pgTable("merchants", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Shopify app installations - separate from merchants for multi-shop support
+export const shopifyInstallations = pgTable("shopify_installations", {
+  id: serial("id").primaryKey(),
+  merchantId: varchar("merchant_id"),
+  shopDomain: text("shop_domain").notNull().unique(),
+  accessToken: text("access_token").notNull(),
+  scope: text("scope"),
+  status: text("status").notNull().default("active"),
+  installedAt: timestamp("installed_at").defaultNow().notNull(),
+  uninstalledAt: timestamp("uninstalled_at"),
+});
+
+export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
+  id: true,
+});
+export type ShopifyInstallation = typeof shopifyInstallations.$inferSelect;
+export type InsertShopifyInstallation = z.infer<typeof insertShopifyInstallationSchema>;
+
 export const insertMerchantSchema = createInsertSchema(merchants).omit({
   id: true,
   createdAt: true,

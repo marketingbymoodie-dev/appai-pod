@@ -5,6 +5,7 @@ import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integra
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
 import { Modality } from "@google/genai";
 import { ai } from "./replit_integrations/image/client";
+import { registerShopifyRoutes } from "./shopify";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -12,6 +13,7 @@ export async function registerRoutes(
 ): Promise<Server> {
   await setupAuth(app);
   registerAuthRoutes(app);
+  registerShopifyRoutes(app);
 
   // Get product configuration
   app.get("/api/config", (_req: Request, res: Response) => {

@@ -8,6 +8,7 @@ import {
   coupons, type Coupon, type InsertCoupon,
   couponRedemptions, type CouponRedemption, type InsertCouponRedemption,
   stylePresets, type StylePresetDB, type InsertStylePreset,
+  shopifyInstallations, type ShopifyInstallation, type InsertShopifyInstallation,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql } from "drizzle-orm";
@@ -72,6 +73,13 @@ export interface IStorage {
   createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB>;
   updateStylePreset(id: number, updates: Partial<StylePresetDB>): Promise<StylePresetDB | undefined>;
   deleteStylePreset(id: number): Promise<void>;
+  
+  // Shopify Installations
+  getShopifyInstallation(id: number): Promise<ShopifyInstallation | undefined>;
+  getShopifyInstallationByShop(shopDomain: string): Promise<ShopifyInstallation | undefined>;
+  getShopifyInstallationsByMerchant(merchantId: string): Promise<ShopifyInstallation[]>;
+  createShopifyInstallation(installation: InsertShopifyInstallation): Promise<ShopifyInstallation>;
+  updateShopifyInstallation(id: number, updates: Partial<ShopifyInstallation>): Promise<ShopifyInstallation | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -321,6 +329,35 @@ export class DatabaseStorage implements IStorage {
 
   async deleteStylePreset(id: number): Promise<void> {
     await db.delete(stylePresets).where(eq(stylePresets.id, id));
+  }
+
+  // Shopify Installations
+  async getShopifyInstallation(id: number): Promise<ShopifyInstallation | undefined> {
+    const [installation] = await db.select().from(shopifyInstallations).where(eq(shopifyInstallations.id, id));
+    return installation;
+  }
+
+  async getShopifyInstallationByShop(shopDomain: string): Promise<ShopifyInstallation | undefined> {
+    const [installation] = await db.select().from(shopifyInstallations).where(eq(shopifyInstallations.shopDomain, shopDomain));
+    return installation;
+  }
+
+  async getShopifyInstallationsByMerchant(merchantId: string): Promise<ShopifyInstallation[]> {
+    return db.select().from(shopifyInstallations).where(eq(shopifyInstallations.merchantId, merchantId));
+  }
+
+  async createShopifyInstallation(installation: InsertShopifyInstallation): Promise<ShopifyInstallation> {
+    const [newInstallation] = await db.insert(shopifyInstallations).values(installation).returning();
+    return newInstallation;
+  }
+
+  async updateShopifyInstallation(id: number, updates: Partial<ShopifyInstallation>): Promise<ShopifyInstallation | undefined> {
+    const [updated] = await db
+      .update(shopifyInstallations)
+      .set(updates)
+      .where(eq(shopifyInstallations.id, id))
+      .returning();
+    return updated;
   }
 }
 
