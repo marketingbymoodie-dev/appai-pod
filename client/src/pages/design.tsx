@@ -539,22 +539,20 @@ export default function DesignPage() {
           <div className="w-80 shrink-0 overflow-y-auto space-y-5">
             {styleSelector}
             {sizeSelector}
+            {frameColorSelector}
             {promptInput}
             {generateButton}
           </div>
           
-          {/* Right: Preview mockup with frame/zoom controls */}
+          {/* Right: Preview mockup with zoom controls */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            <div className="flex-1 flex items-center justify-center min-h-0 py-2">
-              <div className="max-h-full w-full max-w-md">
+            <div className="flex-1 flex items-start justify-center min-h-0 py-2 overflow-y-auto">
+              <div className="w-full max-w-sm">
                 {previewMockup}
               </div>
             </div>
             <div className="shrink-0 pt-4 space-y-4">
-              <div className="flex items-end gap-4">
-                <div className="flex-1">{zoomControls}</div>
-                <div className="shrink-0">{frameColorSelector}</div>
-              </div>
+              {zoomControls}
               {actionButtons}
             </div>
           </div>
@@ -573,20 +571,20 @@ export default function DesignPage() {
             className="flex h-full transition-transform duration-300 ease-out"
             style={{ transform: `translateX(-${mobileSlide * 100}%)` }}
           >
-            {/* Slide 1: Style, Size, Prompt, Generate */}
+            {/* Slide 1: Style, Size, Frame, Prompt, Generate */}
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-4">
               {styleSelector}
               {sizeSelector}
+              {frameColorSelector}
               {promptInput}
               {generateButton}
             </div>
             
-            {/* Slide 2: Preview with frame/zoom controls */}
+            {/* Slide 2: Size, Frame, Zoom, Preview, Actions */}
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-3">
-              <div className="flex items-end gap-3">
-                <div className="flex-1">{zoomControls}</div>
-                <div className="shrink-0">{frameColorSelector}</div>
-              </div>
+              {sizeSelector}
+              {frameColorSelector}
+              {zoomControls}
               {previewMockup}
               {actionButtons}
             </div>
