@@ -28,24 +28,24 @@ import lifestyle20x30wht from "@assets/20x30wht_1767584656740.png";
 
 const lifestyleMockups: Record<string, Record<string, { src: string; frameArea: { top: number; left: number; width: number; height: number } }>> = {
   "11x14": {
-    black: { src: lifestyle11x14blk, frameArea: { top: 22.8, left: 46.3, width: 30.4, height: 38.7 } },
-    white: { src: lifestyle11x14wht, frameArea: { top: 22.8, left: 46.3, width: 30.4, height: 38.7 } },
+    black: { src: lifestyle11x14blk, frameArea: { top: 18.6, left: 46.0, width: 30.7, height: 39.0 } },
+    white: { src: lifestyle11x14wht, frameArea: { top: 18.6, left: 46.0, width: 30.7, height: 39.0 } },
   },
   "12x16": {
-    black: { src: lifestyle12x16blk, frameArea: { top: 20.1, left: 44.8, width: 33.3, height: 44.4 } },
-    white: { src: lifestyle12x16wht, frameArea: { top: 20.1, left: 44.8, width: 33.3, height: 44.4 } },
+    black: { src: lifestyle12x16blk, frameArea: { top: 15.6, left: 45.1, width: 33.3, height: 44.4 } },
+    white: { src: lifestyle12x16wht, frameArea: { top: 15.6, left: 45.1, width: 33.3, height: 44.4 } },
   },
   "16x16": {
-    black: { src: lifestyle16x16blk, frameArea: { top: 19.3, left: 39.8, width: 44.2, height: 44.2 } },
-    white: { src: lifestyle16x16wht, frameArea: { top: 19.3, left: 39.8, width: 44.2, height: 44.2 } },
+    black: { src: lifestyle16x16blk, frameArea: { top: 14.3, left: 39.8, width: 44.2, height: 44.2 } },
+    white: { src: lifestyle16x16wht, frameArea: { top: 14.3, left: 39.8, width: 44.2, height: 44.2 } },
   },
   "16x20": {
-    black: { src: lifestyle16x20blk, frameArea: { top: 27.5, left: 39.5, width: 24.8, height: 31.0 } },
-    white: { src: lifestyle16x20wht, frameArea: { top: 27.5, left: 39.5, width: 24.8, height: 31.0 } },
+    black: { src: lifestyle16x20blk, frameArea: { top: 23.9, left: 39.5, width: 24.8, height: 31.0 } },
+    white: { src: lifestyle16x20wht, frameArea: { top: 23.9, left: 39.5, width: 24.8, height: 31.0 } },
   },
   "20x30": {
-    black: { src: lifestyle20x30blk, frameArea: { top: 20.5, left: 36.9, width: 31.4, height: 47.1 } },
-    white: { src: lifestyle20x30wht, frameArea: { top: 20.5, left: 36.9, width: 31.4, height: 47.1 } },
+    black: { src: lifestyle20x30blk, frameArea: { top: 15.8, left: 37.2, width: 31.4, height: 47.1 } },
+    white: { src: lifestyle20x30wht, frameArea: { top: 15.8, left: 37.2, width: 31.4, height: 47.1 } },
   },
 };
 
@@ -925,7 +925,8 @@ export default function DesignPage() {
                 </div>
               </div>
               <div className="mt-1 h-6 flex items-center justify-center">
-                {currentLifestyle && calibrationPanel}
+                {/* Calibration panel hidden - enable when needed for positioning adjustments */}
+                {/* {currentLifestyle && calibrationPanel} */}
               </div>
             </div>
           </div>
