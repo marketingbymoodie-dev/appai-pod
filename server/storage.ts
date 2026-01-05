@@ -28,6 +28,8 @@ export interface IStorage {
   // Designs
   getDesign(id: number): Promise<Design | undefined>;
   getDesignsByCustomer(customerId: string): Promise<Design[]>;
+  getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: Design[]; total: number }>;
+  getDesignCountByCustomer(customerId: string): Promise<number>;
   createDesign(design: InsertDesign): Promise<Design>;
   updateDesign(id: number, updates: Partial<Design>): Promise<Design | undefined>;
   deleteDesign(id: number): Promise<void>;
@@ -131,6 +133,25 @@ export class DatabaseStorage implements IStorage {
 
   async getDesignsByCustomer(customerId: string): Promise<Design[]> {
     return db.select().from(designs).where(eq(designs.customerId, customerId)).orderBy(desc(designs.createdAt));
+  }
+
+  async getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: Design[]; total: number }> {
+    const [designsList, countResult] = await Promise.all([
+      db.select().from(designs)
+        .where(eq(designs.customerId, customerId))
+        .orderBy(desc(designs.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` }).from(designs)
+        .where(eq(designs.customerId, customerId))
+    ]);
+    return { designs: designsList, total: countResult[0]?.count || 0 };
+  }
+
+  async getDesignCountByCustomer(customerId: string): Promise<number> {
+    const [result] = await db.select({ count: sql<number>`count(*)::int` }).from(designs)
+      .where(eq(designs.customerId, customerId));
+    return result?.count || 0;
   }
 
   async createDesign(design: InsertDesign): Promise<Design> {

@@ -46,18 +46,24 @@ export async function registerRoutes(
     }
   });
 
-  // Get customer's designs
+  // Get customer's designs (paginated)
   app.get("/api/designs", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const customer = await storage.getCustomerByUserId(userId);
       
       if (!customer) {
-        return res.json([]);
+        return res.json({ designs: [], total: 0, hasMore: false });
       }
       
-      const designs = await storage.getDesignsByCustomer(customer.id);
-      res.json(designs);
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 12;
+      const offset = (page - 1) * limit;
+      
+      const { designs, total } = await storage.getDesignsByCustomerPaginated(customer.id, limit, offset);
+      const hasMore = offset + designs.length < total;
+      
+      res.json({ designs, total, hasMore });
     } catch (error) {
       console.error("Error fetching designs:", error);
       res.status(500).json({ error: "Failed to fetch designs" });
@@ -143,6 +149,15 @@ export async function registerRoutes(
         return res.status(400).json({ 
           error: "No credits remaining. Please purchase more credits.",
           needsCredits: true 
+        });
+      }
+
+      // Check design gallery limit (50 max)
+      const designCount = await storage.getDesignCountByCustomer(customer.id);
+      if (designCount >= 50) {
+        return res.status(400).json({ 
+          error: "Your design gallery is full (50 designs max). Please delete some designs to save new ones.",
+          galleryFull: true 
         });
       }
 

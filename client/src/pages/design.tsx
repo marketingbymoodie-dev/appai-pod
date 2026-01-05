@@ -158,6 +158,34 @@ export default function DesignPage() {
     enabled: isAuthenticated,
   });
 
+  // Load design from URL when coming from "Tweak" button in gallery
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const tweakId = urlParams.get("tweak");
+    if (tweakId && tweakId !== "true") {
+      const designId = parseInt(tweakId);
+      if (!isNaN(designId)) {
+        fetch(`/api/designs/${designId}`, { credentials: "include" })
+          .then(res => res.ok ? res.json() : null)
+          .then((design: Design | null) => {
+            if (design) {
+              setGeneratedDesign(design);
+              setPrompt(design.prompt);
+              setSelectedSize(design.size);
+              setSelectedFrameColor(design.frameColor);
+              setSelectedStyle(design.stylePreset || "none");
+              setImageScale(design.transformScale ?? 100);
+              setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
+              setShowTweak(true);
+            }
+            // Clean up URL
+            window.history.replaceState({}, "", "/design");
+          })
+          .catch(e => console.error("Failed to load design:", e));
+      }
+    }
+  }, []);
+
   const generateMutation = useMutation({
     mutationFn: async (data: { prompt: string; stylePreset: string; size: string; frameColor: string; referenceImage?: string }) => {
       const response = await apiRequest("POST", "/api/generate", data);
