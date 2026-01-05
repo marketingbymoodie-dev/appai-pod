@@ -416,12 +416,48 @@ export default function DesignPage() {
     }
     
     if (isCalibrationResizing.current && calibrationArea) {
+      // Lock aspect ratio based on print size
+      const aspectRatio = selectedSizeConfig 
+        ? selectedSizeConfig.width / selectedSizeConfig.height 
+        : 3 / 4;
+      
+      // Calculate delta from drag
       const dx = ((e.clientX - calibrationResizeStart.current.x) / rect.width) * 100;
-      const dy = ((e.clientY - calibrationResizeStart.current.y) / rect.height) * 100;
+      
+      // Calculate unconstrained new dimensions based on width drag
+      let newWidth = calibrationResizeStart.current.width + dx;
+      let newHeight = newWidth / aspectRatio;
+      
+      // Calculate maximum allowed dimensions based on position
+      const maxWidth = 100 - calibrationArea.left;
+      const maxHeight = 100 - calibrationArea.top;
+      
+      // Constrain to bounds while preserving aspect ratio
+      // If either dimension hits its max, scale both down proportionally
+      if (newWidth > maxWidth) {
+        newWidth = maxWidth;
+        newHeight = newWidth / aspectRatio;
+      }
+      if (newHeight > maxHeight) {
+        newHeight = maxHeight;
+        newWidth = newHeight * aspectRatio;
+      }
+      
+      // Apply minimum size while preserving aspect ratio
+      const minSize = 5;
+      if (newWidth < minSize) {
+        newWidth = minSize;
+        newHeight = newWidth / aspectRatio;
+      }
+      if (newHeight < minSize) {
+        newHeight = minSize;
+        newWidth = newHeight * aspectRatio;
+      }
+      
       setCalibrationArea(prev => prev ? {
         ...prev,
-        width: Math.max(5, Math.min(100 - prev.left, calibrationResizeStart.current.width + dx)),
-        height: Math.max(5, Math.min(100 - prev.top, calibrationResizeStart.current.height + dy)),
+        width: newWidth,
+        height: newHeight,
       } : null);
     }
   };

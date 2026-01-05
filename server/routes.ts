@@ -165,15 +165,21 @@ export async function registerRoutes(
         fullPrompt = `${styleConfig.promptPrefix} ${prompt}`;
       }
 
-      // Add aspect ratio guidance
-      if (sizeConfig.aspectRatio === "1:1") {
-        fullPrompt += ". Square composition, centered subject.";
-      } else {
-        fullPrompt += ". Vertical portrait composition, suitable for framed wall art.";
-      }
+      // CRITICAL: Hardcoded sizing and full-bleed requirements for ALL generations
+      const sizingRequirements = `
 
-      // Add safe zone guidance - keep important elements away from edges for framing
-      fullPrompt += " IMPORTANT: Keep all text, faces, and important visual elements within the central 75% of the image to ensure nothing is cut off when framed.";
+MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
+1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
+2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
+3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image. The image will be printed and framed separately.
+4. COMPOSITION: ${sizeConfig.aspectRatio === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${sizeConfig.aspectRatio} composition`} - the artwork fills the entire canvas.
+5. SAFE ZONE: Keep all important elements (text, faces, key subjects) within the central 75% of the image to ensure nothing is cut off when framed.
+6. BACKGROUND: The background/scene must extend fully to all four edges of the image with NO visible canvas edges or cutoffs.
+7. PRINT-READY: This is for high-quality wall art printing - create a complete, finished artwork that fills the entire image area.
+`;
+
+      // Append sizing requirements to prompt
+      fullPrompt += sizingRequirements;
 
       // Generate image using Nano Banana
       const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];

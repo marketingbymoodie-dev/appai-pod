@@ -217,16 +217,17 @@ export const FRAME_COLORS = [
   { id: "white", name: "White", hex: "#f5f5f5" },
 ] as const;
 
+// IMPORTANT: All style presets must create full-bleed, edge-to-edge artwork with no borders or floating elements
 export const STYLE_PRESETS = [
   { id: "none", name: "No Style (Custom Prompt)", promptPrefix: "" },
-  { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop. The portrait should look like a classic oil painting of nobility. Do not include any picture frame, border, or drop shadow in the image. The image will be printed and framed separately. Create" },
-  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful watercolor painting of" },
-  { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic oil painting in the style of impressionism of" },
-  { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant pop art illustration in the style of Andy Warhol of" },
-  { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist single-line art drawing of" },
-  { id: "abstract", name: "Abstract", promptPrefix: "An abstract modern art piece with bold colors representing" },
-  { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A vintage travel poster style illustration of" },
-  { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic high-quality image of" },
+  { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop filling the entire canvas. The portrait should look like a classic oil painting of nobility with the background extending to all edges. Create full-bleed artwork of" },
+  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of" },
+  { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic full-bleed oil painting in the style of impressionism that fills the entire canvas with rich brushstrokes extending to all edges of" },
+  { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of" },
+  { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of" },
+  { id: "abstract", name: "Abstract", promptPrefix: "A full-bleed abstract modern art piece with bold colors filling the entire canvas edge-to-edge representing" },
+  { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel poster style illustration that fills the entire canvas with the design extending to all edges of" },
+  { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of" },
 ] as const;
 
 export type PrintSize = typeof PRINT_SIZES[number];
