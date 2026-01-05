@@ -12,8 +12,42 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair } from "lucide-react";
+import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye } from "lucide-react";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset } from "@shared/schema";
+
+import lifestyle11x14blk from "@assets/11x14blk_1767584656742.png";
+import lifestyle11x14wht from "@assets/11x14wht_1767584656741.png";
+import lifestyle12x16blk from "@assets/12x16blk_1767584656742.png";
+import lifestyle12x16wht from "@assets/12x16wht_1767584656741.png";
+import lifestyle16x16blk from "@assets/16x16blk_1767584656744.png";
+import lifestyle16x16wht from "@assets/16x16wht_1767584656740.png";
+import lifestyle16x20blk from "@assets/16x20blk_1767584656743.png";
+import lifestyle16x20wht from "@assets/16x20wht_1767584656740.png";
+import lifestyle20x30blk from "@assets/20x30blk_1767584656743.png";
+import lifestyle20x30wht from "@assets/20x30wht_1767584656740.png";
+
+const lifestyleMockups: Record<string, Record<string, { src: string; frameArea: { top: number; left: number; width: number; height: number } }>> = {
+  "11x14": {
+    black: { src: lifestyle11x14blk, frameArea: { top: 11.5, left: 29.5, width: 41, height: 52 } },
+    white: { src: lifestyle11x14wht, frameArea: { top: 11.5, left: 29.5, width: 41, height: 52 } },
+  },
+  "12x16": {
+    black: { src: lifestyle12x16blk, frameArea: { top: 10, left: 30, width: 40, height: 52 } },
+    white: { src: lifestyle12x16wht, frameArea: { top: 10, left: 30, width: 40, height: 52 } },
+  },
+  "16x16": {
+    black: { src: lifestyle16x16blk, frameArea: { top: 10, left: 26, width: 48, height: 48 } },
+    white: { src: lifestyle16x16wht, frameArea: { top: 10, left: 26, width: 48, height: 48 } },
+  },
+  "16x20": {
+    black: { src: lifestyle16x20blk, frameArea: { top: 13, left: 32, width: 36, height: 44 } },
+    white: { src: lifestyle16x20wht, frameArea: { top: 13, left: 32, width: 36, height: 44 } },
+  },
+  "20x30": {
+    black: { src: lifestyle20x30blk, frameArea: { top: 8, left: 28, width: 44, height: 64 } },
+    white: { src: lifestyle20x30wht, frameArea: { top: 8, left: 28, width: 44, height: 64 } },
+  },
+};
 
 interface Config {
   sizes: PrintSize[];
@@ -37,6 +71,7 @@ export default function DesignPage() {
   const [imageScale, setImageScale] = useState(100);
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
   const [mobileSlide, setMobileSlide] = useState(0);
+  const [mobileViewMode, setMobileViewMode] = useState<"front" | "lifestyle">("front");
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [tweakPrompt, setTweakPrompt] = useState("");
   const [showTweak, setShowTweak] = useState(false);
@@ -307,6 +342,16 @@ export default function DesignPage() {
 
   const selectedSizeConfig = config?.sizes.find(s => s.id === selectedSize);
   const selectedFrameColorConfig = config?.frameColors.find(f => f.id === selectedFrameColor);
+  
+  const getLifestyleMockup = () => {
+    if (!selectedSize) return null;
+    const sizeConfig = lifestyleMockups[selectedSize];
+    if (!sizeConfig) return null;
+    const colorKey = sizeConfig[selectedFrameColor] ? selectedFrameColor : "black";
+    return sizeConfig[colorKey] || null;
+  };
+  
+  const currentLifestyle = getLifestyleMockup();
 
   const sizeSelector = (
     <div className="space-y-2">
@@ -420,68 +465,25 @@ export default function DesignPage() {
   );
 
   const generateButton = (
-    <div className="space-y-2">
-      <Button
-        size="default"
-        className="w-full"
-        onClick={handleGenerate}
-        disabled={generateMutation.isPending}
-        data-testid="button-generate"
-      >
-        {generateMutation.isPending ? (
-          <>
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            Generating...
-          </>
-        ) : (
-          <>
-            <Sparkles className="h-4 w-4 mr-2" />
-            Generate (1 Credit)
-          </>
-        )}
-      </Button>
-      {generatedDesign?.generatedImageUrl && !showTweak && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full"
-          onClick={() => setShowTweak(true)}
-          data-testid="button-show-tweak"
-        >
-          Tweak This Image
-        </Button>
+    <Button
+      size="default"
+      className="w-full"
+      onClick={handleGenerate}
+      disabled={generateMutation.isPending}
+      data-testid="button-generate"
+    >
+      {generateMutation.isPending ? (
+        <>
+          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          Generating...
+        </>
+      ) : (
+        <>
+          <Sparkles className="h-4 w-4 mr-2" />
+          Generate (1 Credit)
+        </>
       )}
-      {showTweak && (
-        <div className="space-y-2 p-2 bg-muted/50 rounded-md">
-          <Textarea
-            placeholder="e.g., Remove the text, change the sky to night, add more clouds..."
-            value={tweakPrompt}
-            onChange={(e) => setTweakPrompt(e.target.value)}
-            className="min-h-[60px] text-sm"
-            data-testid="input-tweak"
-          />
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              className="flex-1"
-              onClick={handleTweak}
-              disabled={generateMutation.isPending}
-              data-testid="button-tweak"
-            >
-              {generateMutation.isPending ? "Tweaking..." : "Apply Tweak (1 Credit)"}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => { setShowTweak(false); setTweakPrompt(""); }}
-              data-testid="button-cancel-tweak"
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
+    </Button>
   );
 
   const zoomControls = generatedDesign?.generatedImageUrl && (
@@ -538,7 +540,7 @@ export default function DesignPage() {
 
   const previewMockup = (
     <div 
-      className={`relative bg-muted rounded-md overflow-hidden flex items-center justify-center w-full h-full ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
+      className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
@@ -549,7 +551,7 @@ export default function DesignPage() {
         style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none' }}
       >
         <div 
-          className="absolute inset-4 bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
+          className="absolute inset-4 bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center"
           style={{ pointerEvents: 'none' }}
         >
           {generateMutation.isPending ? (
@@ -585,6 +587,82 @@ export default function DesignPage() {
     </div>
   );
 
+  const lifestyleMockup = currentLifestyle && (
+    <div className="relative w-full h-full">
+      <img
+        src={currentLifestyle.src}
+        alt="Lifestyle mockup"
+        className="w-full h-full object-contain rounded-md"
+      />
+      {generatedDesign?.generatedImageUrl && (
+        <div
+          className="absolute overflow-hidden"
+          style={{
+            top: `${currentLifestyle.frameArea.top}%`,
+            left: `${currentLifestyle.frameArea.left}%`,
+            width: `${currentLifestyle.frameArea.width}%`,
+            height: `${currentLifestyle.frameArea.height}%`,
+          }}
+        >
+          <img
+            src={generatedDesign.generatedImageUrl}
+            alt="Artwork in lifestyle"
+            className="absolute"
+            style={{
+              width: `${imageScale}%`,
+              height: `${imageScale}%`,
+              objectFit: 'cover',
+              left: `${imagePosition.x}%`,
+              top: `${imagePosition.y}%`,
+              transform: 'translate(-50%, -50%)',
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+
+  const tweakLink = generatedDesign?.generatedImageUrl && !showTweak && (
+    <button
+      onClick={() => setShowTweak(true)}
+      className="text-sm text-muted-foreground hover:text-foreground underline"
+      data-testid="link-tweak"
+    >
+      Tweak This Image
+    </button>
+  );
+
+  const tweakPanel = showTweak && (
+    <div className="space-y-2 p-2 bg-muted/50 rounded-md">
+      <Textarea
+        placeholder="e.g., Remove the text, change the sky to night, add more clouds..."
+        value={tweakPrompt}
+        onChange={(e) => setTweakPrompt(e.target.value)}
+        className="min-h-[60px] text-sm"
+        data-testid="input-tweak"
+      />
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          className="flex-1"
+          onClick={handleTweak}
+          disabled={generateMutation.isPending}
+          data-testid="button-tweak"
+        >
+          {generateMutation.isPending ? "Tweaking..." : "Apply Tweak (1 Credit)"}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setShowTweak(false); setTweakPrompt(""); }}
+          data-testid="button-cancel-tweak"
+        >
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <header className="border-b bg-background z-50 shrink-0">
@@ -609,29 +687,53 @@ export default function DesignPage() {
         </div>
       </header>
 
-      {/* Desktop Layout - Two columns */}
+      {/* Desktop Layout - Three columns */}
       <main className="hidden lg:flex flex-1 overflow-hidden">
-        <div className="w-full max-w-5xl mx-auto px-4 py-2 flex gap-6 h-full">
-          {/* Left column: Controls */}
-          <div className="w-72 shrink-0 space-y-3">
-            {styleSelector}
-            {sizeSelector}
-            {frameColorSelector}
-            {promptInput}
-            {generateButton}
+        <div className="w-full max-w-6xl mx-auto px-4 py-3 flex flex-col h-full">
+          <div className="flex-1 flex gap-4 min-h-0">
+            {/* Left column: Controls */}
+            <div className="w-72 shrink-0 space-y-3 overflow-y-auto">
+              {styleSelector}
+              {sizeSelector}
+              {frameColorSelector}
+              {promptInput}
+              {generateButton}
+            </div>
+            
+            {/* Center: Front view */}
+            <div className="flex-1 flex flex-col items-center min-w-0">
+              <h3 className="text-sm font-medium mb-2">Front</h3>
+              <div className="flex-1 flex items-center justify-center min-h-0 w-full">
+                <div className="max-h-full h-full max-w-full" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
+                  {previewMockup}
+                </div>
+              </div>
+              <div className="mt-1 h-6 flex items-center justify-center">
+                {tweakLink}
+              </div>
+              {tweakPanel && <div className="mt-2 w-full max-w-xs">{tweakPanel}</div>}
+            </div>
+            
+            {/* Right: Lifestyle view */}
+            <div className="flex-1 flex flex-col items-center min-w-0">
+              <h3 className="text-sm font-medium mb-2">Lifestyle</h3>
+              <div className="flex-1 flex items-center justify-center min-h-0 w-full">
+                <div className="max-h-full h-full max-w-full">
+                  {lifestyleMockup || (
+                    <div className="h-full w-full flex items-center justify-center bg-muted rounded-md">
+                      <p className="text-xs text-muted-foreground">Select a size to see lifestyle view</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="mt-1 h-6" />
+            </div>
           </div>
           
-          {/* Right: Preview mockup with zoom controls */}
-          <div className="flex-1 flex flex-col min-w-0">
-            <div className="flex-1 flex items-center justify-center min-h-0 overflow-hidden">
-              <div className="max-h-full max-w-full w-64" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
-                {previewMockup}
-              </div>
-            </div>
-            <div className="shrink-0 pt-2 space-y-2">
-              {zoomControls}
-              {actionButtons}
-            </div>
+          {/* Bottom: Zoom and action buttons */}
+          <div className="shrink-0 pt-3 flex items-center gap-4">
+            <div className="flex-1">{zoomControls}</div>
+            <div className="w-72">{actionButtons}</div>
           </div>
         </div>
       </main>
@@ -657,14 +759,53 @@ export default function DesignPage() {
               {generateButton}
             </div>
             
-            {/* Slide 2: Size, Frame, Zoom, Preview, Actions */}
+            {/* Slide 2: Preview with Front/Lifestyle toggle */}
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-3">
               {sizeSelector}
               {frameColorSelector}
-              {zoomControls}
-              <div className="w-full" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
-                {previewMockup}
+              
+              {/* Front/Lifestyle Toggle */}
+              <div className="flex justify-center gap-2">
+                <Button
+                  variant={mobileViewMode === "front" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setMobileViewMode("front")}
+                  data-testid="button-view-front"
+                >
+                  Front
+                </Button>
+                <Button
+                  variant={mobileViewMode === "lifestyle" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setMobileViewMode("lifestyle")}
+                  disabled={!currentLifestyle}
+                  data-testid="button-view-lifestyle"
+                >
+                  Lifestyle
+                </Button>
               </div>
+              
+              {zoomControls}
+              
+              {/* Conditionally show Front or Lifestyle */}
+              {mobileViewMode === "front" ? (
+                <div className="space-y-1">
+                  <div className="w-full" style={{ aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4" }}>
+                    {previewMockup}
+                  </div>
+                  <div className="flex justify-center">{tweakLink}</div>
+                  {tweakPanel}
+                </div>
+              ) : (
+                <div className="w-full">
+                  {lifestyleMockup || (
+                    <div className="w-full aspect-square flex items-center justify-center bg-muted rounded-md">
+                      <p className="text-xs text-muted-foreground">Select a size to see lifestyle view</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              
               {actionButtons}
             </div>
           </div>
