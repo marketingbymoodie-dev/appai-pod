@@ -532,27 +532,27 @@ export default function DesignPage() {
         </div>
       </header>
 
-      {/* Desktop Layout - Three columns */}
+      {/* Desktop Layout - Two columns */}
       <main className="hidden lg:flex flex-1 overflow-hidden">
-        <div className="w-full px-4 py-3 flex gap-4 h-full">
-          {/* Left column: Style, Prompt, Generate */}
-          <div className="w-72 shrink-0 overflow-y-auto space-y-4">
+        <div className="w-full max-w-6xl mx-auto px-6 py-4 flex gap-8 h-full">
+          {/* Left column: Controls */}
+          <div className="w-80 shrink-0 overflow-y-auto space-y-5">
             {styleSelector}
+            {sizeSelector}
             {promptInput}
             {generateButton}
           </div>
           
-          {/* Center: Preview mockup with size/frame/zoom below */}
+          {/* Right: Preview mockup with frame/zoom controls */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            <div className="flex-1 flex items-center justify-center min-h-0">
-              <div className="max-h-full w-full max-w-lg">
+            <div className="flex-1 flex items-center justify-center min-h-0 py-2">
+              <div className="max-h-full w-full max-w-md">
                 {previewMockup}
               </div>
             </div>
-            <div className="shrink-0 pt-3 space-y-3">
-              {zoomControls}
-              <div className="flex flex-wrap items-end gap-4">
-                <div className="flex-1 min-w-[280px]">{sizeSelector}</div>
+            <div className="shrink-0 pt-4 space-y-4">
+              <div className="flex items-end gap-4">
+                <div className="flex-1">{zoomControls}</div>
                 <div className="shrink-0">{frameColorSelector}</div>
               </div>
               {actionButtons}
@@ -573,20 +573,20 @@ export default function DesignPage() {
             className="flex h-full transition-transform duration-300 ease-out"
             style={{ transform: `translateX(-${mobileSlide * 100}%)` }}
           >
-            {/* Slide 1: Style, Prompt, Generate */}
+            {/* Slide 1: Style, Size, Prompt, Generate */}
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-4">
               {styleSelector}
+              {sizeSelector}
               {promptInput}
               {generateButton}
             </div>
             
-            {/* Slide 2: Preview with size/frame/zoom controls */}
+            {/* Slide 2: Preview with frame/zoom controls */}
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-3">
-              <div className="flex flex-wrap gap-3 items-end">
-                <div className="flex-1 min-w-[200px]">{sizeSelector}</div>
+              <div className="flex items-end gap-3">
+                <div className="flex-1">{zoomControls}</div>
                 <div className="shrink-0">{frameColorSelector}</div>
               </div>
-              {zoomControls}
               {previewMockup}
               {actionButtons}
             </div>
