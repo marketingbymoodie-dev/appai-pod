@@ -26,41 +26,26 @@ import lifestyle16x20wht from "@assets/16x20wht_1767584656740.png";
 import lifestyle20x30blk from "@assets/20x30blk_1767584656743.png";
 import lifestyle20x30wht from "@assets/20x30wht_1767584656740.png";
 
-const lifestyleMockups: Record<string, { aspectRatio: number; variants: Record<string, { src: string; frameArea: { top: number; left: number; width: number; height: number } }> }> = {
+const lifestyleMockups: Record<string, Record<string, { src: string; frameArea: { top: number; left: number; width: number; height: number } }>> = {
   "11x14": {
-    aspectRatio: 1,
-    variants: {
-      black: { src: lifestyle11x14blk, frameArea: { top: 22.8, left: 46.3, width: 30.4, height: 38.7 } },
-      white: { src: lifestyle11x14wht, frameArea: { top: 22.8, left: 46.3, width: 30.4, height: 38.7 } },
-    }
+    black: { src: lifestyle11x14blk, frameArea: { top: 22.8, left: 46.3, width: 30.4, height: 38.7 } },
+    white: { src: lifestyle11x14wht, frameArea: { top: 22.8, left: 46.3, width: 30.4, height: 38.7 } },
   },
   "12x16": {
-    aspectRatio: 1,
-    variants: {
-      black: { src: lifestyle12x16blk, frameArea: { top: 20.1, left: 44.8, width: 33.3, height: 44.4 } },
-      white: { src: lifestyle12x16wht, frameArea: { top: 20.1, left: 44.8, width: 33.3, height: 44.4 } },
-    }
+    black: { src: lifestyle12x16blk, frameArea: { top: 20.1, left: 44.8, width: 33.3, height: 44.4 } },
+    white: { src: lifestyle12x16wht, frameArea: { top: 20.1, left: 44.8, width: 33.3, height: 44.4 } },
   },
   "16x16": {
-    aspectRatio: 1,
-    variants: {
-      black: { src: lifestyle16x16blk, frameArea: { top: 19.3, left: 39.8, width: 44.2, height: 44.2 } },
-      white: { src: lifestyle16x16wht, frameArea: { top: 19.3, left: 39.8, width: 44.2, height: 44.2 } },
-    }
+    black: { src: lifestyle16x16blk, frameArea: { top: 19.3, left: 39.8, width: 44.2, height: 44.2 } },
+    white: { src: lifestyle16x16wht, frameArea: { top: 19.3, left: 39.8, width: 44.2, height: 44.2 } },
   },
   "16x20": {
-    aspectRatio: 1,
-    variants: {
-      black: { src: lifestyle16x20blk, frameArea: { top: 27.5, left: 39.5, width: 24.8, height: 31.0 } },
-      white: { src: lifestyle16x20wht, frameArea: { top: 27.5, left: 39.5, width: 24.8, height: 31.0 } },
-    }
+    black: { src: lifestyle16x20blk, frameArea: { top: 27.5, left: 39.5, width: 24.8, height: 31.0 } },
+    white: { src: lifestyle16x20wht, frameArea: { top: 27.5, left: 39.5, width: 24.8, height: 31.0 } },
   },
   "20x30": {
-    aspectRatio: 1,
-    variants: {
-      black: { src: lifestyle20x30blk, frameArea: { top: 20.5, left: 36.9, width: 31.4, height: 47.1 } },
-      white: { src: lifestyle20x30wht, frameArea: { top: 20.5, left: 36.9, width: 31.4, height: 47.1 } },
-    }
+    black: { src: lifestyle20x30blk, frameArea: { top: 20.5, left: 36.9, width: 31.4, height: 47.1 } },
+    white: { src: lifestyle20x30wht, frameArea: { top: 20.5, left: 36.9, width: 31.4, height: 47.1 } },
   },
 };
 
@@ -230,7 +215,7 @@ export default function DesignPage() {
   // Initialize calibration area when size/frame changes in calibration mode
   // Note: We compute currentLifestyle inline here since we can't call it before hooks
   const calibrationLifestyle = selectedSize && lifestyleMockups[selectedSize]
-    ? lifestyleMockups[selectedSize].variants[lifestyleMockups[selectedSize].variants[selectedFrameColor] ? selectedFrameColor : "black"]
+    ? lifestyleMockups[selectedSize][lifestyleMockups[selectedSize][selectedFrameColor] ? selectedFrameColor : "black"]
     : null;
   
   useEffect(() => {
@@ -386,13 +371,9 @@ export default function DesignPage() {
     if (!selectedSize) return null;
     const sizeConfig = lifestyleMockups[selectedSize];
     if (!sizeConfig) return null;
-    const colorKey = sizeConfig.variants[selectedFrameColor] ? selectedFrameColor : "black";
-    return sizeConfig.variants[colorKey] || null;
+    const colorKey = sizeConfig[selectedFrameColor] ? selectedFrameColor : "black";
+    return sizeConfig[colorKey] || null;
   };
-  
-  const currentMockupAspectRatio = selectedSize && lifestyleMockups[selectedSize] 
-    ? lifestyleMockups[selectedSize].aspectRatio 
-    : 1;
   
   const currentLifestyle = getLifestyleMockup();
 
@@ -743,29 +724,6 @@ export default function DesignPage() {
   // Get the frame area to use (calibration or default)
   const activeFrameArea = calibrationMode && calibrationArea ? calibrationArea : currentLifestyle?.frameArea;
 
-  // Calculate corrected overlay dimensions that maintain print aspect ratio
-  // Container now uses CSS aspect-ratio matching the mockup, so dimensions are predictable
-  const getCorrectedFrameStyle = () => {
-    if (!activeFrameArea) return {};
-    
-    // Get the print aspect ratio (width / height, e.g., 1 for square)
-    const printAspectRatio = selectedSizeConfig 
-      ? selectedSizeConfig.width / selectedSizeConfig.height 
-      : 3 / 4;
-    
-    // Container aspect ratio matches the mockup image (e.g., 1:1 for square mockups)
-    // This means width% and height% map to proportional pixel lengths
-    // For a 1:1 container: correctedHeight = width / printAspectRatio
-    const correctedHeightPercent = activeFrameArea.width * currentMockupAspectRatio / printAspectRatio;
-    
-    return {
-      top: `${activeFrameArea.top}%`,
-      left: `${activeFrameArea.left}%`,
-      width: `${activeFrameArea.width}%`,
-      height: `${correctedHeightPercent}%`,
-    };
-  };
-
   const lifestyleMockup = currentLifestyle && (
     <div 
       ref={calibrationRef}
@@ -774,25 +732,34 @@ export default function DesignPage() {
       onMouseUp={calibrationMode ? handleCalibrationMouseUp : undefined}
       onMouseLeave={calibrationMode ? handleCalibrationMouseUp : undefined}
     >
-      <div className="relative" style={{ aspectRatio: currentMockupAspectRatio, width: '100%', maxHeight: '100%' }}>
+      <div className="relative">
         <img
           ref={mockupImgRef}
           src={currentLifestyle.src}
           alt="Lifestyle mockup"
-          className="w-full h-full object-cover rounded-md"
+          className="w-full h-auto rounded-md"
         />
         {activeFrameArea && (
           <div
             className={`absolute ${calibrationMode ? 'border-2 border-dashed border-blue-500 cursor-move' : 'overflow-hidden'}`}
-            style={getCorrectedFrameStyle()}
+            style={{
+              top: `${activeFrameArea.top}%`,
+              left: `${activeFrameArea.left}%`,
+              width: `${activeFrameArea.width}%`,
+              height: `${activeFrameArea.height}%`,
+            }}
             onMouseDown={calibrationMode ? handleCalibrationMouseDown : undefined}
           >
             {generatedDesign?.generatedImageUrl && (
               <img
                 src={generatedDesign.generatedImageUrl}
                 alt="Artwork in lifestyle"
-                className={`absolute inset-0 w-full h-full ${calibrationMode ? 'opacity-70' : ''}`}
+                className={`absolute ${calibrationMode ? 'opacity-70' : ''}`}
                 style={{
+                  width: `${imageScale}%`,
+                  height: `${imageScale}%`,
+                  left: `${imagePosition.x - imageScale / 2}%`,
+                  top: `${imagePosition.y - imageScale / 2}%`,
                   objectFit: 'cover',
                 }}
               />
