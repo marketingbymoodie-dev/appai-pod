@@ -661,6 +661,11 @@ export default function DesignPage() {
     </div>
   );
 
+  const thickerFrameSizes = ["11x14", "12x16", "16x16"];
+  const useThickerFrame = thickerFrameSizes.includes(selectedSize);
+  const outerInset = useThickerFrame ? '0.625rem' : '0.75rem';
+  const innerInset = useThickerFrame ? '1.25rem' : '1rem';
+
   const previewMockup = (
     <div 
       className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
@@ -670,12 +675,12 @@ export default function DesignPage() {
       onMouseLeave={handleMouseUp}
     >
       <div
-        className="absolute inset-3 rounded-sm flex items-center justify-center"
-        style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none' }}
+        className="absolute rounded-sm flex items-center justify-center"
+        style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none', inset: outerInset }}
       >
         <div 
-          className="absolute inset-4 bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
-          style={{ pointerEvents: 'none' }}
+          className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
+          style={{ pointerEvents: 'none', inset: innerInset }}
         >
           {generateMutation.isPending ? (
             <div className="flex flex-col items-center gap-2 text-muted-foreground" style={{ pointerEvents: 'none' }}>
