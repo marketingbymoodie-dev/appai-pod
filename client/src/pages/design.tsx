@@ -76,6 +76,15 @@ export default function DesignPage() {
   const [tweakPrompt, setTweakPrompt] = useState("");
   const [showTweak, setShowTweak] = useState(false);
   
+  // Calibration mode for positioning lifestyle mockup artwork
+  const [calibrationMode, setCalibrationMode] = useState(false);
+  const [calibrationArea, setCalibrationArea] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const calibrationRef = useRef<HTMLDivElement>(null);
+  const isCalibrationDragging = useRef(false);
+  const calibrationDragStart = useRef({ x: 0, y: 0, top: 0, left: 0 });
+  const isCalibrationResizing = useRef(false);
+  const calibrationResizeStart = useRef({ x: 0, y: 0, width: 0, height: 0 });
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const carouselRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
@@ -201,6 +210,18 @@ export default function DesignPage() {
       });
     },
   });
+
+  // Initialize calibration area when size/frame changes in calibration mode
+  // Note: We compute currentLifestyle inline here since we can't call it before hooks
+  const calibrationLifestyle = selectedSize && lifestyleMockups[selectedSize]
+    ? lifestyleMockups[selectedSize][lifestyleMockups[selectedSize][selectedFrameColor] ? selectedFrameColor : "black"]
+    : null;
+  
+  useEffect(() => {
+    if (calibrationLifestyle && calibrationMode) {
+      setCalibrationArea({ ...calibrationLifestyle.frameArea });
+    }
+  }, [calibrationLifestyle?.src, calibrationMode]);
 
   if (authLoading) {
     return (
@@ -352,6 +373,70 @@ export default function DesignPage() {
   };
   
   const currentLifestyle = getLifestyleMockup();
+
+  // Calibration drag handlers
+  const handleCalibrationMouseDown = (e: React.MouseEvent) => {
+    if (!calibrationArea || !calibrationRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    isCalibrationDragging.current = true;
+    calibrationDragStart.current = { 
+      x: e.clientX, 
+      y: e.clientY, 
+      top: calibrationArea.top, 
+      left: calibrationArea.left 
+    };
+  };
+
+  const handleCalibrationResizeMouseDown = (e: React.MouseEvent) => {
+    if (!calibrationArea || !calibrationRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    isCalibrationResizing.current = true;
+    calibrationResizeStart.current = { 
+      x: e.clientX, 
+      y: e.clientY, 
+      width: calibrationArea.width, 
+      height: calibrationArea.height 
+    };
+  };
+
+  const handleCalibrationMouseMove = (e: React.MouseEvent) => {
+    if (!calibrationRef.current) return;
+    const rect = calibrationRef.current.getBoundingClientRect();
+    
+    if (isCalibrationDragging.current && calibrationArea) {
+      const dx = ((e.clientX - calibrationDragStart.current.x) / rect.width) * 100;
+      const dy = ((e.clientY - calibrationDragStart.current.y) / rect.height) * 100;
+      setCalibrationArea(prev => prev ? {
+        ...prev,
+        top: Math.max(0, Math.min(100 - prev.height, calibrationDragStart.current.top + dy)),
+        left: Math.max(0, Math.min(100 - prev.width, calibrationDragStart.current.left + dx)),
+      } : null);
+    }
+    
+    if (isCalibrationResizing.current && calibrationArea) {
+      const dx = ((e.clientX - calibrationResizeStart.current.x) / rect.width) * 100;
+      const dy = ((e.clientY - calibrationResizeStart.current.y) / rect.height) * 100;
+      setCalibrationArea(prev => prev ? {
+        ...prev,
+        width: Math.max(5, Math.min(100 - prev.left, calibrationResizeStart.current.width + dx)),
+        height: Math.max(5, Math.min(100 - prev.top, calibrationResizeStart.current.height + dy)),
+      } : null);
+    }
+  };
+
+  const handleCalibrationMouseUp = () => {
+    isCalibrationDragging.current = false;
+    isCalibrationResizing.current = false;
+  };
+
+  const copyCalibrationCoords = () => {
+    if (!calibrationArea) return;
+    const coords = `{ top: ${calibrationArea.top.toFixed(1)}, left: ${calibrationArea.left.toFixed(1)}, width: ${calibrationArea.width.toFixed(1)}, height: ${calibrationArea.height.toFixed(1)} }`;
+    navigator.clipboard.writeText(coords);
+    toast({ title: "Copied!", description: coords });
+  };
 
   const sizeSelector = (
     <div className="space-y-2">
@@ -587,37 +672,91 @@ export default function DesignPage() {
     </div>
   );
 
+  // Get the frame area to use (calibration or default)
+  const activeFrameArea = calibrationMode && calibrationArea ? calibrationArea : currentLifestyle?.frameArea;
+
   const lifestyleMockup = currentLifestyle && (
-    <div className="relative w-full h-full">
+    <div 
+      ref={calibrationRef}
+      className="relative w-full h-full"
+      onMouseMove={calibrationMode ? handleCalibrationMouseMove : undefined}
+      onMouseUp={calibrationMode ? handleCalibrationMouseUp : undefined}
+      onMouseLeave={calibrationMode ? handleCalibrationMouseUp : undefined}
+    >
       <img
         src={currentLifestyle.src}
         alt="Lifestyle mockup"
         className="w-full h-full object-contain rounded-md"
       />
-      {generatedDesign?.generatedImageUrl && (
+      {activeFrameArea && (
         <div
-          className="absolute overflow-hidden"
+          className={`absolute ${calibrationMode ? 'border-2 border-dashed border-blue-500 cursor-move' : 'overflow-hidden'}`}
           style={{
-            top: `${currentLifestyle.frameArea.top}%`,
-            left: `${currentLifestyle.frameArea.left}%`,
-            width: `${currentLifestyle.frameArea.width}%`,
-            height: `${currentLifestyle.frameArea.height}%`,
+            top: `${activeFrameArea.top}%`,
+            left: `${activeFrameArea.left}%`,
+            width: `${activeFrameArea.width}%`,
+            height: `${activeFrameArea.height}%`,
           }}
+          onMouseDown={calibrationMode ? handleCalibrationMouseDown : undefined}
         >
-          <img
-            src={generatedDesign.generatedImageUrl}
-            alt="Artwork in lifestyle"
-            className="absolute"
-            style={{
-              width: `${imageScale}%`,
-              height: `${imageScale}%`,
-              objectFit: 'cover',
-              left: `${imagePosition.x}%`,
-              top: `${imagePosition.y}%`,
-              transform: 'translate(-50%, -50%)',
-            }}
-          />
+          {generatedDesign?.generatedImageUrl && (
+            <img
+              src={generatedDesign.generatedImageUrl}
+              alt="Artwork in lifestyle"
+              className={`absolute ${calibrationMode ? 'opacity-70' : ''}`}
+              style={{
+                width: `${imageScale}%`,
+                height: `${imageScale}%`,
+                objectFit: 'cover',
+                left: `${imagePosition.x}%`,
+                top: `${imagePosition.y}%`,
+                transform: 'translate(-50%, -50%)',
+              }}
+            />
+          )}
+          {calibrationMode && (
+            <>
+              {/* Resize handle */}
+              <div
+                className="absolute bottom-0 right-0 w-4 h-4 bg-blue-500 cursor-se-resize"
+                onMouseDown={handleCalibrationResizeMouseDown}
+              />
+              {/* Coordinate display */}
+              <div className="absolute -top-6 left-0 text-xs bg-blue-500 text-white px-1 rounded whitespace-nowrap">
+                T:{activeFrameArea.top.toFixed(1)} L:{activeFrameArea.left.toFixed(1)} W:{activeFrameArea.width.toFixed(1)} H:{activeFrameArea.height.toFixed(1)}
+              </div>
+            </>
+          )}
         </div>
+      )}
+    </div>
+  );
+
+  // Calibration controls panel
+  const calibrationPanel = (
+    <div className="flex items-center gap-2 text-xs">
+      <Button
+        variant={calibrationMode ? "default" : "outline"}
+        size="sm"
+        onClick={() => {
+          setCalibrationMode(!calibrationMode);
+          if (!calibrationMode && currentLifestyle) {
+            setCalibrationArea({ ...currentLifestyle.frameArea });
+          }
+        }}
+        data-testid="button-calibration-toggle"
+      >
+        {calibrationMode ? "Exit Calibrate" : "Calibrate"}
+      </Button>
+      {calibrationMode && calibrationArea && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={copyCalibrationCoords}
+          data-testid="button-copy-coords"
+        >
+          Copy Coords
+        </Button>
       )}
     </div>
   );
@@ -733,7 +872,9 @@ export default function DesignPage() {
                   )}
                 </div>
               </div>
-              <div className="mt-1 h-6" />
+              <div className="mt-1 h-6 flex items-center justify-center">
+                {currentLifestyle && calibrationPanel}
+              </div>
             </div>
           </div>
           
