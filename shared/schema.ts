@@ -201,6 +201,31 @@ export const insertStylePresetSchema = createInsertSchema(stylePresets).omit({
 export type StylePresetDB = typeof stylePresets.$inferSelect;
 export type InsertStylePreset = z.infer<typeof insertStylePresetSchema>;
 
+// Product types for different customizable products (Framed Prints, Pillows, Mugs, etc.)
+export const productTypes = pgTable("product_types", {
+  id: serial("id").primaryKey(),
+  merchantId: varchar("merchant_id"),
+  name: text("name").notNull(),
+  description: text("description"),
+  printifyBlueprintId: integer("printify_blueprint_id"),
+  mockupTemplateUrl: text("mockup_template_url"),
+  sizes: text("sizes").notNull().default("[]"),
+  frameColors: text("frame_colors").notNull().default("[]"),
+  aspectRatio: text("aspect_ratio").notNull().default("3:4"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type ProductType = typeof productTypes.$inferSelect;
+export type InsertProductType = z.infer<typeof insertProductTypeSchema>;
+
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
   id: serial("id").primaryKey(),

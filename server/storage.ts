@@ -9,6 +9,7 @@ import {
   couponRedemptions, type CouponRedemption, type InsertCouponRedemption,
   stylePresets, type StylePresetDB, type InsertStylePreset,
   shopifyInstallations, type ShopifyInstallation, type InsertShopifyInstallation,
+  productTypes, type ProductType, type InsertProductType,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql } from "drizzle-orm";
@@ -82,6 +83,15 @@ export interface IStorage {
   getShopifyInstallationsByMerchant(merchantId: string): Promise<ShopifyInstallation[]>;
   createShopifyInstallation(installation: InsertShopifyInstallation): Promise<ShopifyInstallation>;
   updateShopifyInstallation(id: number, updates: Partial<ShopifyInstallation>): Promise<ShopifyInstallation | undefined>;
+  
+  // Product Types
+  getProductType(id: number): Promise<ProductType | undefined>;
+  getProductTypes(): Promise<ProductType[]>;
+  getActiveProductTypes(): Promise<ProductType[]>;
+  getProductTypesByMerchant(merchantId: string): Promise<ProductType[]>;
+  createProductType(productType: InsertProductType): Promise<ProductType>;
+  updateProductType(id: number, updates: Partial<ProductType>): Promise<ProductType | undefined>;
+  deleteProductType(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -391,6 +401,42 @@ export class DatabaseStorage implements IStorage {
       .where(eq(shopifyInstallations.id, id))
       .returning();
     return updated;
+  }
+
+  // Product Types
+  async getProductType(id: number): Promise<ProductType | undefined> {
+    const [productType] = await db.select().from(productTypes).where(eq(productTypes.id, id));
+    return productType;
+  }
+
+  async getProductTypes(): Promise<ProductType[]> {
+    return db.select().from(productTypes).orderBy(productTypes.sortOrder);
+  }
+
+  async getActiveProductTypes(): Promise<ProductType[]> {
+    return db.select().from(productTypes).where(eq(productTypes.isActive, true)).orderBy(productTypes.sortOrder);
+  }
+
+  async getProductTypesByMerchant(merchantId: string): Promise<ProductType[]> {
+    return db.select().from(productTypes).where(eq(productTypes.merchantId, merchantId)).orderBy(productTypes.sortOrder);
+  }
+
+  async createProductType(productType: InsertProductType): Promise<ProductType> {
+    const [newProductType] = await db.insert(productTypes).values(productType).returning();
+    return newProductType;
+  }
+
+  async updateProductType(id: number, updates: Partial<ProductType>): Promise<ProductType | undefined> {
+    const [updated] = await db
+      .update(productTypes)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(productTypes.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteProductType(id: number): Promise<void> {
+    await db.delete(productTypes).where(eq(productTypes.id, id));
   }
 }
 
