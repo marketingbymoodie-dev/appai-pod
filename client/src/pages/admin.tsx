@@ -78,6 +78,7 @@ export default function AdminPage() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
+  const [providerLocationFilter, setProviderLocationFilter] = useState("");
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -203,11 +204,32 @@ export default function AdminPage() {
     });
   };
 
-  const filteredBlueprints = printifyBlueprints?.filter(bp =>
-    bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
-    bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
-    bp.description.toLowerCase().includes(blueprintSearch.toLowerCase())
-  ) || [];
+  const filteredBlueprints = printifyBlueprints?.filter(bp => {
+    const search = blueprintSearch.toLowerCase().trim();
+    if (!search) return true;
+    
+    // Check for ID search (e.g., "540", "ID:540", "id: 540")
+    const idMatch = search.match(/^(?:id\s*:\s*)?(\d+)$/i);
+    if (idMatch) {
+      return bp.id.toString() === idMatch[1];
+    }
+    
+    // Regular text search
+    return bp.title.toLowerCase().includes(search) ||
+      bp.brand.toLowerCase().includes(search) ||
+      bp.description.toLowerCase().includes(search);
+  }) || [];
+  
+  // Filter providers by location
+  const filteredProviders = printifyProviders?.filter(provider => {
+    if (!providerLocationFilter) return true;
+    const filter = providerLocationFilter.toLowerCase();
+    const locationMatch = provider.location?.country?.toLowerCase().includes(filter) ||
+      provider.location?.region?.toLowerCase().includes(filter) ||
+      provider.location?.city?.toLowerCase().includes(filter);
+    const shipsToMatch = provider.fulfillment_countries?.some(c => c.toLowerCase().includes(filter));
+    return locationMatch || shipsToMatch;
+  }) || [];
 
   const resetProductTypeForm = () => {
     setEditingProductType(null);
@@ -1059,6 +1081,7 @@ export default function AdminPage() {
                 if (!open) {
                   setSelectedBlueprint(null);
                   setSelectedProvider(null);
+                  setProviderLocationFilter("");
                 }
               }}>
                 <DialogContent className="max-w-lg" data-testid="dialog-provider-selection">
@@ -1082,15 +1105,22 @@ export default function AdminPage() {
                       Choose a print provider based on your target market. Different providers have different sizes, colors, and shipping regions.
                     </p>
 
+                    <Input
+                      placeholder="Filter by location (e.g., USA, Europe, Canada)..."
+                      value={providerLocationFilter}
+                      onChange={(e) => setProviderLocationFilter(e.target.value)}
+                      data-testid="input-provider-location-filter"
+                    />
+
                     {providersLoading ? (
                       <div className="space-y-2">
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
                       </div>
-                    ) : printifyProviders && printifyProviders.length > 0 ? (
+                    ) : filteredProviders.length > 0 ? (
                       <div className="space-y-2 max-h-64 overflow-y-auto">
-                        {printifyProviders.map((provider) => (
+                        {filteredProviders.map((provider) => (
                           <div
                             key={provider.id}
                             className={`p-3 rounded-md border cursor-pointer transition-colors hover-elevate ${
@@ -1127,7 +1157,9 @@ export default function AdminPage() {
                       </div>
                     ) : (
                       <p className="text-sm text-muted-foreground text-center py-4">
-                        No providers available for this product
+                        {providerLocationFilter 
+                          ? `No providers found matching "${providerLocationFilter}"`
+                          : "No providers available for this product"}
                       </p>
                     )}
 
