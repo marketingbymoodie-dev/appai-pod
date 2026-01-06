@@ -135,7 +135,7 @@ export default function EmbedDesign() {
     if (!prompt.trim()) return;
     
     let fullPrompt = prompt;
-    if (selectedPreset) {
+    if (selectedPreset && selectedPreset !== "none") {
       const preset = stylePresets.find(p => p.id === selectedPreset);
       if (preset?.promptSuffix) {
         fullPrompt = `${prompt}. ${preset.promptSuffix}`;
@@ -157,7 +157,7 @@ export default function EmbedDesign() {
       prompt: fullPrompt,
       size: selectedSize || "medium",
       frameColor: selectedFrameColor || "black",
-      stylePreset: selectedPreset || undefined,
+      stylePreset: selectedPreset && selectedPreset !== "none" ? selectedPreset : undefined,
       referenceImage: referenceImageBase64,
       shop: isShopify ? shopDomain : undefined,
       sessionToken: isShopify ? sessionToken || undefined : undefined,
@@ -341,7 +341,7 @@ export default function EmbedDesign() {
                   <SelectValue placeholder="Choose a style (optional)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="" data-testid="select-style-none">None</SelectItem>
+                  <SelectItem value="none" data-testid="select-style-none">None</SelectItem>
                   {stylePresets.map((preset) => (
                     <SelectItem key={preset.id} value={preset.id} data-testid={`select-style-${preset.id}`}>
                       {preset.name}
