@@ -42,6 +42,7 @@ interface PrintifyProvider {
     region?: string;
     zip?: string;
   };
+  fulfillment_countries?: string[];
 }
 
 export default function AdminPage() {
@@ -1101,18 +1102,24 @@ export default function AdminPage() {
                             data-testid={`provider-option-${provider.id}`}
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <div>
+                              <div className="flex-1 min-w-0">
                                 <p className="font-medium">{provider.title}</p>
-                                {provider.location && (
+                                {provider.location?.country && (
                                   <p className="text-xs text-muted-foreground">
-                                    {[provider.location.city, provider.location.region, provider.location.country]
+                                    Based in: {[provider.location.city, provider.location.region, provider.location.country]
                                       .filter(Boolean)
                                       .join(", ")}
                                   </p>
                                 )}
+                                {provider.fulfillment_countries && provider.fulfillment_countries.length > 0 && (
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    Ships to: {provider.fulfillment_countries.slice(0, 5).join(", ")}
+                                    {provider.fulfillment_countries.length > 5 && ` +${provider.fulfillment_countries.length - 5} more`}
+                                  </p>
+                                )}
                               </div>
                               {selectedProvider?.id === provider.id && (
-                                <CheckCircle className="h-5 w-5 text-primary" />
+                                <CheckCircle className="h-5 w-5 text-primary flex-shrink-0" />
                               )}
                             </div>
                           </div>
