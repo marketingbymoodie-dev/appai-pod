@@ -1613,6 +1613,139 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Batch fetch provider location data for multiple blueprints (for on-demand geo-filtering)
+  app.post("/api/admin/printify/blueprints/batch-providers", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { blueprintIds } = req.body;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      if (!Array.isArray(blueprintIds) || blueprintIds.length === 0) {
+        return res.status(400).json({ error: "blueprintIds array is required" });
+      }
+
+      // Limit to 100 blueprints at a time to prevent abuse
+      const idsToFetch = blueprintIds.slice(0, 100);
+      
+      const pLimit = (await import('p-limit')).default;
+      const limit = pLimit(5); // Concurrency limit to avoid rate limits
+      
+      // Fetch provider lists for each blueprint
+      const blueprintProviderMap: Record<number, number[]> = {};
+      const providersToFetch = new Set<number>();
+      
+      await Promise.all(
+        idsToFetch.map((blueprintId: number) =>
+          limit(async () => {
+            try {
+              // Check cache first
+              if (blueprintProviderCache.has(blueprintId)) {
+                const providerIds = blueprintProviderCache.get(blueprintId)!;
+                blueprintProviderMap[blueprintId] = providerIds;
+                providerIds.forEach((id: number) => {
+                  if (!providerLocationCache.has(String(id))) {
+                    providersToFetch.add(id);
+                  }
+                });
+                return;
+              }
+              
+              const response = await fetchWithRetry(
+                `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+                {
+                  headers: {
+                    "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                    "Content-Type": "application/json"
+                  }
+                },
+                2,
+                1000
+              );
+              
+              if (response.ok) {
+                const providers = await response.json();
+                const providerIds = providers.map((p: any) => p.id);
+                blueprintProviderMap[blueprintId] = providerIds;
+                blueprintProviderCache.set(blueprintId, providerIds);
+                providerIds.forEach((id: number) => {
+                  if (!providerLocationCache.has(String(id))) {
+                    providersToFetch.add(id);
+                  }
+                });
+              }
+            } catch (err) {
+              console.error(`Error fetching providers for blueprint ${blueprintId}:`, err);
+            }
+          })
+        )
+      );
+      
+      // Fetch location details for any providers not yet cached
+      if (providersToFetch.size > 0) {
+        await Promise.all(
+          Array.from(providersToFetch).map((providerId) =>
+            limit(async () => {
+              try {
+                const response = await fetchWithRetry(
+                  `https://api.printify.com/v1/catalog/print_providers/${providerId}.json`,
+                  {
+                    headers: {
+                      "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                      "Content-Type": "application/json"
+                    }
+                  },
+                  2,
+                  1000
+                );
+                
+                if (response.ok) {
+                  const details = await response.json();
+                  providerLocationCache.set(String(providerId), {
+                    location: details.location,
+                    fulfillment_countries: details.fulfillment_countries || [],
+                  });
+                }
+              } catch (err) {
+                console.error(`Error fetching provider ${providerId} details:`, err);
+              }
+            })
+          )
+        );
+      }
+      
+      // Build response with blueprint -> location data mapping
+      const result: Record<number, { providerIds: number[]; locations: string[] }> = {};
+      
+      for (const [bpId, providerIds] of Object.entries(blueprintProviderMap)) {
+        const locations = new Set<string>();
+        
+        for (const providerId of providerIds as number[]) {
+          const providerData = providerLocationCache.get(String(providerId));
+          if (providerData) {
+            if (providerData.location?.country) {
+              locations.add(providerData.location.country);
+            }
+            providerData.fulfillment_countries?.forEach((c: string) => locations.add(c));
+          }
+        }
+        
+        result[Number(bpId)] = {
+          providerIds: providerIds as number[],
+          locations: Array.from(locations)
+        };
+      }
+      
+      res.json(result);
+    } catch (error) {
+      console.error("Error batch fetching blueprint providers:", error);
+      res.status(500).json({ error: "Failed to fetch provider data" });
+    }
+  });
+
   // Fetch specific blueprint details from Printify
   app.get("/api/admin/printify/blueprints/:id", isAuthenticated, async (req: any, res: Response) => {
     try {

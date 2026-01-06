@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -81,8 +81,8 @@ export default function AdminPage() {
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
   const [providerLocationFilter, setProviderLocationFilter] = useState("");
   const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
-  const [cacheStatus, setCacheStatus] = useState<"cold" | "warming" | "ready">("cold");
-  const cachePollingRef = useRef<NodeJS.Timeout | null>(null);
+  const [blueprintLocationData, setBlueprintLocationData] = useState<Record<number, string[]>>({});
+  const [locationDataLoading, setLocationDataLoading] = useState(false);
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -152,25 +152,9 @@ export default function AdminPage() {
   });
 
   const { data: printifyBlueprints, isLoading: blueprintsLoading, error: blueprintsError, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
-    queryKey: ["/api/admin/printify/blueprints", catalogLocationFilter, cacheStatus],
+    queryKey: ["/api/admin/printify/blueprints"],
     queryFn: async () => {
-      // Skip fetch if cache is still warming and we need location filtering
-      if (cacheStatus === "warming" && catalogLocationFilter && catalogLocationFilter !== "all") {
-        return []; // Return empty, will refetch when cache is ready
-      }
-      
-      const params = new URLSearchParams();
-      if (catalogLocationFilter && catalogLocationFilter !== "all") {
-        params.set("location", catalogLocationFilter);
-      }
-      const url = `/api/admin/printify/blueprints${params.toString() ? `?${params}` : ""}`;
-      const response = await fetch(url, { credentials: "include" });
-      
-      // Handle cache not ready response - return empty array instead of throwing
-      if (response.status === 202) {
-        return []; // Will refetch when cache becomes ready via useEffect
-      }
-      
+      const response = await fetch("/api/admin/printify/blueprints", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch blueprints");
       return response.json();
     },
@@ -234,58 +218,38 @@ export default function AdminPage() {
 
   const handleOpenPrintifyImport = async () => {
     setPrintifyImportOpen(true);
-    
-    // Clear any existing polling
-    if (cachePollingRef.current) {
-      clearInterval(cachePollingRef.current);
-      cachePollingRef.current = null;
-    }
-    
-    // Start cache warm-up in background
-    try {
-      const warmRes = await fetch("/api/admin/printify/warm-cache", {
-        method: "POST",
-        credentials: "include",
-      });
-      const warmData = await warmRes.json();
-      
-      if (warmData.status === "ready") {
-        setCacheStatus("ready");
-      } else if (warmData.status === "warming") {
-        setCacheStatus("warming");
-        // Poll for cache status
-        cachePollingRef.current = setInterval(async () => {
-          try {
-            const statusRes = await fetch("/api/admin/printify/cache-status", {
-              credentials: "include",
-            });
-            const statusData = await statusRes.json();
-            if (statusData.status === "ready") {
-              setCacheStatus("ready");
-              if (cachePollingRef.current) {
-                clearInterval(cachePollingRef.current);
-                cachePollingRef.current = null;
-              }
-            }
-          } catch (err) {
-            console.error("Cache status poll error:", err);
-          }
-        }, 2000);
-      }
-    } catch (err) {
-      console.error("Cache warm-up error:", err);
-    }
-    
+    setBlueprintLocationData({});
+    setCatalogLocationFilter("");
     refetchBlueprints();
   };
   
-  // Clean up polling when dialog closes
-  useEffect(() => {
-    if (!printifyImportOpen && cachePollingRef.current) {
-      clearInterval(cachePollingRef.current);
-      cachePollingRef.current = null;
+  // Fetch location data for search results when location filter is applied
+  const fetchLocationDataForResults = async (blueprintIds: number[]) => {
+    if (blueprintIds.length === 0) return;
+    
+    setLocationDataLoading(true);
+    try {
+      const response = await fetch("/api/admin/printify/blueprints/batch-providers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ blueprintIds }),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const locationMap: Record<number, string[]> = {};
+        for (const [bpId, info] of Object.entries(data)) {
+          locationMap[Number(bpId)] = (info as { locations: string[] }).locations;
+        }
+        setBlueprintLocationData(prev => ({ ...prev, ...locationMap }));
+      }
+    } catch (err) {
+      console.error("Error fetching location data:", err);
+    } finally {
+      setLocationDataLoading(false);
     }
-  }, [printifyImportOpen]);
+  };
 
   const handleSelectBlueprint = (blueprint: PrintifyBlueprint) => {
     setSelectedBlueprint(blueprint);
@@ -307,21 +271,53 @@ export default function AdminPage() {
     });
   };
 
-  const filteredBlueprints = printifyBlueprints?.filter(bp => {
+  // First apply text search
+  const searchFilteredBlueprints = useMemo(() => {
+    if (!printifyBlueprints) return [];
     const search = blueprintSearch.toLowerCase().trim();
-    if (!search) return true;
+    if (!search) return [];
     
     // Check for ID search (e.g., "540", "ID:540", "id: 540")
     const idMatch = search.match(/^(?:id\s*:\s*)?(\d+)$/i);
     if (idMatch) {
-      return bp.id.toString() === idMatch[1];
+      return printifyBlueprints.filter(bp => bp.id.toString() === idMatch[1]);
     }
     
     // Regular text search
-    return bp.title.toLowerCase().includes(search) ||
+    return printifyBlueprints.filter(bp =>
+      bp.title.toLowerCase().includes(search) ||
       bp.brand.toLowerCase().includes(search) ||
-      bp.description.toLowerCase().includes(search);
-  }) || [];
+      bp.description.toLowerCase().includes(search)
+    );
+  }, [printifyBlueprints, blueprintSearch]);
+  
+  // Then apply location filter if set
+  const filteredBlueprints = useMemo(() => {
+    if (!catalogLocationFilter || catalogLocationFilter === "all") {
+      return searchFilteredBlueprints;
+    }
+    
+    const filter = catalogLocationFilter.toLowerCase();
+    return searchFilteredBlueprints.filter(bp => {
+      const locations = blueprintLocationData[bp.id];
+      if (!locations) return true; // Show items without location data yet
+      return locations.some(loc => loc.toLowerCase().includes(filter));
+    });
+  }, [searchFilteredBlueprints, catalogLocationFilter, blueprintLocationData]);
+  
+  // Fetch location data when location filter is applied to search results
+  useEffect(() => {
+    if (catalogLocationFilter && catalogLocationFilter !== "all" && searchFilteredBlueprints.length > 0) {
+      // Only fetch for blueprints we don't have data for yet
+      const idsToFetch = searchFilteredBlueprints
+        .filter(bp => !blueprintLocationData[bp.id])
+        .map(bp => bp.id);
+      
+      if (idsToFetch.length > 0) {
+        fetchLocationDataForResults(idsToFetch);
+      }
+    }
+  }, [catalogLocationFilter, searchFilteredBlueprints]);
   
   // Filter providers by location
   const filteredProviders = printifyProviders?.filter(provider => {
@@ -428,18 +424,6 @@ export default function AdminPage() {
     }
   }, [isAuthenticated, styles]);
 
-  useEffect(() => {
-    if (printifyImportOpen && catalogLocationFilter) {
-      refetchBlueprints();
-    }
-  }, [catalogLocationFilter, printifyImportOpen]);
-  
-  // Refetch blueprints when cache becomes ready (for location filtering)
-  useEffect(() => {
-    if (printifyImportOpen && cacheStatus === "ready" && catalogLocationFilter && catalogLocationFilter !== "all") {
-      refetchBlueprints();
-    }
-  }, [cacheStatus, printifyImportOpen, catalogLocationFilter]);
 
   const createCouponMutation = useMutation({
     mutationFn: async (data: { code: string; creditAmount: number; maxUses?: number }) => {
@@ -1129,36 +1113,6 @@ export default function AdminPage() {
                     <DialogTitle>Import from Printify Catalog</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-4">
-                    <div className="flex gap-3 items-center">
-                      <div className="flex-1">
-                        <Select 
-                          value={catalogLocationFilter} 
-                          onValueChange={setCatalogLocationFilter}
-                          disabled={cacheStatus === "warming"}
-                        >
-                          <SelectTrigger data-testid="select-catalog-location">
-                            <SelectValue placeholder={cacheStatus === "warming" ? "Loading provider data..." : "Filter by provider location..."} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">All locations</SelectItem>
-                            {availableLocations.map((location) => (
-                              <SelectItem key={location} value={location}>{location}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      {cacheStatus === "warming" && (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          <span>Loading...</span>
-                        </div>
-                      )}
-                    </div>
-                    {cacheStatus === "warming" && (
-                      <p className="text-sm text-muted-foreground">
-                        Preparing provider location data for fast filtering. This happens once and takes 1-2 minutes.
-                      </p>
-                    )}
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
@@ -1180,17 +1134,9 @@ export default function AdminPage() {
                       </Card>
                     ) : blueprintsLoading || blueprintsFetching ? (
                       <div className="space-y-3">
-                        {catalogLocationFilter && catalogLocationFilter !== "all" ? (
-                          cacheStatus === "ready" ? (
-                            <p className="text-sm text-muted-foreground text-center">
-                              Filtering products for {catalogLocationFilter}...
-                            </p>
-                          ) : (
-                            <p className="text-sm text-muted-foreground text-center">
-                              Waiting for provider data to load before filtering...
-                            </p>
-                          )
-                        ) : null}
+                        <p className="text-sm text-muted-foreground text-center">
+                          Loading catalog...
+                        </p>
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
@@ -1203,41 +1149,77 @@ export default function AdminPage() {
                           </p>
                         </CardContent>
                       </Card>
+                    ) : !blueprintSearch ? (
+                      <p className="text-muted-foreground text-center py-8">
+                        Search for a product type to get started (e.g., "pillow", "mug", "blanket")
+                      </p>
                     ) : (
-                      <div className="max-h-[50vh] overflow-y-auto space-y-2">
-                        {filteredBlueprints.length === 0 ? (
-                          <p className="text-muted-foreground text-center py-4">
-                            {catalogLocationFilter && catalogLocationFilter !== "all" 
-                              ? `No products with providers in ${catalogLocationFilter} found` 
-                              : blueprintSearch 
-                                ? "No matching blueprints found" 
-                                : "No blueprints available"}
-                          </p>
-                        ) : (
-                          filteredBlueprints.slice(0, 50).map((bp) => (
-                            <Card key={bp.id} className="hover-elevate" data-testid={`card-blueprint-${bp.id}`}>
-                              <CardContent className="py-3 flex items-center justify-between gap-4">
-                                <div className="flex items-center gap-3 min-w-0">
-                                  {bp.images?.[0] && (
-                                    <img src={bp.images[0]} alt={bp.title} className="w-12 h-12 object-contain rounded" />
-                                  )}
-                                  <div className="min-w-0">
-                                    <p className="font-medium truncate">{bp.title}</p>
-                                    <p className="text-xs text-muted-foreground">{bp.brand} - ID: {bp.id}</p>
-                                  </div>
-                                </div>
-                                <Button
-                                  size="sm"
-                                  onClick={() => handleSelectBlueprint(bp)}
-                                  data-testid={`button-select-blueprint-${bp.id}`}
-                                >
-                                  Select
-                                </Button>
-                              </CardContent>
-                            </Card>
-                          ))
+                      <>
+                        {searchFilteredBlueprints.length > 0 && (
+                          <div className="flex items-center gap-3">
+                            <div className="flex-1">
+                              <Select 
+                                value={catalogLocationFilter} 
+                                onValueChange={setCatalogLocationFilter}
+                              >
+                                <SelectTrigger data-testid="select-catalog-location">
+                                  <SelectValue placeholder="Filter by provider location..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="all">All locations</SelectItem>
+                                  {availableLocations.map((location) => (
+                                    <SelectItem key={location} value={location}>{location}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            {locationDataLoading && (
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>Loading...</span>
+                              </div>
+                            )}
+                          </div>
                         )}
-                      </div>
+                        
+                        <div className="max-h-[50vh] overflow-y-auto space-y-2">
+                          {filteredBlueprints.length === 0 ? (
+                            <p className="text-muted-foreground text-center py-4">
+                              {catalogLocationFilter && catalogLocationFilter !== "all" 
+                                ? `No products with providers in ${catalogLocationFilter} found` 
+                                : "No matching blueprints found"}
+                            </p>
+                          ) : (
+                            <>
+                              <p className="text-xs text-muted-foreground mb-2">
+                                Showing {filteredBlueprints.slice(0, 50).length} of {filteredBlueprints.length} results
+                              </p>
+                              {filteredBlueprints.slice(0, 50).map((bp) => (
+                                <Card key={bp.id} className="hover-elevate" data-testid={`card-blueprint-${bp.id}`}>
+                                  <CardContent className="py-3 flex items-center justify-between gap-4">
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      {bp.images?.[0] && (
+                                        <img src={bp.images[0]} alt={bp.title} className="w-12 h-12 object-contain rounded" />
+                                      )}
+                                      <div className="min-w-0">
+                                        <p className="font-medium truncate">{bp.title}</p>
+                                        <p className="text-xs text-muted-foreground">{bp.brand} - ID: {bp.id}</p>
+                                      </div>
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      onClick={() => handleSelectBlueprint(bp)}
+                                      data-testid={`button-select-blueprint-${bp.id}`}
+                                    >
+                                      Select
+                                    </Button>
+                                  </CardContent>
+                                </Card>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                      </>
                     )}
                   </div>
                 </DialogContent>
