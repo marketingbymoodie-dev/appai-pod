@@ -591,6 +591,96 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Product Types API (public endpoint for Shopify embed)
+  app.get("/api/product-types", async (_req: Request, res: Response) => {
+    try {
+      const types = await storage.getActiveProductTypes();
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching product types:", error);
+      res.status(500).json({ error: "Failed to fetch product types" });
+    }
+  });
+
+  app.get("/api/product-types/:id", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const productType = await storage.getProductType(id);
+      if (!productType) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+      res.json(productType);
+    } catch (error) {
+      console.error("Error fetching product type:", error);
+      res.status(500).json({ error: "Failed to fetch product type" });
+    }
+  });
+
+  // Admin endpoints for product types (requires authentication)
+  app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(403).json({ error: "Merchant not found" });
+      }
+
+      const { name, description, printifyBlueprintId, mockupTemplateUrl, sizes, frameColors, aspectRatio } = req.body;
+      
+      const newProductType = await storage.createProductType({
+        merchantId: merchant.id,
+        name,
+        description,
+        printifyBlueprintId,
+        mockupTemplateUrl,
+        sizes: JSON.stringify(sizes || []),
+        frameColors: JSON.stringify(frameColors || []),
+        aspectRatio: aspectRatio || "3:4",
+        isActive: true,
+        sortOrder: 0,
+      });
+
+      res.json(newProductType);
+    } catch (error) {
+      console.error("Error creating product type:", error);
+      res.status(500).json({ error: "Failed to create product type" });
+    }
+  });
+
+  app.patch("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updates = req.body;
+      
+      if (updates.sizes && Array.isArray(updates.sizes)) {
+        updates.sizes = JSON.stringify(updates.sizes);
+      }
+      if (updates.frameColors && Array.isArray(updates.frameColors)) {
+        updates.frameColors = JSON.stringify(updates.frameColors);
+      }
+
+      const updated = await storage.updateProductType(id, updates);
+      if (!updated) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating product type:", error);
+      res.status(500).json({ error: "Failed to update product type" });
+    }
+  });
+
+  app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      await storage.deleteProductType(id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting product type:", error);
+      res.status(500).json({ error: "Failed to delete product type" });
+    }
+  });
+
   // Delete design
   app.delete("/api/designs/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
