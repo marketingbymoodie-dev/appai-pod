@@ -1483,6 +1483,65 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Fetch all print providers with location data for filtering
+  app.get("/api/admin/printify/providers", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const response = await fetch("https://api.printify.com/v1/catalog/print_providers.json", {
+        headers: {
+          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const providers = await response.json();
+      
+      // Fetch detailed info for each provider to get location data
+      const enrichedProviders = await Promise.all(
+        providers.map(async (provider: any) => {
+          try {
+            const detailResponse = await fetch(
+              `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
+              {
+                headers: {
+                  "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                  "Content-Type": "application/json"
+                }
+              }
+            );
+            
+            if (detailResponse.ok) {
+              const details = await detailResponse.json();
+              return {
+                ...provider,
+                location: details.location,
+                fulfillment_countries: details.fulfillment_countries || [],
+              };
+            }
+          } catch (err) {
+            console.error(`Error fetching provider ${provider.id} details:`, err);
+          }
+          return provider;
+        })
+      );
+      
+      res.json(enrichedProviders);
+    } catch (error) {
+      console.error("Error fetching all print providers:", error);
+      res.status(500).json({ error: "Failed to fetch print providers" });
+    }
+  });
+
   // Fetch variants for a blueprint from a specific provider
   app.get("/api/admin/printify/blueprints/:blueprintId/providers/:providerId/variants", isAuthenticated, async (req: any, res: Response) => {
     try {

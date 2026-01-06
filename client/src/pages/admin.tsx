@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +14,7 @@ import { Link } from "wouter";
 import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2, Download, Search, ExternalLink } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Merchant, Coupon, StylePresetDB, ProductType } from "@shared/schema";
 
 interface GenerationStats {
@@ -79,6 +80,7 @@ export default function AdminPage() {
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
   const [providerLocationFilter, setProviderLocationFilter] = useState("");
+  const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -165,6 +167,29 @@ export default function AdminPage() {
     enabled: !!selectedBlueprint && providerSelectionOpen,
   });
 
+  const { data: allProviders } = useQuery<PrintifyProvider[]>({
+    queryKey: ["/api/admin/printify/providers"],
+    queryFn: async () => {
+      const response = await fetch("/api/admin/printify/providers", {
+        credentials: "include"
+      });
+      if (!response.ok) throw new Error("Failed to fetch providers");
+      return response.json();
+    },
+    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const availableLocations = useMemo(() => {
+    if (!allProviders) return [];
+    const countries = new Set<string>();
+    allProviders.forEach(p => {
+      if (p.location?.country) countries.add(p.location.country);
+      p.fulfillment_countries?.forEach(c => countries.add(c));
+    });
+    return Array.from(countries).sort();
+  }, [allProviders]);
+
   const importPrintifyMutation = useMutation({
     mutationFn: async (data: { blueprintId: number; name: string; description?: string; providerId?: number }) => {
       const response = await apiRequest("POST", "/api/admin/printify/import", data);
@@ -192,6 +217,11 @@ export default function AdminPage() {
   const handleSelectBlueprint = (blueprint: PrintifyBlueprint) => {
     setSelectedBlueprint(blueprint);
     setProviderSelectionOpen(true);
+    if (catalogLocationFilter && catalogLocationFilter !== "all") {
+      setProviderLocationFilter(catalogLocationFilter);
+    } else {
+      setProviderLocationFilter("");
+    }
   };
 
   const handleImportWithProvider = () => {
@@ -1001,16 +1031,37 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <Dialog open={printifyImportOpen} onOpenChange={setPrintifyImportOpen}>
+              <Dialog open={printifyImportOpen} onOpenChange={(open) => {
+                setPrintifyImportOpen(open);
+                if (!open) {
+                  setCatalogLocationFilter("");
+                  setBlueprintSearch("");
+                }
+              }}>
                 <DialogContent className="max-w-2xl max-h-[80vh]">
                   <DialogHeader>
                     <DialogTitle>Import from Printify Catalog</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-4">
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <Select value={catalogLocationFilter} onValueChange={setCatalogLocationFilter}>
+                          <SelectTrigger data-testid="select-catalog-location">
+                            <SelectValue placeholder="Filter by provider location..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All locations</SelectItem>
+                            {availableLocations.map((location) => (
+                              <SelectItem key={location} value={location}>{location}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
-                        placeholder="Search blueprints..."
+                        placeholder="Search blueprints by name or ID..."
                         value={blueprintSearch}
                         onChange={(e) => setBlueprintSearch(e.target.value)}
                         className="pl-10"
