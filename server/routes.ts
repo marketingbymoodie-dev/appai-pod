@@ -681,6 +681,85 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  app.post("/api/admin/product-types/seed", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(403).json({ error: "Merchant not found" });
+      }
+
+      const existing = await storage.getProductTypesByMerchant(merchant.id);
+      if (existing.length > 0) {
+        return res.json({ message: "Product types already exist", productTypes: existing });
+      }
+
+      const defaultProductTypes = [
+        {
+          merchantId: merchant.id,
+          name: "Framed Prints",
+          description: "Museum-quality framed artwork with premium materials",
+          printifyBlueprintId: 540,
+          aspectRatio: "3:4",
+          sizes: JSON.stringify([
+            { id: "11x14", name: "11\" x 14\"", width: 11, height: 14 },
+            { id: "12x16", name: "12\" x 16\"", width: 12, height: 16 },
+            { id: "16x20", name: "16\" x 20\"", width: 16, height: 20 },
+            { id: "18x24", name: "18\" x 24\"", width: 18, height: 24 },
+            { id: "24x32", name: "24\" x 32\"", width: 24, height: 32 },
+          ]),
+          frameColors: JSON.stringify([
+            { id: "black", name: "Black", hex: "#1a1a1a" },
+            { id: "white", name: "White", hex: "#f5f5f5" },
+            { id: "natural", name: "Natural Wood", hex: "#d4a574" },
+          ]),
+          isActive: true,
+          sortOrder: 0,
+        },
+        {
+          merchantId: merchant.id,
+          name: "Throw Pillows",
+          description: "Cozy decorative throw pillows with custom artwork",
+          printifyBlueprintId: 83,
+          aspectRatio: "1:1",
+          sizes: JSON.stringify([
+            { id: "16x16", name: "16\" x 16\"", width: 16, height: 16 },
+            { id: "18x18", name: "18\" x 18\"", width: 18, height: 18 },
+            { id: "20x20", name: "20\" x 20\"", width: 20, height: 20 },
+          ]),
+          frameColors: JSON.stringify([]),
+          isActive: true,
+          sortOrder: 1,
+        },
+        {
+          merchantId: merchant.id,
+          name: "Ceramic Mugs",
+          description: "Premium ceramic mugs with wraparound artwork",
+          printifyBlueprintId: 19,
+          aspectRatio: "3:2",
+          sizes: JSON.stringify([
+            { id: "11oz", name: "11 oz", width: 11, height: 11 },
+            { id: "15oz", name: "15 oz", width: 15, height: 15 },
+          ]),
+          frameColors: JSON.stringify([]),
+          isActive: true,
+          sortOrder: 2,
+        },
+      ];
+
+      const created = [];
+      for (const pt of defaultProductTypes) {
+        const newPt = await storage.createProductType(pt);
+        created.push(newPt);
+      }
+
+      res.json({ message: "Default product types seeded", productTypes: created });
+    } catch (error) {
+      console.error("Error seeding product types:", error);
+      res.status(500).json({ error: "Failed to seed product types" });
+    }
+  });
+
   // Delete design
   app.delete("/api/designs/:id", isAuthenticated, async (req: any, res: Response) => {
     try {

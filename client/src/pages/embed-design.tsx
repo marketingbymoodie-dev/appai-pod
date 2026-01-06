@@ -68,12 +68,30 @@ export default function EmbedDesign() {
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
+  const [productTypeError, setProductTypeError] = useState<string | null>(null);
 
   const shopDomain = searchParams.get("shop") || "";
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [customer, setCustomer] = useState<CustomerInfo | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
+
+  const defaultProductTypeConfig: ProductTypeConfig = {
+    id: 0,
+    name: "Custom Print",
+    description: null,
+    aspectRatio: "3:4",
+    sizes: [
+      { id: "11x14", name: "11\" x 14\"", width: 11, height: 14 },
+      { id: "12x16", name: "12\" x 16\"", width: 12, height: 16 },
+      { id: "16x20", name: "16\" x 20\"", width: 16, height: 20 },
+    ],
+    frameColors: [
+      { id: "black", name: "Black", hex: "#1a1a1a" },
+      { id: "white", name: "White", hex: "#f5f5f5" },
+      { id: "natural", name: "Natural Wood", hex: "#d4a574" },
+    ],
+  };
 
   useEffect(() => {
     Promise.all([
@@ -94,10 +112,21 @@ export default function EmbedDesign() {
           });
           if (sizes?.length > 0) setSelectedSize(sizes[0].id);
           if (frameColors?.length > 0) setSelectedFrameColor(frameColors[0].id);
+        } else {
+          setProductTypeConfig(defaultProductTypeConfig);
+          setSelectedSize(defaultProductTypeConfig.sizes[0].id);
+          setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
+          setProductTypeError(`Product type "${productTypeId}" not found. Using default configuration.`);
         }
         setConfigLoading(false);
       })
-      .catch(() => setConfigLoading(false));
+      .catch(() => {
+        setProductTypeConfig(defaultProductTypeConfig);
+        setSelectedSize(defaultProductTypeConfig.sizes[0].id);
+        setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
+        setProductTypeError("Failed to load product configuration. Using default settings.");
+        setConfigLoading(false);
+      });
   }, [productTypeId]);
 
   useEffect(() => {
@@ -400,6 +429,16 @@ export default function EmbedDesign() {
             <CardContent className="py-3">
               <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error">
                 {loginError}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {productTypeError && (
+          <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
+            <CardContent className="py-3">
+              <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-product-type-error">
+                {productTypeError}
               </p>
             </CardContent>
           </Card>

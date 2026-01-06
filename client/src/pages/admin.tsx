@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
-import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package } from "lucide-react";
+import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import type { Merchant, Coupon, StylePresetDB, ProductType } from "@shared/schema";
@@ -170,6 +170,20 @@ export default function AdminPage() {
       createProductTypeMutation.mutate(data);
     }
   };
+
+  const seedProductTypesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/admin/product-types/seed");
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({ title: "Product types seeded", description: "Default product types have been created." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to seed product types", description: error.message, variant: "destructive" });
+    },
+  });
 
   const seedStylesMutation = useMutation({
     mutationFn: async () => {
@@ -936,10 +950,24 @@ export default function AdminPage() {
                   <CardContent className="py-8 text-center">
                     <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
                     <p className="text-muted-foreground mb-4">No product types configured yet.</p>
-                    <Button onClick={() => setProductTypeDialogOpen(true)} data-testid="button-add-first-product-type">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Your First Product Type
-                    </Button>
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                      <Button 
+                        onClick={() => seedProductTypesMutation.mutate()} 
+                        disabled={seedProductTypesMutation.isPending}
+                        data-testid="button-seed-product-types"
+                      >
+                        {seedProductTypesMutation.isPending ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Plus className="h-4 w-4 mr-2" />
+                        )}
+                        Load Default Product Types
+                      </Button>
+                      <Button variant="outline" onClick={() => setProductTypeDialogOpen(true)} data-testid="button-add-first-product-type">
+                        <Plus className="h-4 w-4 mr-2" />
+                        Create Custom
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               )}
