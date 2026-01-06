@@ -31,6 +31,19 @@ interface PrintifyBlueprint {
   images: string[];
 }
 
+interface PrintifyProvider {
+  id: number;
+  title: string;
+  location?: {
+    address1?: string;
+    address2?: string;
+    city?: string;
+    country?: string;
+    region?: string;
+    zip?: string;
+  };
+}
+
 export default function AdminPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
@@ -62,6 +75,8 @@ export default function AdminPage() {
   const [printifyImportOpen, setPrintifyImportOpen] = useState(false);
   const [blueprintSearch, setBlueprintSearch] = useState("");
   const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
+  const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -135,15 +150,30 @@ export default function AdminPage() {
     enabled: false,
   });
 
+  const { data: printifyProviders, isLoading: providersLoading } = useQuery<PrintifyProvider[]>({
+    queryKey: ["/api/admin/printify/blueprints", selectedBlueprint?.id, "providers"],
+    queryFn: async () => {
+      if (!selectedBlueprint) return [];
+      const response = await fetch(`/api/admin/printify/blueprints/${selectedBlueprint.id}/providers`, {
+        credentials: "include"
+      });
+      if (!response.ok) throw new Error("Failed to fetch providers");
+      return response.json();
+    },
+    enabled: !!selectedBlueprint && providerSelectionOpen,
+  });
+
   const importPrintifyMutation = useMutation({
-    mutationFn: async (data: { blueprintId: number; name: string; description?: string; sizes: any[]; frameColors: any[]; aspectRatio: string }) => {
+    mutationFn: async (data: { blueprintId: number; name: string; description?: string; providerId?: number }) => {
       const response = await apiRequest("POST", "/api/admin/printify/import", data);
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       setPrintifyImportOpen(false);
+      setProviderSelectionOpen(false);
       setSelectedBlueprint(null);
+      setSelectedProvider(null);
       setBlueprintSearch("");
       toast({ title: "Blueprint imported", description: "Product type created from Printify catalog." });
     },
@@ -157,11 +187,18 @@ export default function AdminPage() {
     refetchBlueprints();
   };
 
-  const handleImportBlueprint = (blueprint: PrintifyBlueprint) => {
+  const handleSelectBlueprint = (blueprint: PrintifyBlueprint) => {
+    setSelectedBlueprint(blueprint);
+    setProviderSelectionOpen(true);
+  };
+
+  const handleImportWithProvider = () => {
+    if (!selectedBlueprint) return;
     importPrintifyMutation.mutate({
-      blueprintId: blueprint.id,
-      name: blueprint.title,
-      description: blueprint.description,
+      blueprintId: selectedBlueprint.id,
+      name: selectedBlueprint.title,
+      description: selectedBlueprint.description,
+      providerId: selectedProvider?.id,
     });
   };
 
@@ -209,11 +246,21 @@ export default function AdminPage() {
       return { id: id?.trim(), name: name?.trim(), hex: hex?.trim() || "#000000" };
     });
 
+    // Auto-calculate aspect ratio from first size using GCD
+    const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+    let aspectRatio = "1:1";
+    if (sizes.length > 0 && sizes[0].width > 0 && sizes[0].height > 0) {
+      const w = sizes[0].width;
+      const h = sizes[0].height;
+      const divisor = gcd(w, h);
+      aspectRatio = `${w / divisor}:${h / divisor}`;
+    }
+
     const data = {
       name: productTypeName,
       description: productTypeDescription,
       printifyBlueprintId: productTypeBlueprintId ? parseInt(productTypeBlueprintId) : undefined,
-      aspectRatio: productTypeAspectRatio,
+      aspectRatio,
       sizes,
       frameColors,
     };
@@ -896,16 +943,6 @@ export default function AdminPage() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="pt-aspect">Aspect Ratio</Label>
-                        <Input
-                          id="pt-aspect"
-                          placeholder="e.g., 3:4"
-                          value={productTypeAspectRatio}
-                          onChange={(e) => setProductTypeAspectRatio(e.target.value)}
-                          data-testid="input-product-type-aspect"
-                        />
-                      </div>
-                      <div className="space-y-2">
                         <Label htmlFor="pt-sizes">Sizes (one per line: id:name:widthxheight)</Label>
                         <Textarea
                           id="pt-sizes"
@@ -1001,15 +1038,10 @@ export default function AdminPage() {
                                 </div>
                                 <Button
                                   size="sm"
-                                  onClick={() => handleImportBlueprint(bp)}
-                                  disabled={importPrintifyMutation.isPending}
-                                  data-testid={`button-import-blueprint-${bp.id}`}
+                                  onClick={() => handleSelectBlueprint(bp)}
+                                  data-testid={`button-select-blueprint-${bp.id}`}
                                 >
-                                  {importPrintifyMutation.isPending ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                  ) : (
-                                    "Import"
-                                  )}
+                                  Select
                                 </Button>
                               </CardContent>
                             </Card>
@@ -1017,6 +1049,104 @@ export default function AdminPage() {
                         )}
                       </div>
                     )}
+                  </div>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={providerSelectionOpen} onOpenChange={(open) => {
+                setProviderSelectionOpen(open);
+                if (!open) {
+                  setSelectedBlueprint(null);
+                  setSelectedProvider(null);
+                }
+              }}>
+                <DialogContent className="max-w-lg" data-testid="dialog-provider-selection">
+                  <DialogHeader>
+                    <DialogTitle>Select Print Provider</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    {selectedBlueprint && (
+                      <div className="flex items-center gap-3 p-3 rounded-md bg-muted/50">
+                        {selectedBlueprint.images?.[0] && (
+                          <img src={selectedBlueprint.images[0]} alt={selectedBlueprint.title} className="w-12 h-12 object-contain rounded" />
+                        )}
+                        <div>
+                          <p className="font-medium">{selectedBlueprint.title}</p>
+                          <p className="text-xs text-muted-foreground">{selectedBlueprint.brand}</p>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <p className="text-sm text-muted-foreground">
+                      Choose a print provider based on your target market. Different providers have different sizes, colors, and shipping regions.
+                    </p>
+
+                    {providersLoading ? (
+                      <div className="space-y-2">
+                        <Skeleton className="h-16 w-full" />
+                        <Skeleton className="h-16 w-full" />
+                        <Skeleton className="h-16 w-full" />
+                      </div>
+                    ) : printifyProviders && printifyProviders.length > 0 ? (
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {printifyProviders.map((provider) => (
+                          <div
+                            key={provider.id}
+                            className={`p-3 rounded-md border cursor-pointer transition-colors hover-elevate ${
+                              selectedProvider?.id === provider.id 
+                                ? "border-primary bg-primary/5" 
+                                : "border-border"
+                            }`}
+                            onClick={() => setSelectedProvider(provider)}
+                            data-testid={`provider-option-${provider.id}`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                <p className="font-medium">{provider.title}</p>
+                                {provider.location && (
+                                  <p className="text-xs text-muted-foreground">
+                                    {[provider.location.city, provider.location.region, provider.location.country]
+                                      .filter(Boolean)
+                                      .join(", ")}
+                                  </p>
+                                )}
+                              </div>
+                              {selectedProvider?.id === provider.id && (
+                                <CheckCircle className="h-5 w-5 text-primary" />
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground text-center py-4">
+                        No providers available for this product
+                      </p>
+                    )}
+
+                    <div className="flex justify-end gap-2 pt-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setProviderSelectionOpen(false);
+                          setSelectedBlueprint(null);
+                          setSelectedProvider(null);
+                        }}
+                        data-testid="button-cancel-provider"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={handleImportWithProvider}
+                        disabled={!selectedProvider || importPrintifyMutation.isPending}
+                        data-testid="button-import-with-provider"
+                      >
+                        {importPrintifyMutation.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        ) : null}
+                        Import
+                      </Button>
+                    </div>
                   </div>
                 </DialogContent>
               </Dialog>
@@ -1066,10 +1196,6 @@ export default function AdminPage() {
                             <div>
                               <span className="text-muted-foreground">Blueprint ID:</span>{" "}
                               <span className="font-medium">{pt.printifyBlueprintId || "Not set"}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">Aspect Ratio:</span>{" "}
-                              <span className="font-medium">{pt.aspectRatio}</span>
                             </div>
                             <div>
                               <span className="text-muted-foreground">Sizes:</span>{" "}

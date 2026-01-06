@@ -1534,8 +1534,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(400).json({ error: "No print providers available for this blueprint" });
       }
 
-      // Use the first provider
-      const providerId = providers[0].id;
+      // Use provided provider ID or default to first provider
+      const providerId = req.body.providerId || providers[0].id;
 
       // Fetch variants for this provider
       const variantsResponse = await fetch(
