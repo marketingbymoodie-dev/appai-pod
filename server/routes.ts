@@ -1566,8 +1566,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         const title = variant.title || "";
         const options = variant.options || {};
         
+        // Normalize Unicode quotes/primes to standard characters before parsing
+        const normalizedTitle = title
+          .replace(/[″″‶‴]/g, '"')  // double prime variants
+          .replace(/[′′‵]/g, "'")   // single prime variants
+          .replace(/[""]/g, '"')    // curly double quotes
+          .replace(/['']/g, "'");   // curly single quotes
+        
         // Try to parse dimensions from title or options
-        let sizeMatch = title.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
+        let sizeMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
         if (sizeMatch) {
           const width = parseInt(sizeMatch[1]);
           const height = parseInt(sizeMatch[2]);
