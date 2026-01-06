@@ -1,6 +1,7 @@
 api_version = "2024-01"
 
 [[extensions]]
+uid = "03c2511e-2c28-c301-d086-f538852e3bd73af6f4da"
 type = "theme"
 name = "AI Art Studio"
 handle = "ai-art-studio"

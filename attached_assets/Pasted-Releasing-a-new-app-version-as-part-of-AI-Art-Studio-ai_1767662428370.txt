@@ -1,0 +1,48 @@
+Releasing a new app version as part of AI Art Studio
+
+ai-art-studio │ Running theme check on your Theme app extension...
+Error: ENOENT: no such file or directory, scandir '/home/runner/workspace/extensions/theme-extension/locales'
+    at async Object.readdir (node:internal/fs/promises:952:18)
+    at async Object.readDirectory (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:37570:17)
+    at async getDefaultLocaleFile (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:18671:23)
+    at async getDefaultLocale (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:18675:33)
+    at async LiquidRawTag (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:24154:33)
+    at async visitLiquid (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:18956:48)
+    at async checkLiquidFile (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:30231:136)
+    at async Promise.all (index 33)
+    at async check2 (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:30182:14)
+    at async themeCheckRun2 (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:37649:23) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'scandir',
+  path: '/home/runner/workspace/extensions/theme-extension/locales'
+}
+Error: ENOENT: no such file or directory, scandir '/home/runner/workspace/extensions/theme-extension/locales'
+    at async Object.readdir (node:internal/fs/promises:952:18)
+    at async Object.readDirectory (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:37570:17)
+    at async getDefaultLocaleFile (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:18671:23)
+    at async getDefaultTranslations (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:18686:33)
+    at async Object.onCodePathEnd (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:24159:39)
+    at async checkLiquidFile (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:30231:213)
+    at async Promise.all (index 33)
+    at async check2 (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:30182:14)
+    at async themeCheckRun2 (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:37649:23)
+    at async check2 (file:///home/runner/workspace/.config/npm/node_global/lib/node_modules/@shopify/cli/dist/index.js:37626:15) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'scandir',
+  path: '/home/runner/workspace/extensions/theme-extension/locales'
+}
+ai-art-studio │ Bundling theme extension ai-art-studio...
+
+
+╭─ error ─────────────────────────────────────────────────────────────────────────────╮
+│                                                                                     │
+│  Version couldn't be created.                                                       │
+│                                                                                     │
+│  ai-art-studio                                                                      │
+│                                                                                     │
+│  Validation errors                                                                  │
+│    • bundle: [blocks/design-studio.liquid] Invalid tag 'schema': unknown key        │
+│      'presets', [blocks/design-studio.liquid] Invalid tag 'schema': settings: with  │
+│      id="app_url" default can't be blank   
