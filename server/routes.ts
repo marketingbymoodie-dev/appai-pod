@@ -1395,41 +1395,48 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
   
   // Cache for blueprint provider IDs (blueprint_id -> provider_ids[])
   const blueprintProviderCache = new Map<number, number[]>();
-
-  // Fetch all blueprints from Printify catalog with optional location filtering
-  app.get("/api/admin/printify/blueprints", isAuthenticated, async (req: any, res: Response) => {
+  
+  // Track cache warm-up state
+  let cacheWarmUpInProgress = false;
+  let cacheLastWarmedAt: Date | null = null;
+  
+  // Endpoint to warm up Printify provider and blueprint caches
+  // This runs in background when admin opens Printify tab
+  app.post("/api/admin/printify/warm-cache", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const locationFilter = req.query.location as string | undefined;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant || !merchant.printifyApiToken) {
-        return res.status(400).json({ 
-          error: "Printify API token not configured",
-          message: "Please add your Printify API token in Settings first"
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+      
+      // Return immediately if cache is already warm (within last 10 minutes)
+      const cacheAge = cacheLastWarmedAt ? Date.now() - cacheLastWarmedAt.getTime() : Infinity;
+      if (cacheAge < 10 * 60 * 1000 && providerLocationCache.size > 0 && blueprintProviderCache.size > 0) {
+        return res.json({ 
+          status: "ready",
+          providers: providerLocationCache.size,
+          blueprints: blueprintProviderCache.size
         });
       }
-
-      const response = await fetch("https://api.printify.com/v1/catalog/blueprints.json", {
-        headers: {
-          "Authorization": `Bearer ${merchant.printifyApiToken}`,
-          "Content-Type": "application/json"
-        }
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          return res.status(401).json({ error: "Invalid Printify API token" });
-        }
-        throw new Error(`Printify API error: ${response.status}`);
-      }
-
-      let blueprints = await response.json();
       
-      // If location filter provided, enrich blueprints with provider data and filter
-      if (locationFilter && locationFilter !== "all") {
-        // First, ensure we have all provider locations cached
-        if (providerLocationCache.size === 0) {
+      // Return immediately if warm-up is already in progress
+      if (cacheWarmUpInProgress) {
+        return res.json({ status: "warming" });
+      }
+      
+      // Start warming in background
+      cacheWarmUpInProgress = true;
+      res.json({ status: "warming" });
+      
+      // Background warm-up process
+      (async () => {
+        try {
+          const pLimit = (await import('p-limit')).default;
+          const limit = pLimit(5);
+          
+          // Step 1: Fetch all providers and their details
           const providersResponse = await fetch("https://api.printify.com/v1/catalog/print_providers.json", {
             headers: {
               "Authorization": `Bearer ${merchant.printifyApiToken}`,
@@ -1439,9 +1446,6 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           
           if (providersResponse.ok) {
             const allProviders = await providersResponse.json();
-            // Fetch details for all providers in parallel (with limit to avoid rate limits)
-            const pLimit = (await import('p-limit')).default;
-            const limit = pLimit(5);
             
             await Promise.all(
               allProviders.map((provider: any) => 
@@ -1473,64 +1477,133 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
               )
             );
           }
+          
+          // Step 2: Fetch all blueprints and their provider mappings
+          const blueprintsResponse = await fetch("https://api.printify.com/v1/catalog/blueprints.json", {
+            headers: {
+              "Authorization": `Bearer ${merchant.printifyApiToken}`,
+              "Content-Type": "application/json"
+            }
+          });
+          
+          if (blueprintsResponse.ok) {
+            const allBlueprints = await blueprintsResponse.json();
+            
+            await Promise.all(
+              allBlueprints.map((blueprint: any) =>
+                limit(async () => {
+                  try {
+                    const provResponse = await fetchWithRetry(
+                      `https://api.printify.com/v1/catalog/blueprints/${blueprint.id}/print_providers.json`,
+                      {
+                        headers: {
+                          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                          "Content-Type": "application/json"
+                        }
+                      },
+                      2,
+                      2000
+                    );
+                    
+                    if (provResponse.ok) {
+                      const providers = await provResponse.json();
+                      blueprintProviderCache.set(blueprint.id, providers.map((p: any) => p.id));
+                    }
+                  } catch (err) {
+                    console.error(`Error caching blueprint ${blueprint.id} providers:`, err);
+                  }
+                })
+              )
+            );
+          }
+          
+          cacheLastWarmedAt = new Date();
+          console.log(`Cache warm-up complete: ${providerLocationCache.size} providers, ${blueprintProviderCache.size} blueprints`);
+        } catch (err) {
+          console.error("Cache warm-up error:", err);
+        } finally {
+          cacheWarmUpInProgress = false;
+        }
+      })();
+    } catch (error) {
+      console.error("Error starting cache warm-up:", error);
+      res.status(500).json({ error: "Failed to start cache warm-up" });
+    }
+  });
+  
+  // Check cache status
+  app.get("/api/admin/printify/cache-status", isAuthenticated, async (req: any, res: Response) => {
+    res.json({
+      status: cacheWarmUpInProgress ? "warming" : (providerLocationCache.size > 0 ? "ready" : "cold"),
+      providers: providerLocationCache.size,
+      blueprints: blueprintProviderCache.size,
+      lastWarmed: cacheLastWarmedAt?.toISOString() || null
+    });
+  });
+
+  // Fetch all blueprints from Printify catalog with optional location filtering
+  app.get("/api/admin/printify/blueprints", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const locationFilter = req.query.location as string | undefined;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ 
+          error: "Printify API token not configured",
+          message: "Please add your Printify API token in Settings first"
+        });
+      }
+
+      const response = await fetch("https://api.printify.com/v1/catalog/blueprints.json", {
+        headers: {
+          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({ error: "Invalid Printify API token" });
+        }
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      let blueprints = await response.json();
+      
+      // If location filter provided, filter using cached data only (no API calls)
+      if (locationFilter && locationFilter !== "all") {
+        // Check if cache is ready
+        if (blueprintProviderCache.size === 0 || providerLocationCache.size === 0) {
+          // Cache not ready - return error asking to wait
+          return res.status(202).json({
+            error: "cache_not_ready",
+            message: "Provider data is still loading. Please wait a moment.",
+            cacheStatus: {
+              providers: providerLocationCache.size,
+              blueprints: blueprintProviderCache.size,
+              warming: cacheWarmUpInProgress
+            }
+          });
         }
         
-        // Now filter blueprints by checking their providers against the location
-        const pLimit = (await import('p-limit')).default;
-        const limit = pLimit(5);
-        
-        const filteredBlueprints = await Promise.all(
-          blueprints.map((blueprint: any) =>
-            limit(async () => {
-              // Check cache first
-              let providerIds = blueprintProviderCache.get(blueprint.id);
-              
-              if (!providerIds) {
-                // Fetch providers for this blueprint with retry logic
-                try {
-                  const provResponse = await fetchWithRetry(
-                    `https://api.printify.com/v1/catalog/blueprints/${blueprint.id}/print_providers.json`,
-                    {
-                      headers: {
-                        "Authorization": `Bearer ${merchant.printifyApiToken}`,
-                        "Content-Type": "application/json"
-                      }
-                    },
-                    2,
-                    2000
-                  );
-                  
-                  if (provResponse.ok) {
-                    const providers = await provResponse.json();
-                    const ids = providers.map((p: any) => p.id);
-                    blueprintProviderCache.set(blueprint.id, ids);
-                    providerIds = ids;
-                  }
-                } catch (err) {
-                  console.error(`Error fetching providers for blueprint ${blueprint.id}:`, err);
-                }
-              }
-              
-              if (!providerIds || providerIds.length === 0) return null;
-              
-              // Check if any provider matches the location filter
-              const hasMatchingProvider = providerIds.some((providerId: number) => {
-                const providerData = providerLocationCache.get(String(providerId));
-                if (!providerData) return false;
-                
-                const locationCountry = providerData.location?.country || "";
-                const fulfillmentCountries = providerData.fulfillment_countries || [];
-                
-                return locationCountry.includes(locationFilter) || 
-                       fulfillmentCountries.some((c: string) => c.includes(locationFilter));
-              });
-              
-              return hasMatchingProvider ? blueprint : null;
-            })
-          )
-        );
-        
-        blueprints = filteredBlueprints.filter(Boolean);
+        // Filter blueprints locally using cached data (no API calls!)
+        blueprints = blueprints.filter((blueprint: any) => {
+          const providerIds = blueprintProviderCache.get(blueprint.id);
+          if (!providerIds || providerIds.length === 0) return false;
+          
+          // Check if any provider matches the location filter
+          return providerIds.some((providerId: number) => {
+            const providerData = providerLocationCache.get(String(providerId));
+            if (!providerData) return false;
+            
+            const locationCountry = providerData.location?.country || "";
+            const fulfillmentCountries = providerData.fulfillment_countries || [];
+            
+            return locationCountry.includes(locationFilter) || 
+                   fulfillmentCountries.some((c: string) => c.includes(locationFilter));
+          });
+        });
       }
       
       res.json(blueprints);

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -81,6 +81,8 @@ export default function AdminPage() {
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
   const [providerLocationFilter, setProviderLocationFilter] = useState("");
   const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
+  const [cacheStatus, setCacheStatus] = useState<"cold" | "warming" | "ready">("cold");
+  const cachePollingRef = useRef<NodeJS.Timeout | null>(null);
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -150,14 +152,25 @@ export default function AdminPage() {
   });
 
   const { data: printifyBlueprints, isLoading: blueprintsLoading, error: blueprintsError, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
-    queryKey: ["/api/admin/printify/blueprints", catalogLocationFilter],
+    queryKey: ["/api/admin/printify/blueprints", catalogLocationFilter, cacheStatus],
     queryFn: async () => {
+      // Skip fetch if cache is still warming and we need location filtering
+      if (cacheStatus === "warming" && catalogLocationFilter && catalogLocationFilter !== "all") {
+        return []; // Return empty, will refetch when cache is ready
+      }
+      
       const params = new URLSearchParams();
       if (catalogLocationFilter && catalogLocationFilter !== "all") {
         params.set("location", catalogLocationFilter);
       }
       const url = `/api/admin/printify/blueprints${params.toString() ? `?${params}` : ""}`;
       const response = await fetch(url, { credentials: "include" });
+      
+      // Handle cache not ready response - return empty array instead of throwing
+      if (response.status === 202) {
+        return []; // Will refetch when cache becomes ready via useEffect
+      }
+      
       if (!response.ok) throw new Error("Failed to fetch blueprints");
       return response.json();
     },
@@ -219,10 +232,60 @@ export default function AdminPage() {
     },
   });
 
-  const handleOpenPrintifyImport = () => {
+  const handleOpenPrintifyImport = async () => {
     setPrintifyImportOpen(true);
+    
+    // Clear any existing polling
+    if (cachePollingRef.current) {
+      clearInterval(cachePollingRef.current);
+      cachePollingRef.current = null;
+    }
+    
+    // Start cache warm-up in background
+    try {
+      const warmRes = await fetch("/api/admin/printify/warm-cache", {
+        method: "POST",
+        credentials: "include",
+      });
+      const warmData = await warmRes.json();
+      
+      if (warmData.status === "ready") {
+        setCacheStatus("ready");
+      } else if (warmData.status === "warming") {
+        setCacheStatus("warming");
+        // Poll for cache status
+        cachePollingRef.current = setInterval(async () => {
+          try {
+            const statusRes = await fetch("/api/admin/printify/cache-status", {
+              credentials: "include",
+            });
+            const statusData = await statusRes.json();
+            if (statusData.status === "ready") {
+              setCacheStatus("ready");
+              if (cachePollingRef.current) {
+                clearInterval(cachePollingRef.current);
+                cachePollingRef.current = null;
+              }
+            }
+          } catch (err) {
+            console.error("Cache status poll error:", err);
+          }
+        }, 2000);
+      }
+    } catch (err) {
+      console.error("Cache warm-up error:", err);
+    }
+    
     refetchBlueprints();
   };
+  
+  // Clean up polling when dialog closes
+  useEffect(() => {
+    if (!printifyImportOpen && cachePollingRef.current) {
+      clearInterval(cachePollingRef.current);
+      cachePollingRef.current = null;
+    }
+  }, [printifyImportOpen]);
 
   const handleSelectBlueprint = (blueprint: PrintifyBlueprint) => {
     setSelectedBlueprint(blueprint);
@@ -370,6 +433,13 @@ export default function AdminPage() {
       refetchBlueprints();
     }
   }, [catalogLocationFilter, printifyImportOpen]);
+  
+  // Refetch blueprints when cache becomes ready (for location filtering)
+  useEffect(() => {
+    if (printifyImportOpen && cacheStatus === "ready" && catalogLocationFilter && catalogLocationFilter !== "all") {
+      refetchBlueprints();
+    }
+  }, [cacheStatus, printifyImportOpen, catalogLocationFilter]);
 
   const createCouponMutation = useMutation({
     mutationFn: async (data: { code: string; creditAmount: number; maxUses?: number }) => {
@@ -1059,11 +1129,15 @@ export default function AdminPage() {
                     <DialogTitle>Import from Printify Catalog</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-4">
-                    <div className="flex gap-3">
+                    <div className="flex gap-3 items-center">
                       <div className="flex-1">
-                        <Select value={catalogLocationFilter} onValueChange={setCatalogLocationFilter}>
+                        <Select 
+                          value={catalogLocationFilter} 
+                          onValueChange={setCatalogLocationFilter}
+                          disabled={cacheStatus === "warming"}
+                        >
                           <SelectTrigger data-testid="select-catalog-location">
-                            <SelectValue placeholder="Filter by provider location..." />
+                            <SelectValue placeholder={cacheStatus === "warming" ? "Loading provider data..." : "Filter by provider location..."} />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="all">All locations</SelectItem>
@@ -1073,7 +1147,18 @@ export default function AdminPage() {
                           </SelectContent>
                         </Select>
                       </div>
+                      {cacheStatus === "warming" && (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Loading...</span>
+                        </div>
+                      )}
                     </div>
+                    {cacheStatus === "warming" && (
+                      <p className="text-sm text-muted-foreground">
+                        Preparing provider location data for fast filtering. This happens once and takes 1-2 minutes.
+                      </p>
+                    )}
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                       <Input
@@ -1095,11 +1180,17 @@ export default function AdminPage() {
                       </Card>
                     ) : blueprintsLoading || blueprintsFetching ? (
                       <div className="space-y-3">
-                        {catalogLocationFilter && catalogLocationFilter !== "all" && (
-                          <p className="text-sm text-muted-foreground text-center">
-                            Checking providers in {catalogLocationFilter}... This may take a moment.
-                          </p>
-                        )}
+                        {catalogLocationFilter && catalogLocationFilter !== "all" ? (
+                          cacheStatus === "ready" ? (
+                            <p className="text-sm text-muted-foreground text-center">
+                              Filtering products for {catalogLocationFilter}...
+                            </p>
+                          ) : (
+                            <p className="text-sm text-muted-foreground text-center">
+                              Waiting for provider data to load before filtering...
+                            </p>
+                          )
+                        ) : null}
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
