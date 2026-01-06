@@ -17,6 +17,13 @@
     },
     {
       "type": "text",
+      "id": "product_type_id",
+      "label": "Product Type ID",
+      "info": "Enter the product type ID from your AI Art Studio admin (e.g., 1 for Framed Prints)",
+      "default": "1"
+    },
+    {
+      "type": "text",
       "id": "heading",
       "label": "Section Heading",
       "default": "Create Your Custom Design"
@@ -60,6 +67,7 @@
     id="ai-art-studio-container-{{ block.id }}"
     class="ai-art-studio__container"
     data-app-url="{{ block.settings.app_url }}"
+    data-product-type-id="{{ block.settings.product_type_id }}"
     data-product-id="{{ product.id }}"
     data-product-handle="{{ product.handle }}"
     data-product-title="{{ product.title | escape }}"
@@ -155,6 +163,7 @@
       return;
     }
 
+    const productTypeId = container.dataset.productTypeId || '1';
     const productId = container.dataset.productId;
     const productHandle = container.dataset.productHandle;
     const productTitle = container.dataset.productTitle;
@@ -171,30 +180,17 @@
       console.error('Failed to parse variants:', e);
     }
 
-    const sizeOptions = [];
-    const frameColorOptions = [];
-    
-    variants.forEach(variant => {
-      if (variant.option1 && !sizeOptions.includes(variant.option1)) {
-        sizeOptions.push(variant.option1);
-      }
-      if (variant.option2 && !frameColorOptions.includes(variant.option2)) {
-        frameColorOptions.push(variant.option2);
-      }
-    });
-
     const shopDomain = window.Shopify?.shop || window.location.hostname;
     
     const params = new URLSearchParams();
     params.set('embedded', 'true');
     params.set('shopify', 'true');
     params.set('shop', shopDomain);
+    params.set('productTypeId', productTypeId);
     params.set('productId', productId);
     params.set('productHandle', productHandle);
     params.set('productTitle', productTitle);
     params.set('showPresets', showPresets.toString());
-    params.set('sizes', sizeOptions.join(','));
-    params.set('frameColors', frameColorOptions.join(','));
     params.set('selectedVariant', selectedVariant);
     params.set('variants', JSON.stringify(variants));
     if (customerId) {

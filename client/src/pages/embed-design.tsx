@@ -30,28 +30,33 @@ interface GeneratedDesign {
   prompt: string;
 }
 
+interface ProductTypeConfig {
+  id: number;
+  name: string;
+  description: string | null;
+  aspectRatio: string;
+  sizes: Array<{ id: string; name: string; width: number; height: number }>;
+  frameColors: Array<{ id: string; name: string; hex: string }>;
+}
+
 export default function EmbedDesign() {
   const searchParams = new URLSearchParams(window.location.search);
 
   const isEmbedded = searchParams.get("embedded") === "true";
   const isShopify = searchParams.get("shopify") === "true";
+  const productTypeId = searchParams.get("productTypeId") || "1";
   const productId = searchParams.get("productId") || "";
   const productHandle = searchParams.get("productHandle") || "";
   const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Framed Print");
   const showPresetsParam = searchParams.get("showPresets") !== "false";
-  const sizesParam = searchParams.get("sizes") || "";
-  const frameColorsParam = searchParams.get("frameColors") || "";
   const selectedVariantParam = searchParams.get("selectedVariant") || "";
   const shopifyCustomerId = searchParams.get("customerId") || "";
   const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
   const shopifyCustomerName = searchParams.get("customerName") || "";
 
-  const sizes = sizesParam ? sizesParam.split(",").filter(Boolean) : [];
-  const frameColors = frameColorsParam ? frameColorsParam.split(",").filter(Boolean) : [];
-
   const [prompt, setPrompt] = useState("");
-  const [selectedSize, setSelectedSize] = useState(sizes[0] || "");
-  const [selectedFrameColor, setSelectedFrameColor] = useState(frameColors[0] || "");
+  const [selectedSize, setSelectedSize] = useState("");
+  const [selectedFrameColor, setSelectedFrameColor] = useState("");
   const [selectedPreset, setSelectedPreset] = useState<string>("none");
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
@@ -61,6 +66,7 @@ export default function EmbedDesign() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
 
   const shopDomain = searchParams.get("shop") || "";
@@ -70,16 +76,29 @@ export default function EmbedDesign() {
   const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/config")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.stylePresets) {
-          setStylePresets(data.stylePresets);
+    Promise.all([
+      fetch("/api/config").then(res => res.json()),
+      fetch(`/api/product-types/${productTypeId}`).then(res => res.ok ? res.json() : null)
+    ])
+      .then(([configData, productType]) => {
+        if (configData.stylePresets) {
+          setStylePresets(configData.stylePresets);
+        }
+        if (productType) {
+          const sizes = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes;
+          const frameColors = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors;
+          setProductTypeConfig({
+            ...productType,
+            sizes: sizes || [],
+            frameColors: frameColors || []
+          });
+          if (sizes?.length > 0) setSelectedSize(sizes[0].id);
+          if (frameColors?.length > 0) setSelectedFrameColor(frameColors[0].id);
         }
         setConfigLoading(false);
       })
       .catch(() => setConfigLoading(false));
-  }, []);
+  }, [productTypeId]);
 
   useEffect(() => {
     if (isShopify && shopDomain) {
@@ -325,18 +344,18 @@ export default function EmbedDesign() {
     }
   }, [isEmbedded]);
 
-  const printSizes: PrintSize[] = sizes.map((s) => ({
-    id: s,
-    name: s,
-    width: 3,
-    height: 4,
-    aspectRatio: "3:4",
+  const printSizes: PrintSize[] = (productTypeConfig?.sizes || []).map((s) => ({
+    id: s.id,
+    name: s.name,
+    width: s.width,
+    height: s.height,
+    aspectRatio: productTypeConfig?.aspectRatio || "3:4",
   }));
 
-  const frameColorObjects: FrameColor[] = frameColors.map((c) => ({
-    id: c,
-    name: c,
-    hex: c.toLowerCase() === "black" ? "#1a1a1a" : c.toLowerCase() === "white" ? "#f5f5f5" : c.toLowerCase() === "natural" ? "#d4a574" : "#888888",
+  const frameColorObjects: FrameColor[] = (productTypeConfig?.frameColors || []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    hex: c.hex,
   }));
 
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
