@@ -11,10 +11,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
-import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2 } from "lucide-react";
+import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import type { Merchant, Coupon, StylePresetDB } from "@shared/schema";
+import type { Merchant, Coupon, StylePresetDB, ProductType } from "@shared/schema";
 
 interface GenerationStats {
   total: number;
@@ -41,6 +41,15 @@ export default function AdminPage() {
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
 
+  const [productTypeDialogOpen, setProductTypeDialogOpen] = useState(false);
+  const [editingProductType, setEditingProductType] = useState<ProductType | null>(null);
+  const [productTypeName, setProductTypeName] = useState("");
+  const [productTypeDescription, setProductTypeDescription] = useState("");
+  const [productTypeBlueprintId, setProductTypeBlueprintId] = useState("");
+  const [productTypeAspectRatio, setProductTypeAspectRatio] = useState("3:4");
+  const [productTypeSizes, setProductTypeSizes] = useState("");
+  const [productTypeFrameColors, setProductTypeFrameColors] = useState("");
+
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
     enabled: isAuthenticated,
@@ -60,6 +69,107 @@ export default function AdminPage() {
     queryKey: ["/api/admin/styles"],
     enabled: isAuthenticated,
   });
+
+  const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
+    queryKey: ["/api/product-types"],
+    enabled: isAuthenticated,
+  });
+
+  const createProductTypeMutation = useMutation({
+    mutationFn: async (data: { name: string; description: string; printifyBlueprintId?: number; aspectRatio: string; sizes: any[]; frameColors: any[] }) => {
+      const response = await apiRequest("POST", "/api/admin/product-types", data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      setProductTypeDialogOpen(false);
+      resetProductTypeForm();
+      toast({ title: "Product type created", description: "Your product type is ready to use." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create product type", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateProductTypeMutation = useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; name: string; description: string; printifyBlueprintId?: number; aspectRatio: string; sizes: any[]; frameColors: any[] }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${id}`, data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      setProductTypeDialogOpen(false);
+      resetProductTypeForm();
+      toast({ title: "Product type updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update product type", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteProductTypeMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/admin/product-types/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({ title: "Product type deleted" });
+    },
+  });
+
+  const resetProductTypeForm = () => {
+    setEditingProductType(null);
+    setProductTypeName("");
+    setProductTypeDescription("");
+    setProductTypeBlueprintId("");
+    setProductTypeAspectRatio("3:4");
+    setProductTypeSizes("");
+    setProductTypeFrameColors("");
+  };
+
+  const openEditProductType = (pt: ProductType) => {
+    setEditingProductType(pt);
+    setProductTypeName(pt.name);
+    setProductTypeDescription(pt.description || "");
+    setProductTypeBlueprintId(pt.printifyBlueprintId?.toString() || "");
+    setProductTypeAspectRatio(pt.aspectRatio);
+    try {
+      const sizes = JSON.parse(pt.sizes);
+      setProductTypeSizes(sizes.map((s: any) => `${s.id}:${s.name}:${s.width}x${s.height}`).join("\n"));
+    } catch { setProductTypeSizes(""); }
+    try {
+      const colors = JSON.parse(pt.frameColors);
+      setProductTypeFrameColors(colors.map((c: any) => `${c.id}:${c.name}:${c.hex}`).join("\n"));
+    } catch { setProductTypeFrameColors(""); }
+    setProductTypeDialogOpen(true);
+  };
+
+  const handleProductTypeSubmit = () => {
+    const sizes = productTypeSizes.split("\n").filter(Boolean).map(line => {
+      const [id, name, dims] = line.split(":");
+      const [width, height] = (dims || "").split("x").map(Number);
+      return { id: id?.trim(), name: name?.trim(), width: width || 0, height: height || 0 };
+    });
+    const frameColors = productTypeFrameColors.split("\n").filter(Boolean).map(line => {
+      const [id, name, hex] = line.split(":");
+      return { id: id?.trim(), name: name?.trim(), hex: hex?.trim() || "#000000" };
+    });
+
+    const data = {
+      name: productTypeName,
+      description: productTypeDescription,
+      printifyBlueprintId: productTypeBlueprintId ? parseInt(productTypeBlueprintId) : undefined,
+      aspectRatio: productTypeAspectRatio,
+      sizes,
+      frameColors,
+    };
+
+    if (editingProductType) {
+      updateProductTypeMutation.mutate({ id: editingProductType.id, ...data });
+    } else {
+      createProductTypeMutation.mutate(data);
+    }
+  };
 
   const seedStylesMutation = useMutation({
     mutationFn: async () => {
@@ -231,6 +341,10 @@ export default function AdminPage() {
             <TabsTrigger value="stats" data-testid="tab-stats">
               <BarChart3 className="h-4 w-4 mr-2" />
               Statistics
+            </TabsTrigger>
+            <TabsTrigger value="products" data-testid="tab-products">
+              <Package className="h-4 w-4 mr-2" />
+              Product Types
             </TabsTrigger>
           </TabsList>
 
@@ -656,6 +770,180 @@ export default function AdminPage() {
                 </p>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="products">
+            <div className="max-w-3xl">
+              <div className="flex items-center justify-between gap-4 mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold">Product Types</h2>
+                  <p className="text-sm text-muted-foreground">Configure different products for the design studio (Framed Prints, Pillows, Mugs, etc.)</p>
+                </div>
+                <Dialog open={productTypeDialogOpen} onOpenChange={(open) => { if (!open) resetProductTypeForm(); setProductTypeDialogOpen(open); }}>
+                  <DialogTrigger asChild>
+                    <Button data-testid="button-create-product-type">
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Product Type
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>{editingProductType ? "Edit Product Type" : "Create Product Type"}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 mt-4 max-h-[60vh] overflow-y-auto pr-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="pt-name">Name</Label>
+                        <Input
+                          id="pt-name"
+                          placeholder="e.g., Framed Prints"
+                          value={productTypeName}
+                          onChange={(e) => setProductTypeName(e.target.value)}
+                          data-testid="input-product-type-name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="pt-description">Description</Label>
+                        <Textarea
+                          id="pt-description"
+                          placeholder="High-quality framed artwork prints..."
+                          value={productTypeDescription}
+                          onChange={(e) => setProductTypeDescription(e.target.value)}
+                          data-testid="input-product-type-description"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="pt-blueprint">Printify Blueprint ID</Label>
+                        <Input
+                          id="pt-blueprint"
+                          type="number"
+                          placeholder="e.g., 540"
+                          value={productTypeBlueprintId}
+                          onChange={(e) => setProductTypeBlueprintId(e.target.value)}
+                          data-testid="input-product-type-blueprint"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="pt-aspect">Aspect Ratio</Label>
+                        <Input
+                          id="pt-aspect"
+                          placeholder="e.g., 3:4"
+                          value={productTypeAspectRatio}
+                          onChange={(e) => setProductTypeAspectRatio(e.target.value)}
+                          data-testid="input-product-type-aspect"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="pt-sizes">Sizes (one per line: id:name:widthxheight)</Label>
+                        <Textarea
+                          id="pt-sizes"
+                          placeholder={"11x14:11\" x 14\":11x14\n12x16:12\" x 16\":12x16"}
+                          value={productTypeSizes}
+                          onChange={(e) => setProductTypeSizes(e.target.value)}
+                          className="min-h-[100px] font-mono text-sm"
+                          data-testid="input-product-type-sizes"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="pt-colors">Frame Colors (one per line: id:name:hex)</Label>
+                        <Textarea
+                          id="pt-colors"
+                          placeholder={"black:Black:#1a1a1a\nwhite:White:#f5f5f5"}
+                          value={productTypeFrameColors}
+                          onChange={(e) => setProductTypeFrameColors(e.target.value)}
+                          className="min-h-[80px] font-mono text-sm"
+                          data-testid="input-product-type-colors"
+                        />
+                      </div>
+                      <Button
+                        className="w-full"
+                        onClick={handleProductTypeSubmit}
+                        disabled={!productTypeName || createProductTypeMutation.isPending || updateProductTypeMutation.isPending}
+                        data-testid="button-submit-product-type"
+                      >
+                        {editingProductType ? "Update Product Type" : "Create Product Type"}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+
+              {productTypesLoading ? (
+                <div className="space-y-4">
+                  <Skeleton className="h-32 w-full" />
+                  <Skeleton className="h-32 w-full" />
+                </div>
+              ) : productTypes && productTypes.length > 0 ? (
+                <div className="space-y-4">
+                  {productTypes.map((pt) => {
+                    let sizes: any[] = [];
+                    let frameColors: any[] = [];
+                    try { sizes = JSON.parse(pt.sizes); } catch {}
+                    try { frameColors = JSON.parse(pt.frameColors); } catch {}
+                    
+                    return (
+                      <Card key={pt.id} data-testid={`card-product-type-${pt.id}`}>
+                        <CardHeader className="flex flex-row items-start justify-between gap-4 pb-2">
+                          <div>
+                            <CardTitle className="text-base">{pt.name}</CardTitle>
+                            <CardDescription>{pt.description || "No description"}</CardDescription>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => openEditProductType(pt)}
+                              data-testid={`button-edit-product-type-${pt.id}`}
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => deleteProductTypeMutation.mutate(pt.id)}
+                              disabled={deleteProductTypeMutation.isPending}
+                              data-testid={`button-delete-product-type-${pt.id}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                              <span className="text-muted-foreground">Blueprint ID:</span>{" "}
+                              <span className="font-medium">{pt.printifyBlueprintId || "Not set"}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Aspect Ratio:</span>{" "}
+                              <span className="font-medium">{pt.aspectRatio}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Sizes:</span>{" "}
+                              <span className="font-medium">{sizes.length} options</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Frame Colors:</span>{" "}
+                              <span className="font-medium">{frameColors.length} options</span>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              ) : (
+                <Card>
+                  <CardContent className="py-8 text-center">
+                    <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <p className="text-muted-foreground mb-4">No product types configured yet.</p>
+                    <Button onClick={() => setProductTypeDialogOpen(true)} data-testid="button-add-first-product-type">
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Your First Product Type
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           </TabsContent>
         </Tabs>
       </main>
