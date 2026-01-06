@@ -1,0 +1,25 @@
+{
+  "ai_art_studio": {
+    "name": "AI Art Design Studio",
+    "loading": "Loading design studio...",
+    "error_no_url": "Please configure the App URL in the theme editor.",
+    "settings": {
+      "app_url": {
+        "label": "App URL",
+        "info": "The URL of your AI Art Studio app"
+      },
+      "heading": {
+        "label": "Section Heading"
+      },
+      "description": {
+        "label": "Section Description"
+      },
+      "show_style_presets": {
+        "label": "Show Style Presets"
+      },
+      "studio_height": {
+        "label": "Studio Height"
+      }
+    }
+  }
+}
