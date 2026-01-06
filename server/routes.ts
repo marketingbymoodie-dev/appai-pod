@@ -1489,11 +1489,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
   app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { blueprintId, providerId, name, description, sizes, frameColors, aspectRatio } = req.body;
+      const { blueprintId, name, description } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant) {
         return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      if (!merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
       }
 
       if (!blueprintId || !name) {
@@ -1510,15 +1514,138 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         });
       }
 
-      // Create the product type
+      // Fetch print providers for this blueprint
+      const providersResponse = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (!providersResponse.ok) {
+        throw new Error(`Failed to fetch providers: ${providersResponse.status}`);
+      }
+
+      const providers = await providersResponse.json();
+      if (!providers || providers.length === 0) {
+        return res.status(400).json({ error: "No print providers available for this blueprint" });
+      }
+
+      // Use the first provider
+      const providerId = providers[0].id;
+
+      // Fetch variants for this provider
+      const variantsResponse = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (!variantsResponse.ok) {
+        throw new Error(`Failed to fetch variants: ${variantsResponse.status}`);
+      }
+
+      const variantsData = await variantsResponse.json();
+      const variants = variantsData.variants || variantsData || [];
+
+      // Parse variants to extract sizes and colors
+      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
+      const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
+      let maxWidth = 0;
+      let maxHeight = 0;
+
+      for (const variant of variants) {
+        // Extract size from title (e.g., "8x10 / Black" or "12\" x 16\" / White")
+        const title = variant.title || "";
+        const options = variant.options || {};
+        
+        // Try to parse dimensions from title or options
+        let sizeMatch = title.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
+        if (sizeMatch) {
+          const width = parseInt(sizeMatch[1]);
+          const height = parseInt(sizeMatch[2]);
+          const sizeId = `${width}x${height}`;
+          const sizeName = `${width}" x ${height}"`;
+          
+          if (!sizesMap.has(sizeId)) {
+            sizesMap.set(sizeId, { id: sizeId, name: sizeName, width, height });
+          }
+          
+          if (width > maxWidth) maxWidth = width;
+          if (height > maxHeight) maxHeight = height;
+        }
+
+        // Try to extract color from title (after the "/" or from options)
+        let colorName = "";
+        if (title.includes("/")) {
+          colorName = title.split("/").pop()?.trim() || "";
+        } else if (options.color) {
+          colorName = options.color;
+        } else if (options.frame_color) {
+          colorName = options.frame_color;
+        }
+
+        if (colorName && !colorsMap.has(colorName.toLowerCase())) {
+          // Map common color names to hex values
+          const colorHexMap: Record<string, string> = {
+            "black": "#1a1a1a",
+            "white": "#f5f5f5",
+            "walnut": "#5D4037",
+            "natural": "#D7CCC8",
+            "brown": "#795548",
+            "gold": "#FFD700",
+            "silver": "#C0C0C0",
+            "oak": "#C4A35A",
+            "cherry": "#9B2335",
+            "mahogany": "#4E2728",
+            "espresso": "#3C2415",
+            "grey": "#9E9E9E",
+            "gray": "#9E9E9E",
+          };
+          
+          const hex = colorHexMap[colorName.toLowerCase()] || "#888888";
+          colorsMap.set(colorName.toLowerCase(), { 
+            id: colorName.toLowerCase().replace(/\s+/g, '_'), 
+            name: colorName, 
+            hex 
+          });
+        }
+      }
+
+      // Convert maps to arrays
+      const sizes = Array.from(sizesMap.values());
+      const frameColors = Array.from(colorsMap.values());
+
+      // Determine aspect ratio using GCD for accurate ratio
+      const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+      
+      let aspectRatio = "1:1";
+      if (sizes.length > 0) {
+        const firstSize = sizes[0];
+        const w = firstSize.width;
+        const h = firstSize.height;
+        const divisor = gcd(w, h);
+        const simplifiedW = w / divisor;
+        const simplifiedH = h / divisor;
+        aspectRatio = `${simplifiedW}:${simplifiedH}`;
+      }
+
+      // Create the product type with parsed data
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description: description || null,
         printifyBlueprintId: parseInt(blueprintId),
-        sizes: JSON.stringify(sizes || []),
-        frameColors: JSON.stringify(frameColors || []),
-        aspectRatio: aspectRatio || "1:1",
+        sizes: JSON.stringify(sizes),
+        frameColors: JSON.stringify(frameColors),
+        aspectRatio,
         isActive: true,
         sortOrder: existingTypes.length,
       });

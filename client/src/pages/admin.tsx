@@ -162,9 +162,6 @@ export default function AdminPage() {
       blueprintId: blueprint.id,
       name: blueprint.title,
       description: blueprint.description,
-      sizes: [],
-      frameColors: [],
-      aspectRatio: "1:1",
     });
   };
 
