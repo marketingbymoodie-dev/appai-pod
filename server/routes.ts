@@ -8,6 +8,45 @@ import { Modality } from "@google/genai";
 import { ai } from "./replit_integrations/image/client";
 import { registerShopifyRoutes } from "./shopify";
 
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<globalThis.Response> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After');
+        const delay = retryAfter 
+          ? parseInt(retryAfter) * 1000 
+          : baseDelay * Math.pow(2, attempt);
+        
+        if (attempt < maxRetries) {
+          console.log(`Rate limited (429), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+      }
+      
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(`Fetch error, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries}):`, error);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError || new Error('Max retries exceeded');
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -1400,22 +1439,24 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           
           if (providersResponse.ok) {
             const allProviders = await providersResponse.json();
-            // Fetch details for all providers in parallel (with limit)
+            // Fetch details for all providers in parallel (with limit to avoid rate limits)
             const pLimit = (await import('p-limit')).default;
-            const limit = pLimit(10);
+            const limit = pLimit(5);
             
             await Promise.all(
               allProviders.map((provider: any) => 
                 limit(async () => {
                   try {
-                    const detailResponse = await fetch(
+                    const detailResponse = await fetchWithRetry(
                       `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
                       {
                         headers: {
                           "Authorization": `Bearer ${merchant.printifyApiToken}`,
                           "Content-Type": "application/json"
                         }
-                      }
+                      },
+                      2,
+                      2000
                     );
                     
                     if (detailResponse.ok) {
@@ -1436,7 +1477,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         
         // Now filter blueprints by checking their providers against the location
         const pLimit = (await import('p-limit')).default;
-        const limit = pLimit(20);
+        const limit = pLimit(5);
         
         const filteredBlueprints = await Promise.all(
           blueprints.map((blueprint: any) =>
@@ -1445,16 +1486,18 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
               let providerIds = blueprintProviderCache.get(blueprint.id);
               
               if (!providerIds) {
-                // Fetch providers for this blueprint
+                // Fetch providers for this blueprint with retry logic
                 try {
-                  const provResponse = await fetch(
+                  const provResponse = await fetchWithRetry(
                     `https://api.printify.com/v1/catalog/blueprints/${blueprint.id}/print_providers.json`,
                     {
                       headers: {
                         "Authorization": `Bearer ${merchant.printifyApiToken}`,
                         "Content-Type": "application/json"
                       }
-                    }
+                    },
+                    2,
+                    2000
                   );
                   
                   if (provResponse.ok) {
@@ -1715,15 +1758,17 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         });
       }
 
-      // Fetch print providers for this blueprint
-      const providersResponse = await fetch(
+      // Fetch print providers for this blueprint with retry logic
+      const providersResponse = await fetchWithRetry(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
         {
           headers: {
             "Authorization": `Bearer ${merchant.printifyApiToken}`,
             "Content-Type": "application/json"
           }
-        }
+        },
+        3,
+        1500
       );
 
       if (!providersResponse.ok) {
@@ -1738,15 +1783,17 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Use provided provider ID or default to first provider
       const providerId = req.body.providerId || providers[0].id;
 
-      // Fetch variants for this provider
-      const variantsResponse = await fetch(
+      // Fetch variants for this provider with retry logic
+      const variantsResponse = await fetchWithRetry(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
         {
           headers: {
             "Authorization": `Bearer ${merchant.printifyApiToken}`,
             "Content-Type": "application/json"
           }
-        }
+        },
+        3,
+        1500
       );
 
       if (!variantsResponse.ok) {
