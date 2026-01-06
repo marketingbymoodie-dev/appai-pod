@@ -149,8 +149,18 @@ export default function AdminPage() {
     },
   });
 
-  const { data: printifyBlueprints, isLoading: blueprintsLoading, error: blueprintsError, refetch: refetchBlueprints } = useQuery<PrintifyBlueprint[]>({
-    queryKey: ["/api/admin/printify/blueprints"],
+  const { data: printifyBlueprints, isLoading: blueprintsLoading, error: blueprintsError, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
+    queryKey: ["/api/admin/printify/blueprints", catalogLocationFilter],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (catalogLocationFilter && catalogLocationFilter !== "all") {
+        params.set("location", catalogLocationFilter);
+      }
+      const url = `/api/admin/printify/blueprints${params.toString() ? `?${params}` : ""}`;
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch blueprints");
+      return response.json();
+    },
     enabled: false,
   });
 
@@ -354,6 +364,12 @@ export default function AdminPage() {
       seedStylesMutation.mutate();
     }
   }, [isAuthenticated, styles]);
+
+  useEffect(() => {
+    if (printifyImportOpen && catalogLocationFilter) {
+      refetchBlueprints();
+    }
+  }, [catalogLocationFilter, printifyImportOpen]);
 
   const createCouponMutation = useMutation({
     mutationFn: async (data: { code: string; creditAmount: number; maxUses?: number }) => {
@@ -1077,8 +1093,13 @@ export default function AdminPage() {
                           </p>
                         </CardContent>
                       </Card>
-                    ) : blueprintsLoading ? (
+                    ) : blueprintsLoading || blueprintsFetching ? (
                       <div className="space-y-3">
+                        {catalogLocationFilter && catalogLocationFilter !== "all" && (
+                          <p className="text-sm text-muted-foreground text-center">
+                            Checking providers in {catalogLocationFilter}... This may take a moment.
+                          </p>
+                        )}
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
                         <Skeleton className="h-16 w-full" />
@@ -1095,7 +1116,11 @@ export default function AdminPage() {
                       <div className="max-h-[50vh] overflow-y-auto space-y-2">
                         {filteredBlueprints.length === 0 ? (
                           <p className="text-muted-foreground text-center py-4">
-                            {blueprintSearch ? "No matching blueprints found" : "No blueprints available"}
+                            {catalogLocationFilter && catalogLocationFilter !== "all" 
+                              ? `No products with providers in ${catalogLocationFilter} found` 
+                              : blueprintSearch 
+                                ? "No matching blueprints found" 
+                                : "No blueprints available"}
                           </p>
                         ) : (
                           filteredBlueprints.slice(0, 50).map((bp) => (

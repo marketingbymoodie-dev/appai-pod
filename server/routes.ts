@@ -1351,10 +1351,17 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 
   // ==================== PRINTIFY CATALOG INTEGRATION ====================
 
-  // Fetch all blueprints from Printify catalog
+  // Cache for provider location mappings (provider_id -> location data)
+  const providerLocationCache = new Map<string, { location?: { country: string }, fulfillment_countries: string[] }>();
+  
+  // Cache for blueprint provider IDs (blueprint_id -> provider_ids[])
+  const blueprintProviderCache = new Map<number, number[]>();
+
+  // Fetch all blueprints from Printify catalog with optional location filtering
   app.get("/api/admin/printify/blueprints", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
+      const locationFilter = req.query.location as string | undefined;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant || !merchant.printifyApiToken) {
@@ -1378,7 +1385,111 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         throw new Error(`Printify API error: ${response.status}`);
       }
 
-      const blueprints = await response.json();
+      let blueprints = await response.json();
+      
+      // If location filter provided, enrich blueprints with provider data and filter
+      if (locationFilter && locationFilter !== "all") {
+        // First, ensure we have all provider locations cached
+        if (providerLocationCache.size === 0) {
+          const providersResponse = await fetch("https://api.printify.com/v1/catalog/print_providers.json", {
+            headers: {
+              "Authorization": `Bearer ${merchant.printifyApiToken}`,
+              "Content-Type": "application/json"
+            }
+          });
+          
+          if (providersResponse.ok) {
+            const allProviders = await providersResponse.json();
+            // Fetch details for all providers in parallel (with limit)
+            const pLimit = (await import('p-limit')).default;
+            const limit = pLimit(10);
+            
+            await Promise.all(
+              allProviders.map((provider: any) => 
+                limit(async () => {
+                  try {
+                    const detailResponse = await fetch(
+                      `https://api.printify.com/v1/catalog/print_providers/${provider.id}.json`,
+                      {
+                        headers: {
+                          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                          "Content-Type": "application/json"
+                        }
+                      }
+                    );
+                    
+                    if (detailResponse.ok) {
+                      const details = await detailResponse.json();
+                      providerLocationCache.set(String(provider.id), {
+                        location: details.location,
+                        fulfillment_countries: details.fulfillment_countries || [],
+                      });
+                    }
+                  } catch (err) {
+                    console.error(`Error caching provider ${provider.id}:`, err);
+                  }
+                })
+              )
+            );
+          }
+        }
+        
+        // Now filter blueprints by checking their providers against the location
+        const pLimit = (await import('p-limit')).default;
+        const limit = pLimit(20);
+        
+        const filteredBlueprints = await Promise.all(
+          blueprints.map((blueprint: any) =>
+            limit(async () => {
+              // Check cache first
+              let providerIds = blueprintProviderCache.get(blueprint.id);
+              
+              if (!providerIds) {
+                // Fetch providers for this blueprint
+                try {
+                  const provResponse = await fetch(
+                    `https://api.printify.com/v1/catalog/blueprints/${blueprint.id}/print_providers.json`,
+                    {
+                      headers: {
+                        "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                        "Content-Type": "application/json"
+                      }
+                    }
+                  );
+                  
+                  if (provResponse.ok) {
+                    const providers = await provResponse.json();
+                    const ids = providers.map((p: any) => p.id);
+                    blueprintProviderCache.set(blueprint.id, ids);
+                    providerIds = ids;
+                  }
+                } catch (err) {
+                  console.error(`Error fetching providers for blueprint ${blueprint.id}:`, err);
+                }
+              }
+              
+              if (!providerIds || providerIds.length === 0) return null;
+              
+              // Check if any provider matches the location filter
+              const hasMatchingProvider = providerIds.some((providerId: number) => {
+                const providerData = providerLocationCache.get(String(providerId));
+                if (!providerData) return false;
+                
+                const locationCountry = providerData.location?.country || "";
+                const fulfillmentCountries = providerData.fulfillment_countries || [];
+                
+                return locationCountry.includes(locationFilter) || 
+                       fulfillmentCountries.some((c: string) => c.includes(locationFilter));
+              });
+              
+              return hasMatchingProvider ? blueprint : null;
+            })
+          )
+        );
+        
+        blueprints = filteredBlueprints.filter(Boolean);
+      }
+      
       res.json(blueprints);
     } catch (error) {
       console.error("Error fetching Printify blueprints:", error);
