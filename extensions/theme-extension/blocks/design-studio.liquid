@@ -66,6 +66,9 @@
     data-show-presets="{{ block.settings.show_style_presets }}"
     data-variants='{{ product.variants | json | escape }}'
     data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
+    data-customer-id="{% if customer %}{{ customer.id }}{% endif %}"
+    data-customer-email="{% if customer %}{{ customer.email | escape }}{% endif %}"
+    data-customer-name="{% if customer %}{{ customer.first_name | escape }}{% endif %}"
     style="height: {{ block.settings.studio_height }}px;"
   >
     <div class="ai-art-studio__loading">
@@ -157,6 +160,9 @@
     const productTitle = container.dataset.productTitle;
     const showPresets = container.dataset.showPresets === 'true';
     const selectedVariant = container.dataset.selectedVariant;
+    const customerId = container.dataset.customerId || '';
+    const customerEmail = container.dataset.customerEmail || '';
+    const customerName = container.dataset.customerName || '';
     
     let variants = [];
     try {
@@ -191,6 +197,11 @@
     params.set('frameColors', frameColorOptions.join(','));
     params.set('selectedVariant', selectedVariant);
     params.set('variants', JSON.stringify(variants));
+    if (customerId) {
+      params.set('customerId', customerId);
+      params.set('customerEmail', customerEmail);
+      params.set('customerName', customerName);
+    }
 
     const iframe = document.createElement('iframe');
     iframe.src = `${appUrl}/embed/design?${params.toString()}`;

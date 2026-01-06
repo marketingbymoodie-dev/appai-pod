@@ -1,19 +1,27 @@
 import { useState, useEffect, useRef } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn } from "lucide-react";
+import {
+  MockupPreview,
+  ZoomControls,
+  FrameColorSelector,
+  SizeSelector,
+  StyleSelector,
+  type ImageTransform,
+  type PrintSize,
+  type FrameColor,
+  type StylePreset,
+} from "@/components/designer";
 
-interface StylePreset {
+interface CustomerInfo {
   id: string;
-  name: string;
-  promptSuffix: string;
-  thumbnailUrl?: string;
+  credits: number;
+  isLoggedIn: boolean;
 }
 
 interface GeneratedDesign {
@@ -24,16 +32,19 @@ interface GeneratedDesign {
 
 export default function EmbedDesign() {
   const searchParams = new URLSearchParams(window.location.search);
-  
+
   const isEmbedded = searchParams.get("embedded") === "true";
   const isShopify = searchParams.get("shopify") === "true";
   const productId = searchParams.get("productId") || "";
   const productHandle = searchParams.get("productHandle") || "";
-  const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Pillow");
+  const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Framed Print");
   const showPresetsParam = searchParams.get("showPresets") !== "false";
   const sizesParam = searchParams.get("sizes") || "";
   const frameColorsParam = searchParams.get("frameColors") || "";
   const selectedVariantParam = searchParams.get("selectedVariant") || "";
+  const shopifyCustomerId = searchParams.get("customerId") || "";
+  const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
+  const shopifyCustomerName = searchParams.get("customerName") || "";
 
   const sizes = sizesParam ? sizesParam.split(",").filter(Boolean) : [];
   const frameColors = frameColorsParam ? frameColorsParam.split(",").filter(Boolean) : [];
@@ -41,21 +52,34 @@ export default function EmbedDesign() {
   const [prompt, setPrompt] = useState("");
   const [selectedSize, setSelectedSize] = useState(sizes[0] || "");
   const [selectedFrameColor, setSelectedFrameColor] = useState(frameColors[0] || "");
-  const [selectedPreset, setSelectedPreset] = useState<string>("");
+  const [selectedPreset, setSelectedPreset] = useState<string>("none");
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [transform, setTransform] = useState<ImageTransform>({ scale: 100, x: 50, y: 50 });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: config } = useQuery<{ stylePresets?: StylePreset[] }>({
-    queryKey: ["/api/config"],
-  });
-
-  const stylePresets: StylePreset[] = config?.stylePresets || [];
+  const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const [configLoading, setConfigLoading] = useState(true);
 
   const shopDomain = searchParams.get("shop") || "";
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [customer, setCustomer] = useState<CustomerInfo | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.stylePresets) {
+          setStylePresets(data.stylePresets);
+        }
+        setConfigLoading(false);
+      })
+      .catch(() => setConfigLoading(false));
+  }, []);
 
   useEffect(() => {
     if (isShopify && shopDomain) {
@@ -66,19 +90,29 @@ export default function EmbedDesign() {
           shop: shopDomain,
           productId: productId,
           timestamp: Date.now().toString(),
+          customerId: shopifyCustomerId || undefined,
+          customerEmail: shopifyCustomerEmail || undefined,
+          customerName: shopifyCustomerName || undefined,
         }),
       })
         .then((res) => res.json())
         .then((data) => {
           if (data.sessionToken) {
             setSessionToken(data.sessionToken);
+            if (data.customer) {
+              setCustomer(data.customer);
+            }
           }
+          setSessionLoading(false);
         })
         .catch((error) => {
           console.error("Failed to get session token:", error);
+          setSessionLoading(false);
         });
+    } else {
+      setSessionLoading(false);
     }
-  }, [isShopify, shopDomain, productId]);
+  }, [isShopify, shopDomain, productId, shopifyCustomerId, shopifyCustomerEmail, shopifyCustomerName]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -96,11 +130,16 @@ export default function EmbedDesign() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      const data = await response.json();
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to generate design");
+        if (data.requiresLogin) {
+          setLoginError("Please log in to your account to create designs.");
+        } else if (data.requiresCredits) {
+          setLoginError("No credits remaining. Please purchase more credits to continue.");
+        }
+        throw new Error(data.error || "Failed to generate design");
       }
-      return response.json();
+      return data;
     },
     onSuccess: (data) => {
       setGeneratedDesign({
@@ -108,6 +147,11 @@ export default function EmbedDesign() {
         imageUrl: data.imageUrl || data.design?.generatedImageUrl,
         prompt: prompt,
       });
+      if (data.creditsRemaining !== undefined && customer) {
+        setCustomer({ ...customer, credits: data.creditsRemaining });
+      }
+      setTransform({ scale: 100, x: 50, y: 50 });
+      setLoginError(null);
     },
   });
 
@@ -133,17 +177,18 @@ export default function EmbedDesign() {
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
-    
+
     let fullPrompt = prompt;
     if (selectedPreset && selectedPreset !== "none") {
-      const preset = stylePresets.find(p => p.id === selectedPreset);
+      const preset = stylePresets.find((p) => p.id === selectedPreset);
       if (preset?.promptSuffix) {
         fullPrompt = `${prompt}. ${preset.promptSuffix}`;
       }
     }
-    
-    fullPrompt += ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
-    
+
+    fullPrompt +=
+      ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+
     let referenceImageBase64: string | undefined;
     if (referenceImage) {
       referenceImageBase64 = await new Promise<string>((resolve) => {
@@ -183,60 +228,67 @@ export default function EmbedDesign() {
 
   const findVariantId = (): string | null => {
     if (!isShopify) return null;
-    
+
     if (variants.length > 0 && (selectedSize || selectedFrameColor)) {
       const matchedVariant = variants.find((v: any) => {
         const options = [v.option1, v.option2, v.option3].filter(Boolean);
-        
+
         let sizeMatch = true;
         let colorMatch = true;
-        
+
         if (selectedSize) {
-          sizeMatch = options.some(opt => 
-            opt?.toLowerCase().includes(selectedSize.toLowerCase()) ||
-            selectedSize.toLowerCase().includes(opt?.toLowerCase())
+          sizeMatch = options.some(
+            (opt) =>
+              opt?.toLowerCase().includes(selectedSize.toLowerCase()) ||
+              selectedSize.toLowerCase().includes(opt?.toLowerCase())
           );
         }
-        
+
         if (selectedFrameColor) {
-          colorMatch = options.some(opt => 
-            opt?.toLowerCase().includes(selectedFrameColor.toLowerCase()) ||
-            selectedFrameColor.toLowerCase().includes(opt?.toLowerCase())
+          colorMatch = options.some(
+            (opt) =>
+              opt?.toLowerCase().includes(selectedFrameColor.toLowerCase()) ||
+              selectedFrameColor.toLowerCase().includes(opt?.toLowerCase())
           );
         }
-        
+
         return sizeMatch && colorMatch;
       });
-      
+
       if (matchedVariant) {
         return matchedVariant.id?.toString() || null;
       }
     }
-    
+
     return selectedVariantParam || null;
   };
 
   const handleAddToCart = () => {
     if (!generatedDesign || !isShopify) return;
-    
+
     const variantId = findVariantId();
-    
+
     if (!variantId) {
-      setVariantError("Unable to find matching product variant. Please select a valid size and frame color combination.");
+      setVariantError(
+        "Unable to find matching product variant. Please select a valid size and frame color combination."
+      );
       return;
     }
-    
+
     setVariantError(null);
     setIsAddingToCart(true);
-    
-    window.parent.postMessage({
-      type: "ai-art-studio:add-to-cart",
-      variantId: variantId,
-      artworkUrl: generatedDesign.imageUrl,
-      designId: generatedDesign.id,
-      size: selectedSize,
-      frameColor: selectedFrameColor,
-    }, "*");
+
+    window.parent.postMessage(
+      {
+        type: "ai-art-studio:add-to-cart",
+        variantId: variantId,
+        artworkUrl: generatedDesign.imageUrl,
+        designId: generatedDesign.id,
+        size: selectedSize,
+        frameColor: selectedFrameColor,
+      },
+      "*"
+    );
   };
 
   useEffect(() => {
@@ -258,198 +310,243 @@ export default function EmbedDesign() {
     if (isEmbedded) {
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
-          window.parent.postMessage({
-            type: "ai-art-studio:resize",
-            height: entry.contentRect.height + 40,
-          }, "*");
+          window.parent.postMessage(
+            {
+              type: "ai-art-studio:resize",
+              height: entry.contentRect.height + 40,
+            },
+            "*"
+          );
         }
       });
-      
+
       observer.observe(document.body);
       return () => observer.disconnect();
     }
   }, [isEmbedded]);
 
+  const printSizes: PrintSize[] = sizes.map((s) => ({
+    id: s,
+    name: s,
+    width: 3,
+    height: 4,
+    aspectRatio: "3:4",
+  }));
+
+  const frameColorObjects: FrameColor[] = frameColors.map((c) => ({
+    id: c,
+    name: c,
+    hex: c.toLowerCase() === "black" ? "#1a1a1a" : c.toLowerCase() === "white" ? "#f5f5f5" : c.toLowerCase() === "natural" ? "#d4a574" : "#888888",
+  }));
+
+  const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
+  const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
+
+  if (sessionLoading || configLoading) {
+    return (
+      <div className={`p-4 ${isEmbedded ? "bg-transparent" : "bg-background min-h-screen"}`}>
+        <div className="max-w-2xl mx-auto space-y-4">
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  const isLoggedIn = customer?.isLoggedIn ?? false;
+  const credits = customer?.credits ?? 0;
+
   return (
     <div className={`p-4 ${isEmbedded ? "bg-transparent" : "bg-background min-h-screen"}`}>
-      <div className="max-w-2xl mx-auto space-y-6">
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="prompt" data-testid="label-prompt">
-              Describe your artwork
-            </Label>
-            <Textarea
-              id="prompt"
-              data-testid="input-prompt"
-              placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              className="min-h-[100px]"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label data-testid="label-reference">
-              Reference Image (optional)
-            </Label>
-            <div className="flex items-center gap-4">
-              <Input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleFileChange}
-                className="hidden"
-                data-testid="input-reference-file"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => fileInputRef.current?.click()}
-                data-testid="button-upload-reference"
-              >
-                <ImagePlus className="w-4 h-4 mr-2" />
-                Upload Reference
-              </Button>
-              {referencePreview && (
-                <div className="relative">
-                  <img
-                    src={referencePreview}
-                    alt="Reference"
-                    className="w-16 h-16 object-cover rounded-md"
-                    data-testid="img-reference-preview"
-                  />
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="icon"
-                    className="absolute -top-2 -right-2 w-6 h-6"
-                    onClick={clearReferenceImage}
-                    data-testid="button-clear-reference"
-                  >
-                    <X className="w-3 h-3" />
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {showPresetsParam && stylePresets.length > 0 && (
-            <div className="space-y-2">
-              <Label data-testid="label-style">Style Preset</Label>
-              <Select value={selectedPreset} onValueChange={setSelectedPreset}>
-                <SelectTrigger data-testid="select-style">
-                  <SelectValue placeholder="Choose a style (optional)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none" data-testid="select-style-none">None</SelectItem>
-                  {stylePresets.map((preset) => (
-                    <SelectItem key={preset.id} value={preset.id} data-testid={`select-style-${preset.id}`}>
-                      {preset.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+      <div className="max-w-2xl mx-auto space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-lg font-semibold" data-testid="text-title">
+            Create Your Design
+          </h2>
+          {isLoggedIn ? (
+            <span className="text-sm text-muted-foreground" data-testid="text-credits">
+              {credits} credits
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground flex items-center gap-1" data-testid="text-login-prompt">
+              <LogIn className="w-4 h-4" />
+              Log in to create
+            </span>
           )}
-
-          <div className="grid grid-cols-2 gap-4">
-            {sizes.length > 0 && (
-              <div className="space-y-2">
-                <Label data-testid="label-size">Size</Label>
-                <Select value={selectedSize} onValueChange={setSelectedSize}>
-                  <SelectTrigger data-testid="select-size">
-                    <SelectValue placeholder="Select size" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sizes.map((size) => (
-                      <SelectItem key={size} value={size} data-testid={`select-size-${size}`}>
-                        {size}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {frameColors.length > 0 && (
-              <div className="space-y-2">
-                <Label data-testid="label-frame">Frame Color</Label>
-                <Select value={selectedFrameColor} onValueChange={setSelectedFrameColor}>
-                  <SelectTrigger data-testid="select-frame">
-                    <SelectValue placeholder="Select frame" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {frameColors.map((color) => (
-                      <SelectItem key={color} value={color} data-testid={`select-frame-${color}`}>
-                        {color}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-
-          <Button
-            onClick={handleGenerate}
-            disabled={!prompt.trim() || generateMutation.isPending}
-            className="w-full"
-            data-testid="button-generate"
-          >
-            {generateMutation.isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Generating...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-4 h-4 mr-2" />
-                Generate Artwork
-              </>
-            )}
-          </Button>
         </div>
 
-        {generateMutation.isError && (
-          <Card className="border-destructive">
-            <CardContent className="py-4">
-              <p className="text-destructive text-sm" data-testid="text-error">
-                {generateMutation.error?.message || "Failed to generate design. Please try again."}
+        {loginError && (
+          <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
+            <CardContent className="py-3">
+              <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error">
+                {loginError}
               </p>
             </CardContent>
           </Card>
         )}
 
-        {generatedDesign && (
-          <Card data-testid="card-generated-design">
-            <CardContent className="p-4 space-y-4">
-              <div className="aspect-square relative overflow-hidden rounded-md bg-muted">
-                <img
-                  src={generatedDesign.imageUrl}
-                  alt="Generated artwork"
-                  className="w-full h-full object-cover"
-                  data-testid="img-generated"
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="prompt" data-testid="label-prompt">
+                Describe your artwork
+              </Label>
+              <Textarea
+                id="prompt"
+                data-testid="input-prompt"
+                placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                className="min-h-[80px]"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label data-testid="label-reference">Reference Image (optional)</Label>
+              <div className="flex items-center gap-4 flex-wrap">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                  data-testid="input-reference-file"
                 />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  data-testid="button-upload-reference"
+                >
+                  <ImagePlus className="w-4 h-4 mr-2" />
+                  Upload
+                </Button>
+                {referencePreview && (
+                  <div className="relative">
+                    <img
+                      src={referencePreview}
+                      alt="Reference"
+                      className="w-12 h-12 object-cover rounded-md"
+                      data-testid="img-reference-preview"
+                    />
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="icon"
+                      className="absolute -top-2 -right-2 w-5 h-5"
+                      onClick={clearReferenceImage}
+                      data-testid="button-clear-reference"
+                    >
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                )}
               </div>
-              
-              {variantError && (
-                <p className="text-destructive text-sm" data-testid="text-variant-error">
-                  {variantError}
-                </p>
+            </div>
+
+            {showPresetsParam && stylePresets.length > 0 && (
+              <StyleSelector
+                stylePresets={[{ id: "none", name: "None", promptSuffix: "" }, ...stylePresets]}
+                selectedStyle={selectedPreset}
+                onStyleChange={setSelectedPreset}
+              />
+            )}
+
+            {printSizes.length > 0 && (
+              <SizeSelector
+                sizes={printSizes}
+                selectedSize={selectedSize}
+                onSizeChange={(sizeId) => {
+                  setSelectedSize(sizeId);
+                  setTransform({ scale: 100, x: 50, y: 50 });
+                }}
+              />
+            )}
+
+            {frameColorObjects.length > 0 && (
+              <FrameColorSelector
+                frameColors={frameColorObjects}
+                selectedFrameColor={selectedFrameColor}
+                onFrameColorChange={setSelectedFrameColor}
+              />
+            )}
+
+            <Button
+              onClick={handleGenerate}
+              disabled={!prompt.trim() || generateMutation.isPending || !isLoggedIn || credits <= 0}
+              className="w-full"
+              data-testid="button-generate"
+            >
+              {generateMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  Generate (1 Credit)
+                </>
               )}
-              
+            </Button>
+          </div>
+
+          <div className="space-y-3">
+            <div
+              className="w-full rounded-md overflow-hidden"
+              style={{
+                aspectRatio: selectedSizeConfig
+                  ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}`
+                  : "3/4",
+              }}
+              data-testid="container-mockup"
+            >
+              <MockupPreview
+                imageUrl={generatedDesign?.imageUrl}
+                isLoading={generateMutation.isPending}
+                selectedSize={selectedSizeConfig}
+                selectedFrameColor={selectedFrameColorConfig}
+                transform={transform}
+                onTransformChange={setTransform}
+                enableDrag={!!generatedDesign?.imageUrl}
+              />
+            </div>
+
+            {generatedDesign?.imageUrl && (
+              <ZoomControls
+                transform={transform}
+                onTransformChange={setTransform}
+                disabled={!generatedDesign?.imageUrl}
+              />
+            )}
+
+            {generateMutation.isError && (
+              <p className="text-destructive text-sm" data-testid="text-error">
+                {generateMutation.error?.message || "Failed to generate design. Please try again."}
+              </p>
+            )}
+
+            {variantError && (
+              <p className="text-destructive text-sm" data-testid="text-variant-error">
+                {variantError}
+              </p>
+            )}
+
+            {generatedDesign && (
               <div className="flex gap-2">
                 <Button
                   variant="outline"
                   onClick={handleGenerate}
-                  disabled={generateMutation.isPending}
+                  disabled={generateMutation.isPending || credits <= 0}
                   className="flex-1"
                   data-testid="button-regenerate"
                 >
                   <RefreshCw className="w-4 h-4 mr-2" />
                   Regenerate
                 </Button>
-                
+
                 {isShopify && (
                   <Button
                     onClick={handleAddToCart}
@@ -471,9 +568,9 @@ export default function EmbedDesign() {
                   </Button>
                 )}
               </div>
-            </CardContent>
-          </Card>
-        )}
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

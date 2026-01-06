@@ -17,8 +17,10 @@ export interface IStorage {
   // Customers
   getCustomer(id: string): Promise<Customer | undefined>;
   getCustomerByUserId(userId: string): Promise<Customer | undefined>;
+  getOrCreateShopifyCustomer(shop: string, shopifyCustomerId: string, email?: string): Promise<Customer>;
   createCustomer(customer: InsertCustomer): Promise<Customer>;
   updateCustomer(id: string, updates: Partial<Customer>): Promise<Customer | undefined>;
+  decrementCreditsIfAvailable(customerId: string): Promise<Customer | null>;
   
   // Merchants
   getMerchant(id: string): Promise<Merchant | undefined>;
@@ -106,6 +108,37 @@ export class DatabaseStorage implements IStorage {
       .where(eq(customers.id, id))
       .returning();
     return updated;
+  }
+
+  async getOrCreateShopifyCustomer(shop: string, shopifyCustomerId: string, email?: string): Promise<Customer> {
+    const userId = `shopify:${shop}:${shopifyCustomerId}`;
+    
+    let customer = await this.getCustomerByUserId(userId);
+    
+    if (!customer) {
+      customer = await this.createCustomer({
+        userId,
+        credits: 3,
+        freeGenerationsUsed: 0,
+        totalGenerations: 0,
+        totalSpent: "0.00",
+      });
+    }
+    
+    return customer;
+  }
+
+  async decrementCreditsIfAvailable(customerId: string): Promise<Customer | null> {
+    const [updated] = await db
+      .update(customers)
+      .set({ 
+        credits: sql`${customers.credits} - 1`,
+        totalGenerations: sql`${customers.totalGenerations} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(customers.id, customerId), sql`${customers.credits} > 0`))
+      .returning();
+    return updated || null;
   }
 
   // Merchants

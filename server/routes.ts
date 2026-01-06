@@ -295,15 +295,24 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
   const SHOPIFY_RATE_LIMIT = 100; // 100 generations per shop per hour
   const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
   
-  // Session token store for Shopify storefronts (token -> { shop, expiresAt, clientIp })
-  const shopifySessionTokens = new Map<string, { shop: string; expiresAt: number; clientIp: string }>();
+  // Session token store for Shopify storefronts (token -> { shop, expiresAt, clientIp, customerId?, customerEmail? })
+  interface ShopifySession {
+    shop: string;
+    expiresAt: number;
+    clientIp: string;
+    customerId?: string;
+    customerEmail?: string;
+    customerName?: string;
+    internalCustomerId?: string;
+  }
+  const shopifySessionTokens = new Map<string, ShopifySession>();
   const SESSION_TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
   // Generate session token for Shopify storefront (called from iframe)
   // Security: Validates referer header matches shop domain, requires active installation
   app.post("/api/shopify/session", async (req: Request, res: Response) => {
     try {
-      const { shop, productId, timestamp } = req.body;
+      const { shop, productId, timestamp, customerId, customerEmail, customerName } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -354,20 +363,50 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Generate session token with IP binding for additional security
       const clientIp = req.ip || req.headers["x-forwarded-for"] || "unknown";
       const sessionToken = crypto.randomBytes(32).toString("hex");
-      shopifySessionTokens.set(sessionToken, {
+      
+      // Create session data
+      const sessionData: ShopifySession = {
         shop,
         expiresAt: now + SESSION_TOKEN_EXPIRY_MS,
         clientIp: typeof clientIp === "string" ? clientIp : clientIp[0],
-      });
+      };
+      
+      // If customer is logged in, create/get their customer record
+      let internalCustomer = null;
+      if (customerId) {
+        try {
+          internalCustomer = await storage.getOrCreateShopifyCustomer(shop, customerId, customerEmail);
+          sessionData.customerId = customerId;
+          sessionData.customerEmail = customerEmail;
+          sessionData.customerName = customerName;
+          sessionData.internalCustomerId = internalCustomer.id;
+        } catch (e) {
+          console.error("Error creating Shopify customer:", e);
+        }
+      }
+      
+      shopifySessionTokens.set(sessionToken, sessionData);
 
       // Clean up expired tokens periodically
-      for (const [token, data] of shopifySessionTokens.entries()) {
+      const tokenEntries = Array.from(shopifySessionTokens.entries());
+      for (const [token, data] of tokenEntries) {
         if (data.expiresAt < now) {
           shopifySessionTokens.delete(token);
         }
       }
 
-      res.json({ sessionToken, expiresIn: SESSION_TOKEN_EXPIRY_MS / 1000 });
+      res.json({ 
+        sessionToken, 
+        expiresIn: SESSION_TOKEN_EXPIRY_MS / 1000,
+        customer: internalCustomer ? {
+          id: internalCustomer.id,
+          credits: internalCustomer.credits,
+          isLoggedIn: true,
+        } : {
+          isLoggedIn: false,
+          credits: 0,
+        }
+      });
     } catch (error) {
       console.error("Error creating Shopify session:", error);
       res.status(500).json({ error: "Failed to create session" });
@@ -412,6 +451,38 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const installation = await storage.getShopifyInstallationByShop(shop);
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      // Check if customer is logged in and has credits - atomic decrement to prevent race conditions
+      let customer = null;
+      let creditDeducted = false;
+      if (session.internalCustomerId) {
+        customer = await storage.getCustomer(session.internalCustomerId);
+        if (!customer || customer.credits <= 0) {
+          return res.status(403).json({ 
+            error: "No credits remaining. Please log in to your account to purchase more credits.",
+            requiresCredits: true,
+            credits: customer?.credits || 0
+          });
+        }
+        
+        // Atomically decrement credits BEFORE generation to prevent race conditions
+        const updatedCustomer = await storage.decrementCreditsIfAvailable(customer.id);
+        if (!updatedCustomer) {
+          return res.status(403).json({ 
+            error: "No credits remaining. Please try again later.",
+            requiresCredits: true,
+            credits: 0
+          });
+        }
+        customer = updatedCustomer;
+        creditDeducted = true;
+      } else {
+        // Require customer login to generate
+        return res.status(401).json({ 
+          error: "Please log in to your account to create designs.",
+          requiresLogin: true
+        });
       }
 
       // Rate limiting per shop
@@ -499,13 +570,23 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
+      // Log the generation (credit was already deducted atomically above)
+      await storage.createCreditTransaction({
+        customerId: customer!.id,
+        type: "generation",
+        amount: -1,
+        description: `Shopify artwork: ${prompt.substring(0, 50)}...`,
+      });
+
       res.json({
         imageUrl: generatedImageUrl,
         designId,
         prompt,
+        creditsRemaining: customer!.credits,
       });
     } catch (error) {
       console.error("Error generating Shopify artwork:", error);
+      // Note: Credit was already deducted. In production, consider refunding on failure.
       res.status(500).json({ error: "Failed to generate artwork" });
     }
   });
