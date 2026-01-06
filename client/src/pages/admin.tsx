@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
-import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2 } from "lucide-react";
+import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2, Download, Search, ExternalLink } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import type { Merchant, Coupon, StylePresetDB, ProductType } from "@shared/schema";
@@ -20,6 +20,15 @@ interface GenerationStats {
   total: number;
   successful: number;
   failed: number;
+}
+
+interface PrintifyBlueprint {
+  id: number;
+  title: string;
+  description: string;
+  brand: string;
+  model: string;
+  images: string[];
 }
 
 export default function AdminPage() {
@@ -49,6 +58,10 @@ export default function AdminPage() {
   const [productTypeAspectRatio, setProductTypeAspectRatio] = useState("3:4");
   const [productTypeSizes, setProductTypeSizes] = useState("");
   const [productTypeFrameColors, setProductTypeFrameColors] = useState("");
+
+  const [printifyImportOpen, setPrintifyImportOpen] = useState(false);
+  const [blueprintSearch, setBlueprintSearch] = useState("");
+  const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
 
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -116,6 +129,50 @@ export default function AdminPage() {
       toast({ title: "Product type deleted" });
     },
   });
+
+  const { data: printifyBlueprints, isLoading: blueprintsLoading, error: blueprintsError, refetch: refetchBlueprints } = useQuery<PrintifyBlueprint[]>({
+    queryKey: ["/api/admin/printify/blueprints"],
+    enabled: false,
+  });
+
+  const importPrintifyMutation = useMutation({
+    mutationFn: async (data: { blueprintId: number; name: string; description?: string; sizes: any[]; frameColors: any[]; aspectRatio: string }) => {
+      const response = await apiRequest("POST", "/api/admin/printify/import", data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      setPrintifyImportOpen(false);
+      setSelectedBlueprint(null);
+      setBlueprintSearch("");
+      toast({ title: "Blueprint imported", description: "Product type created from Printify catalog." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to import blueprint", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleOpenPrintifyImport = () => {
+    setPrintifyImportOpen(true);
+    refetchBlueprints();
+  };
+
+  const handleImportBlueprint = (blueprint: PrintifyBlueprint) => {
+    importPrintifyMutation.mutate({
+      blueprintId: blueprint.id,
+      name: blueprint.title,
+      description: blueprint.description,
+      sizes: [],
+      frameColors: [],
+      aspectRatio: "1:1",
+    });
+  };
+
+  const filteredBlueprints = printifyBlueprints?.filter(bp =>
+    bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
+    bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
+    bp.description.toLowerCase().includes(blueprintSearch.toLowerCase())
+  ) || [];
 
   const resetProductTypeForm = () => {
     setEditingProductType(null);
@@ -788,18 +845,23 @@ export default function AdminPage() {
 
           <TabsContent value="products">
             <div className="max-w-3xl">
-              <div className="flex items-center justify-between gap-4 mb-6">
+              <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
                 <div>
                   <h2 className="text-lg font-semibold">Product Types</h2>
                   <p className="text-sm text-muted-foreground">Configure different products for the design studio (Framed Prints, Pillows, Mugs, etc.)</p>
                 </div>
-                <Dialog open={productTypeDialogOpen} onOpenChange={(open) => { if (!open) resetProductTypeForm(); setProductTypeDialogOpen(open); }}>
-                  <DialogTrigger asChild>
-                    <Button data-testid="button-create-product-type">
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Product Type
-                    </Button>
-                  </DialogTrigger>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button variant="outline" onClick={handleOpenPrintifyImport} data-testid="button-import-printify">
+                    <Download className="h-4 w-4 mr-2" />
+                    Import from Printify
+                  </Button>
+                  <Dialog open={productTypeDialogOpen} onOpenChange={(open) => { if (!open) resetProductTypeForm(); setProductTypeDialogOpen(open); }}>
+                    <DialogTrigger asChild>
+                      <Button data-testid="button-create-product-type">
+                        <Plus className="h-4 w-4 mr-2" />
+                        Add Product Type
+                      </Button>
+                    </DialogTrigger>
                   <DialogContent className="max-w-lg">
                     <DialogHeader>
                       <DialogTitle>{editingProductType ? "Edit Product Type" : "Create Product Type"}</DialogTitle>
@@ -879,7 +941,88 @@ export default function AdminPage() {
                     </div>
                   </DialogContent>
                 </Dialog>
+                </div>
               </div>
+
+              <Dialog open={printifyImportOpen} onOpenChange={setPrintifyImportOpen}>
+                <DialogContent className="max-w-2xl max-h-[80vh]">
+                  <DialogHeader>
+                    <DialogTitle>Import from Printify Catalog</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                      <Input
+                        placeholder="Search blueprints..."
+                        value={blueprintSearch}
+                        onChange={(e) => setBlueprintSearch(e.target.value)}
+                        className="pl-10"
+                        data-testid="input-blueprint-search"
+                      />
+                    </div>
+                    
+                    {!merchant?.printifyApiToken ? (
+                      <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
+                        <CardContent className="py-4">
+                          <p className="text-amber-700 dark:text-amber-300 text-sm">
+                            Please add your Printify API token in Settings first.
+                          </p>
+                        </CardContent>
+                      </Card>
+                    ) : blueprintsLoading ? (
+                      <div className="space-y-3">
+                        <Skeleton className="h-16 w-full" />
+                        <Skeleton className="h-16 w-full" />
+                        <Skeleton className="h-16 w-full" />
+                      </div>
+                    ) : blueprintsError ? (
+                      <Card className="border-destructive">
+                        <CardContent className="py-4">
+                          <p className="text-destructive text-sm">
+                            Failed to load Printify catalog. Check your API token.
+                          </p>
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      <div className="max-h-[50vh] overflow-y-auto space-y-2">
+                        {filteredBlueprints.length === 0 ? (
+                          <p className="text-muted-foreground text-center py-4">
+                            {blueprintSearch ? "No matching blueprints found" : "No blueprints available"}
+                          </p>
+                        ) : (
+                          filteredBlueprints.slice(0, 50).map((bp) => (
+                            <Card key={bp.id} className="hover-elevate" data-testid={`card-blueprint-${bp.id}`}>
+                              <CardContent className="py-3 flex items-center justify-between gap-4">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  {bp.images?.[0] && (
+                                    <img src={bp.images[0]} alt={bp.title} className="w-12 h-12 object-contain rounded" />
+                                  )}
+                                  <div className="min-w-0">
+                                    <p className="font-medium truncate">{bp.title}</p>
+                                    <p className="text-xs text-muted-foreground">{bp.brand} - ID: {bp.id}</p>
+                                  </div>
+                                </div>
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleImportBlueprint(bp)}
+                                  disabled={importPrintifyMutation.isPending}
+                                  data-testid={`button-import-blueprint-${bp.id}`}
+                                >
+                                  {importPrintifyMutation.isPending ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                  ) : (
+                                    "Import"
+                                  )}
+                                </Button>
+                              </CardContent>
+                            </Card>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
 
               {productTypesLoading ? (
                 <div className="space-y-4">

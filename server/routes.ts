@@ -1349,5 +1349,186 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // ==================== PRINTIFY CATALOG INTEGRATION ====================
+
+  // Fetch all blueprints from Printify catalog
+  app.get("/api/admin/printify/blueprints", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ 
+          error: "Printify API token not configured",
+          message: "Please add your Printify API token in Settings first"
+        });
+      }
+
+      const response = await fetch("https://api.printify.com/v1/catalog/blueprints.json", {
+        headers: {
+          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({ error: "Invalid Printify API token" });
+        }
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const blueprints = await response.json();
+      res.json(blueprints);
+    } catch (error) {
+      console.error("Error fetching Printify blueprints:", error);
+      res.status(500).json({ error: "Failed to fetch Printify catalog" });
+    }
+  });
+
+  // Fetch specific blueprint details from Printify
+  app.get("/api/admin/printify/blueprints/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const blueprintId = req.params.id;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`, {
+        headers: {
+          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({ error: "Invalid Printify API token" });
+        }
+        if (response.status === 404) {
+          return res.status(404).json({ error: "Blueprint not found" });
+        }
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const blueprint = await response.json();
+      res.json(blueprint);
+    } catch (error) {
+      console.error("Error fetching Printify blueprint:", error);
+      res.status(500).json({ error: "Failed to fetch blueprint details" });
+    }
+  });
+
+  // Fetch print providers for a blueprint
+  app.get("/api/admin/printify/blueprints/:id/providers", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const blueprintId = req.params.id;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`, {
+        headers: {
+          "Authorization": `Bearer ${merchant.printifyApiToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const providers = await response.json();
+      res.json(providers);
+    } catch (error) {
+      console.error("Error fetching print providers:", error);
+      res.status(500).json({ error: "Failed to fetch print providers" });
+    }
+  });
+
+  // Fetch variants for a blueprint from a specific provider
+  app.get("/api/admin/printify/blueprints/:blueprintId/providers/:providerId/variants", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { blueprintId, providerId } = req.params;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const response = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const variants = await response.json();
+      res.json(variants);
+    } catch (error) {
+      console.error("Error fetching variants:", error);
+      res.status(500).json({ error: "Failed to fetch variants" });
+    }
+  });
+
+  // Import a Printify blueprint as a product type
+  app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { blueprintId, providerId, name, description, sizes, frameColors, aspectRatio } = req.body;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      if (!blueprintId || !name) {
+        return res.status(400).json({ error: "Blueprint ID and name are required" });
+      }
+
+      // Check if this blueprint is already imported
+      const existingTypes = await storage.getProductTypes();
+      const alreadyImported = existingTypes.find(pt => pt.printifyBlueprintId === parseInt(blueprintId));
+      if (alreadyImported) {
+        return res.status(400).json({ 
+          error: "Blueprint already imported",
+          existingProductType: alreadyImported
+        });
+      }
+
+      // Create the product type
+      const productType = await storage.createProductType({
+        merchantId: merchant.id,
+        name,
+        description: description || null,
+        printifyBlueprintId: parseInt(blueprintId),
+        sizes: JSON.stringify(sizes || []),
+        frameColors: JSON.stringify(frameColors || []),
+        aspectRatio: aspectRatio || "1:1",
+        isActive: true,
+        sortOrder: existingTypes.length,
+      });
+
+      res.json(productType);
+    } catch (error) {
+      console.error("Error importing Printify blueprint:", error);
+      res.status(500).json({ error: "Failed to import blueprint" });
+    }
+  });
+
   return httpServer;
 }
