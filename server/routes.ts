@@ -2395,7 +2395,9 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
             }
           }
         }
-        console.log(`Extracted ${Object.keys(blueprintColors).length} colors from blueprint options`);
+        console.log(`Extracted ${Object.keys(blueprintColors).length} colors from blueprint options:`, Object.keys(blueprintColors).slice(0, 5).join(', '), '...');
+      } else {
+        console.log(`Blueprint options API - color extraction: no color options found or options missing`);
       }
 
       // Fetch variants for this provider with retry logic
@@ -2676,10 +2678,21 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
             };
             
             // Priority: 1) Blueprint API colors, 2) Fallback hex map (normalized), 3) Fallback hex map (full name), 4) Gray default
-            const hex = blueprintColors[colorName.toLowerCase()] || 
-                        colorHexMap[baseColorName] || 
-                        colorHexMap[colorName.toLowerCase()] || 
-                        "#888888";
+            let hex = blueprintColors[colorName.toLowerCase()];
+            let source = "blueprint";
+            if (!hex) {
+              hex = colorHexMap[baseColorName];
+              source = "normalized";
+            }
+            if (!hex) {
+              hex = colorHexMap[colorName.toLowerCase()];
+              source = "full";
+            }
+            if (!hex) {
+              hex = "#888888";
+              source = "fallback";
+              console.log(`Color not found in map: "${colorName}" (normalized: "${baseColorName}")`);
+            }
             colorsMap.set(colorName.toLowerCase(), { 
               id: extractedColorId, 
               name: colorName, 
