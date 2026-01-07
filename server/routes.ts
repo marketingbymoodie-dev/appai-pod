@@ -1259,6 +1259,109 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Migrate existing designs to have thumbnails
+  app.post("/api/admin/migrate-thumbnails", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const batchSize = req.body.batchSize || 10;
+      const designs = await storage.getDesignsNeedingThumbnails(batchSize);
+      
+      if (designs.length === 0) {
+        return res.json({ migrated: 0, message: "No designs need thumbnail migration" });
+      }
+
+      let migratedCount = 0;
+      const errors: string[] = [];
+
+      for (const design of designs) {
+        try {
+          const imageUrl = design.generatedImageUrl;
+          
+          // Skip if no image or it's already an object storage URL (should have thumbnail)
+          if (!imageUrl) continue;
+          
+          let buffer: Buffer;
+          
+          if (imageUrl.startsWith("data:")) {
+            // Base64 image - extract and decode
+            const base64Match = imageUrl.match(/^data:image\/\w+;base64,(.+)$/);
+            if (!base64Match) {
+              errors.push(`Design ${design.id}: Invalid base64 format`);
+              continue;
+            }
+            buffer = Buffer.from(base64Match[1], "base64");
+          } else if (imageUrl.startsWith("/objects/")) {
+            // Object storage URL - fetch the image
+            const privateDir = objectStorage.getPrivateObjectDir();
+            const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
+            const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
+            const bucketName = pathParts[0];
+            
+            // Extract the filename from the URL
+            const filename = imageUrl.replace("/objects/", "");
+            const objectPath = `.private/${filename}`;
+            
+            const bucket = objectStorageClient.bucket(bucketName);
+            const file = bucket.file(objectPath);
+            
+            const [exists] = await file.exists();
+            if (!exists) {
+              errors.push(`Design ${design.id}: Source image not found in storage`);
+              continue;
+            }
+            
+            const [contents] = await file.download();
+            buffer = contents;
+          } else {
+            errors.push(`Design ${design.id}: Unknown image URL format`);
+            continue;
+          }
+
+          // Generate thumbnail
+          const thumbnailBuffer = await generateThumbnail(buffer);
+          
+          // Save thumbnail to object storage
+          const imageId = crypto.randomUUID();
+          const privateDir = objectStorage.getPrivateObjectDir();
+          const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
+          const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
+          const bucketName = pathParts[0];
+          const thumbObjectName = `.private/designs/thumb_${imageId}.jpg`;
+          
+          const bucket = objectStorageClient.bucket(bucketName);
+          const thumbFile = bucket.file(thumbObjectName);
+          
+          await thumbFile.save(thumbnailBuffer, {
+            contentType: "image/jpeg",
+            metadata: {
+              metadata: {
+                "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
+              }
+            }
+          });
+          
+          const thumbnailUrl = `/objects/designs/thumb_${imageId}.jpg`;
+          
+          // Update design with thumbnail URL
+          await storage.updateDesign(design.id, { thumbnailImageUrl: thumbnailUrl });
+          migratedCount++;
+          
+        } catch (err) {
+          errors.push(`Design ${design.id}: ${(err as Error).message}`);
+        }
+      }
+
+      res.json({
+        migrated: migratedCount,
+        total: designs.length,
+        errors: errors.length > 0 ? errors : undefined,
+        hasMore: designs.length === batchSize
+      });
+    } catch (error) {
+      console.error("Error migrating thumbnails:", error);
+      res.status(500).json({ error: "Failed to migrate thumbnails" });
+    }
+  });
+
   // ==================== COUPON MANAGEMENT ====================
 
   // Get merchant's coupons

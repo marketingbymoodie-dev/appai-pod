@@ -34,6 +34,7 @@ export interface IStorage {
   getDesignsByCustomer(customerId: string): Promise<Design[]>;
   getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: Design[]; total: number }>;
   getDesignCountByCustomer(customerId: string): Promise<number>;
+  getDesignsNeedingThumbnails(limit?: number): Promise<Design[]>;
   createDesign(design: InsertDesign): Promise<Design>;
   updateDesign(id: number, updates: Partial<Design>): Promise<Design | undefined>;
   deleteDesign(id: number): Promise<void>;
@@ -203,6 +204,14 @@ export class DatabaseStorage implements IStorage {
     const [result] = await db.select({ count: sql<number>`count(*)::int` }).from(designs)
       .where(eq(designs.customerId, customerId));
     return result?.count || 0;
+  }
+
+  async getDesignsNeedingThumbnails(limit: number = 50): Promise<Design[]> {
+    // Get designs that have base64 images (no thumbnail) or stored images without thumbnails
+    return db.select().from(designs)
+      .where(sql`${designs.thumbnailImageUrl} IS NULL`)
+      .orderBy(desc(designs.createdAt))
+      .limit(limit);
   }
 
   async createDesign(design: InsertDesign): Promise<Design> {
