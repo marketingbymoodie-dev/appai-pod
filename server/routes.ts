@@ -2680,15 +2680,62 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
-      // Determine sizeType based on whether we have dimensional sizes
+      // Detect product type FIRST to determine sizeType
+      // This is more reliable than checking dimensions since some dimensional products
+      // may not have dimensions in the variant data
+      const lowerName = name.toLowerCase();
+      const lowerDesc = (description || "").toLowerCase();
+      const combined = `${lowerName} ${lowerDesc}`;
+      
+      // Helper function for word boundary matching (prevents "bra" matching "bracelet")
+      const matchesWord = (text: string, word: string): boolean => {
+        const regex = new RegExp(`\\b${word}\\b`, 'i');
+        return regex.test(text);
+      };
+      
+      // Apparel-like products use label sizes (S/M/L/XL)
+      const apparelKeywords = [
+        "shirt", "t-shirt", "tshirt", "hoodie", "sweatshirt", "tank top",
+        "tee", "apparel", "jersey", "jacket", "leggings", "shorts", 
+        "dress", "skirt", "polo", "onesie", "bodysuit", "sweater", 
+        "pants", "joggers", "romper", "blouse", "cardigan", "vest", 
+        "coat", "bikini", "swimsuit", "underwear", "boxers", "briefs", 
+        "socks", "apron", "scrubs"
+      ];
+      const isApparelProduct = apparelKeywords.some(kw => matchesWord(combined, kw));
+      
+      // Known dimensional products that may not have dimension data in variants
+      const dimensionalKeywords = [
+        "pillow", "cushion", "blanket", "throw", "mug", "cup", "tumbler",
+        "poster", "print", "canvas", "frame", "artwork", "wall art",
+        "phone case", "iphone", "samsung", "bag", "tote", "backpack", 
+        "towel", "mat", "rug", "coaster", "mousepad", "sticker", "magnet",
+        "puzzle", "ornament", "clock"
+      ];
+      const isDimensionalProduct = dimensionalKeywords.some(kw => matchesWord(combined, kw));
+      
+      // Check if we have dimensional sizes as backup
       const hasDimensionalSizes = sizes.some(s => s.width > 0 && s.height > 0);
-      const sizeType = hasDimensionalSizes ? "dimensional" : "label";
+      
+      // Determine sizeType:
+      // 1. Apparel always uses labels
+      // 2. Known dimensional products use dimensional (even without parsed dimensions)
+      // 3. Products with parsed dimensions use dimensional
+      // 4. Unknown products without dimensions default to label
+      let sizeType: string;
+      if (isApparelProduct) {
+        sizeType = "label";
+      } else if (isDimensionalProduct || hasDimensionalSizes) {
+        sizeType = "dimensional";
+      } else {
+        sizeType = "label";
+      }
 
       // Determine aspect ratio using GCD for accurate ratio
       const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
       
-      let aspectRatio = "1:1"; // Default for label-only sizes
-      if (hasDimensionalSizes && sizes.length > 0) {
+      let aspectRatio = "1:1"; // Default for label-only or square products
+      if (!isApparelProduct && hasDimensionalSizes && sizes.length > 0) {
         const firstDimensionalSize = sizes.find(s => s.width > 0 && s.height > 0);
         if (firstDimensionalSize) {
           const w = firstDimensionalSize.width;
@@ -2700,10 +2747,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         }
       }
 
-      // Detect product type and shape based on name/description
-      const lowerName = name.toLowerCase();
-      const lowerDesc = (description || "").toLowerCase();
-      const combined = `${lowerName} ${lowerDesc}`;
+      // Product type detection for designer type, shape, and bleed margin
       
       let designerType: string = "generic";
       let printShape: string = "rectangle";
