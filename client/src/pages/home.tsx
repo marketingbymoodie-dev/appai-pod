@@ -6,13 +6,18 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Palette, Image, ShoppingCart, Sparkles, Settings } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
-import type { Customer } from "@shared/schema";
+import type { Customer, Merchant } from "@shared/schema";
 
 export default function Home() {
   const { user, isLoading: authLoading, isAuthenticated } = useAuth();
 
   const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
     queryKey: ["/api/customer"],
+    enabled: isAuthenticated,
+  });
+
+  const { data: merchant } = useQuery<Merchant>({
+    queryKey: ["/api/merchant"],
     enabled: isAuthenticated,
   });
 
@@ -41,11 +46,13 @@ export default function Home() {
             <span className="text-sm text-muted-foreground" data-testid="text-username">
               {user?.firstName || user?.email}
             </span>
-            <Link href="/admin">
-              <Button variant="ghost" size="icon" data-testid="button-admin">
-                <Settings className="h-5 w-5" />
-              </Button>
-            </Link>
+            {merchant && (
+              <Link href="/admin">
+                <Button variant="ghost" size="icon" data-testid="button-admin">
+                  <Settings className="h-5 w-5" />
+                </Button>
+              </Link>
+            )}
             <Button variant="ghost" onClick={() => window.location.href = "/api/logout"} data-testid="button-logout">
               Logout
             </Button>
@@ -111,7 +118,6 @@ export default function Home() {
             </Card>
           </Link>
         </div>
-
       </main>
     </div>
   );

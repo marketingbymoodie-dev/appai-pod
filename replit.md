@@ -19,11 +19,23 @@ Preferred communication style: Simple, everyday language.
 - **Build Tool**: Vite for development and production builds
 
 The frontend follows a pages-based structure with shared components. Key pages include:
+
+**Customer Pages:**
 - Home (landing/dashboard)
 - Design (AI art generation interface)
-- Designs (saved designs gallery)
+- Designs / My Designs (saved designs gallery)
 - Orders (order history)
-- Admin (merchant settings panel)
+
+**Admin Pages (under /admin/*):**
+- Dashboard (/admin) - Overview stats
+- Products (/admin/products) - Manage product types from Printify
+- Create Product (/admin/create-product) - Test AI generator for products
+- Styles (/admin/styles) - Custom art style presets
+- Coupons (/admin/coupons) - Discount codes management
+- Credits (/admin/credits) - Credit usage monitoring
+- Settings (/admin/settings) - Printify API configuration
+
+The admin portal uses a sidebar navigation layout via AdminLayout component.
 
 ### Backend Architecture
 - **Runtime**: Node.js with Express

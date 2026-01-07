@@ -7,9 +7,16 @@ import Home from "@/pages/home";
 import DesignPage from "@/pages/design";
 import DesignsPage from "@/pages/designs";
 import OrdersPage from "@/pages/orders";
-import AdminPage from "@/pages/admin";
 import EmbedDesign from "@/pages/embed-design";
 import NotFound from "@/pages/not-found";
+
+import AdminDashboard from "@/pages/admin/dashboard";
+import AdminSettings from "@/pages/admin/settings";
+import AdminProducts from "@/pages/admin/products";
+import AdminStyles from "@/pages/admin/styles";
+import AdminCoupons from "@/pages/admin/coupons";
+import AdminCredits from "@/pages/admin/credits";
+import AdminCreateProduct from "@/pages/admin/create-product";
 
 function Router() {
   return (
@@ -17,9 +24,18 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/design" component={DesignPage} />
       <Route path="/designs" component={DesignsPage} />
+      <Route path="/my-designs" component={DesignsPage} />
       <Route path="/orders" component={OrdersPage} />
-      <Route path="/admin" component={AdminPage} />
       <Route path="/embed/design" component={EmbedDesign} />
+      
+      <Route path="/admin" component={AdminDashboard} />
+      <Route path="/admin/settings" component={AdminSettings} />
+      <Route path="/admin/products" component={AdminProducts} />
+      <Route path="/admin/styles" component={AdminStyles} />
+      <Route path="/admin/coupons" component={AdminCoupons} />
+      <Route path="/admin/credits" component={AdminCredits} />
+      <Route path="/admin/create-product" component={AdminCreateProduct} />
+      
       <Route component={NotFound} />
     </Switch>
   );
