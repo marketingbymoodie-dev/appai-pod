@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,7 +77,32 @@ export function BaseDesigner({
     queryKey: ["/api/config"],
   });
 
-  const stylePresets = stylePresetsData?.stylePresets || [];
+  const allStylePresets = stylePresetsData?.stylePresets || [];
+  
+  // Filter styles based on designerType
+  // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
+  // - apparel -> "apparel" category (centered graphics)
+  // - generic -> show all styles
+  // During initial load (no designerConfig yet), return empty to prevent briefly showing wrong styles
+  const stylePresets = useMemo(() => {
+    if (!designerConfig) return [];
+    
+    const designerType = designerConfig.designerType;
+    let targetCategory: "decor" | "apparel" | null = null;
+    
+    if (designerType === "apparel") {
+      targetCategory = "apparel";
+    } else if (designerType === "framed-print" || designerType === "pillow" || designerType === "mug") {
+      targetCategory = "decor";
+    }
+    
+    if (!targetCategory) return allStylePresets;
+    
+    // Return styles that match the category or are "all" (universal styles)
+    return allStylePresets.filter(s => 
+      s.category === targetCategory || s.category === "all" || !s.category
+    );
+  }, [allStylePresets, designerConfig]);
 
   const state = useDesignerState(designerConfig || null);
   const {

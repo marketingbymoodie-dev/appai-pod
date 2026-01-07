@@ -75,6 +75,7 @@ export interface IStorage {
   getStylePreset(id: number): Promise<StylePresetDB | undefined>;
   getStylePresetsByMerchant(merchantId: string): Promise<StylePresetDB[]>;
   getActiveStylePresetsByMerchant(merchantId: string): Promise<StylePresetDB[]>;
+  getAllActiveStylePresets(): Promise<StylePresetDB[]>;
   createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB>;
   updateStylePreset(id: number, updates: Partial<StylePresetDB>): Promise<StylePresetDB | undefined>;
   deleteStylePreset(id: number): Promise<void>;
@@ -392,6 +393,10 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(stylePresets).where(
       and(eq(stylePresets.merchantId, merchantId), eq(stylePresets.isActive, true))
     ).orderBy(stylePresets.sortOrder);
+  }
+
+  async getAllActiveStylePresets(): Promise<StylePresetDB[]> {
+    return db.select().from(stylePresets).where(eq(stylePresets.isActive, true)).orderBy(stylePresets.sortOrder);
   }
 
   async createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB> {

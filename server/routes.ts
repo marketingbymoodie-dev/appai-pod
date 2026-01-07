@@ -133,13 +133,48 @@ export async function registerRoutes(
   registerObjectStorageRoutes(app);
 
   // Get product configuration
-  app.get("/api/config", (_req: Request, res: Response) => {
-    res.json({
-      sizes: PRINT_SIZES,
-      frameColors: FRAME_COLORS,
-      stylePresets: STYLE_PRESETS,
-      blueprintId: 540,
-    });
+  app.get("/api/config", async (_req: Request, res: Response) => {
+    try {
+      // Get all active style presets from database
+      const dbStyles = await storage.getAllActiveStylePresets();
+      
+      // Convert database styles to the format expected by the frontend
+      // If no database styles exist, fall back to hardcoded presets with consistent shape
+      const stylePresets = dbStyles.length > 0 
+        ? dbStyles.map(s => ({
+            id: s.id.toString(),
+            name: s.name,
+            promptSuffix: s.promptPrefix,
+            category: s.category || "all",
+          }))
+        : STYLE_PRESETS.map(s => ({
+            id: s.id,
+            name: s.name,
+            promptSuffix: s.promptPrefix,
+            category: "all" as const,
+          }));
+      
+      res.json({
+        sizes: PRINT_SIZES,
+        frameColors: FRAME_COLORS,
+        stylePresets,
+        blueprintId: 540,
+      });
+    } catch (error) {
+      console.error("Error fetching config:", error);
+      // Fallback to hardcoded presets on error with consistent shape
+      res.json({
+        sizes: PRINT_SIZES,
+        frameColors: FRAME_COLORS,
+        stylePresets: STYLE_PRESETS.map(s => ({
+          id: s.id,
+          name: s.name,
+          promptSuffix: s.promptPrefix,
+          category: "all" as const,
+        })),
+        blueprintId: 540,
+      });
+    }
   });
 
   // Get or create customer profile
@@ -322,12 +357,8 @@ export async function registerRoutes(
       const finalSizeConfig = sizeConfig!;
       const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
 
-      // Build prompt with style
-      const styleConfig = STYLE_PRESETS.find(s => s.id === stylePreset);
+      // The frontend already incorporates style prompts, so we use the prompt as-is
       let fullPrompt = prompt;
-      if (styleConfig && styleConfig.promptPrefix) {
-        fullPrompt = `${styleConfig.promptPrefix} ${prompt}`;
-      }
 
       // CRITICAL: Hardcoded sizing and full-bleed requirements for ALL generations
       const sizingRequirements = `
@@ -680,12 +711,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizeConfig = PRINT_SIZES[0];
       }
 
-      // Build prompt with style
-      const styleConfig = STYLE_PRESETS.find(s => s.id === stylePreset);
+      // The frontend already incorporates style prompts, so we use the prompt as-is
       let fullPrompt = prompt;
-      if (styleConfig && styleConfig.promptPrefix) {
-        fullPrompt = `${styleConfig.promptPrefix} ${prompt}`;
-      }
 
       // Build shape-specific safe zone instructions
       const printShape = productType?.printShape || "rectangle";

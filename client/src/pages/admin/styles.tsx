@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -11,11 +11,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Palette, Plus, Trash2, Edit2, Frame, Shirt } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
 type StyleCategory = "all" | "decor" | "apparel";
+type FilterCategory = "show-all" | "all" | "decor" | "apparel";
 
 export default function AdminStyles() {
   const { toast } = useToast();
@@ -25,6 +27,7 @@ export default function AdminStyles() {
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
   const [styleCategory, setStyleCategory] = useState<StyleCategory>("all");
+  const [filterCategory, setFilterCategory] = useState<FilterCategory>("show-all");
 
   const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
     queryKey: ["/api/admin/styles"],
@@ -111,6 +114,17 @@ export default function AdminStyles() {
     }
   };
 
+  const filteredStyles = useMemo(() => {
+    if (!styles) return [];
+    if (filterCategory === "show-all") return styles;
+    // When filtering by Decor or Apparel, also include universal ("all") styles
+    if (filterCategory === "decor" || filterCategory === "apparel") {
+      return styles.filter(s => s.category === filterCategory || s.category === "all");
+    }
+    // When filtering by "all" category specifically, show only those
+    return styles.filter(s => s.category === filterCategory);
+  }, [styles, filterCategory]);
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -125,15 +139,35 @@ export default function AdminStyles() {
           </Button>
         </div>
 
+        <Tabs value={filterCategory} onValueChange={(v) => setFilterCategory(v as FilterCategory)}>
+          <TabsList data-testid="tabs-category-filter">
+            <TabsTrigger value="show-all" data-testid="tab-show-all">
+              <Palette className="h-4 w-4 mr-2" />
+              Show All
+            </TabsTrigger>
+            <TabsTrigger value="all" data-testid="tab-all-products">
+              All Products
+            </TabsTrigger>
+            <TabsTrigger value="decor" data-testid="tab-decor">
+              <Frame className="h-4 w-4 mr-2" />
+              Decor
+            </TabsTrigger>
+            <TabsTrigger value="apparel" data-testid="tab-apparel">
+              <Shirt className="h-4 w-4 mr-2" />
+              Apparel
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
         {stylesLoading ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {[1, 2, 3].map((i) => (
               <Skeleton key={i} className="h-32" />
             ))}
           </div>
-        ) : styles && styles.length > 0 ? (
+        ) : filteredStyles.length > 0 ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {styles.map((style) => (
+            {filteredStyles.map((style) => (
               <Card key={style.id} data-testid={`card-style-${style.id}`}>
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">

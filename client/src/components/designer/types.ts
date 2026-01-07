@@ -17,6 +17,7 @@ export interface StylePreset {
   name: string;
   promptSuffix: string;
   thumbnailUrl?: string;
+  category?: "all" | "decor" | "apparel";
 }
 
 export interface DesignerConfig {
