@@ -250,48 +250,70 @@ export default function AdminProducts() {
           </div>
         ) : productTypes && productTypes.length > 0 ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {productTypes.map((pt) => (
-              <Card key={pt.id} data-testid={`card-product-${pt.id}`}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-base">{pt.name}</CardTitle>
-                      <CardDescription className="text-xs mt-1">
-                        Blueprint: {pt.printifyBlueprintId || "Custom"}
-                      </CardDescription>
+            {productTypes.map((pt) => {
+              const mockupImages = typeof pt.baseMockupImages === 'string' 
+                ? JSON.parse(pt.baseMockupImages || "{}") 
+                : pt.baseMockupImages || {};
+              const productImage = mockupImages.front || mockupImages.lifestyle;
+              
+              return (
+                <Card key={pt.id} data-testid={`card-product-${pt.id}`}>
+                  {productImage && (
+                    <div className="w-full h-40 overflow-hidden rounded-t-lg bg-muted">
+                      <img 
+                        src={productImage} 
+                        alt={pt.name} 
+                        className="w-full h-full object-contain"
+                        data-testid={`img-product-${pt.id}`}
+                      />
                     </div>
-                    <Badge variant="outline" className="text-xs">
-                      {pt.designerType}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-sm text-muted-foreground space-y-1">
-                    <div>Aspect Ratio: {pt.aspectRatio}</div>
-                    <div>Sizes: {JSON.parse(pt.sizes || "[]").length}</div>
-                    <div>Colors: {JSON.parse(pt.frameColors || "[]").length}</div>
-                  </div>
-                  <div className="flex gap-2 mt-4">
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => window.location.href = `/admin/create-product?productTypeId=${pt.id}`}
-                      data-testid={`button-test-${pt.id}`}
-                    >
-                      Test Generator
-                    </Button>
-                    <Button 
-                      variant="ghost" 
-                      size="icon"
-                      onClick={() => deleteProductTypeMutation.mutate(pt.id)}
-                      data-testid={`button-delete-${pt.id}`}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                  )}
+                  {!productImage && (
+                    <div className="w-full h-40 flex items-center justify-center bg-muted rounded-t-lg">
+                      <Package className="h-12 w-12 text-muted-foreground" />
+                    </div>
+                  )}
+                  <CardHeader className="pb-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-base">{pt.name}</CardTitle>
+                        <CardDescription className="text-xs mt-1">
+                          Blueprint: {pt.printifyBlueprintId || "Custom"}
+                        </CardDescription>
+                      </div>
+                      <Badge variant="outline" className="text-xs">
+                        {pt.designerType}
+                      </Badge>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-sm text-muted-foreground space-y-1">
+                      <div>Aspect Ratio: {pt.aspectRatio}</div>
+                      <div>Sizes: {JSON.parse(pt.sizes || "[]").length}</div>
+                      <div>Colors: {JSON.parse(pt.frameColors || "[]").length}</div>
+                    </div>
+                    <div className="flex gap-2 mt-4">
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => window.location.href = `/admin/create-product?productTypeId=${pt.id}`}
+                        data-testid={`button-test-${pt.id}`}
+                      >
+                        Test Generator
+                      </Button>
+                      <Button 
+                        variant="ghost" 
+                        size="icon"
+                        onClick={() => deleteProductTypeMutation.mutate(pt.id)}
+                        data-testid={`button-delete-${pt.id}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         ) : (
           <Card>

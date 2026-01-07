@@ -130,7 +130,7 @@ export class DatabaseStorage implements IStorage {
     if (!customer) {
       customer = await this.createCustomer({
         userId,
-        credits: 3,
+        credits: 5,
         freeGenerationsUsed: 0,
         totalGenerations: 0,
         totalSpent: "0.00",

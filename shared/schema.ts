@@ -189,6 +189,7 @@ export const stylePresets = pgTable("style_presets", {
   merchantId: varchar("merchant_id").notNull(),
   name: text("name").notNull(),
   promptPrefix: text("prompt_prefix").notNull(),
+  category: text("category").notNull().default("all"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),

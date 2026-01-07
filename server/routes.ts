@@ -1682,7 +1682,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, isActive, sortOrder } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -1692,6 +1692,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         merchantId: merchant.id,
         name,
         promptPrefix: promptPrefix || "",
+        category: category || "all",
         isActive: isActive !== undefined ? isActive : true,
         sortOrder: sortOrder || 0,
       });
@@ -1719,11 +1720,12 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, isActive, sortOrder } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
         promptPrefix: promptPrefix !== undefined ? promptPrefix : preset.promptPrefix,
+        category: category !== undefined ? category : preset.category,
         isActive: isActive !== undefined ? isActive : preset.isActive,
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
       });

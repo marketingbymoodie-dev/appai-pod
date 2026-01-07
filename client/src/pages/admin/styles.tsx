@@ -10,9 +10,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Palette, Plus, Trash2, Edit2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Palette, Plus, Trash2, Edit2, Frame, Shirt } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
+
+type StyleCategory = "all" | "decor" | "apparel";
 
 export default function AdminStyles() {
   const { toast } = useToast();
@@ -21,13 +24,14 @@ export default function AdminStyles() {
   const [editingStyle, setEditingStyle] = useState<StylePresetDB | null>(null);
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
+  const [styleCategory, setStyleCategory] = useState<StyleCategory>("all");
 
   const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
     queryKey: ["/api/admin/styles"],
   });
 
   const createStyleMutation = useMutation({
-    mutationFn: async (data: { name: string; promptPrefix: string }) => {
+    mutationFn: async (data: { name: string; promptPrefix: string; category: StyleCategory }) => {
       const response = await apiRequest("POST", "/api/admin/styles", data);
       return response.json();
     },
@@ -43,7 +47,7 @@ export default function AdminStyles() {
   });
 
   const updateStyleMutation = useMutation({
-    mutationFn: async ({ id, ...data }: { id: number; name: string; promptPrefix: string }) => {
+    mutationFn: async ({ id, ...data }: { id: number; name: string; promptPrefix: string; category: StyleCategory }) => {
       const response = await apiRequest("PATCH", `/api/admin/styles/${id}`, data);
       return response.json();
     },
@@ -72,20 +76,38 @@ export default function AdminStyles() {
     setEditingStyle(null);
     setStyleName("");
     setStylePrompt("");
+    setStyleCategory("all");
   };
 
   const handleEditStyle = (style: StylePresetDB) => {
     setEditingStyle(style);
     setStyleName(style.name);
     setStylePrompt(style.promptPrefix);
+    setStyleCategory((style.category as StyleCategory) || "all");
     setStyleDialogOpen(true);
   };
 
   const handleSaveStyle = () => {
     if (editingStyle) {
-      updateStyleMutation.mutate({ id: editingStyle.id, name: styleName, promptPrefix: stylePrompt });
+      updateStyleMutation.mutate({ id: editingStyle.id, name: styleName, promptPrefix: stylePrompt, category: styleCategory });
     } else {
-      createStyleMutation.mutate({ name: styleName, promptPrefix: stylePrompt });
+      createStyleMutation.mutate({ name: styleName, promptPrefix: stylePrompt, category: styleCategory });
+    }
+  };
+
+  const getCategoryLabel = (category: string) => {
+    switch (category) {
+      case "decor": return "Decor";
+      case "apparel": return "Apparel";
+      default: return "All Products";
+    }
+  };
+
+  const getCategoryIcon = (category: string) => {
+    switch (category) {
+      case "decor": return <Frame className="h-3 w-3" />;
+      case "apparel": return <Shirt className="h-3 w-3" />;
+      default: return <Palette className="h-3 w-3" />;
     }
   };
 
@@ -116,9 +138,15 @@ export default function AdminStyles() {
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between gap-2">
                     <CardTitle className="text-base">{style.name}</CardTitle>
-                    <Badge variant={style.isActive ? "default" : "secondary"} className="text-xs">
-                      {style.isActive ? "Active" : "Inactive"}
-                    </Badge>
+                    <div className="flex gap-1 flex-wrap">
+                      <Badge variant="outline" className="text-xs flex items-center gap-1">
+                        {getCategoryIcon(style.category || "all")}
+                        {getCategoryLabel(style.category || "all")}
+                      </Badge>
+                      <Badge variant={style.isActive ? "default" : "secondary"} className="text-xs">
+                        {style.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -178,6 +206,22 @@ export default function AdminStyles() {
                   placeholder="e.g., Watercolor, Pop Art"
                   data-testid="input-style-name"
                 />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="style-category">Product Category</Label>
+                <Select value={styleCategory} onValueChange={(v) => setStyleCategory(v as StyleCategory)}>
+                  <SelectTrigger data-testid="select-style-category">
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Products</SelectItem>
+                    <SelectItem value="decor">Decor (Prints, Posters, Frames)</SelectItem>
+                    <SelectItem value="apparel">Apparel (T-shirts, Clothing)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Decor styles use full-bleed artwork; Apparel styles use centered graphics
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="style-prompt">Prompt Prefix</Label>
