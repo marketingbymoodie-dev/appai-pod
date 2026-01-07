@@ -2015,63 +2015,156 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       let maxWidth = 0;
       let maxHeight = 0;
 
-      // Standard apparel sizes in order
+      // Known size patterns for various product types
       const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
       const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
+      const namedSizes = ["small", "medium", "large", "extra large", "king", "queen", "twin", "full", "one size"];
+      
+      // Helper function to check if a string looks like a size (not a color)
+      const looksLikeSize = (str: string): boolean => {
+        const lower = str.toLowerCase().trim();
+        // Dimensional (8x10, 12"x16")
+        if (lower.match(/^\d+[""']?\s*[xX×]\s*\d+[""']?$/)) return true;
+        // Apparel sizes (S, M, L, XL, 2XL)
+        if (apparelSizesLower.includes(lower)) return true;
+        // Named sizes (Small, Medium, Large, King, Queen)
+        if (namedSizes.includes(lower)) return true;
+        // Volume sizes (11oz, 15 oz)
+        if (lower.match(/^\d+\s*oz$/i)) return true;
+        // Device models - must have model identifier after brand
+        // Don't match just "Galaxy" as it could be a color name like "Galaxy Blue"
+        // iPhone: iPhone 14, iPhone X, iPhone XS, iPhone SE, iPhone Pro Max, etc.
+        if (lower.match(/^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i)) return true;
+        // Galaxy: Galaxy S23, Galaxy A54, Galaxy Note, Galaxy Z Fold/Flip, etc.
+        if (lower.match(/^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i)) return true;
+        // Pixel: Pixel 7, Pixel Fold, Pixel Pro, etc.
+        if (lower.match(/^pixel\s+(\d|fold|pro)/i)) return true;
+        // Samsung with model identifiers
+        if (lower.match(/^samsung\s+(galaxy|note)/i)) return true;
+        // OnePlus with model numbers
+        if (lower.match(/^oneplus\s+\d/i)) return true;
+        // Generic "for iPhone/Galaxy/etc" patterns often seen in case listings
+        if (lower.match(/^for\s+(iphone|galaxy|pixel|samsung)/i)) return true;
+        // Youth/Kids sizes
+        if (lower.match(/^(youth|kid'?s?|toddler|infant|baby)\s/i)) return true;
+        // Size with numbers (14x14, 50x60, etc for blankets/pillows)
+        if (lower.match(/^\d+\s*["'']?\s*[xX×]\s*\d+/)) return true;
+        return false;
+      };
       
       for (const variant of variants) {
-        // Extract size from title (e.g., "8x10 / Black" or "12\" x 16\" / White" or "S / Black")
         const title = variant.title || "";
         const options = variant.options || {};
         
-        // Normalize Unicode quotes/primes to standard characters before parsing
+        // Normalize Unicode quotes/primes to standard characters
         const normalizedTitle = title
-          .replace(/[″″‶‴]/g, '"')  // double prime variants
-          .replace(/[′′‵]/g, "'")   // single prime variants
-          .replace(/[""]/g, '"')    // curly double quotes
-          .replace(/['']/g, "'");   // curly single quotes
+          .replace(/[″″‶‴]/g, '"')
+          .replace(/[′′‵]/g, "'")
+          .replace(/[""]/g, '"')
+          .replace(/['']/g, "'");
         
-        // Try to parse dimensions from title or options (for framed prints, posters, etc.)
-        let sizeMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
-        if (sizeMatch) {
-          const width = parseInt(sizeMatch[1]);
-          const height = parseInt(sizeMatch[2]);
+        let sizeExtracted = false;
+        
+        // 1. Try dimensional sizes (8x10, 12"x16", etc.) for prints, pillows, blankets
+        const dimMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
+        if (dimMatch) {
+          const width = parseInt(dimMatch[1]);
+          const height = parseInt(dimMatch[2]);
           const sizeId = `${width}x${height}`;
           const sizeName = `${width}" x ${height}"`;
           
           if (!sizesMap.has(sizeId)) {
             sizesMap.set(sizeId, { id: sizeId, name: sizeName, width, height });
           }
-          
           if (width > maxWidth) maxWidth = width;
           if (height > maxHeight) maxHeight = height;
-        } else {
-          // Try to extract apparel-style sizes (S, M, L, XL, etc.)
-          // Check options first
-          let sizeFromOptions = options.size || "";
+          sizeExtracted = true;
+        }
+        
+        // 2. Check options.size first (most reliable)
+        if (!sizeExtracted && options.size) {
+          const sizeVal = options.size;
+          const sizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          if (!sizesMap.has(sizeId)) {
+            sizesMap.set(sizeId, { id: sizeId, name: sizeVal, width: 0, height: 0 });
+          }
+          sizeExtracted = true;
+        }
+        
+        // 3. Try to extract from title for other patterns
+        if (!sizeExtracted && title) {
+          const parts = title.split("/").map((p: string) => p.trim());
           
-          // If not in options, try to parse from title (e.g., "S / Black" -> "S")
-          if (!sizeFromOptions && title.includes("/")) {
-            const titleParts = title.split("/").map((p: string) => p.trim());
-            // Check if first part is a known size
-            for (const part of titleParts) {
-              if (apparelSizesLower.includes(part.toLowerCase()) || 
-                  part.match(/^(one\s*size|youth|kid'?s?\s*(xs|s|m|l|xl))/i)) {
-                sizeFromOptions = part;
-                break;
+          for (const part of parts) {
+            // Check for volume sizes (11oz, 15oz for mugs)
+            const volumeMatch = part.match(/^(\d+)\s*oz$/i);
+            if (volumeMatch) {
+              const sizeId = `${volumeMatch[1]}oz`;
+              const sizeName = `${volumeMatch[1]}oz`;
+              if (!sizesMap.has(sizeId)) {
+                sizesMap.set(sizeId, { id: sizeId, name: sizeName, width: 0, height: 0 });
               }
+              sizeExtracted = true;
+              break;
+            }
+            
+            // Check apparel sizes (S, M, L, XL, 2XL, etc.)
+            if (apparelSizesLower.includes(part.toLowerCase())) {
+              const sizeId = part.toLowerCase();
+              if (!sizesMap.has(sizeId)) {
+                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              }
+              sizeExtracted = true;
+              break;
+            }
+            
+            // Check named sizes (Small, Medium, Large, King, Queen)
+            if (namedSizes.includes(part.toLowerCase())) {
+              const sizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(sizeId)) {
+                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              }
+              sizeExtracted = true;
+              break;
+            }
+            
+            // Check youth/kids sizes
+            if (part.match(/^(youth|kid'?s?|toddler|infant|baby)\s/i)) {
+              const sizeId = part.toLowerCase().replace(/\s+/g, '_').replace(/'/g, '');
+              if (!sizesMap.has(sizeId)) {
+                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              }
+              sizeExtracted = true;
+              break;
+            }
+            
+            // Check device models (iPhone 14, Galaxy S23, etc. for phone cases)
+            // Must have model identifier to avoid matching colors like "Galaxy Blue"
+            if (part.match(/^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i) || 
+                part.match(/^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i) || 
+                part.match(/^pixel\s+(\d|fold|pro)/i) ||
+                part.match(/^samsung\s+(galaxy|note)/i) ||
+                part.match(/^oneplus\s+\d/i) ||
+                part.match(/^for\s+(iphone|galaxy|pixel|samsung)/i)) {
+              const sizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(sizeId)) {
+                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              }
+              sizeExtracted = true;
+              break;
             }
           }
-          
-          if (sizeFromOptions) {
-            const sizeId = sizeFromOptions.toLowerCase().replace(/\s+/g, '_');
+        }
+        
+        // 4. Fallback: If still no size and title has parts, use first non-color part
+        if (!sizeExtracted && title && title.includes("/")) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          // Take the first part as size if it's not obviously a color
+          const firstPart = parts[0];
+          if (firstPart && !firstPart.match(/^(black|white|red|blue|green|yellow|pink|purple|orange|gray|grey|navy|brown|beige|cream|tan)/i)) {
+            const sizeId = firstPart.toLowerCase().replace(/\s+/g, '_');
             if (!sizesMap.has(sizeId)) {
-              sizesMap.set(sizeId, { 
-                id: sizeId, 
-                name: sizeFromOptions, 
-                width: 0, 
-                height: 0 
-              });
+              sizesMap.set(sizeId, { id: sizeId, name: firstPart, width: 0, height: 0 });
             }
           }
         }
@@ -2089,9 +2182,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           // Find the last part that looks like a color (not a size)
           for (let i = parts.length - 1; i >= 0; i--) {
             const part = parts[i];
-            // Skip if it looks like a size
-            if (apparelSizesLower.includes(part.toLowerCase()) || 
-                part.match(/^\d+[""']?\s*[xX×]\s*\d+/)) {
+            // Skip if it looks like a size (using comprehensive check)
+            if (looksLikeSize(part)) {
               continue;
             }
             colorName = part;
