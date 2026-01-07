@@ -338,6 +338,13 @@ export default function DesignPage() {
     },
   });
 
+  const handleRegenerateMockup = useCallback(() => {
+    if (generatedDesign && designerConfig && selectedProductTypeId) {
+      const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
+      fetchPrintifyMockups(imageUrl, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale);
+    }
+  }, [generatedDesign, designerConfig, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, fetchPrintifyMockups]);
+
   // Initialize calibration area when size/frame changes in calibration mode
   // Note: We compute currentLifestyle inline here since we can't call it before hooks
   const calibrationLifestyle = selectedSize && lifestyleMockups[selectedSize]
@@ -739,13 +746,6 @@ export default function DesignPage() {
       )}
     </Button>
   );
-
-  const handleRegenerateMockup = useCallback(() => {
-    if (generatedDesign && designerConfig && selectedProductTypeId) {
-      const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
-      fetchPrintifyMockups(imageUrl, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale);
-    }
-  }, [generatedDesign, designerConfig, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, fetchPrintifyMockups]);
 
   const zoomControls = generatedDesign?.generatedImageUrl && (
     <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
