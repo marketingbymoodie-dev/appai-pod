@@ -1259,7 +1259,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
-  // Migrate existing designs to have thumbnails
+  // Migrate existing designs to have thumbnails (and migrate base64 to object storage)
   app.post("/api/admin/migrate-thumbnails", isAuthenticated, async (req: any, res: Response) => {
     try {
       const batchSize = req.body.batchSize || 10;
@@ -1269,6 +1269,13 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.json({ migrated: 0, message: "No designs need thumbnail migration" });
       }
 
+      // Get bucket info once
+      const privateDir = objectStorage.getPrivateObjectDir();
+      const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
+      const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
+      const bucketName = pathParts[0];
+      const bucket = objectStorageClient.bucket(bucketName);
+
       let migratedCount = 0;
       const errors: string[] = [];
 
@@ -1276,41 +1283,62 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         try {
           const imageUrl = design.generatedImageUrl;
           
-          // Skip if no image or it's already an object storage URL (should have thumbnail)
           if (!imageUrl) continue;
           
           let buffer: Buffer;
+          let imageId: string;
+          let newGeneratedImageUrl: string | undefined;
           
           if (imageUrl.startsWith("data:")) {
-            // Base64 image - extract and decode
-            const base64Match = imageUrl.match(/^data:image\/\w+;base64,(.+)$/);
+            // Base64 image - extract, decode, and migrate to object storage
+            const base64Match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/);
             if (!base64Match) {
               errors.push(`Design ${design.id}: Invalid base64 format`);
               continue;
             }
-            buffer = Buffer.from(base64Match[1], "base64");
+            const imageFormat = base64Match[1];
+            const extension = imageFormat === "png" ? "png" : "jpg";
+            buffer = Buffer.from(base64Match[2], "base64");
+            
+            // Generate a new ID for both original and thumbnail
+            imageId = crypto.randomUUID();
+            
+            // Save original to object storage (migrating from base64)
+            const originalObjectPath = `.private/designs/${imageId}.${extension}`;
+            const originalFile = bucket.file(originalObjectPath);
+            await originalFile.save(buffer, {
+              contentType: `image/${imageFormat}`,
+              metadata: {
+                metadata: {
+                  "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
+                }
+              }
+            });
+            newGeneratedImageUrl = `/objects/designs/${imageId}.${extension}`;
+            
           } else if (imageUrl.startsWith("/objects/")) {
-            // Object storage URL - fetch the image
-            const privateDir = objectStorage.getPrivateObjectDir();
-            const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
-            const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
-            const bucketName = pathParts[0];
+            // Object storage URL - extract existing ID from filename
+            const filenameMatch = imageUrl.match(/\/objects\/designs\/([^.]+)\.(png|jpg)$/);
+            if (!filenameMatch) {
+              errors.push(`Design ${design.id}: Could not extract ID from URL`);
+              continue;
+            }
+            imageId = filenameMatch[1];
+            const extension = filenameMatch[2];
             
-            // Extract the filename from the URL
-            const filename = imageUrl.replace("/objects/", "");
-            const objectPath = `.private/${filename}`;
-            
-            const bucket = objectStorageClient.bucket(bucketName);
+            // Fetch the original image
+            const objectPath = `.private/designs/${imageId}.${extension}`;
             const file = bucket.file(objectPath);
             
             const [exists] = await file.exists();
             if (!exists) {
-              errors.push(`Design ${design.id}: Source image not found in storage`);
+              errors.push(`Design ${design.id}: Source image not found at ${objectPath}`);
               continue;
             }
             
             const [contents] = await file.download();
             buffer = contents;
+            
           } else {
             errors.push(`Design ${design.id}: Unknown image URL format`);
             continue;
@@ -1319,16 +1347,9 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           // Generate thumbnail
           const thumbnailBuffer = await generateThumbnail(buffer);
           
-          // Save thumbnail to object storage
-          const imageId = crypto.randomUUID();
-          const privateDir = objectStorage.getPrivateObjectDir();
-          const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
-          const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
-          const bucketName = pathParts[0];
-          const thumbObjectName = `.private/designs/thumb_${imageId}.jpg`;
-          
-          const bucket = objectStorageClient.bucket(bucketName);
-          const thumbFile = bucket.file(thumbObjectName);
+          // Save thumbnail with matching ID pattern
+          const thumbObjectPath = `.private/designs/thumb_${imageId}.jpg`;
+          const thumbFile = bucket.file(thumbObjectPath);
           
           await thumbFile.save(thumbnailBuffer, {
             contentType: "image/jpeg",
@@ -1341,8 +1362,14 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           
           const thumbnailUrl = `/objects/designs/thumb_${imageId}.jpg`;
           
-          // Update design with thumbnail URL
-          await storage.updateDesign(design.id, { thumbnailImageUrl: thumbnailUrl });
+          // Update design with new URLs
+          const updateData: { thumbnailImageUrl: string; generatedImageUrl?: string } = { 
+            thumbnailImageUrl: thumbnailUrl 
+          };
+          if (newGeneratedImageUrl) {
+            updateData.generatedImageUrl = newGeneratedImageUrl;
+          }
+          await storage.updateDesign(design.id, updateData);
           migratedCount++;
           
         } catch (err) {

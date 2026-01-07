@@ -7,7 +7,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Trash2, ShoppingCart, Plus, Image, Pencil, Loader2 } from "lucide-react";
+import { ArrowLeft, Trash2, ShoppingCart, Plus, Image, Pencil, Loader2, X, ZoomIn } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import type { Design } from "@shared/schema";
 
 interface DesignsResponse {
@@ -25,6 +31,7 @@ export default function DesignsPage() {
   const [hasMore, setHasMore] = useState(false);
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [selectedDesign, setSelectedDesign] = useState<Design | null>(null);
 
   const { isLoading: designsLoading } = useQuery<DesignsResponse>({
     queryKey: ["/api/designs", "initial"],
@@ -143,14 +150,23 @@ export default function DesignsPage() {
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {allDesigns.map((design) => (
                 <Card key={design.id} className="overflow-hidden" data-testid={`card-design-${design.id}`}>
-                  <div className="aspect-[3/4] bg-muted relative overflow-hidden">
+                  <div 
+                    className="aspect-[3/4] bg-muted relative overflow-hidden cursor-pointer group"
+                    onClick={() => setSelectedDesign(design)}
+                    data-testid={`image-container-${design.id}`}
+                  >
                     {design.generatedImageUrl ? (
-                      <img
-                        src={design.generatedImageUrl}
-                        alt={design.prompt}
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                      />
+                      <>
+                        <img
+                          src={design.thumbnailImageUrl || design.generatedImageUrl}
+                          alt={design.prompt}
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                          <ZoomIn className="h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      </>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
                         <Image className="h-12 w-12 text-muted-foreground opacity-50" />
@@ -231,6 +247,43 @@ export default function DesignsPage() {
           </div>
         )}
       </main>
+
+      {/* Full-size image modal */}
+      <Dialog open={!!selectedDesign} onOpenChange={(open) => !open && setSelectedDesign(null)}>
+        <DialogContent className="max-w-4xl p-0 overflow-hidden" data-testid="dialog-fullsize-image">
+          <VisuallyHidden>
+            <DialogTitle>Design Preview</DialogTitle>
+          </VisuallyHidden>
+          {selectedDesign && (
+            <div className="relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-2 right-2 z-10 bg-black/50 hover:bg-black/70 text-white"
+                onClick={() => setSelectedDesign(null)}
+                data-testid="button-close-modal"
+              >
+                <X className="h-5 w-5" />
+              </Button>
+              <img
+                src={selectedDesign.generatedImageUrl || ""}
+                alt={selectedDesign.prompt}
+                className="w-full h-auto max-h-[80vh] object-contain"
+                data-testid="img-fullsize"
+              />
+              <div className="p-4 bg-background">
+                <p className="text-sm text-muted-foreground" data-testid="text-design-prompt">
+                  {selectedDesign.prompt}
+                </p>
+                <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                  <span>{selectedDesign.size}</span>
+                  <span className="capitalize">{selectedDesign.frameColor} frame</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
