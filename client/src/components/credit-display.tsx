@@ -85,8 +85,21 @@ export function CreditDisplay({
             </p>
             
             <div className="space-y-3">
+              <Button className="w-full" data-testid="button-buy-credits">
+                Buy 5 Credits for $1
+              </Button>
+              
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-background px-2 text-muted-foreground">Or</span>
+                </div>
+              </div>
+              
               <div className="space-y-2">
-                <Label htmlFor="coupon-input-header">Enter your coupon code</Label>
+                <Label htmlFor="coupon-input-header">Redeem a coupon code</Label>
                 <div className="flex gap-2">
                   <Input
                     id="coupon-input-header"
@@ -96,6 +109,7 @@ export function CreditDisplay({
                     data-testid="input-redeem-coupon-header"
                   />
                   <Button
+                    variant="outline"
                     onClick={() => redeemCouponMutation.mutate(couponCode)}
                     disabled={!couponCode || redeemCouponMutation.isPending}
                     data-testid="button-submit-redeem-header"

@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link } from "wouter";
-import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2, Download, Search, ExternalLink } from "lucide-react";
+import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2, Download, Search, ExternalLink, CreditCard } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -622,6 +622,10 @@ export default function AdminPage() {
             <TabsTrigger value="products" data-testid="tab-products">
               <Package className="h-4 w-4 mr-2" />
               Product Types
+            </TabsTrigger>
+            <TabsTrigger value="credits" data-testid="tab-credits">
+              <CreditCard className="h-4 w-4 mr-2" />
+              Buy Credits
             </TabsTrigger>
           </TabsList>
 
@@ -1488,6 +1492,71 @@ export default function AdminPage() {
                   </CardContent>
                 </Card>
               )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="credits">
+            <div className="grid gap-6 max-w-2xl">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Buy More Credits</CardTitle>
+                  <CardDescription>
+                    Purchase credits to generate AI artwork
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid gap-4">
+                    <Card className="hover-elevate">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <h3 className="font-semibold">5 Credits</h3>
+                            <p className="text-sm text-muted-foreground">Perfect for trying out designs</p>
+                          </div>
+                          <Button data-testid="button-buy-5-credits">
+                            $1.00
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    
+                    <Card className="hover-elevate border-primary/30">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-semibold">25 Credits</h3>
+                              <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-md">Popular</span>
+                            </div>
+                            <p className="text-sm text-muted-foreground">Best for regular use</p>
+                          </div>
+                          <Button data-testid="button-buy-25-credits">
+                            $4.00
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    
+                    <Card className="hover-elevate">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <h3 className="font-semibold">100 Credits</h3>
+                            <p className="text-sm text-muted-foreground">Best value for power users</p>
+                          </div>
+                          <Button data-testid="button-buy-100-credits">
+                            $12.00
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                  
+                  <p className="text-sm text-muted-foreground">
+                    Each credit allows you to generate one AI artwork. Credits spent are refunded up to $1 when you place an order.
+                  </p>
+                </CardContent>
+              </Card>
             </div>
           </TabsContent>
         </Tabs>
