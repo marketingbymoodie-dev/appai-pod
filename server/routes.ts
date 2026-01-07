@@ -7,6 +7,46 @@ import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@sh
 import { Modality } from "@google/genai";
 import { ai } from "./replit_integrations/image/client";
 import { registerShopifyRoutes } from "./shopify";
+import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient } from "./replit_integrations/object_storage";
+
+const objectStorage = new ObjectStorageService();
+
+async function saveImageToStorage(base64Data: string, mimeType: string): Promise<string> {
+  const imageId = crypto.randomUUID();
+  const extension = mimeType.includes("png") ? "png" : "jpg";
+  const privateDir = objectStorage.getPrivateObjectDir();
+  
+  // privateDir is like /bucket-name/.private, we need to parse it correctly
+  const fullPath = `${privateDir}/designs/${imageId}.${extension}`;
+  
+  // Parse the path: first segment is bucket name, rest is object name
+  const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
+  const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
+  
+  if (pathParts.length < 2) {
+    throw new Error("Invalid object path structure");
+  }
+  
+  const bucketName = pathParts[0];
+  const objectName = pathParts.slice(1).join("/");
+  
+  const buffer = Buffer.from(base64Data, "base64");
+  
+  const bucket = objectStorageClient.bucket(bucketName);
+  const file = bucket.file(objectName);
+  
+  await file.save(buffer, {
+    contentType: mimeType,
+    metadata: {
+      metadata: {
+        "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
+      }
+    }
+  });
+  
+  // Return path that the /objects/* route expects
+  return `/objects/designs/${imageId}.${extension}`;
+}
 
 async function fetchWithRetry(
   url: string,
@@ -54,6 +94,7 @@ export async function registerRoutes(
   await setupAuth(app);
   registerAuthRoutes(app);
   registerShopifyRoutes(app);
+  registerObjectStorageRoutes(app);
 
   // Get product configuration
   app.get("/api/config", (_req: Request, res: Response) => {
@@ -279,7 +320,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
 
       const mimeType = imagePart.inlineData.mimeType || "image/png";
-      const generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      
+      // Save image to object storage instead of base64
+      let generatedImageUrl: string;
+      try {
+        generatedImageUrl = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+      } catch (storageError) {
+        console.error("Failed to save to object storage, falling back to base64:", storageError);
+        generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      }
 
       // Create design record
       const design = await storage.createDesign({
@@ -637,7 +686,16 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
 
       const mimeType = imagePart.inlineData.mimeType || "image/png";
-      const generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      
+      // Save image to object storage instead of base64
+      let imageUrl: string;
+      try {
+        imageUrl = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+      } catch (storageError) {
+        console.error("Failed to save to object storage, falling back to base64:", storageError);
+        imageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      }
+      
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
       // Log the generation (credit was already deducted atomically above)
@@ -649,7 +707,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       });
 
       res.json({
-        imageUrl: generatedImageUrl,
+        imageUrl,
         designId,
         prompt,
         creditsRemaining: customer!.credits,

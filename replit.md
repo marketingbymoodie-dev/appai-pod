@@ -42,6 +42,7 @@ The server uses a modular integration pattern with dedicated folders under `serv
 - **Database**: PostgreSQL with Drizzle ORM
 - **Schema Location**: `shared/schema.ts` for shared types between frontend and backend
 - **Migration Tool**: Drizzle Kit with `db:push` command
+- **Image Storage**: Replit Object Storage for AI-generated images (served via `/objects/*` routes)
 
 Core database tables:
 - `users` and `sessions` - Authentication (required for Replit Auth)
