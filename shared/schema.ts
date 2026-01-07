@@ -73,6 +73,7 @@ export const designs = pgTable("designs", {
   id: serial("id").primaryKey(),
   customerId: varchar("customer_id").notNull(),
   merchantId: varchar("merchant_id"),
+  productTypeId: integer("product_type_id"),
   prompt: text("prompt").notNull(),
   stylePreset: text("style_preset"),
   referenceImageUrl: text("reference_image_url"),
