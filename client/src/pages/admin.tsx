@@ -1151,7 +1151,7 @@ export default function AdminPage() {
                       </Card>
                     ) : !blueprintSearch ? (
                       <p className="text-muted-foreground text-center py-8">
-                        Search for a product type to get started (e.g., "pillow", "mug", "blanket")
+                        Search for a product by the Printify name or category type to get started (e.g., "pillow", "t-shirt", "blanket") and ensure you have checked they ship to the countries you want to supply.
                       </p>
                     ) : (
                       <>
