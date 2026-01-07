@@ -97,6 +97,7 @@ export default function DesignPage() {
   const [generatedDesign, setGeneratedDesign] = useState<Design | null>(null);
   
   const [printifyMockups, setPrintifyMockups] = useState<string[]>([]);
+  const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
   
   const [imageScale, setImageScale] = useState(100);
@@ -253,19 +254,23 @@ export default function DesignPage() {
     }
   }, []);
 
-  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string) => {
+  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 100) => {
     setMockupLoading(true);
-    setPrintifyMockups([]);
+    // Don't clear existing mockups - preserve them while loading new ones
     try {
       const response = await apiRequest("POST", "/api/mockup/generate", {
         productTypeId,
         designImageUrl,
         sizeId,
         colorId,
+        scale,
       });
       const result = await response.json();
       if (result.success && result.mockupUrls?.length > 0) {
         setPrintifyMockups(result.mockupUrls);
+      }
+      if (result.success && result.mockupImages?.length > 0) {
+        setPrintifyMockupImages(result.mockupImages);
       }
     } catch (error) {
       console.error("Failed to generate mockups:", error);
@@ -735,6 +740,13 @@ export default function DesignPage() {
     </Button>
   );
 
+  const handleRegenerateMockup = useCallback(() => {
+    if (generatedDesign && designerConfig && selectedProductTypeId) {
+      const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
+      fetchPrintifyMockups(imageUrl, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale);
+    }
+  }, [generatedDesign, designerConfig, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, fetchPrintifyMockups]);
+
   const zoomControls = generatedDesign?.generatedImageUrl && (
     <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
       <ZoomIn className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -765,6 +777,27 @@ export default function DesignPage() {
       >
         Reset
       </Button>
+      {printifyMockups.length > 0 && designerConfig?.hasPrintifyMockups && (
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={handleRegenerateMockup}
+          disabled={mockupLoading}
+          data-testid="button-update-mockup"
+        >
+          {mockupLoading ? (
+            <>
+              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              Updating...
+            </>
+          ) : (
+            <>
+              <Eye className="h-3 w-3 mr-1" />
+              Update Preview
+            </>
+          )}
+        </Button>
+      )}
     </div>
   );
 
@@ -1313,9 +1346,13 @@ export default function DesignPage() {
               {tweakPanel && <div className="mt-2 w-full max-w-xs">{tweakPanel}</div>}
             </div>
             
-            {/* Right: Lifestyle view */}
+            {/* Right: Secondary view (Back, Lifestyle, etc) */}
             <div className="flex-1 flex flex-col items-center min-w-0">
-              <h3 className="text-sm font-medium mb-2">Lifestyle</h3>
+              <h3 className="text-sm font-medium mb-2">
+                {printifyMockupImages.length > 1 
+                  ? printifyMockupImages[1].label.charAt(0).toUpperCase() + printifyMockupImages[1].label.slice(1).replace(/-/g, ' ')
+                  : currentLifestyle ? "Lifestyle" : "Preview"}
+              </h3>
               <div className="flex-1 flex items-center justify-center min-h-0 w-full">
                 <div key={`lifestyle-${selectedSize}-${selectedFrameColor}`} className="max-h-full h-full max-w-full">
                   {lifestyleMockup || (
@@ -1380,10 +1417,12 @@ export default function DesignPage() {
                   variant={mobileViewMode === "lifestyle" ? "default" : "outline"}
                   size="sm"
                   onClick={() => setMobileViewMode("lifestyle")}
-                  disabled={!currentLifestyle}
+                  disabled={!currentLifestyle && printifyMockupImages.length < 2}
                   data-testid="button-view-lifestyle"
                 >
-                  Lifestyle
+                  {printifyMockupImages.length > 1 
+                    ? printifyMockupImages[1].label.charAt(0).toUpperCase() + printifyMockupImages[1].label.slice(1).replace(/-/g, ' ')
+                    : currentLifestyle ? "Lifestyle" : "Preview"}
                 </Button>
               </div>
               

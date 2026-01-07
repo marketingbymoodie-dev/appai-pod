@@ -7,11 +7,18 @@ interface MockupRequest {
   imageUrl: string;
   printifyApiToken: string;
   printifyShopId: string;
+  scale?: number; // 0-2 range, default 1
+}
+
+interface MockupImage {
+  url: string;
+  label: string; // e.g., "front", "back", "lifestyle"
 }
 
 interface MockupResult {
   success: boolean;
   mockupUrls: string[];
+  mockupImages: MockupImage[];
   source: "printify" | "fallback";
   error?: string;
 }
@@ -90,7 +97,8 @@ async function createTemporaryProduct(
   providerId: number,
   variantId: number,
   imageId: string,
-  apiToken: string
+  apiToken: string,
+  scale: number = 1
 ): Promise<string | null> {
   try {
     const response = await fetch(
@@ -124,7 +132,7 @@ async function createTemporaryProduct(
                       id: imageId,
                       x: 0.5,
                       y: 0.5,
-                      scale: 1,
+                      scale: scale, // Use provided scale
                       angle: 0,
                     },
                   ],
@@ -150,11 +158,19 @@ async function createTemporaryProduct(
   }
 }
 
+function extractCameraLabel(url: string): string {
+  const match = url.match(/camera_label=([^&]+)/);
+  if (match) {
+    return match[1];
+  }
+  return "front";
+}
+
 async function getProductMockups(
   shopId: string,
   productId: string,
   apiToken: string
-): Promise<string[] | null> {
+): Promise<{ urls: string[]; images: MockupImage[] } | null> {
   try {
     const response = await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`,
@@ -171,16 +187,25 @@ async function getProductMockups(
 
     const product = await response.json();
     const mockupUrls: string[] = [];
+    const mockupImages: MockupImage[] = [];
 
     if (product.images && Array.isArray(product.images)) {
       for (const image of product.images) {
         if (image.src) {
+          const label = extractCameraLabel(image.src);
+          // Skip size-chart images
+          if (label === "size-chart") continue;
+          
           mockupUrls.push(image.src);
+          mockupImages.push({
+            url: image.src,
+            label: label,
+          });
         }
       }
     }
 
-    return mockupUrls.length > 0 ? mockupUrls : null;
+    return mockupUrls.length > 0 ? { urls: mockupUrls, images: mockupImages } : null;
   } catch (error) {
     console.error("Error fetching product mockups:", error);
     return null;
@@ -217,12 +242,14 @@ export async function generatePrintifyMockup(
     imageUrl,
     printifyApiToken,
     printifyShopId,
+    scale = 1,
   } = request;
 
   if (!printifyApiToken || !printifyShopId) {
     return {
       success: false,
       mockupUrls: [],
+      mockupImages: [],
       source: "fallback",
       error: "Printify credentials not configured",
     };
@@ -236,6 +263,7 @@ export async function generatePrintifyMockup(
       return {
         success: false,
         mockupUrls: [],
+        mockupImages: [],
         source: "fallback",
         error: "Failed to upload image to Printify",
       };
@@ -247,25 +275,27 @@ export async function generatePrintifyMockup(
       providerId,
       variantId,
       uploadedImage.id,
-      printifyApiToken
+      printifyApiToken,
+      scale
     );
 
     if (!productId) {
       return {
         success: false,
         mockupUrls: [],
+        mockupImages: [],
         source: "fallback",
         error: "Failed to create temporary product",
       };
     }
 
-    const mockupUrls = await pRetry(
+    const mockupData = await pRetry(
       async () => {
-        const urls = await getProductMockups(printifyShopId, productId!, printifyApiToken);
-        if (!urls || urls.length === 0) {
+        const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
+        if (!data || data.urls.length === 0) {
           throw new Error("Mockups not ready yet");
         }
-        return urls;
+        return data;
       },
       {
         retries: 5,
@@ -279,7 +309,8 @@ export async function generatePrintifyMockup(
 
     return {
       success: true,
-      mockupUrls,
+      mockupUrls: mockupData.urls,
+      mockupImages: mockupData.images,
       source: "printify",
     };
   } catch (error) {
@@ -287,6 +318,7 @@ export async function generatePrintifyMockup(
     return {
       success: false,
       mockupUrls: [],
+      mockupImages: [],
       source: "fallback",
       error: error instanceof Error ? error.message : "Unknown error",
     };
