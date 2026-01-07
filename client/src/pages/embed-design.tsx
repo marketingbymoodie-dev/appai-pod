@@ -171,6 +171,7 @@ export default function EmbedDesign() {
       referenceImage?: string;
       shop?: string;
       sessionToken?: string;
+      productTypeId?: string;
     }) => {
       const endpoint = isShopify ? "/api/shopify/generate" : "/api/generate";
       const response = await fetch(endpoint, {

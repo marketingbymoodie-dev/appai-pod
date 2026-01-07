@@ -223,6 +223,7 @@ export const productTypes = pgTable("product_types", {
   designerType: text("designer_type").notNull().default("generic"),
   sizeType: text("size_type").notNull().default("dimensional"),
   hasPrintifyMockups: boolean("has_printify_mockups").notNull().default(false),
+  baseMockupImages: text("base_mockup_images").notNull().default("{}"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),

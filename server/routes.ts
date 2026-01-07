@@ -318,6 +318,10 @@ export async function registerRoutes(
         sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: "1:1", genWidth: 1024, genHeight: 1024 } as any;
       }
 
+      // Now sizeConfig is guaranteed to be defined
+      const finalSizeConfig = sizeConfig!;
+      const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
+
       // Build prompt with style
       const styleConfig = STYLE_PRESETS.find(s => s.id === stylePreset);
       let fullPrompt = prompt;
@@ -332,7 +336,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
 2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
 3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image. The image will be printed and framed separately.
-4. COMPOSITION: ${sizeConfig.aspectRatio === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${sizeConfig.aspectRatio} composition`} - the artwork fills the entire canvas.
+4. COMPOSITION: ${aspectRatioStr === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${aspectRatioStr} composition`} - the artwork fills the entire canvas.
 5. SAFE ZONE: Keep all important elements (text, faces, key subjects) within the central 75% of the image to ensure nothing is cut off when framed.
 6. BACKGROUND: The background/scene must extend fully to all four edges of the image with NO visible canvas edges or cutoffs.
 7. PRINT-READY: This is for high-quality wall art printing - create a complete, finished artwork that fills the entire image area.
@@ -405,7 +409,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         thumbnailImageUrl,
         size,
         frameColor: frameColor || "black",
-        aspectRatio: sizeConfig.aspectRatio,
+        aspectRatio: aspectRatioStr,
         status: "completed",
       });
 
@@ -672,7 +676,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Find size config - use default if not matching internal sizes
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
       if (!sizeConfig) {
-        sizeConfig = PRINT_SIZES.find(s => s.id === "medium") || PRINT_SIZES[0];
+        // For Shopify generation, use a sensible default
+        sizeConfig = PRINT_SIZES[0];
       }
 
       // Build prompt with style
@@ -848,6 +853,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Determine sizeType (dimensional vs label-only)
       const sizeType = (productType as any).sizeType || "dimensional";
 
+      // Parse base mockup images if available
+      const baseMockupImages = typeof productType.baseMockupImages === 'string'
+        ? JSON.parse(productType.baseMockupImages)
+        : productType.baseMockupImages || {};
+
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -861,6 +871,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         designerType: productType.designerType || "generic",
         sizeType,
         hasPrintifyMockups: productType.hasPrintifyMockups || false,
+        baseMockupImages,
         sizes: sizes.map((s: any) => ({
           id: s.id,
           name: s.name,
@@ -2744,6 +2755,53 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
+      // Fetch base mockup images (placeholder images) from the first variant
+      // This gives us product preview images before any design is applied
+      let baseMockupImages: { front?: string; lifestyle?: string; variantImages?: Record<string, string> } = {};
+      const firstVariant = variants[0];
+      if (firstVariant?.id) {
+        try {
+          // Fetch variant placeholder images from Printify
+          const placeholderResponse = await fetchWithRetry(
+            `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${firstVariant.id}/placeholders.json`,
+            {
+              headers: {
+                "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                "Content-Type": "application/json"
+              }
+            },
+            2,
+            1000
+          );
+          
+          if (placeholderResponse.ok) {
+            const placeholderData = await placeholderResponse.json();
+            const placeholders = placeholderData.placeholders || placeholderData || [];
+            
+            // Find front and lifestyle images
+            for (const placeholder of placeholders) {
+              const position = (placeholder.position || "").toLowerCase();
+              const images = placeholder.images || [];
+              
+              if (images.length > 0) {
+                const imgUrl = images[0].src || images[0].url;
+                if (position === "front" || position.includes("front")) {
+                  baseMockupImages.front = imgUrl;
+                } else if (position === "lifestyle" || position.includes("lifestyle")) {
+                  baseMockupImages.lifestyle = imgUrl;
+                } else if (!baseMockupImages.front) {
+                  // Use first available position as front if no explicit front
+                  baseMockupImages.front = imgUrl;
+                }
+              }
+            }
+            console.log(`Fetched base mockup images for blueprint ${blueprintId}:`, Object.keys(baseMockupImages));
+          }
+        } catch (e) {
+          console.warn("Could not fetch base mockup placeholders:", e);
+        }
+      }
+
       // Detect product type FIRST to determine sizeType
       // This is more reliable than checking dimensions since some dimensional products
       // may not have dimensions in the variant data
@@ -2881,6 +2939,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         designerType,
         sizeType,
         hasPrintifyMockups: true,
+        baseMockupImages: JSON.stringify(baseMockupImages),
         isActive: true,
         sortOrder: existingTypes.length,
       });

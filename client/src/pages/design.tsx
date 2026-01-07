@@ -68,6 +68,10 @@ interface ProductDesignerConfig {
   bleedMarginPercent: number;
   designerType: string;
   hasPrintifyMockups: boolean;
+  baseMockupImages?: {
+    front?: string;
+    lifestyle?: string;
+  };
   sizes: PrintSize[];
   frameColors: FrameColor[];
   canvasConfig: {
@@ -762,6 +766,10 @@ export default function DesignPage() {
   };
   const frameInsets = getFrameInsets();
 
+  // Determine if we should show a framed preview or a base product mockup
+  const isFramedProduct = designerConfig?.designerType === "framed-print" || designerConfig?.designerType === "framed_print";
+  const hasBaseMockup = designerConfig?.baseMockupImages?.front;
+
   const previewMockup = (
     <div 
       className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
@@ -770,16 +778,94 @@ export default function DesignPage() {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      <div
-        className="absolute rounded-sm flex items-center justify-center"
-        style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none', inset: frameInsets.outer }}
-      >
-        <div 
-          className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
-          style={{ pointerEvents: 'none', inset: frameInsets.inner }}
+      {isFramedProduct ? (
+        // Framed print preview with frame and mat
+        <div
+          className="absolute rounded-sm flex items-center justify-center"
+          style={{ backgroundColor: selectedFrameColorConfig?.hex || "#1a1a1a", pointerEvents: 'none', inset: frameInsets.outer }}
         >
+          <div 
+            className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
+            style={{ pointerEvents: 'none', inset: frameInsets.inner }}
+          >
+            {generateMutation.isPending ? (
+              <div className="flex flex-col items-center gap-2 text-muted-foreground" style={{ pointerEvents: 'none' }}>
+                <Loader2 className="h-8 w-8 animate-spin" />
+                <span className="text-xs">Creating...</span>
+              </div>
+            ) : generatedDesign?.generatedImageUrl ? (
+              <img
+                src={generatedDesign.generatedImageUrl}
+                alt="Generated artwork"
+                className="select-none absolute"
+                style={{
+                  width: `${imageScale}%`,
+                  height: `${imageScale}%`,
+                  objectFit: 'cover',
+                  left: `${imagePosition.x}%`,
+                  top: `${imagePosition.y}%`,
+                  transform: 'translate(-50%, -50%)',
+                  pointerEvents: 'none',
+                }}
+                draggable={false}
+                data-testid="img-generated"
+              />
+            ) : (
+              <div className="text-center text-muted-foreground p-4" style={{ pointerEvents: 'none' }}>
+                <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p className="text-xs">Your artwork will appear here</p>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : hasBaseMockup ? (
+        // Base product mockup (for apparel, etc.) with optional generated artwork overlay
+        <div className="absolute inset-0 flex items-center justify-center" style={{ pointerEvents: 'none' }}>
           {generateMutation.isPending ? (
-            <div className="flex flex-col items-center gap-2 text-muted-foreground" style={{ pointerEvents: 'none' }}>
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-xs">Creating...</span>
+            </div>
+          ) : (
+            <div className="relative w-full h-full">
+              <img
+                src={designerConfig.baseMockupImages!.front!}
+                alt="Product preview"
+                className="w-full h-full object-contain rounded-md"
+                data-testid="img-base-mockup"
+              />
+              {/* Overlay generated artwork on the product mockup */}
+              {generatedDesign?.generatedImageUrl && (
+                <div 
+                  className="absolute overflow-hidden"
+                  style={{
+                    top: '25%',
+                    left: '30%',
+                    width: '40%',
+                    height: '40%',
+                    pointerEvents: 'auto',
+                  }}
+                >
+                  <img
+                    src={generatedDesign.generatedImageUrl}
+                    alt="Generated artwork"
+                    className="w-full h-full object-cover"
+                    style={{
+                      transform: `scale(${imageScale / 100}) translate(${(imagePosition.x - 50)}%, ${(imagePosition.y - 50)}%)`,
+                    }}
+                    draggable={false}
+                    data-testid="img-generated"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        // Generic placeholder
+        <div className="text-center text-muted-foreground p-4" style={{ pointerEvents: 'none' }}>
+          {generateMutation.isPending ? (
+            <div className="flex flex-col items-center gap-2">
               <Loader2 className="h-8 w-8 animate-spin" />
               <span className="text-xs">Creating...</span>
             </div>
@@ -787,34 +873,27 @@ export default function DesignPage() {
             <img
               src={generatedDesign.generatedImageUrl}
               alt="Generated artwork"
-              className="select-none absolute"
-              style={{
-                width: `${imageScale}%`,
-                height: `${imageScale}%`,
-                objectFit: 'cover',
-                left: `${imagePosition.x}%`,
-                top: `${imagePosition.y}%`,
-                transform: 'translate(-50%, -50%)',
-                pointerEvents: 'none',
-              }}
-              draggable={false}
+              className="w-full h-full object-contain rounded-md"
               data-testid="img-generated"
             />
           ) : (
-            <div className="text-center text-muted-foreground p-4" style={{ pointerEvents: 'none' }}>
+            <>
               <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
               <p className="text-xs">Your artwork will appear here</p>
-            </div>
+            </>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 
   // Get the frame area to use (calibration or default)
   const activeFrameArea = calibrationMode && calibrationArea ? calibrationArea : currentLifestyle?.frameArea;
+  
+  // For non-framed products, use base mockup lifestyle image if available
+  const hasBaseLifestyleMockup = designerConfig?.baseMockupImages?.lifestyle;
 
-  const lifestyleMockup = currentLifestyle && (
+  const lifestyleMockup = (currentLifestyle || hasBaseLifestyleMockup) && (
     <div 
       ref={calibrationRef}
       className="relative w-full flex items-center justify-center"
@@ -823,52 +902,87 @@ export default function DesignPage() {
       onMouseLeave={calibrationMode ? handleCalibrationMouseUp : undefined}
     >
       <div className="relative">
-        <img
-          ref={mockupImgRef}
-          src={currentLifestyle.src}
-          alt="Lifestyle mockup"
-          className="w-full h-auto rounded-md"
-        />
-        {activeFrameArea && (
-          <div
-            className={`absolute ${calibrationMode ? 'border-2 border-dashed border-blue-500 cursor-move' : 'overflow-hidden'}`}
-            style={{
-              top: `${activeFrameArea.top}%`,
-              left: `${activeFrameArea.left}%`,
-              width: `${activeFrameArea.width}%`,
-              height: `${activeFrameArea.height}%`,
-            }}
-            onMouseDown={calibrationMode ? handleCalibrationMouseDown : undefined}
-          >
-            {generatedDesign?.generatedImageUrl && (
-              <img
-                src={generatedDesign.generatedImageUrl}
-                alt="Artwork in lifestyle"
-                className={`absolute ${calibrationMode ? 'opacity-70' : ''}`}
+        {currentLifestyle ? (
+          // Framed product lifestyle with artwork overlay
+          <>
+            <img
+              ref={mockupImgRef}
+              src={currentLifestyle.src}
+              alt="Lifestyle mockup"
+              className="w-full h-auto rounded-md"
+            />
+            {activeFrameArea && (
+              <div
+                className={`absolute ${calibrationMode ? 'border-2 border-dashed border-blue-500 cursor-move' : 'overflow-hidden'}`}
                 style={{
-                  width: `${imageScale}%`,
-                  height: `${imageScale}%`,
-                  left: `${imagePosition.x - imageScale / 2}%`,
-                  top: `${imagePosition.y - imageScale / 2}%`,
-                  objectFit: 'cover',
+                  top: `${activeFrameArea.top}%`,
+                  left: `${activeFrameArea.left}%`,
+                  width: `${activeFrameArea.width}%`,
+                  height: `${activeFrameArea.height}%`,
                 }}
-              />
+                onMouseDown={calibrationMode ? handleCalibrationMouseDown : undefined}
+              >
+                {generatedDesign?.generatedImageUrl && (
+                  <img
+                    src={generatedDesign.generatedImageUrl}
+                    alt="Artwork in lifestyle"
+                    className={`absolute ${calibrationMode ? 'opacity-70' : ''}`}
+                    style={{
+                      width: `${imageScale}%`,
+                      height: `${imageScale}%`,
+                      left: `${imagePosition.x - imageScale / 2}%`,
+                      top: `${imagePosition.y - imageScale / 2}%`,
+                      objectFit: 'cover',
+                    }}
+                  />
+                )}
+                {calibrationMode && (
+                  <>
+                    <div
+                      className="absolute bottom-0 right-0 w-4 h-4 bg-blue-500 cursor-se-resize"
+                      onMouseDown={handleCalibrationResizeMouseDown}
+                    />
+                    <div className="absolute -top-6 left-0 text-xs bg-blue-500 text-white px-1 rounded whitespace-nowrap">
+                      T:{activeFrameArea.top.toFixed(1)} L:{activeFrameArea.left.toFixed(1)} W:{activeFrameArea.width.toFixed(1)} H:{activeFrameArea.height.toFixed(1)}
+                    </div>
+                  </>
+                )}
+              </div>
             )}
-            {calibrationMode && (
-              <>
-                {/* Resize handle */}
-                <div
-                  className="absolute bottom-0 right-0 w-4 h-4 bg-blue-500 cursor-se-resize"
-                  onMouseDown={handleCalibrationResizeMouseDown}
+          </>
+        ) : hasBaseLifestyleMockup ? (
+          // Base product lifestyle mockup (for apparel, etc.) with generated artwork overlay
+          <div className="relative">
+            <img
+              src={designerConfig!.baseMockupImages!.lifestyle!}
+              alt="Lifestyle preview"
+              className="w-full h-auto rounded-md"
+              data-testid="img-base-lifestyle"
+            />
+            {/* Overlay generated artwork on lifestyle mockup */}
+            {generatedDesign?.generatedImageUrl && (
+              <div 
+                className="absolute overflow-hidden"
+                style={{
+                  top: '20%',
+                  left: '25%',
+                  width: '50%',
+                  height: '50%',
+                }}
+              >
+                <img
+                  src={generatedDesign.generatedImageUrl}
+                  alt="Artwork in lifestyle"
+                  className="w-full h-full object-cover"
+                  style={{
+                    transform: `scale(${imageScale / 100}) translate(${(imagePosition.x - 50)}%, ${(imagePosition.y - 50)}%)`,
+                  }}
+                  data-testid="img-generated-lifestyle"
                 />
-                {/* Coordinate display */}
-                <div className="absolute -top-6 left-0 text-xs bg-blue-500 text-white px-1 rounded whitespace-nowrap">
-                  T:{activeFrameArea.top.toFixed(1)} L:{activeFrameArea.left.toFixed(1)} W:{activeFrameArea.width.toFixed(1)} H:{activeFrameArea.height.toFixed(1)}
-                </div>
-              </>
+              </div>
             )}
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
