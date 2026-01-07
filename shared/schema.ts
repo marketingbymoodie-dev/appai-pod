@@ -77,6 +77,7 @@ export const designs = pgTable("designs", {
   stylePreset: text("style_preset"),
   referenceImageUrl: text("reference_image_url"),
   generatedImageUrl: text("generated_image_url"),
+  thumbnailImageUrl: text("thumbnail_image_url"),
   size: text("size").notNull(),
   frameColor: text("frame_color").notNull().default("black"),
   aspectRatio: text("aspect_ratio").notNull().default("3:4"),
