@@ -28,7 +28,9 @@ export function SizeSelector({
             data-testid={`button-size-${size.id}`}
           >
             <span className="font-medium">{size.name}</span>
-            <span className="text-[10px] opacity-70">{size.aspectRatio}</span>
+            {size.aspectRatio && (
+              <span className="text-[10px] opacity-70">{size.aspectRatio}</span>
+            )}
           </Button>
         ))}
       </div>

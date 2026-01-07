@@ -221,6 +221,7 @@ export const productTypes = pgTable("product_types", {
   printAreaHeight: integer("print_area_height"),
   bleedMarginPercent: integer("bleed_margin_percent").notNull().default(5),
   designerType: text("designer_type").notNull().default("generic"),
+  sizeType: text("size_type").notNull().default("dimensional"),
   hasPrintifyMockups: boolean("has_printify_mockups").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),

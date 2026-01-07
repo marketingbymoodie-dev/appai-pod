@@ -819,6 +819,9 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const bleedMarginPercent = productType.bleedMarginPercent || 5;
       const safeZoneMargin = Math.round(Math.min(canvasWidth, canvasHeight) * (bleedMarginPercent / 100));
 
+      // Determine sizeType (dimensional vs label-only)
+      const sizeType = (productType as any).sizeType || "dimensional";
+
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -830,13 +833,14 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         printAreaHeight: productType.printAreaHeight,
         bleedMarginPercent,
         designerType: productType.designerType || "generic",
+        sizeType,
         hasPrintifyMockups: productType.hasPrintifyMockups || false,
         sizes: sizes.map((s: any) => ({
           id: s.id,
           name: s.name,
           width: s.width || 0,
           height: s.height || 0,
-          aspectRatio: s.aspectRatio || productType.aspectRatio,
+          aspectRatio: sizeType === "dimensional" ? (s.aspectRatio || productType.aspectRatio) : undefined,
         })),
         frameColors: frameColors.map((c: any) => ({
           id: c.id,
@@ -2358,6 +2362,42 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Use provided provider ID or default to first provider
       const providerId = req.body.providerId || providers[0].id;
 
+      // Fetch blueprint details to get color hex codes from options
+      const blueprintResponse = await fetchWithRetry(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        },
+        3,
+        1500
+      );
+
+      let blueprintColors: Record<string, string> = {}; // colorName -> hex
+      if (blueprintResponse.ok) {
+        const blueprintData = await blueprintResponse.json();
+        // Extract colors from blueprint options if available
+        const colorOptions = blueprintData.options?.find((opt: any) => 
+          opt.type === 'color' || opt.name?.toLowerCase() === 'color' || opt.name?.toLowerCase() === 'colors'
+        );
+        if (colorOptions?.values) {
+          for (const colorVal of colorOptions.values) {
+            const colorName = (colorVal.title || colorVal.name || '').toLowerCase();
+            // Prefer colors array with hex, or hex_code field, or try to extract from value
+            if (colorVal.colors && colorVal.colors.length > 0) {
+              blueprintColors[colorName] = colorVal.colors[0];
+            } else if (colorVal.hex_code) {
+              blueprintColors[colorName] = colorVal.hex_code;
+            } else if (colorVal.value && colorVal.value.startsWith('#')) {
+              blueprintColors[colorName] = colorVal.value;
+            }
+          }
+        }
+        console.log(`Extracted ${Object.keys(blueprintColors).length} colors from blueprint options`);
+      }
+
       // Fetch variants for this provider with retry logic
       const variantsResponse = await fetchWithRetry(
         `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
@@ -2613,7 +2653,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
               "khaki": "#C3B091",
             };
             
-            const hex = colorHexMap[colorName.toLowerCase()] || "#888888";
+            // Priority: 1) Blueprint API colors, 2) Fallback hex map, 3) Gray default
+            const hex = blueprintColors[colorName.toLowerCase()] || colorHexMap[colorName.toLowerCase()] || "#888888";
             colorsMap.set(colorName.toLowerCase(), { 
               id: extractedColorId, 
               name: colorName, 
@@ -2639,15 +2680,19 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
+      // Determine sizeType based on whether we have dimensional sizes
+      const hasDimensionalSizes = sizes.some(s => s.width > 0 && s.height > 0);
+      const sizeType = hasDimensionalSizes ? "dimensional" : "label";
+
       // Determine aspect ratio using GCD for accurate ratio
       const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
       
-      let aspectRatio = "1:1";
-      if (sizes.length > 0) {
-        const firstSize = sizes[0];
-        const w = firstSize.width;
-        const h = firstSize.height;
-        if (w > 0 && h > 0) {
+      let aspectRatio = "1:1"; // Default for label-only sizes
+      if (hasDimensionalSizes && sizes.length > 0) {
+        const firstDimensionalSize = sizes.find(s => s.width > 0 && s.height > 0);
+        if (firstDimensionalSize) {
+          const w = firstDimensionalSize.width;
+          const h = firstDimensionalSize.height;
           const divisor = gcd(w, h);
           const simplifiedW = w / divisor;
           const simplifiedH = h / divisor;
@@ -2726,6 +2771,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         printAreaHeight: maxHeight || null,
         bleedMarginPercent,
         designerType,
+        sizeType,
         hasPrintifyMockups: true,
         isActive: true,
         sortOrder: existingTypes.length,

@@ -44,6 +44,7 @@ export interface LifestyleMockupConfig {
 
 export type PrintShape = "rectangle" | "square" | "circle";
 export type DesignerType = "framed-print" | "pillow" | "mug" | "apparel" | "generic";
+export type SizeType = "dimensional" | "label";
 
 export interface CanvasConfig {
   maxDimension: number;
@@ -63,6 +64,7 @@ export interface ProductDesignerConfig {
   printAreaHeight: number | null;
   bleedMarginPercent: number;
   designerType: DesignerType;
+  sizeType: SizeType;
   hasPrintifyMockups: boolean;
   sizes: PrintSize[];
   frameColors: FrameColor[];
