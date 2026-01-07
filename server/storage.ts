@@ -12,7 +12,7 @@ import {
   productTypes, type ProductType, type InsertProductType,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, sql } from "drizzle-orm";
+import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
 
 export interface IStorage {
   // Customers
@@ -32,9 +32,10 @@ export interface IStorage {
   // Designs
   getDesign(id: number): Promise<Design | undefined>;
   getDesignsByCustomer(customerId: string): Promise<Design[]>;
-  getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: Design[]; total: number }>;
+  getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: (Design & { productTypeName: string | null })[]; total: number }>;
   getDesignCountByCustomer(customerId: string): Promise<number>;
   getDesignsNeedingThumbnails(limit?: number): Promise<Design[]>;
+  getDesignsNeedingProductType(limit?: number): Promise<Design[]>;
   createDesign(design: InsertDesign): Promise<Design>;
   updateDesign(id: number, updates: Partial<Design>): Promise<Design | undefined>;
   deleteDesign(id: number): Promise<void>;
@@ -187,9 +188,30 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(designs).where(eq(designs.customerId, customerId)).orderBy(desc(designs.createdAt));
   }
 
-  async getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: Design[]; total: number }> {
-    const [designsList, countResult] = await Promise.all([
-      db.select().from(designs)
+  async getDesignsByCustomerPaginated(customerId: string, limit: number, offset: number): Promise<{ designs: (Design & { productTypeName: string | null })[]; total: number }> {
+    const [designsWithTypes, countResult] = await Promise.all([
+      db.select({
+        id: designs.id,
+        customerId: designs.customerId,
+        merchantId: designs.merchantId,
+        productTypeId: designs.productTypeId,
+        prompt: designs.prompt,
+        stylePreset: designs.stylePreset,
+        referenceImageUrl: designs.referenceImageUrl,
+        generatedImageUrl: designs.generatedImageUrl,
+        thumbnailImageUrl: designs.thumbnailImageUrl,
+        size: designs.size,
+        frameColor: designs.frameColor,
+        aspectRatio: designs.aspectRatio,
+        transformScale: designs.transformScale,
+        transformX: designs.transformX,
+        transformY: designs.transformY,
+        status: designs.status,
+        createdAt: designs.createdAt,
+        updatedAt: designs.updatedAt,
+        productTypeName: productTypes.name,
+      }).from(designs)
+        .leftJoin(productTypes, eq(designs.productTypeId, productTypes.id))
         .where(eq(designs.customerId, customerId))
         .orderBy(desc(designs.createdAt))
         .limit(limit)
@@ -197,7 +219,7 @@ export class DatabaseStorage implements IStorage {
       db.select({ count: sql<number>`count(*)::int` }).from(designs)
         .where(eq(designs.customerId, customerId))
     ]);
-    return { designs: designsList, total: countResult[0]?.count || 0 };
+    return { designs: designsWithTypes, total: countResult[0]?.count || 0 };
   }
 
   async getDesignCountByCustomer(customerId: string): Promise<number> {
@@ -210,6 +232,13 @@ export class DatabaseStorage implements IStorage {
     // Get designs that have base64 images (no thumbnail) or stored images without thumbnails
     return db.select().from(designs)
       .where(sql`${designs.thumbnailImageUrl} IS NULL`)
+      .orderBy(desc(designs.createdAt))
+      .limit(limit);
+  }
+
+  async getDesignsNeedingProductType(limit: number = 50): Promise<Design[]> {
+    return db.select().from(designs)
+      .where(isNull(designs.productTypeId))
       .orderBy(desc(designs.createdAt))
       .limit(limit);
   }

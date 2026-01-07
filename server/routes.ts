@@ -1389,6 +1389,42 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Backfill product type for existing designs (defaults to Framed Vertical Poster with ID 20)
+  app.post("/api/admin/backfill-product-types", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const batchSize = req.body.batchSize || 50;
+      const defaultProductTypeId = req.body.defaultProductTypeId || 20; // Framed Vertical Poster
+      
+      const designs = await storage.getDesignsNeedingProductType(batchSize);
+      
+      if (designs.length === 0) {
+        return res.json({ updated: 0, message: "No designs need product type backfill" });
+      }
+
+      let updatedCount = 0;
+      const errors: string[] = [];
+
+      for (const design of designs) {
+        try {
+          await storage.updateDesign(design.id, { productTypeId: defaultProductTypeId });
+          updatedCount++;
+        } catch (err) {
+          errors.push(`Design ${design.id}: ${(err as Error).message}`);
+        }
+      }
+
+      res.json({
+        updated: updatedCount,
+        total: designs.length,
+        errors: errors.length > 0 ? errors : undefined,
+        hasMore: designs.length === batchSize
+      });
+    } catch (error) {
+      console.error("Error backfilling product types:", error);
+      res.status(500).json({ error: "Failed to backfill product types" });
+    }
+  });
+
   // ==================== COUPON MANAGEMENT ====================
 
   // Get merchant's coupons
