@@ -81,6 +81,7 @@ interface ProductDesignerConfig {
     height: number;
     safeZoneMargin: number;
   };
+  variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
 }
 
 export default function DesignPage() {
@@ -345,6 +346,33 @@ export default function DesignPage() {
     }
   }, [generatedDesign, designerConfig, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, fetchPrintifyMockups]);
 
+  // Debounced auto-update for mockups when scale changes
+  const scaleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastScaleRef = useRef(imageScale);
+  
+  useEffect(() => {
+    // Only trigger if we have mockups and scale actually changed
+    if (printifyMockups.length > 0 && designerConfig?.hasPrintifyMockups && generatedDesign) {
+      if (lastScaleRef.current !== imageScale) {
+        // Clear any existing timeout
+        if (scaleTimeoutRef.current) {
+          clearTimeout(scaleTimeoutRef.current);
+        }
+        // Set new timeout for 1 second after slider stops
+        scaleTimeoutRef.current = setTimeout(() => {
+          handleRegenerateMockup();
+          lastScaleRef.current = imageScale;
+        }, 1000);
+      }
+    }
+    // Cleanup on unmount
+    return () => {
+      if (scaleTimeoutRef.current) {
+        clearTimeout(scaleTimeoutRef.current);
+      }
+    };
+  }, [imageScale, printifyMockups.length, designerConfig?.hasPrintifyMockups, generatedDesign, handleRegenerateMockup]);
+
   // Initialize calibration area when size/frame changes in calibration mode
   // Note: We compute currentLifestyle inline here since we can't call it before hooks
   const calibrationLifestyle = selectedSize && lifestyleMockups[selectedSize]
@@ -502,6 +530,34 @@ export default function DesignPage() {
   const activeSizes = designerConfig?.sizes || config?.sizes || [];
   const activeFrameColors = designerConfig?.frameColors || config?.frameColors || [];
   
+  // Helper to check if a size/color combination is available
+  const isVariantAvailable = useCallback((sizeId: string, colorId: string): boolean => {
+    if (!designerConfig?.variantMap) return true; // If no variant map, assume all available
+    const key = `${sizeId}:${colorId}`;
+    return key in designerConfig.variantMap;
+  }, [designerConfig?.variantMap]);
+  
+  // Get available colors for current size
+  const getAvailableColorsForSize = useCallback((sizeId: string): string[] => {
+    if (!designerConfig?.variantMap) return activeFrameColors.map(c => c.id);
+    return activeFrameColors
+      .filter(color => isVariantAvailable(sizeId, color.id))
+      .map(c => c.id);
+  }, [designerConfig?.variantMap, activeFrameColors, isVariantAvailable]);
+  
+  // Get available sizes for current color
+  const getAvailableSizesForColor = useCallback((colorId: string): string[] => {
+    if (!designerConfig?.variantMap) return activeSizes.map(s => s.id);
+    return activeSizes
+      .filter(size => isVariantAvailable(size.id, colorId))
+      .map(s => s.id);
+  }, [designerConfig?.variantMap, activeSizes, isVariantAvailable]);
+  
+  // Check if current selection is valid
+  const isCurrentSelectionValid = selectedSize && selectedFrameColor 
+    ? isVariantAvailable(selectedSize, selectedFrameColor) 
+    : true;
+  
   const selectedSizeConfig = activeSizes.find(s => s.id === selectedSize);
   const selectedFrameColorConfig = activeFrameColors.find(f => f.id === selectedFrameColor);
   
@@ -619,17 +675,22 @@ export default function DesignPage() {
     <div className="space-y-2">
       <Label className="text-sm font-medium">Size</Label>
       <div className="grid grid-cols-3 gap-2">
-        {activeSizes.map((size) => (
-          <Button
-            key={size.id}
-            variant={selectedSize === size.id ? "default" : "outline"}
-            className="h-auto py-2 text-xs"
-            onClick={() => handleSizeChange(size.id)}
-            data-testid={`button-size-${size.id}`}
-          >
-            <span className="font-medium">{size.name}</span>
-          </Button>
-        ))}
+        {activeSizes.map((size) => {
+          const isAvailable = !selectedFrameColor || isVariantAvailable(size.id, selectedFrameColor);
+          return (
+            <Button
+              key={size.id}
+              variant={selectedSize === size.id ? "default" : "outline"}
+              className={`h-auto py-2 text-xs ${!isAvailable ? 'opacity-40' : ''}`}
+              onClick={() => handleSizeChange(size.id)}
+              disabled={!isAvailable}
+              title={!isAvailable ? `Not available in ${activeFrameColors.find(c => c.id === selectedFrameColor)?.name || 'selected color'}` : undefined}
+              data-testid={`button-size-${size.id}`}
+            >
+              <span className="font-medium">{size.name}</span>
+            </Button>
+          );
+        })}
       </div>
     </div>
   );
@@ -638,33 +699,61 @@ export default function DesignPage() {
     <div className="space-y-2">
       <Label className="text-sm font-medium">{designerConfig?.designerType === "framed_print" ? "Frame" : "Color"}</Label>
       <div className="flex flex-wrap gap-2">
-        {activeFrameColors.map((color) => (
-          <button
-            key={color.id}
-            className={`w-10 h-10 rounded-md border-2 transition-all ${
-              selectedFrameColor === color.id
-                ? "border-primary ring-2 ring-primary ring-offset-2"
-                : "border-muted"
-            }`}
-            style={{ backgroundColor: color.hex }}
-            onClick={() => handleFrameColorChange(color.id)}
-            title={color.name}
-            data-testid={`button-frame-${color.id}`}
-          />
-        ))}
+        {activeFrameColors.map((color) => {
+          const isAvailable = !selectedSize || isVariantAvailable(selectedSize, color.id);
+          return (
+            <button
+              key={color.id}
+              className={`w-10 h-10 rounded-md border-2 transition-all ${
+                selectedFrameColor === color.id
+                  ? "border-primary ring-2 ring-primary ring-offset-2"
+                  : "border-muted"
+              } ${!isAvailable ? 'opacity-40 cursor-not-allowed' : ''}`}
+              style={{ backgroundColor: color.hex }}
+              onClick={() => isAvailable && handleFrameColorChange(color.id)}
+              disabled={!isAvailable}
+              title={!isAvailable ? `Not available in ${activeSizes.find(s => s.id === selectedSize)?.name || 'selected size'}` : color.name}
+              data-testid={`button-frame-${color.id}`}
+            />
+          );
+        })}
       </div>
+      {!isCurrentSelectionValid && selectedSize && selectedFrameColor && (
+        <p className="text-xs text-destructive">
+          This size/color combination is not available. Please select a different option.
+        </p>
+      )}
     </div>
   );
 
+  // Determine which style category to show based on product type
+  const getStyleCategory = (): "decor" | "apparel" => {
+    const designerType = designerConfig?.designerType || "";
+    if (designerType === "apparel" || designerType.includes("shirt") || designerType.includes("hoodie")) {
+      return "apparel";
+    }
+    return "decor";
+  };
+  
+  const styleCategory = getStyleCategory();
+  const filteredStyles = config?.stylePresets.filter(style => 
+    (style as any).category === "all" || (style as any).category === styleCategory
+  ) || [];
+  
   const styleSelector = (
     <div className="space-y-2">
-      <Label className="text-sm font-medium">Style</Label>
+      <Label className="text-sm font-medium">
+        Style 
+        <span className="text-xs text-muted-foreground ml-1">
+          ({styleCategory === "apparel" ? "Apparel Artwork" : "Decor Artwork"})
+        </span>
+      </Label>
       <Select value={selectedStyle} onValueChange={setSelectedStyle}>
         <SelectTrigger data-testid="select-style" className="h-9">
           <SelectValue placeholder="Choose a style" />
         </SelectTrigger>
         <SelectContent>
-          {config?.stylePresets.map((style) => (
+          {filteredStyles.map((style) => (
             <SelectItem key={style.id} value={style.id}>
               {style.name}
             </SelectItem>
@@ -939,12 +1028,23 @@ export default function DesignPage() {
               <span className="text-xs">Generating product preview...</span>
             </div>
           ) : printifyMockups.length > 0 ? (
-            <img
-              src={printifyMockups[0]}
-              alt="Product mockup"
-              className="w-full h-full object-contain rounded-md"
-              data-testid="img-printify-mockup"
-            />
+            <div className="relative w-full h-full">
+              <img
+                src={printifyMockups[0]}
+                alt="Product mockup"
+                className="w-full h-full object-contain rounded-md"
+                data-testid="img-printify-mockup"
+              />
+              {/* Loading overlay when updating mockups */}
+              {mockupLoading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-md">
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                    <span className="text-xs">Updating...</span>
+                  </div>
+                </div>
+              )}
+            </div>
           ) : generatedDesign?.generatedImageUrl ? (
             <img
               src={generatedDesign.generatedImageUrl}
@@ -1031,12 +1131,23 @@ export default function DesignPage() {
           </>
         ) : hasPrintifyLifestyleMockup ? (
           // Printify-generated lifestyle mockup
-          <img
-            src={printifyMockups[1]}
-            alt="Lifestyle preview"
-            className="w-full h-auto rounded-md"
-            data-testid="img-printify-lifestyle"
-          />
+          <div className="relative">
+            <img
+              src={printifyMockups[1]}
+              alt="Lifestyle preview"
+              className="w-full h-auto rounded-md"
+              data-testid="img-printify-lifestyle"
+            />
+            {/* Loading overlay when updating mockups */}
+            {mockupLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-md">
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                  <span className="text-xs">Updating...</span>
+                </div>
+              </div>
+            )}
+          </div>
         ) : hasBaseLifestyleMockup ? (
           // Base product lifestyle mockup (for apparel, etc.) with generated artwork overlay
           <div className="relative">
@@ -1353,8 +1464,16 @@ export default function DesignPage() {
                   ? printifyMockupImages[1].label.charAt(0).toUpperCase() + printifyMockupImages[1].label.slice(1).replace(/-/g, ' ')
                   : currentLifestyle ? "Lifestyle" : "Preview"}
               </h3>
-              <div className="flex-1 flex items-center justify-center min-h-0 w-full">
-                <div key={`lifestyle-${selectedSize}-${selectedFrameColor}`} className="max-h-full h-full max-w-full">
+              <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
+                <div 
+                  key={`lifestyle-${selectedSize}-${selectedFrameColor}`} 
+                  className="max-h-full max-w-full flex items-center justify-center"
+                  style={{ 
+                    aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
+                    width: selectedSizeConfig && selectedSizeConfig.width >= selectedSizeConfig.height ? '100%' : 'auto',
+                    height: selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width ? '100%' : 'auto',
+                  }}
+                >
                   {lifestyleMockup || (
                     <div className="h-full w-full flex items-center justify-center bg-muted rounded-md">
                       <p className="text-xs text-muted-foreground">Select a size to see lifestyle view</p>

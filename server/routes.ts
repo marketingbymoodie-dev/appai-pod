@@ -858,6 +858,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         ? JSON.parse(productType.baseMockupImages)
         : productType.baseMockupImages || {};
 
+      // Parse variant map for size/color availability
+      const variantMap = typeof productType.variantMap === 'string'
+        ? JSON.parse(productType.variantMap)
+        : productType.variantMap || {};
+
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -890,6 +895,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           height: canvasHeight,
           safeZoneMargin,
         },
+        variantMap,
       };
 
       res.json(designerConfig);

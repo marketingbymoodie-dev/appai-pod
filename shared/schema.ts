@@ -272,17 +272,30 @@ export const FRAME_COLORS = [
   { id: "white", name: "White", hex: "#f5f5f5" },
 ] as const;
 
-// IMPORTANT: All style presets must create full-bleed, edge-to-edge artwork with no borders or floating elements
+// IMPORTANT: Style presets are categorized by product type
+// Decor styles create full-bleed, edge-to-edge artwork for prints and wall art
+// Apparel styles create centered graphics/motifs suitable for t-shirts, etc.
 export const STYLE_PRESETS = [
-  { id: "none", name: "No Style (Custom Prompt)", promptPrefix: "" },
-  { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop filling the entire canvas. The portrait should look like a classic oil painting of nobility with the background extending to all edges. Create full-bleed artwork of" },
-  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of" },
-  { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic full-bleed oil painting in the style of impressionism that fills the entire canvas with rich brushstrokes extending to all edges of" },
-  { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of" },
-  { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of" },
-  { id: "abstract", name: "Abstract", promptPrefix: "A full-bleed abstract modern art piece with bold colors filling the entire canvas edge-to-edge representing" },
-  { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel poster style illustration that fills the entire canvas with the design extending to all edges of" },
-  { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of" },
+  // Universal - works for all product types
+  { id: "none", name: "No Style (Custom Prompt)", promptPrefix: "", category: "all" },
+  
+  // Decor Artwork - Full-bleed styles for prints, posters, wall art
+  { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop filling the entire canvas. The portrait should look like a classic oil painting of nobility with the background extending to all edges. Create full-bleed artwork of", category: "decor" },
+  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of", category: "decor" },
+  { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic full-bleed oil painting in the style of impressionism that fills the entire canvas with rich brushstrokes extending to all edges of", category: "decor" },
+  { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of", category: "decor" },
+  { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of", category: "decor" },
+  { id: "abstract", name: "Abstract", promptPrefix: "A full-bleed abstract modern art piece with bold colors filling the entire canvas edge-to-edge representing", category: "decor" },
+  { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel poster style illustration that fills the entire canvas with the design extending to all edges of", category: "decor" },
+  { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of", category: "decor" },
+  
+  // Apparel Artwork - Centered graphics/motifs for t-shirts, hoodies, etc.
+  { id: "centered-graphic", name: "Centered Graphic", promptPrefix: "A bold centered graphic design with a transparent or simple background, suitable for printing on a t-shirt. The main subject should be prominently centered and isolated without edge-to-edge backgrounds. Create a clean, printable design of", category: "apparel" },
+  { id: "vintage-logo", name: "Vintage Logo", promptPrefix: "A vintage-style logo or emblem design with a distressed, retro look. The design should be centered with clean edges, suitable for t-shirt printing. Create a nostalgic, badge-style graphic of", category: "apparel" },
+  { id: "minimalist-icon", name: "Minimalist Icon", promptPrefix: "A clean, minimalist icon or symbol design with simple lines and shapes. The design should be centered with plenty of negative space around it, perfect for subtle t-shirt prints. Create a simple, elegant icon of", category: "apparel" },
+  { id: "typography", name: "Typographic Design", promptPrefix: "A bold typographic design with stylized lettering or text. The text should be the main focus, centered and designed with creative fonts and effects suitable for t-shirt printing. Create eye-catching typography of", category: "apparel" },
+  { id: "illustration-motif", name: "Illustrated Motif", promptPrefix: "A hand-drawn illustration style motif or character design. The illustration should be centered with clean edges, not edge-to-edge, suitable for apparel printing. Create a charming illustrated design of", category: "apparel" },
+  { id: "retro-badge", name: "Retro Badge", promptPrefix: "A retro-style badge or patch design with circular or shield shape. Include vintage textures and classic design elements, centered and suitable for t-shirt chest placement. Create a cool retro badge design of", category: "apparel" },
 ] as const;
 
 export type PrintSize = typeof PRINT_SIZES[number];
