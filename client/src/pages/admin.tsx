@@ -1022,14 +1022,11 @@ export default function AdminPage() {
                     <Download className="h-4 w-4 mr-2" />
                     Import from Printify
                   </Button>
-                  <Dialog open={productTypeDialogOpen} onOpenChange={(open) => { if (!open) resetProductTypeForm(); setProductTypeDialogOpen(open); }}>
-                    <DialogTrigger asChild>
-                      <Button data-testid="button-create-product-type">
-                        <Plus className="h-4 w-4 mr-2" />
-                        Add Product Type
-                      </Button>
-                    </DialogTrigger>
-                  <DialogContent className="max-w-lg">
+                </div>
+              </div>
+
+              <Dialog open={productTypeDialogOpen} onOpenChange={(open) => { if (!open) resetProductTypeForm(); setProductTypeDialogOpen(open); }}>
+                <DialogContent className="max-w-lg">
                     <DialogHeader>
                       <DialogTitle>{editingProductType ? "Edit Product Type" : "Create Product Type"}</DialogTitle>
                     </DialogHeader>
@@ -1097,9 +1094,7 @@ export default function AdminPage() {
                       </Button>
                     </div>
                   </DialogContent>
-                </Dialog>
-                </div>
-              </div>
+              </Dialog>
 
               <Dialog open={printifyImportOpen} onOpenChange={(open) => {
                 setPrintifyImportOpen(open);
@@ -1403,25 +1398,7 @@ export default function AdminPage() {
                 <Card>
                   <CardContent className="py-8 text-center">
                     <Package className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground mb-4">No product types configured yet.</p>
-                    <div className="flex flex-wrap items-center justify-center gap-3">
-                      <Button 
-                        onClick={() => seedProductTypesMutation.mutate()} 
-                        disabled={seedProductTypesMutation.isPending}
-                        data-testid="button-seed-product-types"
-                      >
-                        {seedProductTypesMutation.isPending ? (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : (
-                          <Plus className="h-4 w-4 mr-2" />
-                        )}
-                        Load Default Product Types
-                      </Button>
-                      <Button variant="outline" onClick={() => setProductTypeDialogOpen(true)} data-testid="button-add-first-product-type">
-                        <Plus className="h-4 w-4 mr-2" />
-                        Create Custom
-                      </Button>
-                    </div>
+                    <p className="text-muted-foreground">No product types configured yet. Import from Printify to get started.</p>
                   </CardContent>
                 </Card>
               )}
