@@ -2419,8 +2419,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const variants = variantsData.variants || variantsData || [];
 
       // Parse variants to extract sizes and colors
-      // Include providerId and printifyVariantId for mockup generation
-      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number; providerId: number; printifyVariantId: number }>();
+      // Sizes are purely catalog metadata - variant info goes in variantMap
+      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
       const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
       // Map of "sizeId:colorId" -> printifyVariantId for accurate mockup generation
       const variantMap: Record<string, { printifyVariantId: number; providerId: number }> = {};
@@ -2611,6 +2611,12 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           
           if (!colorsMap.has(colorName.toLowerCase())) {
             // Map common color names to hex values (frames + apparel)
+            // Normalize "Solid X" pattern by extracting base color name
+            const baseColorName = colorName.toLowerCase()
+              .replace(/^solid\s+/i, '')
+              .replace(/^heather\s+/i, 'heather ')
+              .trim();
+            
             const colorHexMap: Record<string, string> = {
               // Frame colors
               "black": "#1a1a1a",
@@ -2626,35 +2632,54 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
               "espresso": "#3C2415",
               "grey": "#9E9E9E",
               "gray": "#9E9E9E",
-              // Apparel colors
+              // Basic apparel colors
               "navy": "#1B2838",
               "navy blue": "#1B2838",
+              "midnight navy": "#191970",
               "red": "#C41E3A",
+              "cardinal red": "#C41230",
               "blue": "#2563EB",
+              "royal": "#4169E1",
               "royal blue": "#4169E1",
               "light blue": "#87CEEB",
+              "cool blue": "#4A90D9",
+              "tahiti blue": "#3AB09E",
               "green": "#22C55E",
               "forest green": "#228B22",
+              "kelly green": "#4CBB17",
+              "military green": "#4B5320",
               "olive": "#808000",
               "yellow": "#FACC15",
+              "banana cream": "#FFE9A1",
               "orange": "#F97316",
               "pink": "#EC4899",
               "light pink": "#FFB6C1",
+              "desert pink": "#EDC9AF",
               "purple": "#A855F7",
+              "purple rush": "#9B59B6",
               "maroon": "#800000",
               "burgundy": "#800020",
               "charcoal": "#36454F",
+              "heavy metal": "#3D3D3D",
               "heather grey": "#9CA3AF",
               "heather gray": "#9CA3AF",
+              "light grey": "#D3D3D3",
+              "light gray": "#D3D3D3",
+              "dark chocolate": "#3D2314",
               "cream": "#FFFDD0",
               "beige": "#F5F5DC",
               "tan": "#D2B48C",
               "sand": "#C2B280",
               "khaki": "#C3B091",
+              "indigo": "#4B0082",
+              "turquoise": "#40E0D0",
             };
             
-            // Priority: 1) Blueprint API colors, 2) Fallback hex map, 3) Gray default
-            const hex = blueprintColors[colorName.toLowerCase()] || colorHexMap[colorName.toLowerCase()] || "#888888";
+            // Priority: 1) Blueprint API colors, 2) Fallback hex map (normalized), 3) Fallback hex map (full name), 4) Gray default
+            const hex = blueprintColors[colorName.toLowerCase()] || 
+                        colorHexMap[baseColorName] || 
+                        colorHexMap[colorName.toLowerCase()] || 
+                        "#888888";
             colorsMap.set(colorName.toLowerCase(), { 
               id: extractedColorId, 
               name: colorName, 

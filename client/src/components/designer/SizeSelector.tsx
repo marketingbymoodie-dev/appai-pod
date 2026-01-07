@@ -23,14 +23,11 @@ export function SizeSelector({
           <Button
             key={size.id}
             variant={selectedSize === size.id ? "default" : "outline"}
-            className="h-auto py-2 flex flex-col text-xs"
+            className="text-xs"
             onClick={() => onSizeChange(size.id)}
             data-testid={`button-size-${size.id}`}
           >
             <span className="font-medium">{size.name}</span>
-            {size.aspectRatio && (
-              <span className="text-[10px] opacity-70">{size.aspectRatio}</span>
-            )}
           </Button>
         ))}
       </div>
