@@ -95,6 +95,9 @@ export default function DesignPage() {
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<Design | null>(null);
   
+  const [printifyMockups, setPrintifyMockups] = useState<string[]>([]);
+  const [mockupLoading, setMockupLoading] = useState(false);
+  
   const [imageScale, setImageScale] = useState(100);
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
   const [mobileSlide, setMobileSlide] = useState(0);
@@ -202,6 +205,7 @@ export default function DesignPage() {
   const handleSelectProductType = (productType: ProductType) => {
     setSelectedProductTypeId(productType.id);
     setGeneratedDesign(null);
+    setPrintifyMockups([]);
     setPrompt("");
     setSelectedSize("");
     setSelectedFrameColor("");
@@ -248,6 +252,27 @@ export default function DesignPage() {
     }
   }, []);
 
+  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string) => {
+    setMockupLoading(true);
+    setPrintifyMockups([]);
+    try {
+      const response = await apiRequest("POST", "/api/mockup/generate", {
+        productTypeId,
+        designImageUrl,
+        sizeId,
+        colorId,
+      });
+      const result = await response.json();
+      if (result.success && result.mockupUrls?.length > 0) {
+        setPrintifyMockups(result.mockupUrls);
+      }
+    } catch (error) {
+      console.error("Failed to generate mockups:", error);
+    } finally {
+      setMockupLoading(false);
+    }
+  }, []);
+
   const generateMutation = useMutation({
     mutationFn: async (data: { prompt: string; stylePreset: string; size: string; frameColor: string; referenceImage?: string; productTypeId?: number }) => {
       const response = await apiRequest("POST", "/api/generate", data);
@@ -266,6 +291,11 @@ export default function DesignPage() {
         title: "Artwork generated!",
         description: `You have ${data.creditsRemaining} credits remaining.`,
       });
+      
+      if (designerConfig && designerConfig.designerType !== "framed-print" && designerConfig.hasPrintifyMockups) {
+        const imageUrl = window.location.origin + design.generatedImageUrl;
+        fetchPrintifyMockups(imageUrl, designerConfig.id, design.size, design.frameColor);
+      }
     },
     onError: (error: any) => {
       toast({
@@ -862,13 +892,25 @@ export default function DesignPage() {
           )}
         </div>
       ) : (
-        // Generic placeholder
-        <div className="text-center text-muted-foreground p-4" style={{ pointerEvents: 'none' }}>
+        // Generic placeholder or Printify mockups
+        <div className="w-full h-full flex items-center justify-center" style={{ pointerEvents: 'none' }}>
           {generateMutation.isPending ? (
-            <div className="flex flex-col items-center gap-2">
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <Loader2 className="h-8 w-8 animate-spin" />
-              <span className="text-xs">Creating...</span>
+              <span className="text-xs">Creating artwork...</span>
             </div>
+          ) : mockupLoading ? (
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-xs">Generating product preview...</span>
+            </div>
+          ) : printifyMockups.length > 0 ? (
+            <img
+              src={printifyMockups[0]}
+              alt="Product mockup"
+              className="w-full h-full object-contain rounded-md"
+              data-testid="img-printify-mockup"
+            />
           ) : generatedDesign?.generatedImageUrl ? (
             <img
               src={generatedDesign.generatedImageUrl}
@@ -877,10 +919,10 @@ export default function DesignPage() {
               data-testid="img-generated"
             />
           ) : (
-            <>
+            <div className="text-center text-muted-foreground p-4">
               <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
               <p className="text-xs">Your artwork will appear here</p>
-            </>
+            </div>
           )}
         </div>
       )}
@@ -892,8 +934,11 @@ export default function DesignPage() {
   
   // For non-framed products, use base mockup lifestyle image if available
   const hasBaseLifestyleMockup = designerConfig?.baseMockupImages?.lifestyle;
+  
+  // Check if we have additional Printify mockups to show
+  const hasPrintifyLifestyleMockup = printifyMockups.length > 1;
 
-  const lifestyleMockup = (currentLifestyle || hasBaseLifestyleMockup) && (
+  const lifestyleMockup = (currentLifestyle || hasBaseLifestyleMockup || hasPrintifyLifestyleMockup) && (
     <div 
       ref={calibrationRef}
       className="relative w-full flex items-center justify-center"
@@ -950,6 +995,14 @@ export default function DesignPage() {
               </div>
             )}
           </>
+        ) : hasPrintifyLifestyleMockup ? (
+          // Printify-generated lifestyle mockup
+          <img
+            src={printifyMockups[1]}
+            alt="Lifestyle preview"
+            className="w-full h-auto rounded-md"
+            data-testid="img-printify-lifestyle"
+          />
         ) : hasBaseLifestyleMockup ? (
           // Base product lifestyle mockup (for apparel, etc.) with generated artwork overlay
           <div className="relative">
