@@ -41,3 +41,43 @@ export interface LifestyleMockupConfig {
     height: number;
   };
 }
+
+export type PrintShape = "rectangle" | "square" | "circle";
+export type DesignerType = "framed-print" | "pillow" | "mug" | "apparel" | "generic";
+
+export interface CanvasConfig {
+  maxDimension: number;
+  width: number;
+  height: number;
+  safeZoneMargin: number;
+}
+
+export interface ProductDesignerConfig {
+  id: number;
+  name: string;
+  description: string | null;
+  printifyBlueprintId: number | null;
+  aspectRatio: string;
+  printShape: PrintShape;
+  printAreaWidth: number | null;
+  printAreaHeight: number | null;
+  bleedMarginPercent: number;
+  designerType: DesignerType;
+  hasPrintifyMockups: boolean;
+  sizes: PrintSize[];
+  frameColors: FrameColor[];
+  canvasConfig: CanvasConfig;
+}
+
+export interface DesignerState {
+  prompt: string;
+  selectedPreset: string;
+  selectedSize: string;
+  selectedFrameColor: string;
+  referenceImage: File | null;
+  referencePreview: string | null;
+  generatedImageUrl: string | null;
+  generatedDesignId: string | null;
+  transform: ImageTransform;
+  isGenerating: boolean;
+}

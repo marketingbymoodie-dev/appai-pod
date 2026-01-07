@@ -542,14 +542,21 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       
       rateLimit.count++;
 
+      const { productTypeId } = req.body;
+
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Load product type config if provided
+      let productType = null;
+      if (productTypeId) {
+        productType = await storage.getProductType(parseInt(productTypeId));
       }
 
       // Find size config - use default if not matching internal sizes
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
       if (!sizeConfig) {
-        // Use medium as default for Shopify custom sizes
         sizeConfig = PRINT_SIZES.find(s => s.id === "medium") || PRINT_SIZES[0];
       }
 
@@ -560,6 +567,30 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         fullPrompt = `${styleConfig.promptPrefix} ${prompt}`;
       }
 
+      // Build shape-specific safe zone instructions
+      const printShape = productType?.printShape || "rectangle";
+      const bleedMargin = productType?.bleedMarginPercent || 5;
+      const safeZonePercent = 100 - (bleedMargin * 2);
+      
+      let shapeInstructions = "";
+      if (printShape === "circle") {
+        shapeInstructions = `
+CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
+- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
+- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
+- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
+- Design with radial/circular composition in mind`;
+      } else if (printShape === "square") {
+        shapeInstructions = `
+SQUARE PRINT AREA: This design is for a square product.
+- Center important elements within the inner ${safeZonePercent}% of the canvas
+- Keep a ${bleedMargin}% margin from all edges for bleed`;
+      } else {
+        shapeInstructions = `
+- Keep important elements within the inner ${safeZonePercent}% of the canvas
+- Maintain a ${bleedMargin}% margin from edges for bleed`;
+      }
+
       // CRITICAL: Full-bleed requirements for ALL generations
       const sizingRequirements = `
 
@@ -568,7 +599,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
 3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image.
 4. COMPOSITION: ${sizeConfig.aspectRatio === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${sizeConfig.aspectRatio} composition`} - the artwork fills the entire canvas.
-5. SAFE ZONE: Keep all important elements within the central 75% of the image.
+5. SAFE ZONE: ${shapeInstructions}
 6. BACKGROUND: The background/scene must extend fully to all four edges.
 7. PRINT-READY: This is for high-quality printing - create a complete, finished artwork.
 `;
@@ -652,6 +683,76 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error fetching product type:", error);
       res.status(500).json({ error: "Failed to fetch product type" });
+    }
+  });
+
+  app.get("/api/product-types/:id/designer", async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id);
+      const productType = await storage.getProductType(id);
+      if (!productType) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      const sizes = typeof productType.sizes === 'string' 
+        ? JSON.parse(productType.sizes) 
+        : productType.sizes || [];
+      const frameColors = typeof productType.frameColors === 'string' 
+        ? JSON.parse(productType.frameColors) 
+        : productType.frameColors || [];
+
+      const [aspectW, aspectH] = (productType.aspectRatio || "1:1").split(":").map(Number);
+      const aspectRatio = aspectW / aspectH;
+
+      const maxDimension = 1024;
+      let canvasWidth: number, canvasHeight: number;
+      if (aspectRatio >= 1) {
+        canvasWidth = maxDimension;
+        canvasHeight = Math.round(maxDimension / aspectRatio);
+      } else {
+        canvasHeight = maxDimension;
+        canvasWidth = Math.round(maxDimension * aspectRatio);
+      }
+
+      const bleedMarginPercent = productType.bleedMarginPercent || 5;
+      const safeZoneMargin = Math.round(Math.min(canvasWidth, canvasHeight) * (bleedMarginPercent / 100));
+
+      const designerConfig = {
+        id: productType.id,
+        name: productType.name,
+        description: productType.description,
+        printifyBlueprintId: productType.printifyBlueprintId,
+        aspectRatio: productType.aspectRatio,
+        printShape: productType.printShape || "rectangle",
+        printAreaWidth: productType.printAreaWidth,
+        printAreaHeight: productType.printAreaHeight,
+        bleedMarginPercent,
+        designerType: productType.designerType || "generic",
+        hasPrintifyMockups: productType.hasPrintifyMockups || false,
+        sizes: sizes.map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          width: s.width || 0,
+          height: s.height || 0,
+          aspectRatio: s.aspectRatio || productType.aspectRatio,
+        })),
+        frameColors: frameColors.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          hex: c.hex,
+        })),
+        canvasConfig: {
+          maxDimension,
+          width: canvasWidth,
+          height: canvasHeight,
+          safeZoneMargin,
+        },
+      };
+
+      res.json(designerConfig);
+    } catch (error) {
+      console.error("Error fetching designer config:", error);
+      res.status(500).json({ error: "Failed to fetch designer configuration" });
     }
   });
 
@@ -2256,10 +2357,67 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         const firstSize = sizes[0];
         const w = firstSize.width;
         const h = firstSize.height;
-        const divisor = gcd(w, h);
-        const simplifiedW = w / divisor;
-        const simplifiedH = h / divisor;
-        aspectRatio = `${simplifiedW}:${simplifiedH}`;
+        if (w > 0 && h > 0) {
+          const divisor = gcd(w, h);
+          const simplifiedW = w / divisor;
+          const simplifiedH = h / divisor;
+          aspectRatio = `${simplifiedW}:${simplifiedH}`;
+        }
+      }
+
+      // Detect product type and shape based on name/description
+      const lowerName = name.toLowerCase();
+      const lowerDesc = (description || "").toLowerCase();
+      const combined = `${lowerName} ${lowerDesc}`;
+      
+      let designerType: string = "generic";
+      let printShape: string = "rectangle";
+      let bleedMarginPercent = 5;
+      
+      // Detect framed prints
+      if (combined.includes("frame") || combined.includes("poster") || combined.includes("canvas") || combined.includes("print")) {
+        designerType = "framed-print";
+        printShape = "rectangle";
+        bleedMarginPercent = 3;
+      }
+      // Detect pillows
+      else if (combined.includes("pillow") || combined.includes("cushion")) {
+        designerType = "pillow";
+        if (combined.includes("round") || combined.includes("circle") || combined.includes("circular")) {
+          printShape = "circle";
+          bleedMarginPercent = 8;
+        } else if (maxWidth === maxHeight && maxWidth > 0) {
+          printShape = "square";
+          bleedMarginPercent = 5;
+        } else {
+          printShape = "rectangle";
+          bleedMarginPercent = 5;
+        }
+      }
+      // Detect mugs
+      else if (combined.includes("mug") || combined.includes("cup") || combined.includes("tumbler")) {
+        designerType = "mug";
+        printShape = "rectangle";
+        bleedMarginPercent = 3;
+      }
+      // Detect apparel
+      else if (combined.includes("shirt") || combined.includes("hoodie") || combined.includes("sweatshirt") || 
+               combined.includes("tank") || combined.includes("tee") || combined.includes("apparel") ||
+               combined.includes("jersey") || combined.includes("jacket")) {
+        designerType = "apparel";
+        printShape = "rectangle";
+        bleedMarginPercent = 5;
+      }
+      // Detect blankets
+      else if (combined.includes("blanket") || combined.includes("throw")) {
+        designerType = "pillow";
+        printShape = "rectangle";
+        bleedMarginPercent = 5;
+      }
+      // Detect round products
+      else if (combined.includes("round") || combined.includes("circle") || combined.includes("coaster")) {
+        printShape = "circle";
+        bleedMarginPercent = 8;
       }
 
       // Create the product type with parsed data
@@ -2271,6 +2429,12 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
         aspectRatio,
+        printShape,
+        printAreaWidth: maxWidth || null,
+        printAreaHeight: maxHeight || null,
+        bleedMarginPercent,
+        designerType,
+        hasPrintifyMockups: true,
         isActive: true,
         sortOrder: existingTypes.length,
       });

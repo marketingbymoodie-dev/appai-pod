@@ -212,6 +212,12 @@ export const productTypes = pgTable("product_types", {
   sizes: text("sizes").notNull().default("[]"),
   frameColors: text("frame_colors").notNull().default("[]"),
   aspectRatio: text("aspect_ratio").notNull().default("3:4"),
+  printShape: text("print_shape").notNull().default("rectangle"),
+  printAreaWidth: integer("print_area_width"),
+  printAreaHeight: integer("print_area_height"),
+  bleedMarginPercent: integer("bleed_margin_percent").notNull().default(5),
+  designerType: text("designer_type").notNull().default("generic"),
+  hasPrintifyMockups: boolean("has_printify_mockups").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -276,3 +282,38 @@ export const STYLE_PRESETS = [
 export type PrintSize = typeof PRINT_SIZES[number];
 export type FrameColor = typeof FRAME_COLORS[number];
 export type StylePreset = typeof STYLE_PRESETS[number];
+
+export type PrintShape = "rectangle" | "square" | "circle";
+export type DesignerType = "framed-print" | "pillow" | "mug" | "apparel" | "generic";
+
+export interface DesignerConfig {
+  id: number;
+  name: string;
+  description: string | null;
+  printifyBlueprintId: number | null;
+  aspectRatio: string;
+  printShape: PrintShape;
+  printAreaWidth: number | null;
+  printAreaHeight: number | null;
+  bleedMarginPercent: number;
+  designerType: DesignerType;
+  hasPrintifyMockups: boolean;
+  sizes: Array<{
+    id: string;
+    name: string;
+    width: number;
+    height: number;
+    aspectRatio?: string;
+  }>;
+  frameColors: Array<{
+    id: string;
+    name: string;
+    hex: string;
+  }>;
+  canvasConfig: {
+    maxDimension: number;
+    width: number;
+    height: number;
+    safeZoneMargin: number;
+  };
+}

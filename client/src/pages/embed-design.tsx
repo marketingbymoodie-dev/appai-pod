@@ -254,6 +254,7 @@ export default function EmbedDesign() {
       referenceImage: referenceImageBase64,
       shop: isShopify ? shopDomain : undefined,
       sessionToken: isShopify ? sessionToken || undefined : undefined,
+      productTypeId: productTypeId,
     });
   };
 
