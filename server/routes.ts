@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
+import sharp from "sharp";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
@@ -11,13 +12,31 @@ import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient 
 
 const objectStorage = new ObjectStorageService();
 
-async function saveImageToStorage(base64Data: string, mimeType: string): Promise<string> {
+const THUMBNAIL_SIZE = 256; // Max dimension for thumbnails
+
+async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
+  return sharp(buffer)
+    .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, {
+      fit: 'inside',
+      withoutEnlargement: true
+    })
+    .jpeg({ quality: 80 })
+    .toBuffer();
+}
+
+interface SaveImageResult {
+  imageUrl: string;
+  thumbnailUrl: string;
+}
+
+async function saveImageToStorage(base64Data: string, mimeType: string): Promise<SaveImageResult> {
   const imageId = crypto.randomUUID();
   const extension = mimeType.includes("png") ? "png" : "jpg";
   const privateDir = objectStorage.getPrivateObjectDir();
   
   // privateDir is like /bucket-name/.private, we need to parse it correctly
   const fullPath = `${privateDir}/designs/${imageId}.${extension}`;
+  const thumbPath = `${privateDir}/designs/thumb_${imageId}.jpg`;
   
   // Parse the path: first segment is bucket name, rest is object name
   const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
@@ -29,12 +48,15 @@ async function saveImageToStorage(base64Data: string, mimeType: string): Promise
   
   const bucketName = pathParts[0];
   const objectName = pathParts.slice(1).join("/");
+  const thumbObjectName = `.private/designs/thumb_${imageId}.jpg`;
   
   const buffer = Buffer.from(base64Data, "base64");
+  const thumbnailBuffer = await generateThumbnail(buffer);
   
   const bucket = objectStorageClient.bucket(bucketName);
-  const file = bucket.file(objectName);
   
+  // Save original image
+  const file = bucket.file(objectName);
   await file.save(buffer, {
     contentType: mimeType,
     metadata: {
@@ -44,8 +66,22 @@ async function saveImageToStorage(base64Data: string, mimeType: string): Promise
     }
   });
   
-  // Return path that the /objects/* route expects
-  return `/objects/designs/${imageId}.${extension}`;
+  // Save thumbnail
+  const thumbFile = bucket.file(thumbObjectName);
+  await thumbFile.save(thumbnailBuffer, {
+    contentType: "image/jpeg",
+    metadata: {
+      metadata: {
+        "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
+      }
+    }
+  });
+  
+  // Return paths that the /objects/* route expects
+  return {
+    imageUrl: `/objects/designs/${imageId}.${extension}`,
+    thumbnailUrl: `/objects/designs/thumb_${imageId}.jpg`
+  };
 }
 
 async function fetchWithRetry(
@@ -323,8 +359,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       
       // Save image to object storage instead of base64
       let generatedImageUrl: string;
+      let thumbnailImageUrl: string | undefined;
       try {
-        generatedImageUrl = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+        generatedImageUrl = result.imageUrl;
+        thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
         console.error("Failed to save to object storage, falling back to base64:", storageError);
         generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
@@ -337,6 +376,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         stylePreset: stylePreset || null,
         referenceImageUrl: referenceImage ? "uploaded" : null,
         generatedImageUrl,
+        thumbnailImageUrl,
         size,
         frameColor: frameColor || "black",
         aspectRatio: sizeConfig.aspectRatio,
@@ -689,8 +729,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       
       // Save image to object storage instead of base64
       let imageUrl: string;
+      let thumbnailUrl: string | undefined;
       try {
-        imageUrl = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+        imageUrl = result.imageUrl;
+        thumbnailUrl = result.thumbnailUrl;
       } catch (storageError) {
         console.error("Failed to save to object storage, falling back to base64:", storageError);
         imageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
@@ -708,6 +751,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 
       res.json({
         imageUrl,
+        thumbnailUrl,
         designId,
         prompt,
         creditsRemaining: customer!.credits,
