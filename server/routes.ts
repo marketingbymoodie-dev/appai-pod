@@ -2870,16 +2870,18 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
 
       // Product type detection for designer type, shape, and bleed margin
+      // IMPORTANT: Check apparel FIRST because descriptions often contain "print" (e.g. "print surface")
+      // which would incorrectly match framed-print if checked first
       
       let designerType: string = "generic";
       let printShape: string = "rectangle";
       let bleedMarginPercent = 5;
       
-      // Detect framed prints
-      if (combined.includes("frame") || combined.includes("poster") || combined.includes("canvas") || combined.includes("print")) {
-        designerType = "framed-print";
+      // Detect apparel FIRST (before framed-print check)
+      if (isApparelProduct) {
+        designerType = "apparel";
         printShape = "rectangle";
-        bleedMarginPercent = 3;
+        bleedMarginPercent = 5;
       }
       // Detect pillows
       else if (combined.includes("pillow") || combined.includes("cushion")) {
@@ -2895,25 +2897,24 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           bleedMarginPercent = 5;
         }
       }
+      // Detect blankets
+      else if (combined.includes("blanket") || combined.includes("throw")) {
+        designerType = "pillow";
+        printShape = "rectangle";
+        bleedMarginPercent = 5;
+      }
       // Detect mugs
       else if (combined.includes("mug") || combined.includes("cup") || combined.includes("tumbler")) {
         designerType = "mug";
         printShape = "rectangle";
         bleedMarginPercent = 3;
       }
-      // Detect apparel
-      else if (combined.includes("shirt") || combined.includes("hoodie") || combined.includes("sweatshirt") || 
-               combined.includes("tank") || combined.includes("tee") || combined.includes("apparel") ||
-               combined.includes("jersey") || combined.includes("jacket")) {
-        designerType = "apparel";
+      // Detect framed prints AFTER apparel (to avoid false positives from "print surface" in descriptions)
+      else if (combined.includes("frame") || combined.includes("poster") || combined.includes("canvas") || 
+               matchesWord(combined, "print") || combined.includes("wall art")) {
+        designerType = "framed-print";
         printShape = "rectangle";
-        bleedMarginPercent = 5;
-      }
-      // Detect blankets
-      else if (combined.includes("blanket") || combined.includes("throw")) {
-        designerType = "pillow";
-        printShape = "rectangle";
-        bleedMarginPercent = 5;
+        bleedMarginPercent = 3;
       }
       // Detect round products
       else if (combined.includes("round") || combined.includes("circle") || combined.includes("coaster")) {
