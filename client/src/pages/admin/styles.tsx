@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Palette, Plus, Trash2, Edit2, Frame, Shirt } from "lucide-react";
+import { Palette, Plus, Trash2, Edit2, Frame, Shirt, RefreshCw } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -75,6 +75,24 @@ export default function AdminStyles() {
     },
   });
 
+  const reseedStylesMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/admin/styles/reseed");
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      toast({ 
+        title: "Styles updated", 
+        description: `Updated ${data.updated} styles, created ${data.created} new styles.` 
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to reseed styles", description: error.message, variant: "destructive" });
+    },
+  });
+
   const resetStyleForm = () => {
     setEditingStyle(null);
     setStyleName("");
@@ -133,10 +151,21 @@ export default function AdminStyles() {
             <h1 className="text-2xl font-bold" data-testid="text-styles-title">Styles</h1>
             <p className="text-muted-foreground">Create custom art styles for your customers</p>
           </div>
-          <Button onClick={() => { resetStyleForm(); setStyleDialogOpen(true); }} data-testid="button-add-style">
-            <Plus className="h-4 w-4 mr-2" />
-            Add Style
-          </Button>
+          <div className="flex gap-2 flex-wrap">
+            <Button 
+              variant="outline" 
+              onClick={() => reseedStylesMutation.mutate()}
+              disabled={reseedStylesMutation.isPending}
+              data-testid="button-reseed-styles"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${reseedStylesMutation.isPending ? 'animate-spin' : ''}`} />
+              Sync Default Styles
+            </Button>
+            <Button onClick={() => { resetStyleForm(); setStyleDialogOpen(true); }} data-testid="button-add-style">
+              <Plus className="h-4 w-4 mr-2" />
+              Add Style
+            </Button>
+          </div>
         </div>
 
         <Tabs value={filterCategory} onValueChange={(v) => setFilterCategory(v as FilterCategory)}>

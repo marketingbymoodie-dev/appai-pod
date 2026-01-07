@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
 
@@ -130,6 +130,24 @@ export default function AdminProducts() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       toast({ title: "Product type deleted" });
+    },
+  });
+
+  const refreshImagesMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/refresh-images`);
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      const hasImages = data.baseMockupImages?.front || data.baseMockupImages?.lifestyle;
+      toast({ 
+        title: hasImages ? "Images refreshed" : "No images available",
+        description: hasImages ? "Product placeholder images updated from Printify." : "This product type has no placeholder images in Printify."
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to refresh images", description: error.message, variant: "destructive" });
     },
   });
 
@@ -269,8 +287,20 @@ export default function AdminProducts() {
                     </div>
                   )}
                   {!productImage && (
-                    <div className="w-full h-40 flex items-center justify-center bg-muted rounded-t-lg">
-                      <Package className="h-12 w-12 text-muted-foreground" />
+                    <div className="w-full h-40 flex flex-col items-center justify-center bg-muted rounded-t-lg gap-2">
+                      <Package className="h-10 w-10 text-muted-foreground" />
+                      {pt.printifyBlueprintId && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => refreshImagesMutation.mutate(pt.id)}
+                          disabled={refreshImagesMutation.isPending}
+                          data-testid={`button-refresh-images-${pt.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${refreshImagesMutation.isPending ? 'animate-spin' : ''}`} />
+                          Load Image
+                        </Button>
+                      )}
                     </div>
                   )}
                   <CardHeader className="pb-2">

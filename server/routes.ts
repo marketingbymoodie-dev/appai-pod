@@ -151,7 +151,7 @@ export async function registerRoutes(
             id: s.id,
             name: s.name,
             promptSuffix: s.promptPrefix,
-            category: "all" as const,
+            category: s.category,
           }));
       
       res.json({
@@ -170,7 +170,7 @@ export async function registerRoutes(
           id: s.id,
           name: s.name,
           promptSuffix: s.promptPrefix,
-          category: "all" as const,
+          category: s.category,
         })),
         blueprintId: 540,
       });
@@ -1805,11 +1805,12 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.json({ message: "Styles already seeded", styles: existingStyles });
       }
 
-      // Seed default styles
+      // Seed default styles with their categories
       const defaultStyles = STYLE_PRESETS.map((style, index) => ({
         merchantId: merchant.id,
         name: style.name,
         promptPrefix: style.promptPrefix,
+        category: style.category,
         isActive: true,
         sortOrder: index,
       }));
@@ -1824,6 +1825,60 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error seeding styles:", error);
       res.status(500).json({ error: "Failed to seed styles" });
+    }
+  });
+
+  // Reseed styles - update existing styles with proper categories and add missing ones
+  app.post("/api/admin/styles/reseed", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const existingStyles = await storage.getStylePresetsByMerchant(merchant.id);
+      const existingByName = new Map(existingStyles.map(s => [s.name, s]));
+      
+      const updatedStyles = [];
+      const createdStyles = [];
+
+      for (let i = 0; i < STYLE_PRESETS.length; i++) {
+        const preset = STYLE_PRESETS[i];
+        const existing = existingByName.get(preset.name);
+        
+        if (existing) {
+          // Update existing style with correct category
+          const updated = await storage.updateStylePreset(existing.id, {
+            category: preset.category,
+            promptPrefix: preset.promptPrefix,
+            sortOrder: i,
+          });
+          if (updated) updatedStyles.push(updated);
+        } else {
+          // Create missing style
+          const created = await storage.createStylePreset({
+            merchantId: merchant.id,
+            name: preset.name,
+            promptPrefix: preset.promptPrefix,
+            category: preset.category,
+            isActive: true,
+            sortOrder: i,
+          });
+          createdStyles.push(created);
+        }
+      }
+
+      res.json({ 
+        message: "Styles reseeded successfully",
+        updated: updatedStyles.length,
+        created: createdStyles.length,
+        styles: [...updatedStyles, ...createdStyles]
+      });
+    } catch (error) {
+      console.error("Error reseeding styles:", error);
+      res.status(500).json({ error: "Failed to reseed styles" });
     }
   });
 
@@ -3006,6 +3061,109 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error deleting product type:", error);
       res.status(500).json({ error: "Failed to delete product type" });
+    }
+  });
+
+  // POST /api/admin/product-types/:id/refresh-images - Refresh placeholder images from Printify
+  app.post("/api/admin/product-types/:id/refresh-images", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      if (!merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+        return res.status(400).json({ error: "Product type is not linked to Printify" });
+      }
+
+      // Fetch variants to get the first variant ID
+      const variantsResponse = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (!variantsResponse.ok) {
+        return res.status(500).json({ error: "Failed to fetch variants from Printify" });
+      }
+
+      const variantsData = await variantsResponse.json();
+      const variants = variantsData.variants || [];
+      
+      if (variants.length === 0) {
+        return res.status(400).json({ error: "No variants found for this product" });
+      }
+
+      const firstVariant = variants[0];
+      // Printify may return variant_id or id depending on the endpoint
+      const variantId = firstVariant.variant_id || firstVariant.id;
+      if (!variantId) {
+        return res.status(400).json({ error: "Could not determine variant ID" });
+      }
+      
+      let baseMockupImages: { front?: string; lifestyle?: string } = {};
+
+      // Fetch placeholder images
+      const placeholderResponse = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${variantId}/placeholders.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (placeholderResponse.ok) {
+        const placeholderData = await placeholderResponse.json();
+        const placeholders = placeholderData.placeholders || [];
+        
+        for (const placeholder of placeholders) {
+          const position = placeholder.position?.toLowerCase() || "";
+          const images = placeholder.images || [];
+          
+          if (images.length > 0) {
+            const imgUrl = images[0].src || images[0].url;
+            if (position === "front" || position.includes("front")) {
+              baseMockupImages.front = imgUrl;
+            } else if (position === "lifestyle" || position.includes("lifestyle")) {
+              baseMockupImages.lifestyle = imgUrl;
+            } else if (!baseMockupImages.front) {
+              baseMockupImages.front = imgUrl;
+            }
+          }
+        }
+      }
+
+      // Update the product type with new images
+      const updated = await storage.updateProductType(productTypeId, {
+        baseMockupImages: JSON.stringify(baseMockupImages)
+      });
+
+      res.json({ 
+        success: true, 
+        baseMockupImages,
+        productType: updated 
+      });
+    } catch (error) {
+      console.error("Error refreshing placeholder images:", error);
+      res.status(500).json({ error: "Failed to refresh images" });
     }
   });
 
