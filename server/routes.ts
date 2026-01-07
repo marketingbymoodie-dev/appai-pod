@@ -1611,12 +1611,6 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(400).json({ error: "Coupon has reached maximum uses" });
       }
 
-      // Check if customer already used this coupon
-      const existingRedemption = await storage.getCouponRedemption(coupon.id, customer.id);
-      if (existingRedemption) {
-        return res.status(400).json({ error: "You have already used this coupon" });
-      }
-
       // Add credits to customer
       await storage.updateCustomer(customer.id, {
         credits: customer.credits + coupon.creditAmount,
