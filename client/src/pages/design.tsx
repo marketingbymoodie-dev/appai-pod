@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,8 +12,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye } from "lucide-react";
-import type { Customer, Design, PrintSize, FrameColor, StylePreset } from "@shared/schema";
+import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye, Package } from "lucide-react";
+import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
 
 import lifestyle11x14blk from "@assets/11x14blk_1767584656742.png";
 import lifestyle11x14wht from "@assets/11x14wht_1767584656741.png";
@@ -56,11 +56,34 @@ interface Config {
   blueprintId: number;
 }
 
+interface ProductDesignerConfig {
+  id: number;
+  name: string;
+  description?: string;
+  printifyBlueprintId?: number;
+  aspectRatio: string;
+  printShape: string;
+  printAreaWidth?: number;
+  printAreaHeight?: number;
+  bleedMarginPercent: number;
+  designerType: string;
+  hasPrintifyMockups: boolean;
+  sizes: PrintSize[];
+  frameColors: FrameColor[];
+  canvasConfig: {
+    maxDimension: number;
+    width: number;
+    height: number;
+    safeZoneMargin: number;
+  };
+}
+
 export default function DesignPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   
+  const [selectedProductTypeId, setSelectedProductTypeId] = useState<number | null>(null);
   const [prompt, setPrompt] = useState("");
   const [selectedSize, setSelectedSize] = useState<string>("");
   const [selectedFrameColor, setSelectedFrameColor] = useState<string>("black");
@@ -149,6 +172,20 @@ export default function DesignPage() {
     setTouchStart(null);
   }, [touchStart, mobileSlide]);
 
+  const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
+    queryKey: ["/api/product-types"],
+  });
+
+  const { data: designerConfig, isLoading: designerConfigLoading, error: designerConfigError } = useQuery<ProductDesignerConfig>({
+    queryKey: ["/api/product-types", selectedProductTypeId, "designer"],
+    queryFn: async () => {
+      const res = await fetch(`/api/product-types/${selectedProductTypeId}/designer`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load product configuration");
+      return res.json();
+    },
+    enabled: !!selectedProductTypeId,
+  });
+
   const { data: config } = useQuery<Config>({
     queryKey: ["/api/config"],
   });
@@ -157,6 +194,27 @@ export default function DesignPage() {
     queryKey: ["/api/customer"],
     enabled: isAuthenticated,
   });
+
+  const handleSelectProductType = (productType: ProductType) => {
+    setSelectedProductTypeId(productType.id);
+    setGeneratedDesign(null);
+    setPrompt("");
+    setSelectedSize("");
+    setSelectedFrameColor("");
+    setImageScale(100);
+    setImagePosition({ x: 50, y: 50 });
+  };
+
+  useEffect(() => {
+    if (designerConfig) {
+      if (designerConfig.sizes.length > 0 && !selectedSize) {
+        setSelectedSize(designerConfig.sizes[0].id);
+      }
+      if (designerConfig.frameColors.length > 0 && !selectedFrameColor) {
+        setSelectedFrameColor(designerConfig.frameColors[0].id);
+      }
+    }
+  }, [designerConfig, selectedSize, selectedFrameColor]);
 
   // Load design from URL when coming from "Tweak" button in gallery
   useEffect(() => {
@@ -392,8 +450,11 @@ export default function DesignPage() {
     });
   };
 
-  const selectedSizeConfig = config?.sizes.find(s => s.id === selectedSize);
-  const selectedFrameColorConfig = config?.frameColors.find(f => f.id === selectedFrameColor);
+  const activeSizes = designerConfig?.sizes || config?.sizes || [];
+  const activeFrameColors = designerConfig?.frameColors || config?.frameColors || [];
+  
+  const selectedSizeConfig = activeSizes.find(s => s.id === selectedSize);
+  const selectedFrameColorConfig = activeFrameColors.find(f => f.id === selectedFrameColor);
   
   const getLifestyleMockup = () => {
     if (!selectedSize) return null;
@@ -509,7 +570,7 @@ export default function DesignPage() {
     <div className="space-y-2">
       <Label className="text-sm font-medium">Size</Label>
       <div className="grid grid-cols-3 gap-2">
-        {config?.sizes.map((size) => (
+        {activeSizes.map((size) => (
           <Button
             key={size.id}
             variant={selectedSize === size.id ? "default" : "outline"}
@@ -518,7 +579,7 @@ export default function DesignPage() {
             data-testid={`button-size-${size.id}`}
           >
             <span className="font-medium">{size.name}</span>
-            <span className="text-[10px] opacity-70">{size.aspectRatio}</span>
+            <span className="text-[10px] opacity-70">{size.aspectRatio || designerConfig?.aspectRatio}</span>
           </Button>
         ))}
       </div>
@@ -527,9 +588,9 @@ export default function DesignPage() {
 
   const frameColorSelector = (
     <div className="space-y-2">
-      <Label className="text-sm font-medium">Frame</Label>
-      <div className="flex gap-2">
-        {config?.frameColors.map((color) => (
+      <Label className="text-sm font-medium">{designerConfig?.designerType === "framed_print" ? "Frame" : "Color"}</Label>
+      <div className="flex flex-wrap gap-2">
+        {activeFrameColors.map((color) => (
           <button
             key={color.id}
             className={`w-10 h-10 rounded-md border-2 transition-all ${
@@ -881,17 +942,172 @@ export default function DesignPage() {
     </div>
   );
 
+  const productTypeSelector = (
+    <div className="flex-1 overflow-auto p-6">
+      <div className="max-w-4xl mx-auto">
+        <div className="text-center mb-8">
+          <h2 className="text-2xl font-semibold mb-2">Choose a Product</h2>
+          <p className="text-muted-foreground">Select which product you would like to design</p>
+        </div>
+        
+        {productTypesLoading ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[1, 2, 3].map((i) => (
+              <Card key={i} className="overflow-hidden">
+                <CardContent className="p-4">
+                  <Skeleton className="h-32 w-full mb-3" />
+                  <Skeleton className="h-5 w-3/4 mb-2" />
+                  <Skeleton className="h-4 w-full" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : productTypes && productTypes.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {productTypes.map((productType) => (
+              <Card
+                key={productType.id}
+                className="overflow-hidden hover-elevate cursor-pointer transition-all"
+                onClick={() => handleSelectProductType(productType)}
+                data-testid={`card-product-type-${productType.id}`}
+              >
+                <CardContent className="p-4">
+                  <div className="h-32 bg-muted rounded-md flex items-center justify-center mb-3">
+                    <Package className="h-12 w-12 text-muted-foreground" />
+                  </div>
+                  <CardTitle className="text-lg mb-1">{productType.name}</CardTitle>
+                  <CardDescription className="text-sm line-clamp-2">
+                    {productType.description || "Custom AI artwork design"}
+                  </CardDescription>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-12">
+            <Package className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+            <h3 className="text-lg font-medium mb-2">No Products Available</h3>
+            <p className="text-muted-foreground mb-4">
+              Products need to be imported from Printify in the Admin panel.
+            </p>
+            <Link href="/admin">
+              <Button data-testid="button-go-to-admin">
+                Go to Admin Panel
+              </Button>
+            </Link>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const selectedProductTypeName = productTypes?.find(p => p.id === selectedProductTypeId)?.name;
+
+  if (!selectedProductTypeId) {
+    return (
+      <div className="h-screen flex flex-col bg-background overflow-hidden">
+        <header className="border-b bg-background z-50 shrink-0">
+          <div className="container mx-auto px-3 py-2 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Link href="/">
+                <Button variant="ghost" size="icon" data-testid="button-back">
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+              </Link>
+              <h1 className="text-base font-semibold">Create Design</h1>
+            </div>
+            <div className="flex items-center gap-4">
+              {customerLoading ? (
+                <Skeleton className="h-5 w-20" />
+              ) : (
+                <span className="text-sm text-muted-foreground" data-testid="text-credits">
+                  {customer?.credits ?? 0} credits
+                </span>
+              )}
+            </div>
+          </div>
+        </header>
+        {productTypeSelector}
+      </div>
+    );
+  }
+
+  if (designerConfigLoading) {
+    return (
+      <div className="h-screen flex flex-col bg-background overflow-hidden">
+        <header className="border-b bg-background z-50 shrink-0">
+          <div className="container mx-auto px-3 py-2 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => setSelectedProductTypeId(null)}
+                data-testid="button-back-to-products"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <h1 className="text-base font-semibold">{selectedProductTypeName || "Loading..."}</h1>
+            </div>
+          </div>
+        </header>
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
+
+  if (designerConfigError) {
+    return (
+      <div className="h-screen flex flex-col bg-background overflow-hidden">
+        <header className="border-b bg-background z-50 shrink-0">
+          <div className="container mx-auto px-3 py-2 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={() => setSelectedProductTypeId(null)}
+                data-testid="button-back-to-products"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <h1 className="text-base font-semibold">{selectedProductTypeName || "Error"}</h1>
+            </div>
+          </div>
+        </header>
+        <div className="flex-1 flex flex-col items-center justify-center gap-4">
+          <p className="text-muted-foreground">Failed to load product configuration</p>
+          <Button onClick={() => setSelectedProductTypeId(null)} data-testid="button-try-again">
+            Choose a Different Product
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <header className="border-b bg-background z-50 shrink-0">
         <div className="container mx-auto px-3 py-2 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Link href="/">
-              <Button variant="ghost" size="icon" data-testid="button-back">
-                <ArrowLeft className="h-5 w-5" />
-              </Button>
-            </Link>
-            <h1 className="text-base font-semibold">Create Design</h1>
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              onClick={() => setSelectedProductTypeId(null)}
+              data-testid="button-back-to-products"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <div>
+              <h1 className="text-base font-semibold">{selectedProductTypeName || "Design"}</h1>
+              <button 
+                onClick={() => setSelectedProductTypeId(null)}
+                className="text-xs text-muted-foreground hover:underline"
+                data-testid="link-change-product"
+              >
+                Change product
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             {customerLoading ? (
