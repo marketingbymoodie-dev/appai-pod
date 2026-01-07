@@ -109,7 +109,7 @@ async function createTemporaryProduct(
           variants: [
             {
               id: variantId,
-              price: 0,
+              price: 100, // Minimum price required by Printify (in cents)
               is_enabled: true,
             },
           ],
