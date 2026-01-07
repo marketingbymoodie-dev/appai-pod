@@ -2776,6 +2776,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           
           if (placeholderResponse.ok) {
             const placeholderData = await placeholderResponse.json();
+            console.log(`Placeholder API response for blueprint ${blueprintId}, variant ${firstVariant.id}:`, JSON.stringify(placeholderData).slice(0, 500));
+            
             const placeholders = placeholderData.placeholders || placeholderData || [];
             
             // Find front and lifestyle images
@@ -2796,6 +2798,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
               }
             }
             console.log(`Fetched base mockup images for blueprint ${blueprintId}:`, Object.keys(baseMockupImages));
+          } else {
+            console.warn(`Placeholder API returned ${placeholderResponse.status} for blueprint ${blueprintId}`);
           }
         } catch (e) {
           console.warn("Could not fetch base mockup placeholders:", e);
