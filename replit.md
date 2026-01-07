@@ -114,3 +114,25 @@ shopify app extension push
 - Rate limiting: 100 generations per shop per hour
 - Shop installation verification for all requests
 - For enhanced security, implement Shopify App Bridge (see README in extensions folder)
+
+## Printify Integration
+
+### Variant Mapping Architecture
+The Printify integration uses a two-layer approach to separate catalog metadata from variant identifiers:
+
+1. **Sizes** (catalog metadata only): Contains `id`, `name`, `width`, `height` - no variant-specific fields
+2. **Colors**: Contains `id`, `name`, `hex` - pure display data
+3. **VariantMap**: JSON dictionary mapping `${sizeId}:${colorId}` → `{printifyVariantId, providerId}`
+
+This separation ensures:
+- Size records are color-agnostic and don't get overwritten by multiple color variants
+- Mockup generation resolves the correct Printify variant ID via the map
+- Client-side code cannot bypass variant resolution
+
+### Mockup Generation
+The `/api/mockup/generate` endpoint:
+1. Takes `productTypeId`, `designImageUrl`, `sizeId`, `colorId`
+2. Looks up the variant using `variantMap[sizeId:colorId]`
+3. Creates a temporary Printify product with the resolved variant
+4. Retrieves mockup images from Printify
+5. Cleans up the temporary product (in `finally` block to ensure cleanup)

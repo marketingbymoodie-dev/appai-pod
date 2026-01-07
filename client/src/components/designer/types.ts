@@ -3,7 +3,7 @@ export interface PrintSize {
   name: string;
   width: number;
   height: number;
-  aspectRatio: string;
+  aspectRatio?: string;
 }
 
 export interface FrameColor {

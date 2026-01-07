@@ -2111,8 +2111,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const variants = variantsData.variants || variantsData || [];
 
       // Parse variants to extract sizes and colors
-      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
+      // Include providerId and printifyVariantId for mockup generation
+      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number; providerId: number; printifyVariantId: number }>();
       const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
+      // Map of "sizeId:colorId" -> printifyVariantId for accurate mockup generation
+      const variantMap: Record<string, { printifyVariantId: number; providerId: number }> = {};
       let maxWidth = 0;
       let maxHeight = 0;
 
@@ -2164,78 +2167,74 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           .replace(/[""]/g, '"')
           .replace(/['']/g, "'");
         
-        let sizeExtracted = false;
+        // Track the extracted sizeId for this variant (used for variantMap)
+        let extractedSizeId = "";
         
         // 1. Try dimensional sizes (8x10, 12"x16", etc.) for prints, pillows, blankets
         const dimMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
         if (dimMatch) {
           const width = parseInt(dimMatch[1]);
           const height = parseInt(dimMatch[2]);
-          const sizeId = `${width}x${height}`;
+          extractedSizeId = `${width}x${height}`;
           const sizeName = `${width}" x ${height}"`;
           
-          if (!sizesMap.has(sizeId)) {
-            sizesMap.set(sizeId, { id: sizeId, name: sizeName, width, height });
+          // Sizes are purely catalog metadata - no variant-specific fields
+          if (!sizesMap.has(extractedSizeId)) {
+            sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeName, width, height });
           }
           if (width > maxWidth) maxWidth = width;
           if (height > maxHeight) maxHeight = height;
-          sizeExtracted = true;
         }
         
-        // 2. Check options.size first (most reliable)
-        if (!sizeExtracted && options.size) {
-          const sizeVal = options.size;
-          const sizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
-          if (!sizesMap.has(sizeId)) {
-            sizesMap.set(sizeId, { id: sizeId, name: sizeVal, width: 0, height: 0 });
+        // 2. Check options for size (normalize various key names)
+        if (!extractedSizeId && (options.size || options.Size)) {
+          const sizeVal = options.size || options.Size;
+          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          if (!sizesMap.has(extractedSizeId)) {
+            sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
-          sizeExtracted = true;
         }
         
         // 3. Try to extract from title for other patterns
-        if (!sizeExtracted && title) {
+        if (!extractedSizeId && title) {
           const parts = title.split("/").map((p: string) => p.trim());
           
           for (const part of parts) {
             // Check for volume sizes (11oz, 15oz for mugs)
             const volumeMatch = part.match(/^(\d+)\s*oz$/i);
             if (volumeMatch) {
-              const sizeId = `${volumeMatch[1]}oz`;
+              extractedSizeId = `${volumeMatch[1]}oz`;
               const sizeName = `${volumeMatch[1]}oz`;
-              if (!sizesMap.has(sizeId)) {
-                sizesMap.set(sizeId, { id: sizeId, name: sizeName, width: 0, height: 0 });
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeName, width: 0, height: 0 });
               }
-              sizeExtracted = true;
               break;
             }
             
             // Check apparel sizes (S, M, L, XL, 2XL, etc.)
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              const sizeId = part.toLowerCase();
-              if (!sizesMap.has(sizeId)) {
-                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              extractedSizeId = part.toLowerCase();
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
-              sizeExtracted = true;
               break;
             }
             
             // Check named sizes (Small, Medium, Large, King, Queen)
             if (namedSizes.includes(part.toLowerCase())) {
-              const sizeId = part.toLowerCase().replace(/\s+/g, '_');
-              if (!sizesMap.has(sizeId)) {
-                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
-              sizeExtracted = true;
               break;
             }
             
             // Check youth/kids sizes
             if (part.match(/^(youth|kid'?s?|toddler|infant|baby)\s/i)) {
-              const sizeId = part.toLowerCase().replace(/\s+/g, '_').replace(/'/g, '');
-              if (!sizesMap.has(sizeId)) {
-                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_').replace(/'/g, '');
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
-              sizeExtracted = true;
               break;
             }
             
@@ -2247,36 +2246,41 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
                 part.match(/^samsung\s+(galaxy|note)/i) ||
                 part.match(/^oneplus\s+\d/i) ||
                 part.match(/^for\s+(iphone|galaxy|pixel|samsung)/i)) {
-              const sizeId = part.toLowerCase().replace(/\s+/g, '_');
-              if (!sizesMap.has(sizeId)) {
-                sizesMap.set(sizeId, { id: sizeId, name: part, width: 0, height: 0 });
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
-              sizeExtracted = true;
               break;
             }
           }
         }
         
         // 4. Fallback: If still no size and title has parts, use first non-color part
-        if (!sizeExtracted && title && title.includes("/")) {
+        if (!extractedSizeId && title && title.includes("/")) {
           const parts = title.split("/").map((p: string) => p.trim());
           // Take the first part as size if it's not obviously a color
           const firstPart = parts[0];
           if (firstPart && !firstPart.match(/^(black|white|red|blue|green|yellow|pink|purple|orange|gray|grey|navy|brown|beige|cream|tan)/i)) {
-            const sizeId = firstPart.toLowerCase().replace(/\s+/g, '_');
-            if (!sizesMap.has(sizeId)) {
-              sizesMap.set(sizeId, { id: sizeId, name: firstPart, width: 0, height: 0 });
+            extractedSizeId = firstPart.toLowerCase().replace(/\s+/g, '_');
+            if (!sizesMap.has(extractedSizeId)) {
+              sizesMap.set(extractedSizeId, { id: extractedSizeId, name: firstPart, width: 0, height: 0 });
             }
           }
         }
 
         // Try to extract color from title (after the "/" or from options)
         let colorName = "";
-        // First check options object
+        // First check options object (normalize various color option names)
         if (options.color) {
           colorName = options.color;
+        } else if (options.colour) {
+          colorName = options.colour;
         } else if (options.frame_color) {
           colorName = options.frame_color;
+        } else if (options.Color) {
+          colorName = options.Color;
+        } else if (options.Colour) {
+          colorName = options.Colour;
         } else if (title.includes("/")) {
           // For titles like "S / Black" or "8x10 / White", color is usually after last "/"
           const parts = title.split("/").map((p: string) => p.trim());
@@ -2292,56 +2296,74 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           }
         }
 
-        if (colorName && !colorsMap.has(colorName.toLowerCase())) {
-          // Map common color names to hex values (frames + apparel)
-          const colorHexMap: Record<string, string> = {
-            // Frame colors
-            "black": "#1a1a1a",
-            "white": "#f5f5f5",
-            "walnut": "#5D4037",
-            "natural": "#D7CCC8",
-            "brown": "#795548",
-            "gold": "#FFD700",
-            "silver": "#C0C0C0",
-            "oak": "#C4A35A",
-            "cherry": "#9B2335",
-            "mahogany": "#4E2728",
-            "espresso": "#3C2415",
-            "grey": "#9E9E9E",
-            "gray": "#9E9E9E",
-            // Apparel colors
-            "navy": "#1B2838",
-            "navy blue": "#1B2838",
-            "red": "#C41E3A",
-            "blue": "#2563EB",
-            "royal blue": "#4169E1",
-            "light blue": "#87CEEB",
-            "green": "#22C55E",
-            "forest green": "#228B22",
-            "olive": "#808000",
-            "yellow": "#FACC15",
-            "orange": "#F97316",
-            "pink": "#EC4899",
-            "light pink": "#FFB6C1",
-            "purple": "#A855F7",
-            "maroon": "#800000",
-            "burgundy": "#800020",
-            "charcoal": "#36454F",
-            "heather grey": "#9CA3AF",
-            "heather gray": "#9CA3AF",
-            "cream": "#FFFDD0",
-            "beige": "#F5F5DC",
-            "tan": "#D2B48C",
-            "sand": "#C2B280",
-            "khaki": "#C3B091",
-          };
+        // Extract color and track the extractedColorId for this variant
+        let extractedColorId = "";
+        if (colorName) {
+          extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
           
-          const hex = colorHexMap[colorName.toLowerCase()] || "#888888";
-          colorsMap.set(colorName.toLowerCase(), { 
-            id: colorName.toLowerCase().replace(/\s+/g, '_'), 
-            name: colorName, 
-            hex 
-          });
+          if (!colorsMap.has(colorName.toLowerCase())) {
+            // Map common color names to hex values (frames + apparel)
+            const colorHexMap: Record<string, string> = {
+              // Frame colors
+              "black": "#1a1a1a",
+              "white": "#f5f5f5",
+              "walnut": "#5D4037",
+              "natural": "#D7CCC8",
+              "brown": "#795548",
+              "gold": "#FFD700",
+              "silver": "#C0C0C0",
+              "oak": "#C4A35A",
+              "cherry": "#9B2335",
+              "mahogany": "#4E2728",
+              "espresso": "#3C2415",
+              "grey": "#9E9E9E",
+              "gray": "#9E9E9E",
+              // Apparel colors
+              "navy": "#1B2838",
+              "navy blue": "#1B2838",
+              "red": "#C41E3A",
+              "blue": "#2563EB",
+              "royal blue": "#4169E1",
+              "light blue": "#87CEEB",
+              "green": "#22C55E",
+              "forest green": "#228B22",
+              "olive": "#808000",
+              "yellow": "#FACC15",
+              "orange": "#F97316",
+              "pink": "#EC4899",
+              "light pink": "#FFB6C1",
+              "purple": "#A855F7",
+              "maroon": "#800000",
+              "burgundy": "#800020",
+              "charcoal": "#36454F",
+              "heather grey": "#9CA3AF",
+              "heather gray": "#9CA3AF",
+              "cream": "#FFFDD0",
+              "beige": "#F5F5DC",
+              "tan": "#D2B48C",
+              "sand": "#C2B280",
+              "khaki": "#C3B091",
+            };
+            
+            const hex = colorHexMap[colorName.toLowerCase()] || "#888888";
+            colorsMap.set(colorName.toLowerCase(), { 
+              id: extractedColorId, 
+              name: colorName, 
+              hex 
+            });
+          }
+        }
+
+        // Store the size+color -> variant mapping for mockup generation
+        // Use the extractedSizeId and extractedColorId captured during this iteration
+        // Only add to variantMap if we have at least a size or color - no fallback keys
+        if (extractedSizeId || extractedColorId) {
+          const mapKey = `${extractedSizeId || 'default'}:${extractedColorId || 'default'}`;
+          variantMap[mapKey] = { printifyVariantId: variant.id, providerId };
+        } else {
+          // Neither size nor color could be extracted - skip this variant for mockup generation
+          // This ensures we never send the wrong variant to Printify
+          console.warn(`Skipping variant for mockup mapping - could not extract size or color: ${title} (id: ${variant.id})`);
         }
       }
 
@@ -2426,8 +2448,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         name,
         description: description || null,
         printifyBlueprintId: parseInt(blueprintId),
+        printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
+        variantMap: JSON.stringify(variantMap),
         aspectRatio,
         printShape,
         printAreaWidth: maxWidth || null,
@@ -2443,6 +2467,81 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error importing Printify blueprint:", error);
       res.status(500).json({ error: "Failed to import blueprint" });
+    }
+  });
+
+  // POST /api/mockup/generate - Generate Printify mockup for a design
+  app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { productTypeId, designImageUrl, sizeId, colorId } = req.body;
+
+      if (!productTypeId || !designImageUrl) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(parseInt(productTypeId));
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Check if we have Printify credentials and blueprint ID
+      if (!merchant.printifyApiToken || !merchant.printifyShopId || !productType.printifyBlueprintId) {
+        // Return fallback response with local template suggestion
+        const { getLocalMockupTemplate } = await import("./printify-mockups.js");
+        const localTemplate = getLocalMockupTemplate(productType.designerType || "pillow");
+        
+        return res.json({
+          success: false,
+          mockupUrls: [],
+          source: "fallback",
+          localTemplate,
+          message: "Printify not configured, using local preview",
+        });
+      }
+
+      // Generate Printify mockup
+      const { generatePrintifyMockup } = await import("./printify-mockups.js");
+      
+      // Look up the correct variant from the variantMap using server-side data only
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
+      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
+      
+      // Try exact match first, then fallback to partial matches, then any available variant
+      const variantData = variantMapData[variantKey] || 
+                          variantMapData[`${sizeId || 'default'}:default`] ||
+                          variantMapData[`default:${colorId || 'default'}`] ||
+                          variantMapData['default:default'] ||
+                          Object.values(variantMapData)[0];
+      
+      if (!variantData || !variantData.printifyVariantId) {
+        return res.status(400).json({ 
+          error: "Could not resolve product variant for the selected options",
+          availableKeys: Object.keys(variantMapData)
+        });
+      }
+      
+      const providerId = variantData.providerId || productType.printifyProviderId || 1;
+      const targetVariantId = variantData.printifyVariantId;
+
+      const result = await generatePrintifyMockup({
+        blueprintId: productType.printifyBlueprintId,
+        providerId,
+        variantId: targetVariantId,
+        imageUrl: designImageUrl,
+        printifyApiToken: merchant.printifyApiToken,
+        printifyShopId: merchant.printifyShopId,
+      });
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error generating mockup:", error);
+      res.status(500).json({ error: "Failed to generate mockup" });
     }
   });
 
