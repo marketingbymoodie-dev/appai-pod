@@ -245,7 +245,7 @@ export default function DesignPage() {
   }, []);
 
   const generateMutation = useMutation({
-    mutationFn: async (data: { prompt: string; stylePreset: string; size: string; frameColor: string; referenceImage?: string }) => {
+    mutationFn: async (data: { prompt: string; stylePreset: string; size: string; frameColor: string; referenceImage?: string; productTypeId?: number }) => {
       const response = await apiRequest("POST", "/api/generate", data);
       return response.json();
     },
@@ -412,6 +412,7 @@ export default function DesignPage() {
       size: selectedSize,
       frameColor: selectedFrameColor,
       referenceImage: referenceImage || undefined,
+      productTypeId: designerConfig?.id,
     });
   };
 
@@ -442,6 +443,7 @@ export default function DesignPage() {
       size: selectedSize,
       frameColor: selectedFrameColor,
       referenceImage: generatedDesign.generatedImageUrl,
+      productTypeId: designerConfig?.id,
     }, {
       onSuccess: () => {
         setTweakPrompt("");
@@ -574,12 +576,11 @@ export default function DesignPage() {
           <Button
             key={size.id}
             variant={selectedSize === size.id ? "default" : "outline"}
-            className="h-auto py-2 flex flex-col text-xs"
+            className="h-auto py-2 text-xs"
             onClick={() => handleSizeChange(size.id)}
             data-testid={`button-size-${size.id}`}
           >
             <span className="font-medium">{size.name}</span>
-            <span className="text-[10px] opacity-70">{size.aspectRatio || designerConfig?.aspectRatio}</span>
           </Button>
         ))}
       </div>

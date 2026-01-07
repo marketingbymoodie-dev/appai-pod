@@ -280,16 +280,42 @@ export async function registerRoutes(
         });
       }
 
-      const { prompt, stylePreset, size, frameColor, referenceImage } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, productTypeId } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Find size config
-      const sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      // Load product type if provided
+      let productType = null;
+      if (productTypeId) {
+        productType = await storage.getProductType(parseInt(productTypeId));
+      }
+
+      // Find size config - check product type sizes first, then fall back to PRINT_SIZES
+      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      
+      if (!sizeConfig && productType) {
+        // Try to find size in product type's sizes (for apparel, etc.)
+        const productSizes = JSON.parse(productType.sizes || "[]");
+        const productSize = productSizes.find((s: any) => s.id === size);
+        if (productSize) {
+          // Create a compatible size config from product type size
+          sizeConfig = {
+            id: productSize.id,
+            name: productSize.name,
+            width: productSize.width || 12,
+            height: productSize.height || 16,
+            aspectRatio: productType.aspectRatio || "1:1",
+            genWidth: 1024,
+            genHeight: 1024,
+          } as any;
+        }
+      }
+      
       if (!sizeConfig) {
-        return res.status(400).json({ error: "Invalid size" });
+        // Default fallback for unknown sizes
+        sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: "1:1", genWidth: 1024, genHeight: 1024 } as any;
       }
 
       // Build prompt with style
