@@ -16,8 +16,12 @@ import {
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import type { Design } from "@shared/schema";
 
+interface DesignWithProductType extends Design {
+  productTypeName: string | null;
+}
+
 interface DesignsResponse {
-  designs: Design[];
+  designs: DesignWithProductType[];
   total: number;
   hasMore: boolean;
 }
@@ -26,12 +30,12 @@ export default function DesignsPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const { toast } = useToast();
   const [, setLocation] = useLocation();
-  const [allDesigns, setAllDesigns] = useState<Design[]>([]);
+  const [allDesigns, setAllDesigns] = useState<DesignWithProductType[]>([]);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [selectedDesign, setSelectedDesign] = useState<Design | null>(null);
+  const [selectedDesign, setSelectedDesign] = useState<DesignWithProductType | null>(null);
 
   const { isLoading: designsLoading } = useQuery<DesignsResponse>({
     queryKey: ["/api/designs", "initial"],
@@ -174,8 +178,8 @@ export default function DesignsPage() {
                     )}
                   </div>
                   <CardContent className="p-4">
-                    <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
-                      {design.prompt}
+                    <p className="text-sm font-medium line-clamp-1 mb-2" data-testid={`text-product-type-${design.id}`}>
+                      {design.productTypeName || "Artwork"}
                     </p>
                     <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground mb-3">
                       <span>{design.size}</span>
@@ -272,6 +276,9 @@ export default function DesignsPage() {
                 data-testid="img-fullsize"
               />
               <div className="p-4 bg-background">
+                <p className="text-sm font-medium mb-1" data-testid="text-modal-product-type">
+                  {selectedDesign.productTypeName || "Artwork"}
+                </p>
                 <p className="text-sm text-muted-foreground" data-testid="text-design-prompt">
                   {selectedDesign.prompt}
                 </p>
