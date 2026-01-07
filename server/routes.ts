@@ -2980,6 +2980,79 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // GET /api/admin/printify/shops - Fetch available Printify shops using API token
+  app.get("/api/admin/printify/shops", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      // Check if we have a Printify API token
+      const apiToken = merchant.printifyApiToken;
+      if (!apiToken) {
+        return res.status(400).json({ 
+          error: "Printify API token not configured",
+          message: "Please save your Printify API token first, then try detecting your shop."
+        });
+      }
+
+      // Call Printify API to list shops
+      const response = await fetch("https://api.printify.com/v1/shops.json", {
+        headers: {
+          "Authorization": `Bearer ${apiToken}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({ 
+            error: "Invalid API token",
+            message: "Your Printify API token appears to be invalid. Please check it and try again."
+          });
+        }
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const responseData = await response.json();
+      
+      // Printify API returns shops directly as an array (not wrapped in {data:...})
+      const shops = Array.isArray(responseData) ? responseData : (responseData.data || responseData || []);
+      
+      if (!Array.isArray(shops) || shops.length === 0) {
+        return res.json({ 
+          shops: [],
+          message: "No shops found. You need to create a shop in Printify first.",
+          instructions: [
+            "1. Go to printify.com and log in",
+            "2. Click 'Add new store' or go to 'My Stores'",
+            "3. Choose 'Manual orders' or 'Other' as your platform",
+            "4. Name your store and complete setup",
+            "5. Come back here and click 'Detect Shop ID' again"
+          ]
+        });
+      }
+
+      // Return the list of shops
+      res.json({ 
+        shops: shops.map((shop: any) => ({
+          id: shop.id,
+          title: shop.title,
+          sales_channel: shop.sales_channel
+        })),
+        message: shops.length === 1 
+          ? "Found your shop! Click to use this Shop ID."
+          : `Found ${shops.length} shops. Select the one you want to use.`
+      });
+    } catch (error) {
+      console.error("Error fetching Printify shops:", error);
+      res.status(500).json({ error: "Failed to fetch shops from Printify" });
+    }
+  });
+
   // POST /api/mockup/generate - Generate Printify mockup for a design
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {

@@ -52,6 +52,8 @@ export default function AdminPage() {
 
   const [printifyToken, setPrintifyToken] = useState("");
   const [printifyShopId, setPrintifyShopId] = useState("");
+  const [detectShopLoading, setDetectShopLoading] = useState(false);
+  const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string }[]; instructions?: string[] } | null>(null);
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
 
@@ -539,6 +541,43 @@ export default function AdminPage() {
     return null;
   }
 
+  const handleDetectShopId = async () => {
+    setDetectShopLoading(true);
+    setShopDetectResult(null);
+    try {
+      const response = await fetch("/api/admin/printify/shops", {
+        credentials: "include",
+      });
+      const data = await response.json();
+      
+      if (!response.ok) {
+        setShopDetectResult({ 
+          message: data.message || data.error || "Failed to detect shop", 
+          error: true 
+        });
+        return;
+      }
+      
+      if (data.shops && data.shops.length === 1) {
+        setPrintifyShopId(String(data.shops[0].id));
+        toast({ 
+          title: "Shop detected!", 
+          description: `Found "${data.shops[0].title}" and set as your Shop ID.` 
+        });
+        setShopDetectResult(null);
+      } else {
+        setShopDetectResult(data);
+      }
+    } catch (error) {
+      setShopDetectResult({ 
+        message: "Failed to connect to Printify. Please check your connection and try again.", 
+        error: true 
+      });
+    } finally {
+      setDetectShopLoading(false);
+    }
+  };
+
   const handleSave = () => {
     saveMutation.mutate({
       printifyApiToken: printifyToken || merchant?.printifyApiToken,
@@ -612,13 +651,60 @@ export default function AdminPage() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="printify-shop">Shop ID</Label>
-                    <Input
-                      id="printify-shop"
-                      placeholder="Your Printify Shop ID"
-                      value={printifyShopId}
-                      onChange={(e) => setPrintifyShopId(e.target.value)}
-                      data-testid="input-printify-shop"
-                    />
+                    <div className="flex gap-2">
+                      <Input
+                        id="printify-shop"
+                        placeholder="Your Printify Shop ID"
+                        value={printifyShopId}
+                        onChange={(e) => setPrintifyShopId(e.target.value)}
+                        data-testid="input-printify-shop"
+                        className="flex-1"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={handleDetectShopId}
+                        disabled={detectShopLoading}
+                        data-testid="button-detect-shop"
+                      >
+                        {detectShopLoading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "Detect"
+                        )}
+                      </Button>
+                    </div>
+                    {shopDetectResult && (
+                      <div className={`text-sm p-3 rounded-md ${shopDetectResult.error ? 'bg-destructive/10 text-destructive' : 'bg-muted'}`}>
+                        <p>{shopDetectResult.message}</p>
+                        {shopDetectResult.shops && shopDetectResult.shops.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {shopDetectResult.shops.map((shop: { id: string; title: string }) => (
+                              <Button
+                                key={shop.id}
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => {
+                                  setPrintifyShopId(String(shop.id));
+                                  setShopDetectResult(null);
+                                  toast({ title: "Shop ID set", description: `Using "${shop.title}" (ID: ${shop.id})` });
+                                }}
+                                className="w-full justify-start"
+                                data-testid={`button-select-shop-${shop.id}`}
+                              >
+                                {shop.title} (ID: {shop.id})
+                              </Button>
+                            ))}
+                          </div>
+                        )}
+                        {shopDetectResult.instructions && (
+                          <ul className="mt-2 text-xs space-y-1 list-none">
+                            {shopDetectResult.instructions.map((step: string, i: number) => (
+                              <li key={i}>{step}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     {merchant?.printifyApiToken ? (
