@@ -2784,6 +2784,30 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // DELETE /api/admin/product-types/:id - Delete a product type
+  app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      await storage.deleteProductType(productTypeId);
+      res.json({ success: true, message: "Product type deleted" });
+    } catch (error) {
+      console.error("Error deleting product type:", error);
+      res.status(500).json({ error: "Failed to delete product type" });
+    }
+  });
+
   // POST /api/mockup/generate - Generate Printify mockup for a design
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
