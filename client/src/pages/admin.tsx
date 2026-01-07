@@ -58,6 +58,7 @@ export default function AdminPage() {
   const [customToken, setCustomToken] = useState("");
 
   const [couponDialogOpen, setCouponDialogOpen] = useState(false);
+  const [editingCoupon, setEditingCoupon] = useState<Coupon | null>(null);
   const [newCouponCode, setNewCouponCode] = useState("");
   const [newCouponCredits, setNewCouponCredits] = useState("5");
   const [newCouponMaxUses, setNewCouponMaxUses] = useState("");
@@ -455,6 +456,25 @@ export default function AdminPage() {
     },
   });
 
+  const updateCouponMutation = useMutation({
+    mutationFn: async ({ id, ...data }: { id: number; code?: string; creditAmount?: number; maxUses?: number | null }) => {
+      const response = await apiRequest("PATCH", `/api/admin/coupons/${id}`, data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/coupons"] });
+      setCouponDialogOpen(false);
+      setEditingCoupon(null);
+      setNewCouponCode("");
+      setNewCouponCredits("5");
+      setNewCouponMaxUses("");
+      toast({ title: "Coupon updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update coupon", description: error.message, variant: "destructive" });
+    },
+  });
+
   const deleteCouponMutation = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/admin/coupons/${id}`);
@@ -810,7 +830,15 @@ export default function AdminPage() {
                   <h2 className="text-lg font-semibold">Coupon Codes</h2>
                   <p className="text-sm text-muted-foreground">Create codes to give customers free credits</p>
                 </div>
-                <Dialog open={couponDialogOpen} onOpenChange={setCouponDialogOpen}>
+                <Dialog open={couponDialogOpen} onOpenChange={(open) => {
+                  setCouponDialogOpen(open);
+                  if (!open) {
+                    setEditingCoupon(null);
+                    setNewCouponCode("");
+                    setNewCouponCredits("5");
+                    setNewCouponMaxUses("");
+                  }
+                }}>
                   <DialogTrigger asChild>
                     <Button data-testid="button-create-coupon">
                       <Plus className="h-4 w-4 mr-2" />
@@ -819,7 +847,7 @@ export default function AdminPage() {
                   </DialogTrigger>
                   <DialogContent>
                     <DialogHeader>
-                      <DialogTitle>Create Coupon Code</DialogTitle>
+                      <DialogTitle>{editingCoupon ? "Edit Coupon" : "Create Coupon Code"}</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4 mt-4">
                       <div className="space-y-2">
@@ -844,28 +872,59 @@ export default function AdminPage() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="coupon-max-uses">Max Uses (optional)</Label>
-                        <Input
-                          id="coupon-max-uses"
-                          type="number"
-                          min="1"
-                          placeholder="Unlimited"
-                          value={newCouponMaxUses}
-                          onChange={(e) => setNewCouponMaxUses(e.target.value)}
-                          data-testid="input-coupon-max-uses"
-                        />
+                        <Label htmlFor="coupon-max-uses">Max Uses</Label>
+                        <Select
+                          value={newCouponMaxUses === "" ? "unlimited" : newCouponMaxUses === "1" ? "once" : "custom"}
+                          onValueChange={(value) => {
+                            if (value === "unlimited") setNewCouponMaxUses("");
+                            else if (value === "once") setNewCouponMaxUses("1");
+                            else setNewCouponMaxUses(newCouponMaxUses || "10");
+                          }}
+                        >
+                          <SelectTrigger data-testid="select-coupon-max-uses">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="unlimited">Unlimited uses</SelectItem>
+                            <SelectItem value="once">Single use only</SelectItem>
+                            <SelectItem value="custom">Custom limit</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        {newCouponMaxUses !== "" && newCouponMaxUses !== "1" && (
+                          <Input
+                            type="number"
+                            min="2"
+                            placeholder="Number of uses"
+                            value={newCouponMaxUses}
+                            onChange={(e) => setNewCouponMaxUses(e.target.value)}
+                            data-testid="input-coupon-max-uses"
+                          />
+                        )}
                       </div>
                       <Button
                         className="w-full"
-                        onClick={() => createCouponMutation.mutate({
-                          code: newCouponCode,
-                          creditAmount: parseInt(newCouponCredits),
-                          maxUses: newCouponMaxUses ? parseInt(newCouponMaxUses) : undefined,
-                        })}
-                        disabled={!newCouponCode || !newCouponCredits || createCouponMutation.isPending}
+                        onClick={() => {
+                          if (editingCoupon) {
+                            updateCouponMutation.mutate({
+                              id: editingCoupon.id,
+                              code: newCouponCode,
+                              creditAmount: parseInt(newCouponCredits),
+                              maxUses: newCouponMaxUses ? parseInt(newCouponMaxUses) : null,
+                            });
+                          } else {
+                            createCouponMutation.mutate({
+                              code: newCouponCode,
+                              creditAmount: parseInt(newCouponCredits),
+                              maxUses: newCouponMaxUses ? parseInt(newCouponMaxUses) : undefined,
+                            });
+                          }
+                        }}
+                        disabled={!newCouponCode || !newCouponCredits || (editingCoupon ? updateCouponMutation.isPending : createCouponMutation.isPending)}
                         data-testid="button-submit-coupon"
                       >
-                        {createCouponMutation.isPending ? "Creating..." : "Create Coupon"}
+                        {editingCoupon
+                          ? (updateCouponMutation.isPending ? "Saving..." : "Save Changes")
+                          : (createCouponMutation.isPending ? "Creating..." : "Create Coupon")}
                       </Button>
                     </div>
                   </DialogContent>
@@ -896,6 +955,20 @@ export default function AdminPage() {
                             onCheckedChange={(checked) => toggleCouponMutation.mutate({ id: coupon.id, isActive: checked })}
                             data-testid={`switch-coupon-${coupon.id}`}
                           />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setEditingCoupon(coupon);
+                              setNewCouponCode(coupon.code);
+                              setNewCouponCredits(coupon.creditAmount.toString());
+                              setNewCouponMaxUses(coupon.maxUses?.toString() || "");
+                              setCouponDialogOpen(true);
+                            }}
+                            data-testid={`button-edit-coupon-${coupon.id}`}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
