@@ -2015,8 +2015,12 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       let maxWidth = 0;
       let maxHeight = 0;
 
+      // Standard apparel sizes in order
+      const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
+      const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
+      
       for (const variant of variants) {
-        // Extract size from title (e.g., "8x10 / Black" or "12\" x 16\" / White")
+        // Extract size from title (e.g., "8x10 / Black" or "12\" x 16\" / White" or "S / Black")
         const title = variant.title || "";
         const options = variant.options || {};
         
@@ -2027,7 +2031,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           .replace(/[""]/g, '"')    // curly double quotes
           .replace(/['']/g, "'");   // curly single quotes
         
-        // Try to parse dimensions from title or options
+        // Try to parse dimensions from title or options (for framed prints, posters, etc.)
         let sizeMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
         if (sizeMatch) {
           const width = parseInt(sizeMatch[1]);
@@ -2041,21 +2045,64 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           
           if (width > maxWidth) maxWidth = width;
           if (height > maxHeight) maxHeight = height;
+        } else {
+          // Try to extract apparel-style sizes (S, M, L, XL, etc.)
+          // Check options first
+          let sizeFromOptions = options.size || "";
+          
+          // If not in options, try to parse from title (e.g., "S / Black" -> "S")
+          if (!sizeFromOptions && title.includes("/")) {
+            const titleParts = title.split("/").map((p: string) => p.trim());
+            // Check if first part is a known size
+            for (const part of titleParts) {
+              if (apparelSizesLower.includes(part.toLowerCase()) || 
+                  part.match(/^(one\s*size|youth|kid'?s?\s*(xs|s|m|l|xl))/i)) {
+                sizeFromOptions = part;
+                break;
+              }
+            }
+          }
+          
+          if (sizeFromOptions) {
+            const sizeId = sizeFromOptions.toLowerCase().replace(/\s+/g, '_');
+            if (!sizesMap.has(sizeId)) {
+              sizesMap.set(sizeId, { 
+                id: sizeId, 
+                name: sizeFromOptions, 
+                width: 0, 
+                height: 0 
+              });
+            }
+          }
         }
 
         // Try to extract color from title (after the "/" or from options)
         let colorName = "";
-        if (title.includes("/")) {
-          colorName = title.split("/").pop()?.trim() || "";
-        } else if (options.color) {
+        // First check options object
+        if (options.color) {
           colorName = options.color;
         } else if (options.frame_color) {
           colorName = options.frame_color;
+        } else if (title.includes("/")) {
+          // For titles like "S / Black" or "8x10 / White", color is usually after last "/"
+          const parts = title.split("/").map((p: string) => p.trim());
+          // Find the last part that looks like a color (not a size)
+          for (let i = parts.length - 1; i >= 0; i--) {
+            const part = parts[i];
+            // Skip if it looks like a size
+            if (apparelSizesLower.includes(part.toLowerCase()) || 
+                part.match(/^\d+[""']?\s*[xX×]\s*\d+/)) {
+              continue;
+            }
+            colorName = part;
+            break;
+          }
         }
 
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {
-          // Map common color names to hex values
+          // Map common color names to hex values (frames + apparel)
           const colorHexMap: Record<string, string> = {
+            // Frame colors
             "black": "#1a1a1a",
             "white": "#f5f5f5",
             "walnut": "#5D4037",
@@ -2069,6 +2116,31 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
             "espresso": "#3C2415",
             "grey": "#9E9E9E",
             "gray": "#9E9E9E",
+            // Apparel colors
+            "navy": "#1B2838",
+            "navy blue": "#1B2838",
+            "red": "#C41E3A",
+            "blue": "#2563EB",
+            "royal blue": "#4169E1",
+            "light blue": "#87CEEB",
+            "green": "#22C55E",
+            "forest green": "#228B22",
+            "olive": "#808000",
+            "yellow": "#FACC15",
+            "orange": "#F97316",
+            "pink": "#EC4899",
+            "light pink": "#FFB6C1",
+            "purple": "#A855F7",
+            "maroon": "#800000",
+            "burgundy": "#800020",
+            "charcoal": "#36454F",
+            "heather grey": "#9CA3AF",
+            "heather gray": "#9CA3AF",
+            "cream": "#FFFDD0",
+            "beige": "#F5F5DC",
+            "tan": "#D2B48C",
+            "sand": "#C2B280",
+            "khaki": "#C3B091",
           };
           
           const hex = colorHexMap[colorName.toLowerCase()] || "#888888";

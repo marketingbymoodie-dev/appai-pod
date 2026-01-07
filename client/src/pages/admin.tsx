@@ -1077,7 +1077,7 @@ export default function AdminPage() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="pt-colors">Frame Colors (one per line: id:name:hex)</Label>
+                        <Label htmlFor="pt-colors">Color Options (one per line: id:name:hex)</Label>
                         <Textarea
                           id="pt-colors"
                           placeholder={"black:Black:#1a1a1a\nwhite:White:#f5f5f5"}
@@ -1390,7 +1390,7 @@ export default function AdminPage() {
                               <span className="font-medium">{sizes.length} options</span>
                             </div>
                             <div>
-                              <span className="text-muted-foreground">Frame Colors:</span>{" "}
+                              <span className="text-muted-foreground">Colors:</span>{" "}
                               <span className="font-medium">{frameColors.length} options</span>
                             </div>
                           </div>
