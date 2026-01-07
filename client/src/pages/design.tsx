@@ -13,6 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
 import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye, Package } from "lucide-react";
+import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
 
 import lifestyle11x14blk from "@assets/11x14blk_1767584656742.png";
@@ -1185,13 +1186,7 @@ export default function DesignPage() {
               <h1 className="text-base font-semibold">Create Design</h1>
             </div>
             <div className="flex items-center gap-4">
-              {customerLoading ? (
-                <Skeleton className="h-5 w-20" />
-              ) : (
-                <span className="text-sm text-muted-foreground" data-testid="text-credits">
-                  {customer?.credits ?? 0} credits
-                </span>
-              )}
+              <CreditDisplay customer={customer} isLoading={customerLoading} />
             </div>
           </div>
         </header>
@@ -1278,13 +1273,7 @@ export default function DesignPage() {
             </div>
           </div>
           <div className="flex items-center gap-4">
-            {customerLoading ? (
-              <Skeleton className="h-5 w-20" />
-            ) : (
-              <span className="text-sm text-muted-foreground" data-testid="text-credits">
-                {customer?.credits ?? 0} credits
-              </span>
-            )}
+            <CreditDisplay customer={customer} isLoading={customerLoading} />
           </div>
         </div>
       </header>

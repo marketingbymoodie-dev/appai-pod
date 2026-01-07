@@ -6,13 +6,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { ArrowLeft, Package, ShoppingCart } from "lucide-react";
-import type { Order } from "@shared/schema";
+import { CreditDisplay } from "@/components/credit-display";
+import type { Order, Customer } from "@shared/schema";
 
 export default function OrdersPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuth();
 
   const { data: orders, isLoading: ordersLoading } = useQuery<Order[]>({
     queryKey: ["/api/orders"],
+    enabled: isAuthenticated,
+  });
+
+  const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
+    queryKey: ["/api/customer"],
     enabled: isAuthenticated,
   });
 
@@ -51,13 +57,16 @@ export default function OrdersPage() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b sticky top-0 bg-background z-50">
-        <div className="container mx-auto px-4 py-3 flex items-center gap-4">
-          <Link href="/">
-            <Button variant="ghost" size="icon" data-testid="button-back">
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-          </Link>
-          <h1 className="text-lg font-semibold">My Orders</h1>
+        <div className="container mx-auto px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Link href="/">
+              <Button variant="ghost" size="icon" data-testid="button-back">
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+            </Link>
+            <h1 className="text-lg font-semibold">My Orders</h1>
+          </div>
+          <CreditDisplay customer={customer} isLoading={customerLoading} />
         </div>
       </header>
 

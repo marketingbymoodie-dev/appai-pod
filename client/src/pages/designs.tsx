@@ -14,7 +14,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
-import type { Design } from "@shared/schema";
+import { CreditDisplay } from "@/components/credit-display";
+import type { Design, Customer } from "@shared/schema";
 
 interface DesignWithProductType extends Design {
   productTypeName: string | null;
@@ -36,6 +37,11 @@ export default function DesignsPage() {
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedDesign, setSelectedDesign] = useState<DesignWithProductType | null>(null);
+
+  const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
+    queryKey: ["/api/customer"],
+    enabled: isAuthenticated,
+  });
 
   const { isLoading: designsLoading } = useQuery<DesignsResponse>({
     queryKey: ["/api/designs", "initial"],
@@ -133,12 +139,15 @@ export default function DesignsPage() {
               )}
             </div>
           </div>
-          <Link href="/design">
-            <Button data-testid="button-new-design">
-              <Plus className="h-4 w-4 mr-2" />
-              New Design
-            </Button>
-          </Link>
+          <div className="flex items-center gap-3">
+            <CreditDisplay customer={customer} isLoading={customerLoading} />
+            <Link href="/design">
+              <Button data-testid="button-new-design">
+                <Plus className="h-4 w-4 mr-2" />
+                New Design
+              </Button>
+            </Link>
+          </div>
         </div>
       </header>
 
