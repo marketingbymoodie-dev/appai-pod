@@ -120,12 +120,13 @@ export default function AdminCreateProduct() {
       });
 
       const data = await response.json();
-      setGeneratedImageUrl(data.generatedImageUrl);
+      const imageUrl = data.design?.generatedImageUrl || data.generatedImageUrl;
+      setGeneratedImageUrl(imageUrl);
       toast({ title: "Design generated!", description: "Your test design is ready" });
 
       // Generate mockups if available
-      if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId) {
-        await generateMockups(data.generatedImageUrl);
+      if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId && imageUrl) {
+        await generateMockups(imageUrl);
       }
     } catch (error: any) {
       toast({ title: "Generation failed", description: error.message, variant: "destructive" });
