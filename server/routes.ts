@@ -904,13 +904,23 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizeType,
         hasPrintifyMockups: productType.hasPrintifyMockups || false,
         baseMockupImages,
-        sizes: sizes.map((s: any) => ({
-          id: s.id,
-          name: s.name,
-          width: s.width || 0,
-          height: s.height || 0,
-          aspectRatio: sizeType === "dimensional" ? (s.aspectRatio || productType.aspectRatio) : undefined,
-        })),
+        sizes: sizes.map((s: any) => {
+          // Calculate aspect ratio from dimensions if available
+          let sizeAspectRatio = s.aspectRatio || productType.aspectRatio;
+          if (sizeType === "dimensional" && s.width && s.height) {
+            // Calculate proper aspect ratio from dimensions
+            const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+            const divisor = gcd(s.width, s.height);
+            sizeAspectRatio = `${s.width / divisor}:${s.height / divisor}`;
+          }
+          return {
+            id: s.id,
+            name: s.name,
+            width: s.width || 0,
+            height: s.height || 0,
+            aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
+          };
+        }),
         frameColors: frameColors.map((c: any) => ({
           id: c.id,
           name: c.name,
