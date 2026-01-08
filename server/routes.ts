@@ -321,11 +321,33 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Load product type if provided
+      // Load product type if provided (needed for style lookup)
       let productType = null;
       if (productTypeId) {
         productType = await storage.getProductType(parseInt(productTypeId));
       }
+
+      // Look up style preset and get its promptSuffix
+      let stylePromptPrefix = "";
+      if (stylePreset) {
+        // Use product type's merchant for style lookup (merchant-scoped styles)
+        const merchantId = productType?.merchantId;
+        if (merchantId) {
+          const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
+          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
+          if (selectedStyle && selectedStyle.promptPrefix) {
+            stylePromptPrefix = selectedStyle.promptPrefix;
+          }
+        }
+        // Fall back to hardcoded STYLE_PRESETS only if no merchant context or no match
+        if (!stylePromptPrefix) {
+          const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
+            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          }
+        }
+      }
+
 
       // Find size config - check product type sizes first, then fall back to PRINT_SIZES
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
@@ -357,8 +379,10 @@ export async function registerRoutes(
       const finalSizeConfig = sizeConfig!;
       const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
 
-      // The frontend already incorporates style prompts, so we use the prompt as-is
-      let fullPrompt = prompt;
+      // Apply style prompt prefix if available
+      let fullPrompt = stylePromptPrefix 
+        ? `${stylePromptPrefix} ${prompt}` 
+        : prompt;
 
       // CRITICAL: Hardcoded sizing and full-bleed requirements for ALL generations
       const sizingRequirements = `
@@ -698,6 +722,24 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
+      // Look up style preset and get its promptSuffix
+      let stylePromptPrefix = "";
+      if (stylePreset && installation.merchantId) {
+        // Try to find in database styles first
+        const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
+        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
+        if (selectedStyle && selectedStyle.promptPrefix) {
+          stylePromptPrefix = selectedStyle.promptPrefix;
+        }
+        // Fall back to hardcoded STYLE_PRESETS if not found in database
+        if (!stylePromptPrefix) {
+          const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
+            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          }
+        }
+      }
+
       // Load product type config if provided
       let productType = null;
       if (productTypeId) {
@@ -711,8 +753,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizeConfig = PRINT_SIZES[0];
       }
 
-      // The frontend already incorporates style prompts, so we use the prompt as-is
-      let fullPrompt = prompt;
+      // Apply style prompt prefix if available
+      let fullPrompt = stylePromptPrefix 
+        ? `${stylePromptPrefix} ${prompt}` 
+        : prompt;
 
       // Build shape-specific safe zone instructions
       const printShape = productType?.printShape || "rectangle";

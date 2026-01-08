@@ -158,8 +158,9 @@ export default function AdminCreateProduct() {
 
       if (response.ok) {
         const data = await response.json();
-        if (data.mockups && data.mockups.length > 0) {
-          setMockupImages(data.mockups.map((m: any) => ({
+        const mockups = data.mockupImages || data.mockups || [];
+        if (mockups.length > 0) {
+          setMockupImages(mockups.map((m: any) => ({
             url: m.url || m,
             label: m.label || "Mockup",
           })));
