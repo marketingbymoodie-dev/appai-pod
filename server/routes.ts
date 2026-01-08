@@ -3322,6 +3322,16 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      // Convert relative URLs to absolute URLs for Printify
+      let absoluteImageUrl = designImageUrl;
+      if (designImageUrl.startsWith("/objects/")) {
+        // Get the host from request headers or use REPLIT_DEV_DOMAIN
+        const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
+        const protocol = req.protocol || "https";
+        absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
+        console.log("Converting image URL for Printify:", absoluteImageUrl);
+      }
+
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) {
         return res.status(404).json({ error: "Merchant not found" });
@@ -3375,7 +3385,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         blueprintId: productType.printifyBlueprintId,
         providerId,
         variantId: targetVariantId,
-        imageUrl: designImageUrl,
+        imageUrl: absoluteImageUrl,
         printifyApiToken: merchant.printifyApiToken,
         printifyShopId: merchant.printifyShopId,
         scale: scale ? scale / 100 : 1, // Convert from percentage to 0-2 range
