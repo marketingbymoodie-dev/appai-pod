@@ -110,7 +110,7 @@ export default function AdminCreateProduct() {
     setMockupImages([]);
 
     try {
-      const response = await apiRequest("POST", "/api/designs/generate", {
+      const response = await apiRequest("POST", "/api/generate", {
         prompt,
         size: selectedSize,
         frameColor: selectedFrameColor,
@@ -441,11 +441,41 @@ export default function AdminCreateProduct() {
                       </div>
                     ) : null}
                   </div>
+                ) : designerConfig?.baseMockupImages?.front ? (
+                  <div className="space-y-4">
+                    <div className="aspect-square bg-muted rounded-lg overflow-hidden">
+                      <img 
+                        src={designerConfig.baseMockupImages.front} 
+                        alt="Product preview" 
+                        className="w-full h-full object-contain"
+                        data-testid="img-product-placeholder"
+                      />
+                    </div>
+                    {designerConfig.baseMockupImages.lifestyle && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="aspect-square bg-muted rounded-lg overflow-hidden">
+                          <img 
+                            src={designerConfig.baseMockupImages.front} 
+                            alt="Front view" 
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                        <div className="aspect-square bg-muted rounded-lg overflow-hidden">
+                          <img 
+                            src={designerConfig.baseMockupImages.lifestyle} 
+                            alt="Lifestyle view" 
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-center text-sm text-muted-foreground">Enter a prompt and generate to see your custom design</p>
+                  </div>
                 ) : (
                   <div className="aspect-square bg-muted rounded-lg flex items-center justify-center">
                     <div className="text-center text-muted-foreground">
                       <Package className="h-12 w-12 mx-auto mb-2" />
-                      <p className="text-sm">Generate a design to see preview</p>
+                      <p className="text-sm">Select a product type to see preview</p>
                     </div>
                   </div>
                 )}
