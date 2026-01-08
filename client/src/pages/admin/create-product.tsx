@@ -58,6 +58,7 @@ export default function AdminCreateProduct() {
   const [mockupImages, setMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState<number | null>(null);
+  const [bgRemovalSensitivity, setBgRemovalSensitivity] = useState(50);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -116,6 +117,9 @@ export default function AdminCreateProduct() {
     lastAppliedScaleRef.current = null;
 
     try {
+      // Only pass bgRemovalSensitivity for apparel products
+      const isApparel = designerConfig?.designerType === "apparel";
+      
       const response = await apiRequest("POST", "/api/generate", {
         prompt,
         size: selectedSize,
@@ -123,6 +127,7 @@ export default function AdminCreateProduct() {
         stylePreset: selectedStyle,
         productTypeId: selectedProductTypeId,
         referenceImageBase64: referenceImage,
+        ...(isApparel && { bgRemovalSensitivity }),
       });
 
       const data = await response.json();
@@ -383,6 +388,26 @@ export default function AdminCreateProduct() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {designerConfig?.designerType === "apparel" && (
+                  <div className="space-y-2 pt-2 border-t">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">Background Removal Sensitivity</Label>
+                      <span className="text-xs text-muted-foreground">{bgRemovalSensitivity}%</span>
+                    </div>
+                    <Slider
+                      value={[bgRemovalSensitivity]}
+                      onValueChange={(v) => setBgRemovalSensitivity(v[0])}
+                      min={0}
+                      max={100}
+                      step={5}
+                      data-testid="slider-bg-removal"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Low = preserve small white areas, High = remove more enclosed white regions (like letter holes)
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

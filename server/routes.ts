@@ -67,13 +67,19 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 
 /**
  * Remove edge-connected white background from an image and make it transparent.
- * Uses flood-fill algorithm starting from the edges to only remove background,
- * preserving interior white areas (like white text or design elements).
+ * Uses two-pass algorithm:
+ * 1. Flood-fill from edges to remove outer background
+ * 2. Find and remove enclosed white regions above a size threshold (like letter counters)
  * @param buffer - The image buffer to process
  * @param threshold - How close to white a pixel must be (0-255, default 240)
+ * @param enclosedMinSize - Minimum pixels for enclosed regions to be removed (default 200, 0 = skip second pass)
  * @returns Buffer with transparent background as PNG
  */
-async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): Promise<Buffer> {
+async function removeWhiteBackground(
+  buffer: Buffer, 
+  threshold: number = 240,
+  enclosedMinSize: number = 200
+): Promise<Buffer> {
   // Convert to raw RGBA pixels
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
@@ -83,39 +89,37 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
   const width = info.width;
   const height = info.height;
   const pixels = new Uint8Array(data);
+  const totalPixels = width * height;
   
-  // Helper to check if a pixel is white/near-white
+  // Helper to check if a pixel is white/near-white and still opaque
   const isWhite = (idx: number): boolean => {
     const r = pixels[idx];
     const g = pixels[idx + 1];
     const b = pixels[idx + 2];
-    return r >= threshold && g >= threshold && b >= threshold;
+    const a = pixels[idx + 3];
+    return a > 0 && r >= threshold && g >= threshold && b >= threshold;
   };
   
-  // Helper to get pixel index from x,y coordinates
-  const getIdx = (x: number, y: number): number => (y * width + x) * 4;
-  
   // Track which pixels have been visited
-  const visited = new Uint8Array(width * height);
+  const visited = new Uint8Array(totalPixels);
   
   // Queue for flood fill - use pointer-based approach for O(1) dequeue
-  const queue = new Int32Array(width * height);
+  const queue = new Int32Array(totalPixels);
   let queueHead = 0;
   let queueTail = 0;
   
+  // ========== PASS 1: Edge-connected flood fill ==========
   // Add all edge pixels that are white to the queue
   // Top and bottom edges
   for (let x = 0; x < width; x++) {
-    const topIdx = getIdx(x, 0);
-    const bottomIdx = getIdx(x, height - 1);
     const topPos = x;
     const bottomPos = (height - 1) * width + x;
     
-    if (isWhite(topIdx) && !visited[topPos]) {
+    if (isWhite(topPos * 4) && !visited[topPos]) {
       queue[queueTail++] = topPos;
       visited[topPos] = 1;
     }
-    if (isWhite(bottomIdx) && !visited[bottomPos]) {
+    if (isWhite(bottomPos * 4) && !visited[bottomPos]) {
       queue[queueTail++] = bottomPos;
       visited[bottomPos] = 1;
     }
@@ -123,22 +127,21 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
   
   // Left and right edges
   for (let y = 0; y < height; y++) {
-    const leftIdx = getIdx(0, y);
-    const rightIdx = getIdx(width - 1, y);
     const leftPos = y * width;
     const rightPos = y * width + (width - 1);
     
-    if (isWhite(leftIdx) && !visited[leftPos]) {
+    if (isWhite(leftPos * 4) && !visited[leftPos]) {
       queue[queueTail++] = leftPos;
       visited[leftPos] = 1;
     }
-    if (isWhite(rightIdx) && !visited[rightPos]) {
+    if (isWhite(rightPos * 4) && !visited[rightPos]) {
       queue[queueTail++] = rightPos;
       visited[rightPos] = 1;
     }
   }
   
   // BFS flood fill from edges - O(n) with pointer-based queue
+  let edgePixelsRemoved = 0;
   while (queueHead < queueTail) {
     const pos = queue[queueHead++];
     const x = pos % width;
@@ -147,9 +150,9 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
     
     // Make this pixel transparent
     pixels[idx + 3] = 0;
+    edgePixelsRemoved++;
     
     // Check 4-connected neighbors inline for performance
-    // Up
     if (y > 0) {
       const neighborPos = pos - width;
       if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
@@ -157,7 +160,6 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
         queue[queueTail++] = neighborPos;
       }
     }
-    // Down
     if (y < height - 1) {
       const neighborPos = pos + width;
       if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
@@ -165,7 +167,6 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
         queue[queueTail++] = neighborPos;
       }
     }
-    // Left
     if (x > 0) {
       const neighborPos = pos - 1;
       if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
@@ -173,7 +174,6 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
         queue[queueTail++] = neighborPos;
       }
     }
-    // Right
     if (x < width - 1) {
       const neighborPos = pos + 1;
       if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
@@ -183,7 +183,75 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
     }
   }
   
-  console.log(`Background removal: processed ${width}x${height} image, made ${visited.reduce((a, b) => a + b, 0)} pixels transparent`);
+  // ========== PASS 2: Find and remove enclosed white regions ==========
+  let enclosedPixelsRemoved = 0;
+  let enclosedRegionsFound = 0;
+  
+  if (enclosedMinSize > 0) {
+    // Scan for unvisited white pixels (these are enclosed regions)
+    for (let startPos = 0; startPos < totalPixels; startPos++) {
+      if (visited[startPos] || !isWhite(startPos * 4)) continue;
+      
+      // Found an unvisited white region - measure its size first
+      const regionPixels: number[] = [];
+      queueHead = 0;
+      queueTail = 0;
+      queue[queueTail++] = startPos;
+      visited[startPos] = 1;
+      
+      while (queueHead < queueTail) {
+        const pos = queue[queueHead++];
+        regionPixels.push(pos);
+        
+        const x = pos % width;
+        const y = Math.floor(pos / width);
+        
+        // Check neighbors
+        if (y > 0) {
+          const neighborPos = pos - width;
+          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+            visited[neighborPos] = 1;
+            queue[queueTail++] = neighborPos;
+          }
+        }
+        if (y < height - 1) {
+          const neighborPos = pos + width;
+          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+            visited[neighborPos] = 1;
+            queue[queueTail++] = neighborPos;
+          }
+        }
+        if (x > 0) {
+          const neighborPos = pos - 1;
+          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+            visited[neighborPos] = 1;
+            queue[queueTail++] = neighborPos;
+          }
+        }
+        if (x < width - 1) {
+          const neighborPos = pos + 1;
+          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+            visited[neighborPos] = 1;
+            queue[queueTail++] = neighborPos;
+          }
+        }
+      }
+      
+      enclosedRegionsFound++;
+      
+      // Only remove if region exceeds minimum size threshold
+      if (regionPixels.length >= enclosedMinSize) {
+        for (const pos of regionPixels) {
+          pixels[pos * 4 + 3] = 0; // Make transparent
+        }
+        enclosedPixelsRemoved += regionPixels.length;
+      }
+    }
+  }
+  
+  console.log(`Background removal: ${width}x${height} image`);
+  console.log(`  Pass 1 (edges): removed ${edgePixelsRemoved} pixels`);
+  console.log(`  Pass 2 (enclosed): found ${enclosedRegionsFound} regions, removed ${enclosedPixelsRemoved} pixels (threshold: ${enclosedMinSize})`);
   
   // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
@@ -200,10 +268,11 @@ async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): P
 interface SaveImageOptions {
   isApparel?: boolean;
   targetDims?: TargetDimensions;
+  enclosedMinSize?: number;
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, targetDims } = options || {};
+  const { isApparel = false, targetDims, enclosedMinSize = 200 } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -213,8 +282,8 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   
   // For apparel, remove white background to make it transparent
   if (isApparel) {
-    console.log("Removing white background for apparel image...");
-    buffer = await removeWhiteBackground(buffer, 240);
+    console.log(`Removing white background for apparel image (sensitivity: ${enclosedMinSize})...`);
+    buffer = await removeWhiteBackground(buffer, 240, enclosedMinSize);
     // Force PNG for transparency support
     extension = "png";
     actualMimeType = "image/png";
@@ -506,7 +575,7 @@ export async function registerRoutes(
         });
       }
 
-      const { prompt, stylePreset, size, frameColor, referenceImage, productTypeId } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -693,10 +762,16 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
       
       // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
+      // Convert sensitivity slider (0-100) to minimum enclosed region size
+      // Higher slider = more aggressive = lower threshold (100→50px, 0→2000px)
+      const enclosedMinSize = bgRemovalSensitivity !== undefined 
+        ? Math.round(2000 - (bgRemovalSensitivity / 100) * 1950)
+        : 200;
+      
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims, enclosedMinSize });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
@@ -880,7 +955,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
   // Requires valid session token from /api/shopify/session
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, sessionToken } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, sessionToken, bgRemovalSensitivity } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -1133,10 +1208,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
       
       // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
+      // Convert sensitivity slider (0-100) to minimum enclosed region size
+      const enclosedMinSize = bgRemovalSensitivity !== undefined 
+        ? Math.round(2000 - (bgRemovalSensitivity / 100) * 1950)
+        : 200;
+      
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims, enclosedMinSize });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
       } catch (storageError) {
