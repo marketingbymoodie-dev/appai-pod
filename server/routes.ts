@@ -66,43 +66,130 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove white/near-white background from an image and make it transparent.
- * Uses sharp to detect white pixels and convert them to alpha.
+ * Remove edge-connected white background from an image and make it transparent.
+ * Uses flood-fill algorithm starting from the edges to only remove background,
+ * preserving interior white areas (like white text or design elements).
  * @param buffer - The image buffer to process
  * @param threshold - How close to white a pixel must be (0-255, default 240)
  * @returns Buffer with transparent background as PNG
  */
 async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): Promise<Buffer> {
-  // Get image metadata
-  const metadata = await sharp(buffer).metadata();
-  const width = metadata.width || 1024;
-  const height = metadata.height || 1024;
-  
   // Convert to raw RGBA pixels
   const { data, info } = await sharp(buffer)
-    .ensureAlpha() // Ensure image has alpha channel
+    .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
   
-  // Process each pixel: if it's white (or near-white), make it transparent
+  const width = info.width;
+  const height = info.height;
   const pixels = new Uint8Array(data);
-  for (let i = 0; i < pixels.length; i += 4) {
-    const r = pixels[i];
-    const g = pixels[i + 1];
-    const b = pixels[i + 2];
+  
+  // Helper to check if a pixel is white/near-white
+  const isWhite = (idx: number): boolean => {
+    const r = pixels[idx];
+    const g = pixels[idx + 1];
+    const b = pixels[idx + 2];
+    return r >= threshold && g >= threshold && b >= threshold;
+  };
+  
+  // Helper to get pixel index from x,y coordinates
+  const getIdx = (x: number, y: number): number => (y * width + x) * 4;
+  
+  // Track which pixels have been visited
+  const visited = new Uint8Array(width * height);
+  
+  // Queue for flood fill - use pointer-based approach for O(1) dequeue
+  const queue = new Int32Array(width * height);
+  let queueHead = 0;
+  let queueTail = 0;
+  
+  // Add all edge pixels that are white to the queue
+  // Top and bottom edges
+  for (let x = 0; x < width; x++) {
+    const topIdx = getIdx(x, 0);
+    const bottomIdx = getIdx(x, height - 1);
+    const topPos = x;
+    const bottomPos = (height - 1) * width + x;
     
-    // Check if pixel is white or near-white
-    if (r >= threshold && g >= threshold && b >= threshold) {
-      // Make pixel fully transparent
-      pixels[i + 3] = 0;
+    if (isWhite(topIdx) && !visited[topPos]) {
+      queue[queueTail++] = topPos;
+      visited[topPos] = 1;
+    }
+    if (isWhite(bottomIdx) && !visited[bottomPos]) {
+      queue[queueTail++] = bottomPos;
+      visited[bottomPos] = 1;
     }
   }
+  
+  // Left and right edges
+  for (let y = 0; y < height; y++) {
+    const leftIdx = getIdx(0, y);
+    const rightIdx = getIdx(width - 1, y);
+    const leftPos = y * width;
+    const rightPos = y * width + (width - 1);
+    
+    if (isWhite(leftIdx) && !visited[leftPos]) {
+      queue[queueTail++] = leftPos;
+      visited[leftPos] = 1;
+    }
+    if (isWhite(rightIdx) && !visited[rightPos]) {
+      queue[queueTail++] = rightPos;
+      visited[rightPos] = 1;
+    }
+  }
+  
+  // BFS flood fill from edges - O(n) with pointer-based queue
+  while (queueHead < queueTail) {
+    const pos = queue[queueHead++];
+    const x = pos % width;
+    const y = Math.floor(pos / width);
+    const idx = pos * 4;
+    
+    // Make this pixel transparent
+    pixels[idx + 3] = 0;
+    
+    // Check 4-connected neighbors inline for performance
+    // Up
+    if (y > 0) {
+      const neighborPos = pos - width;
+      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+    // Down
+    if (y < height - 1) {
+      const neighborPos = pos + width;
+      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+    // Left
+    if (x > 0) {
+      const neighborPos = pos - 1;
+      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+    // Right
+    if (x < width - 1) {
+      const neighborPos = pos + 1;
+      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+  }
+  
+  console.log(`Background removal: processed ${width}x${height} image, made ${visited.reduce((a, b) => a + b, 0)} pixels transparent`);
   
   // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
     raw: {
-      width: info.width,
-      height: info.height,
+      width,
+      height,
       channels: 4
     }
   })
