@@ -29,10 +29,56 @@ interface SaveImageResult {
   thumbnailUrl: string;
 }
 
-async function saveImageToStorage(base64Data: string, mimeType: string): Promise<SaveImageResult> {
+interface TargetDimensions {
+  width: number;
+  height: number;
+}
+
+async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions, outputFormat: 'png' | 'jpeg' = 'png'): Promise<Buffer> {
+  const metadata = await sharp(buffer).metadata();
+  const srcWidth = metadata.width || 1024;
+  const srcHeight = metadata.height || 1024;
+  
+  const targetRatio = targetDims.width / targetDims.height;
+  const srcRatio = srcWidth / srcHeight;
+  
+  let cropWidth = srcWidth;
+  let cropHeight = srcHeight;
+  let cropLeft = 0;
+  let cropTop = 0;
+  
+  if (srcRatio > targetRatio) {
+    cropWidth = Math.round(srcHeight * targetRatio);
+    cropLeft = Math.round((srcWidth - cropWidth) / 2);
+  } else if (srcRatio < targetRatio) {
+    cropHeight = Math.round(srcWidth / targetRatio);
+    cropTop = Math.round((srcHeight - cropHeight) / 2);
+  }
+  
+  const sharpInstance = sharp(buffer)
+    .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
+    .resize(targetDims.width, targetDims.height, { fit: 'fill' });
+  
+  if (outputFormat === 'jpeg') {
+    return sharpInstance.jpeg({ quality: 90 }).toBuffer();
+  }
+  return sharpInstance.png().toBuffer();
+}
+
+async function saveImageToStorage(base64Data: string, mimeType: string, targetDims?: TargetDimensions): Promise<SaveImageResult> {
   const imageId = crypto.randomUUID();
-  const extension = mimeType.includes("png") ? "png" : "jpg";
+  let actualMimeType = mimeType.toLowerCase();
+  let extension = actualMimeType.includes("png") ? "png" : "jpg";
   const privateDir = objectStorage.getPrivateObjectDir();
+  
+  let buffer = Buffer.from(base64Data, "base64");
+  
+  if (targetDims && (targetDims.width !== targetDims.height)) {
+    const outputFormat = actualMimeType.includes("jpeg") || actualMimeType.includes("jpg") ? 'jpeg' : 'png';
+    buffer = await resizeToAspectRatio(buffer, targetDims, outputFormat);
+    extension = outputFormat === 'jpeg' ? 'jpg' : 'png';
+    actualMimeType = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+  }
   
   // privateDir is like /bucket-name/.private, we need to parse it correctly
   const fullPath = `${privateDir}/designs/${imageId}.${extension}`;
@@ -49,8 +95,6 @@ async function saveImageToStorage(base64Data: string, mimeType: string): Promise
   const bucketName = pathParts[0];
   const objectName = pathParts.slice(1).join("/");
   const thumbObjectName = `.private/designs/thumb_${imageId}.jpg`;
-  
-  const buffer = Buffer.from(base64Data, "base64");
   const thumbnailBuffer = await generateThumbnail(buffer);
   
   const bucket = objectStorageClient.bucket(bucketName);
@@ -58,7 +102,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string): Promise
   // Save original image
   const file = bucket.file(objectName);
   await file.save(buffer, {
-    contentType: mimeType,
+    contentType: actualMimeType,
     metadata: {
       metadata: {
         "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
@@ -464,11 +508,16 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 
       const mimeType = imagePart.inlineData.mimeType || "image/png";
       
-      // Save image to object storage instead of base64
+      // Get target dimensions for resizing
+      const genWidth = (finalSizeConfig as any).genWidth || 1024;
+      const genHeight = (finalSizeConfig as any).genHeight || 1024;
+      const targetDims = { width: genWidth, height: genHeight };
+      
+      // Save image to object storage instead of base64 (with aspect ratio resizing)
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, targetDims);
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
@@ -885,11 +934,16 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 
       const mimeType = imagePart.inlineData.mimeType || "image/png";
       
-      // Save image to object storage instead of base64
+      // Get target dimensions for resizing
+      const genWidth = (sizeConfig as any).genWidth || 1024;
+      const genHeight = (sizeConfig as any).genHeight || 1024;
+      const targetDims = { width: genWidth, height: genHeight };
+      
+      // Save image to object storage instead of base64 (with aspect ratio resizing)
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType);
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, targetDims);
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
       } catch (storageError) {

@@ -57,7 +57,7 @@ export default function AdminCreateProduct() {
   
   const [mockupImages, setMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
-  const [selectedMainImage, setSelectedMainImage] = useState<string | null>(null);
+  const [selectedMockupIndex, setSelectedMockupIndex] = useState<number | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -112,7 +112,7 @@ export default function AdminCreateProduct() {
     setIsGenerating(true);
     setGeneratedImageUrl(null);
     setMockupImages([]);
-    setSelectedMainImage(null);
+    setSelectedMockupIndex(null);
     lastAppliedScaleRef.current = null;
 
     try {
@@ -190,8 +190,10 @@ export default function AdminCreateProduct() {
     }
   }, [designerConfig]);
 
-  // Track last applied scale to only regenerate when scale actually changes
+  // Track last applied values to only regenerate when they actually change
   const lastAppliedScaleRef = useRef<number | null>(null);
+  const lastAppliedSizeRef = useRef<string | null>(null);
+  const lastAppliedColorRef = useRef<string | null>(null);
   
   // Regenerate mockups when zoom scale changes (debounced, queues if currently loading)
   useEffect(() => {
@@ -220,6 +222,39 @@ export default function AdminCreateProduct() {
     
     return () => clearTimeout(timer);
   }, [imageScale, generatedImageUrl, designerConfig?.hasPrintifyMockups, mockupImages.length, mockupLoading]);
+  
+  // Regenerate mockups when size or color variant changes (debounced)
+  useEffect(() => {
+    // Skip if no image or no mockup support
+    if (!generatedImageUrl || !designerConfig?.hasPrintifyMockups) return;
+    
+    // Skip if we don't have mockups yet (initial generation will handle it)
+    if (mockupImages.length === 0) return;
+    
+    // Initialize refs on first run
+    if (lastAppliedSizeRef.current === null) {
+      lastAppliedSizeRef.current = selectedSize;
+      lastAppliedColorRef.current = selectedFrameColor;
+      return;
+    }
+    
+    // Check if size or color has changed
+    const sizeChanged = lastAppliedSizeRef.current !== selectedSize;
+    const colorChanged = lastAppliedColorRef.current !== selectedFrameColor;
+    
+    if (!sizeChanged && !colorChanged) return;
+    
+    // If currently loading, wait for it to complete
+    if (mockupLoading) return;
+    
+    const timer = setTimeout(() => {
+      lastAppliedSizeRef.current = selectedSize;
+      lastAppliedColorRef.current = selectedFrameColor;
+      generateMockups(generatedImageUrl);
+    }, 300); // 300ms debounce for variant changes
+    
+    return () => clearTimeout(timer);
+  }, [selectedSize, selectedFrameColor, generatedImageUrl, designerConfig?.hasPrintifyMockups, mockupImages.length, mockupLoading]);
   
   const filteredStyles = config?.stylePresets.filter(style => 
     style.category === "all" || style.category === styleCategory
@@ -435,7 +470,7 @@ export default function AdminCreateProduct() {
                   <div className="space-y-4">
                     <div className="aspect-square bg-muted rounded-lg overflow-hidden">
                       <img 
-                        src={selectedMainImage || generatedImageUrl} 
+                        src={selectedMockupIndex !== null && mockupImages[selectedMockupIndex] ? mockupImages[selectedMockupIndex].url : generatedImageUrl} 
                         alt="Selected preview" 
                         className="w-full h-full object-contain"
                         data-testid="img-generated-design"
@@ -470,8 +505,8 @@ export default function AdminCreateProduct() {
                         <p className="text-xs text-muted-foreground">Click a mockup to view it larger</p>
                         <div className="grid grid-cols-2 gap-2">
                           <div 
-                            className={`space-y-1 cursor-pointer rounded-lg p-1 ${!selectedMainImage ? 'ring-2 ring-primary' : 'hover-elevate'}`}
-                            onClick={() => setSelectedMainImage(null)}
+                            className={`space-y-1 cursor-pointer rounded-lg p-1 ${selectedMockupIndex === null ? 'ring-2 ring-primary' : 'hover-elevate'}`}
+                            onClick={() => setSelectedMockupIndex(null)}
                             data-testid="mockup-thumbnail-original"
                           >
                             <img 
@@ -484,8 +519,8 @@ export default function AdminCreateProduct() {
                           {mockupImages.map((mockup, i) => (
                             <div 
                               key={i} 
-                              className={`space-y-1 cursor-pointer rounded-lg p-1 ${selectedMainImage === mockup.url ? 'ring-2 ring-primary' : 'hover-elevate'}`}
-                              onClick={() => setSelectedMainImage(mockup.url)}
+                              className={`space-y-1 cursor-pointer rounded-lg p-1 ${selectedMockupIndex === i ? 'ring-2 ring-primary' : 'hover-elevate'}`}
+                              onClick={() => setSelectedMockupIndex(i)}
                               data-testid={`mockup-thumbnail-${i}`}
                             >
                               <img 
