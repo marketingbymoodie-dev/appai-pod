@@ -923,6 +923,8 @@ export default function DesignPage() {
   // Determine if we should show a framed preview or a base product mockup
   const isFramedProduct = designerConfig?.designerType === "framed-print" || designerConfig?.designerType === "framed_print";
   const hasBaseMockup = designerConfig?.baseMockupImages?.front;
+  // For products with Printify mockups, prefer showing those over static base mockup
+  const usePrintifyMockups = designerConfig?.hasPrintifyMockups && (printifyMockups.length > 0 || mockupLoading);
 
   const previewMockup = (
     <div 
@@ -971,6 +973,35 @@ export default function DesignPage() {
               </div>
             )}
           </div>
+        </div>
+      ) : usePrintifyMockups ? (
+        // Show Printify mockups for products with hasPrintifyMockups enabled
+        <div className="w-full h-full flex items-center justify-center" style={{ pointerEvents: 'none' }}>
+          {generateMutation.isPending ? (
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-xs">Creating artwork...</span>
+            </div>
+          ) : mockupLoading ? (
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-xs">Generating product preview...</span>
+            </div>
+          ) : printifyMockups.length > 0 ? (
+            <div className="relative w-full h-full">
+              <img
+                src={printifyMockups[0]}
+                alt="Product mockup"
+                className="w-full h-full object-contain rounded-md"
+                data-testid="img-printify-mockup"
+              />
+            </div>
+          ) : (
+            <div className="text-center text-muted-foreground p-4">
+              <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p className="text-xs">Your artwork will appear here</p>
+            </div>
+          )}
         </div>
       ) : hasBaseMockup ? (
         // Base product mockup (for apparel, etc.) with optional generated artwork overlay
