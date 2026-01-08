@@ -3064,7 +3064,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
-  // POST /api/admin/product-types/:id/refresh-images - Refresh placeholder images from Printify
+  // POST /api/admin/product-types/:id/refresh-images - Refresh product images from Printify
   app.post("/api/admin/product-types/:id/refresh-images", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -3088,7 +3088,61 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(400).json({ error: "Product type is not linked to Printify" });
       }
 
-      // Fetch variants to get the first variant ID
+      // Helper to extract URL from image entry (handles both string and object formats)
+      const extractImageUrl = (img: any): string | undefined => {
+        if (typeof img === 'string') return img;
+        if (img && typeof img === 'object') return img.src || img.url;
+        return undefined;
+      };
+
+      let baseMockupImages: { front?: string; lifestyle?: string } = {};
+
+      // First, fetch blueprint details which contains product images
+      const blueprintResponse = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (blueprintResponse.ok) {
+        const blueprintData = await blueprintResponse.json();
+        const images = blueprintData.images || [];
+        
+        // Blueprint images are product mockups - use first as front, second as lifestyle if available
+        if (images.length > 0) {
+          baseMockupImages.front = extractImageUrl(images[0]);
+        }
+        if (images.length > 1) {
+          baseMockupImages.lifestyle = extractImageUrl(images[1]);
+        }
+      }
+
+      // If no images from blueprint, try print provider specific endpoint
+      if (!baseMockupImages.front) {
+        const providerResponse = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}.json`,
+          {
+            headers: {
+              "Authorization": `Bearer ${merchant.printifyApiToken}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        if (providerResponse.ok) {
+          const providerData = await providerResponse.json();
+          // Provider data may have location-specific images
+          if (providerData.image) {
+            baseMockupImages.front = extractImageUrl(providerData.image);
+          }
+        }
+      }
+
+      // Also fetch placeholder data for print-area/safe-zone information
       const variantsResponse = await fetch(
         `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
         {
@@ -3099,56 +3153,64 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         }
       );
 
-      if (!variantsResponse.ok) {
-        return res.status(500).json({ error: "Failed to fetch variants from Printify" });
-      }
-
-      const variantsData = await variantsResponse.json();
-      const variants = variantsData.variants || [];
-      
-      if (variants.length === 0) {
-        return res.status(400).json({ error: "No variants found for this product" });
-      }
-
-      const firstVariant = variants[0];
-      // Printify may return variant_id or id depending on the endpoint
-      const variantId = firstVariant.variant_id || firstVariant.id;
-      if (!variantId) {
-        return res.status(400).json({ error: "Could not determine variant ID" });
-      }
-      
-      let baseMockupImages: { front?: string; lifestyle?: string } = {};
-
-      // Fetch placeholder images
-      const placeholderResponse = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${variantId}/placeholders.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-
-      if (placeholderResponse.ok) {
-        const placeholderData = await placeholderResponse.json();
-        const placeholders = placeholderData.placeholders || [];
+      if (variantsResponse.ok) {
+        const variantsData = await variantsResponse.json();
+        const variants = variantsData.variants || [];
         
-        for (const placeholder of placeholders) {
-          const position = placeholder.position?.toLowerCase() || "";
-          const images = placeholder.images || [];
+        if (variants.length > 0) {
+          const firstVariant = variants[0];
+          const variantId = firstVariant.variant_id || firstVariant.id;
           
-          if (images.length > 0) {
-            const imgUrl = images[0].src || images[0].url;
-            if (position === "front" || position.includes("front")) {
-              baseMockupImages.front = imgUrl;
-            } else if (position === "lifestyle" || position.includes("lifestyle")) {
-              baseMockupImages.lifestyle = imgUrl;
-            } else if (!baseMockupImages.front) {
-              baseMockupImages.front = imgUrl;
+          if (variantId) {
+            const placeholderResponse = await fetch(
+              `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${variantId}/placeholders.json`,
+              {
+                headers: {
+                  "Authorization": `Bearer ${merchant.printifyApiToken}`,
+                  "Content-Type": "application/json"
+                }
+              }
+            );
+
+            if (placeholderResponse.ok) {
+              const placeholderData = await placeholderResponse.json();
+              const placeholders = placeholderData.placeholders || [];
+              
+              // Fallback: If no images from blueprint/provider, try to extract from placeholder images
+              if (!baseMockupImages.front || !baseMockupImages.lifestyle) {
+                for (const placeholder of placeholders) {
+                  const position = placeholder.position?.toLowerCase() || "";
+                  const images = placeholder.images || [];
+                  
+                  if (images.length > 0) {
+                    const imgUrl = extractImageUrl(images[0]);
+                    if (imgUrl) {
+                      if (!baseMockupImages.front && (position === "front" || position.includes("front"))) {
+                        baseMockupImages.front = imgUrl;
+                      } else if (!baseMockupImages.lifestyle && (position === "lifestyle" || position.includes("lifestyle"))) {
+                        baseMockupImages.lifestyle = imgUrl;
+                      } else if (!baseMockupImages.front) {
+                        // Use first available image as front if no specific position match yet
+                        baseMockupImages.front = imgUrl;
+                      } else if (!baseMockupImages.lifestyle) {
+                        // Use subsequent image as lifestyle if front is already set
+                        baseMockupImages.lifestyle = imgUrl;
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
+      }
+
+      // Check if we found any images
+      if (!baseMockupImages.front && !baseMockupImages.lifestyle) {
+        return res.status(400).json({ 
+          error: "No product images available from Printify for this blueprint",
+          hint: "This product type may not have catalog images. You can add a custom mockup template URL instead."
+        });
       }
 
       // Update the product type with new images
@@ -3162,7 +3224,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         productType: updated 
       });
     } catch (error) {
-      console.error("Error refreshing placeholder images:", error);
+      console.error("Error refreshing product images:", error);
       res.status(500).json({ error: "Failed to refresh images" });
     }
   });
