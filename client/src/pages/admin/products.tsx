@@ -109,7 +109,7 @@ export default function AdminProducts() {
       const response = await apiRequest("POST", "/api/admin/printify/import", data);
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: async (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       setPrintifyImportOpen(false);
       setProviderSelectionOpen(false);
@@ -117,6 +117,17 @@ export default function AdminProducts() {
       setSelectedProvider(null);
       setBlueprintSearch("");
       toast({ title: "Blueprint imported", description: "Product type created from Printify catalog." });
+      
+      // Auto-refresh images for the newly imported product
+      if (data?.id) {
+        try {
+          await apiRequest("POST", `/api/admin/product-types/${data.id}/refresh-images`);
+          queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+        } catch (e) {
+          // Silent fail for image refresh - product was still imported successfully
+          console.log("Auto-image refresh skipped:", e);
+        }
+      }
     },
     onError: (error: Error) => {
       toast({ title: "Failed to import blueprint", description: error.message, variant: "destructive" });
