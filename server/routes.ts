@@ -65,7 +65,58 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
   return sharpInstance.png().toBuffer();
 }
 
-async function saveImageToStorage(base64Data: string, mimeType: string, targetDims?: TargetDimensions): Promise<SaveImageResult> {
+/**
+ * Remove white/near-white background from an image and make it transparent.
+ * Uses sharp to detect white pixels and convert them to alpha.
+ * @param buffer - The image buffer to process
+ * @param threshold - How close to white a pixel must be (0-255, default 240)
+ * @returns Buffer with transparent background as PNG
+ */
+async function removeWhiteBackground(buffer: Buffer, threshold: number = 240): Promise<Buffer> {
+  // Get image metadata
+  const metadata = await sharp(buffer).metadata();
+  const width = metadata.width || 1024;
+  const height = metadata.height || 1024;
+  
+  // Convert to raw RGBA pixels
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha() // Ensure image has alpha channel
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  
+  // Process each pixel: if it's white (or near-white), make it transparent
+  const pixels = new Uint8Array(data);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
+    
+    // Check if pixel is white or near-white
+    if (r >= threshold && g >= threshold && b >= threshold) {
+      // Make pixel fully transparent
+      pixels[i + 3] = 0;
+    }
+  }
+  
+  // Convert back to PNG with transparency
+  return sharp(Buffer.from(pixels), {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 4
+    }
+  })
+    .png()
+    .toBuffer();
+}
+
+interface SaveImageOptions {
+  isApparel?: boolean;
+  targetDims?: TargetDimensions;
+}
+
+async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
+  const { isApparel = false, targetDims } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -73,7 +124,16 @@ async function saveImageToStorage(base64Data: string, mimeType: string, targetDi
   
   let buffer = Buffer.from(base64Data, "base64");
   
-  if (targetDims && (targetDims.width !== targetDims.height)) {
+  // For apparel, remove white background to make it transparent
+  if (isApparel) {
+    console.log("Removing white background for apparel image...");
+    buffer = await removeWhiteBackground(buffer, 240);
+    // Force PNG for transparency support
+    extension = "png";
+    actualMimeType = "image/png";
+    console.log("Background removal complete - image now has transparency");
+  } else if (targetDims && (targetDims.width !== targetDims.height)) {
+    // Only resize for non-apparel (apparel stays square)
     const outputFormat = actualMimeType.includes("jpeg") || actualMimeType.includes("jpg") ? 'jpeg' : 'png';
     buffer = await resizeToAspectRatio(buffer, targetDims, outputFormat);
     extension = outputFormat === 'jpeg' ? 'jpg' : 'png';
@@ -545,11 +605,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         targetDims = { width: genWidth, height: genHeight };
       }
       
-      // Save image to object storage instead of base64 (with aspect ratio resizing for non-apparel)
+      // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, targetDims);
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
@@ -966,16 +1026,30 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 
       const mimeType = imagePart.inlineData.mimeType || "image/png";
       
-      // Get target dimensions for resizing
-      const genWidth = (sizeConfig as any).genWidth || 1024;
-      const genHeight = (sizeConfig as any).genHeight || 1024;
-      const targetDims = { width: genWidth, height: genHeight };
+      // Check if this is an apparel product
+      let isApparel = productType?.designerType === "apparel";
       
-      // Save image to object storage instead of base64 (with aspect ratio resizing)
+      // Also detect apparel from style preset category if no productType
+      if (!isApparel && stylePreset) {
+        const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+        if (hardcodedStyle && hardcodedStyle.category === "apparel") {
+          isApparel = true;
+        }
+      }
+      
+      // Get target dimensions for resizing - skip for apparel (keep square)
+      let targetDims: TargetDimensions | undefined;
+      if (!isApparel) {
+        const genWidth = (sizeConfig as any).genWidth || 1024;
+        const genHeight = (sizeConfig as any).genHeight || 1024;
+        targetDims = { width: genWidth, height: genHeight };
+      }
+      
+      // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, targetDims);
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
       } catch (storageError) {
