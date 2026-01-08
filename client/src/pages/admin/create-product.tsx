@@ -25,8 +25,10 @@ interface DesignerConfig {
   printAreaHeight: number | null;
   bleedMarginPercent: number;
   designerType: string;
+  sizeType: string;
   hasPrintifyMockups: boolean;
-  sizes: Array<{ id: string; name: string; width: number; height: number }>;
+  baseMockupImages: { front?: string; lifestyle?: string };
+  sizes: Array<{ id: string; name: string; width: number; height: number; aspectRatio?: string }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
   canvasConfig: { maxDimension: number; width: number; height: number; safeZoneMargin: number };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
@@ -71,12 +73,7 @@ export default function AdminCreateProduct() {
   });
 
   const { data: designerConfig, isLoading: designerConfigLoading } = useQuery<DesignerConfig>({
-    queryKey: ["/api/product-types", selectedProductTypeId, "config"],
-    queryFn: async () => {
-      const response = await fetch(`/api/product-types/${selectedProductTypeId}/config`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch product config");
-      return response.json();
-    },
+    queryKey: ["/api/product-types", selectedProductTypeId, "designer"],
     enabled: !!selectedProductTypeId,
   });
 
@@ -171,15 +168,20 @@ export default function AdminCreateProduct() {
     }
   };
 
-  const getStyleCategory = (): "decor" | "apparel" => {
-    const designerType = designerConfig?.designerType || "";
-    if (designerType === "apparel" || designerType.includes("shirt") || designerType.includes("hoodie")) {
-      return "apparel";
+  const [styleCategory, setStyleCategory] = useState<"decor" | "apparel">("decor");
+  
+  // Auto-set style category based on designer type when config loads
+  useEffect(() => {
+    if (designerConfig) {
+      const designerType = designerConfig.designerType || "";
+      if (designerType === "apparel" || designerType.includes("shirt") || designerType.includes("hoodie")) {
+        setStyleCategory("apparel");
+      } else {
+        setStyleCategory("decor");
+      }
     }
-    return "decor";
-  };
-
-  const styleCategory = getStyleCategory();
+  }, [designerConfig]);
+  
   const filteredStyles = config?.stylePresets.filter(style => 
     style.category === "all" || style.category === styleCategory
   ) || [];
@@ -270,17 +272,35 @@ export default function AdminCreateProduct() {
                 )}
 
                 <div className="space-y-2">
-                  <Label>
-                    Style
-                    <span className="text-xs text-muted-foreground ml-1">
-                      ({styleCategory === "apparel" ? "Apparel Artwork" : "Decor Artwork"})
-                    </span>
-                  </Label>
+                  <div className="flex items-center justify-between">
+                    <Label>Style</Label>
+                    <div className="flex gap-1">
+                      <Button
+                        type="button"
+                        variant={styleCategory === "decor" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setStyleCategory("decor")}
+                        data-testid="button-style-decor"
+                      >
+                        Decor
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={styleCategory === "apparel" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setStyleCategory("apparel")}
+                        data-testid="button-style-apparel"
+                      >
+                        Apparel
+                      </Button>
+                    </div>
+                  </div>
                   <Select value={selectedStyle} onValueChange={setSelectedStyle}>
                     <SelectTrigger data-testid="select-style">
                       <SelectValue placeholder="Choose a style" />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="none">No Style</SelectItem>
                       {filteredStyles.map((style) => (
                         <SelectItem key={style.id} value={style.id}>
                           {style.name}
