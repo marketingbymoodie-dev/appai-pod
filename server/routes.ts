@@ -67,16 +67,15 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 
 /**
  * Remove white background pixels from an image and make them transparent.
- * Uses edge-connected flood-fill with luminance + chroma gating to reliably
- * identify background regions while preserving interior white design elements.
+ * Uses a two-pass approach:
+ * 
+ * Pass 1: Edge-connected flood-fill to remove outer background
+ * Pass 2: Connected component analysis to remove large enclosed white regions
+ *         while preserving small ones (like letter counters in typography)
  * 
  * Background detection criteria:
  * - High luminance (>= 245 on 0-255 scale, ~96%)
  * - Low chroma/saturation (max-min channel distance <= 8)
- * - Connected to image edges
- * 
- * This approach handles JPEG compression noise while preserving design whites
- * because interior white regions are never removed (only edge-connected ones).
  * 
  * @param buffer - The image buffer to process
  * @param _threshold - DEPRECATED: No longer used, kept for API compatibility
@@ -103,6 +102,13 @@ async function removeWhiteBackground(
   const LUMINANCE_THRESHOLD = 245;  // ~96% brightness (handles JPEG at 253-255)
   const MAX_CHROMA_DISTANCE = 8;    // Max difference between R, G, B channels
   
+  // Thresholds for enclosed region removal
+  // Remove enclosed regions larger than 0.25% of image OR larger than 2500px
+  const MIN_ENCLOSED_AREA_PERCENT = 0.0025;  // 0.25%
+  const MIN_ENCLOSED_AREA_ABSOLUTE = 2500;   // 2500 pixels (50x50 area)
+  // Also remove if bounding box diagonal spans > 8% of canvas
+  const MIN_BBOX_DIAGONAL_PERCENT = 0.08;    // 8% of image diagonal
+  
   // Helper to check if a pixel is likely background (high luminance, low chroma, opaque)
   const isBackground = (idx: number): boolean => {
     const r = pixels[idx];
@@ -125,7 +131,7 @@ async function removeWhiteBackground(
     return true;
   };
   
-  // Track which pixels have been visited
+  // Track which pixels have been visited (for pass 1)
   const visited = new Uint8Array(totalPixels);
   
   // Queue for flood fill - use pointer-based approach for O(1) dequeue
@@ -133,6 +139,7 @@ async function removeWhiteBackground(
   let queueHead = 0;
   let queueTail = 0;
   
+  // PASS 1: Edge-connected flood fill
   // Add all edge pixels that pass background test to the queue
   // Top and bottom edges
   for (let x = 0; x < width; x++) {
@@ -164,8 +171,8 @@ async function removeWhiteBackground(
     }
   }
   
-  // BFS flood fill from edges - only removes edge-connected background pixels
-  let pixelsRemoved = 0;
+  // BFS flood fill from edges
+  let edgePixelsRemoved = 0;
   while (queueHead < queueTail) {
     const pos = queue[queueHead++];
     const x = pos % width;
@@ -174,7 +181,7 @@ async function removeWhiteBackground(
     
     // Make this pixel transparent
     pixels[idx + 3] = 0;
-    pixelsRemoved++;
+    edgePixelsRemoved++;
     
     // Check 4-connected neighbors
     if (y > 0) {
@@ -207,8 +214,90 @@ async function removeWhiteBackground(
     }
   }
   
+  // PASS 2: Find and remove large enclosed white regions
+  // Re-check for remaining background pixels (not visited in pass 1)
+  const isRemainingBackground = (pos: number): boolean => {
+    const idx = pos * 4;
+    return pixels[idx + 3] > 0 && isBackground(idx);
+  };
+  
+  // Track which pixels have been processed in pass 2
+  const processed = new Uint8Array(totalPixels);
+  let enclosedPixelsRemoved = 0;
+  let enclosedRegionsRemoved = 0;
+  let enclosedRegionsPreserved = 0;
+  
+  const imageDiagonal = Math.sqrt(width * width + height * height);
+  const minAreaThreshold = Math.max(MIN_ENCLOSED_AREA_ABSOLUTE, totalPixels * MIN_ENCLOSED_AREA_PERCENT);
+  const minDiagonalThreshold = imageDiagonal * MIN_BBOX_DIAGONAL_PERCENT;
+  
+  // Find connected components of remaining background pixels
+  for (let startPos = 0; startPos < totalPixels; startPos++) {
+    if (processed[startPos] || !isRemainingBackground(startPos)) continue;
+    
+    // BFS to find this connected component
+    const component: number[] = [];
+    let minX = width, maxX = 0, minY = height, maxY = 0;
+    
+    queueHead = 0;
+    queueTail = 0;
+    queue[queueTail++] = startPos;
+    processed[startPos] = 1;
+    
+    while (queueHead < queueTail) {
+      const pos = queue[queueHead++];
+      const x = pos % width;
+      const y = Math.floor(pos / width);
+      
+      component.push(pos);
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+      
+      // Check 4-connected neighbors
+      const neighbors = [
+        y > 0 ? pos - width : -1,
+        y < height - 1 ? pos + width : -1,
+        x > 0 ? pos - 1 : -1,
+        x < width - 1 ? pos + 1 : -1
+      ];
+      
+      for (const neighborPos of neighbors) {
+        if (neighborPos >= 0 && !processed[neighborPos] && isRemainingBackground(neighborPos)) {
+          processed[neighborPos] = 1;
+          queue[queueTail++] = neighborPos;
+        }
+      }
+    }
+    
+    // Decide whether to remove this component based on size/shape
+    const area = component.length;
+    const bboxWidth = maxX - minX + 1;
+    const bboxHeight = maxY - minY + 1;
+    const bboxDiagonal = Math.sqrt(bboxWidth * bboxWidth + bboxHeight * bboxHeight);
+    
+    // Remove if: large area OR large bounding box diagonal
+    const shouldRemove = area >= minAreaThreshold || bboxDiagonal >= minDiagonalThreshold;
+    
+    if (shouldRemove) {
+      // Remove this enclosed background region
+      for (const pos of component) {
+        pixels[pos * 4 + 3] = 0;
+      }
+      enclosedPixelsRemoved += area;
+      enclosedRegionsRemoved++;
+    } else {
+      enclosedRegionsPreserved++;
+    }
+  }
+  
+  const totalRemoved = edgePixelsRemoved + enclosedPixelsRemoved;
   console.log(`Background removal: ${width}x${height} image`);
-  console.log(`  Removed ${pixelsRemoved} edge-connected background pixels (luminance>=${LUMINANCE_THRESHOLD}, chroma<=${MAX_CHROMA_DISTANCE}, ${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
+  console.log(`  Pass 1: Removed ${edgePixelsRemoved} edge-connected pixels (${(edgePixelsRemoved / totalPixels * 100).toFixed(1)}%)`);
+  console.log(`  Pass 2: Removed ${enclosedPixelsRemoved} pixels from ${enclosedRegionsRemoved} large enclosed regions`);
+  console.log(`  Pass 2: Preserved ${enclosedRegionsPreserved} small enclosed regions (letter counters etc.)`);
+  console.log(`  Total: Removed ${totalRemoved} pixels (${(totalRemoved / totalPixels * 100).toFixed(1)}% of image)`);
   
   // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
