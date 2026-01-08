@@ -495,10 +495,19 @@ export default function AdminCreateProduct() {
                     )}
 
                     {mockupLoading ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        {[1, 2].map((i) => (
-                          <Skeleton key={i} className="aspect-square rounded-lg" />
-                        ))}
+                      <div className="space-y-3" data-testid="mockup-loading-container">
+                        <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <p className="text-sm" data-testid="text-mockup-loading">Generating mockups...</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[1, 2].map((i) => (
+                            <Skeleton key={i} className="aspect-square rounded-lg flex items-center justify-center" data-testid={`skeleton-mockup-${i}`}>
+                              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground/50" />
+                            </Skeleton>
+                          ))}
+                        </div>
+                        <p className="text-xs text-center text-muted-foreground">This may take a few seconds</p>
                       </div>
                     ) : mockupImages.length > 0 ? (
                       <div className="space-y-2">

@@ -444,14 +444,42 @@ export async function registerRoutes(
       // Now sizeConfig is guaranteed to be defined
       const finalSizeConfig = sizeConfig!;
       const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
+      
+      // Check if this is an apparel product - either from productType or from style preset category
+      let isApparel = productType?.designerType === "apparel";
+      
+      // Also detect apparel from style preset category if no productType
+      if (!isApparel && stylePreset) {
+        const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+        if (hardcodedStyle && hardcodedStyle.category === "apparel") {
+          isApparel = true;
+        }
+      }
 
       // Apply style prompt prefix if available
       let fullPrompt = stylePromptPrefix 
         ? `${stylePromptPrefix} ${prompt}` 
         : prompt;
 
-      // CRITICAL: Hardcoded sizing and full-bleed requirements for ALL generations
-      const sizingRequirements = `
+      // Different requirements for apparel vs wall art
+      let sizingRequirements: string;
+      
+      if (isApparel) {
+        // Apparel needs centered isolated designs with solid white backgrounds (for easy removal)
+        sizingRequirements = `
+
+MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
+1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
+2. SOLID WHITE BACKGROUND: The design MUST be on a PURE WHITE (#FFFFFF) background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The white background can be easily removed for printing.
+3. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
+4. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
+5. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the white background.
+6. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic on white that can be printed on fabric of any color.
+7. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+`;
+      } else {
+        // Wall art needs full-bleed edge-to-edge designs
+        sizingRequirements = `
 
 MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
@@ -462,6 +490,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 6. BACKGROUND: The background/scene must extend fully to all four edges of the image with NO visible canvas edges or cutoffs.
 7. PRINT-READY: This is for high-quality wall art printing - create a complete, finished artwork that fills the entire image area.
 `;
+      }
 
       // Append sizing requirements to prompt
       fullPrompt += sizingRequirements;
@@ -508,12 +537,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 
       const mimeType = imagePart.inlineData.mimeType || "image/png";
       
-      // Get target dimensions for resizing
-      const genWidth = (finalSizeConfig as any).genWidth || 1024;
-      const genHeight = (finalSizeConfig as any).genHeight || 1024;
-      const targetDims = { width: genWidth, height: genHeight };
+      // Get target dimensions for resizing - skip for apparel (keep square)
+      let targetDims: TargetDimensions | undefined;
+      if (!isApparel) {
+        const genWidth = (finalSizeConfig as any).genWidth || 1024;
+        const genHeight = (finalSizeConfig as any).genHeight || 1024;
+        targetDims = { width: genWidth, height: genHeight };
+      }
       
-      // Save image to object storage instead of base64 (with aspect ratio resizing)
+      // Save image to object storage instead of base64 (with aspect ratio resizing for non-apparel)
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
