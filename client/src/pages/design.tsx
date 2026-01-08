@@ -385,6 +385,33 @@ export default function DesignPage() {
     }
   }, [calibrationLifestyle?.src, calibrationMode]);
 
+  // These need to be defined before early returns to satisfy Rules of Hooks
+  const activeSizes = designerConfig?.sizes || config?.sizes || [];
+  const activeFrameColors = designerConfig?.frameColors || config?.frameColors || [];
+  
+  // Helper to check if a size/color combination is available
+  const isVariantAvailable = useCallback((sizeId: string, colorId: string): boolean => {
+    if (!designerConfig?.variantMap) return true; // If no variant map, assume all available
+    const key = `${sizeId}:${colorId}`;
+    return key in designerConfig.variantMap;
+  }, [designerConfig?.variantMap]);
+  
+  // Get available colors for current size
+  const getAvailableColorsForSize = useCallback((sizeId: string): string[] => {
+    if (!designerConfig?.variantMap) return activeFrameColors.map(c => c.id);
+    return activeFrameColors
+      .filter(color => isVariantAvailable(sizeId, color.id))
+      .map(c => c.id);
+  }, [designerConfig?.variantMap, activeFrameColors, isVariantAvailable]);
+  
+  // Get available sizes for current color
+  const getAvailableSizesForColor = useCallback((colorId: string): string[] => {
+    if (!designerConfig?.variantMap) return activeSizes.map(s => s.id);
+    return activeSizes
+      .filter(size => isVariantAvailable(size.id, colorId))
+      .map(s => s.id);
+  }, [designerConfig?.variantMap, activeSizes, isVariantAvailable]);
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -527,32 +554,6 @@ export default function DesignPage() {
     });
   };
 
-  const activeSizes = designerConfig?.sizes || config?.sizes || [];
-  const activeFrameColors = designerConfig?.frameColors || config?.frameColors || [];
-  
-  // Helper to check if a size/color combination is available
-  const isVariantAvailable = useCallback((sizeId: string, colorId: string): boolean => {
-    if (!designerConfig?.variantMap) return true; // If no variant map, assume all available
-    const key = `${sizeId}:${colorId}`;
-    return key in designerConfig.variantMap;
-  }, [designerConfig?.variantMap]);
-  
-  // Get available colors for current size
-  const getAvailableColorsForSize = useCallback((sizeId: string): string[] => {
-    if (!designerConfig?.variantMap) return activeFrameColors.map(c => c.id);
-    return activeFrameColors
-      .filter(color => isVariantAvailable(sizeId, color.id))
-      .map(c => c.id);
-  }, [designerConfig?.variantMap, activeFrameColors, isVariantAvailable]);
-  
-  // Get available sizes for current color
-  const getAvailableSizesForColor = useCallback((colorId: string): string[] => {
-    if (!designerConfig?.variantMap) return activeSizes.map(s => s.id);
-    return activeSizes
-      .filter(size => isVariantAvailable(size.id, colorId))
-      .map(s => s.id);
-  }, [designerConfig?.variantMap, activeSizes, isVariantAvailable]);
-  
   // Check if current selection is valid
   const isCurrentSelectionValid = selectedSize && selectedFrameColor 
     ? isVariantAvailable(selectedSize, selectedFrameColor) 
