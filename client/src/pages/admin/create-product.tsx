@@ -82,8 +82,11 @@ export default function AdminCreateProduct() {
       if (designerConfig.sizes.length > 0 && !selectedSize) {
         setSelectedSize(designerConfig.sizes[0].id);
       }
+      // Use first color if available, otherwise "default" for colorless products
       if (designerConfig.frameColors.length > 0 && !selectedFrameColor) {
         setSelectedFrameColor(designerConfig.frameColors[0].id);
+      } else if (designerConfig.frameColors.length === 0) {
+        setSelectedFrameColor("default");
       }
     }
   }, [designerConfig, selectedSize, selectedFrameColor]);
@@ -137,9 +140,6 @@ export default function AdminCreateProduct() {
 
   const generateMockups = async (imageUrl: string) => {
     if (!selectedProductTypeId || !selectedSize) return;
-    
-    // Use "default" for products without frame colors (like phone cases)
-    const colorId = selectedFrameColor || "default";
 
     setMockupLoading(true);
     try {
@@ -151,7 +151,7 @@ export default function AdminCreateProduct() {
           productTypeId: selectedProductTypeId,
           designImageUrl: imageUrl,
           sizeId: selectedSize,
-          colorId: colorId,
+          colorId: selectedFrameColor || "default",
           scale: imageScale,
         }),
       });
