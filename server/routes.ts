@@ -66,10 +66,18 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove pure white background pixels from an image and make them transparent.
- * Simple approach: AI is instructed to use PURE WHITE (#FFFFFF) for backgrounds
- * and slightly off-white (#FEFEFE or darker) for white design elements.
- * This allows clean removal of only background pixels.
+ * Remove white background pixels from an image and make them transparent.
+ * Uses edge-connected flood-fill with luminance + chroma gating to reliably
+ * identify background regions while preserving interior white design elements.
+ * 
+ * Background detection criteria:
+ * - High luminance (>= 245 on 0-255 scale, ~96%)
+ * - Low chroma/saturation (max-min channel distance <= 8)
+ * - Connected to image edges
+ * 
+ * This approach handles JPEG compression noise while preserving design whites
+ * because interior white regions are never removed (only edge-connected ones).
+ * 
  * @param buffer - The image buffer to process
  * @param _threshold - DEPRECATED: No longer used, kept for API compatibility
  * @param _enclosedMinSize - DEPRECATED: No longer used, kept for API compatibility
@@ -91,24 +99,116 @@ async function removeWhiteBackground(
   const pixels = new Uint8Array(data);
   const totalPixels = width * height;
   
-  // Simple scan: replace ALL pure white pixels with transparency
-  let pixelsRemoved = 0;
-  for (let pos = 0; pos < totalPixels; pos++) {
-    const idx = pos * 4;
+  // Configuration for background detection
+  const LUMINANCE_THRESHOLD = 245;  // ~96% brightness (handles JPEG at 253-255)
+  const MAX_CHROMA_DISTANCE = 8;    // Max difference between R, G, B channels
+  
+  // Helper to check if a pixel is likely background (high luminance, low chroma, opaque)
+  const isBackground = (idx: number): boolean => {
     const r = pixels[idx];
     const g = pixels[idx + 1];
     const b = pixels[idx + 2];
     const a = pixels[idx + 3];
     
-    // Only remove PURE WHITE (255, 255, 255) pixels that are opaque
-    if (a > 0 && r === 255 && g === 255 && b === 255) {
-      pixels[idx + 3] = 0; // Make transparent
-      pixelsRemoved++;
+    if (a === 0) return false; // Already transparent
+    
+    // Calculate luminance (average of RGB)
+    const luminance = (r + g + b) / 3;
+    if (luminance < LUMINANCE_THRESHOLD) return false;
+    
+    // Calculate chroma (max - min of RGB)
+    const maxRGB = Math.max(r, g, b);
+    const minRGB = Math.min(r, g, b);
+    const chromaDistance = maxRGB - minRGB;
+    if (chromaDistance > MAX_CHROMA_DISTANCE) return false;
+    
+    return true;
+  };
+  
+  // Track which pixels have been visited
+  const visited = new Uint8Array(totalPixels);
+  
+  // Queue for flood fill - use pointer-based approach for O(1) dequeue
+  const queue = new Int32Array(totalPixels);
+  let queueHead = 0;
+  let queueTail = 0;
+  
+  // Add all edge pixels that pass background test to the queue
+  // Top and bottom edges
+  for (let x = 0; x < width; x++) {
+    const topPos = x;
+    const bottomPos = (height - 1) * width + x;
+    
+    if (isBackground(topPos * 4) && !visited[topPos]) {
+      queue[queueTail++] = topPos;
+      visited[topPos] = 1;
+    }
+    if (isBackground(bottomPos * 4) && !visited[bottomPos]) {
+      queue[queueTail++] = bottomPos;
+      visited[bottomPos] = 1;
+    }
+  }
+  
+  // Left and right edges
+  for (let y = 0; y < height; y++) {
+    const leftPos = y * width;
+    const rightPos = y * width + (width - 1);
+    
+    if (isBackground(leftPos * 4) && !visited[leftPos]) {
+      queue[queueTail++] = leftPos;
+      visited[leftPos] = 1;
+    }
+    if (isBackground(rightPos * 4) && !visited[rightPos]) {
+      queue[queueTail++] = rightPos;
+      visited[rightPos] = 1;
+    }
+  }
+  
+  // BFS flood fill from edges - only removes edge-connected background pixels
+  let pixelsRemoved = 0;
+  while (queueHead < queueTail) {
+    const pos = queue[queueHead++];
+    const x = pos % width;
+    const y = Math.floor(pos / width);
+    const idx = pos * 4;
+    
+    // Make this pixel transparent
+    pixels[idx + 3] = 0;
+    pixelsRemoved++;
+    
+    // Check 4-connected neighbors
+    if (y > 0) {
+      const neighborPos = pos - width;
+      if (!visited[neighborPos] && isBackground(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+    if (y < height - 1) {
+      const neighborPos = pos + width;
+      if (!visited[neighborPos] && isBackground(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+    if (x > 0) {
+      const neighborPos = pos - 1;
+      if (!visited[neighborPos] && isBackground(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
+    }
+    if (x < width - 1) {
+      const neighborPos = pos + 1;
+      if (!visited[neighborPos] && isBackground(neighborPos * 4)) {
+        visited[neighborPos] = 1;
+        queue[queueTail++] = neighborPos;
+      }
     }
   }
   
   console.log(`Background removal: ${width}x${height} image`);
-  console.log(`  Removed ${pixelsRemoved} pure white pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
+  console.log(`  Removed ${pixelsRemoved} edge-connected background pixels (luminance>=${LUMINANCE_THRESHOLD}, chroma<=${MAX_CHROMA_DISTANCE}, ${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
   
   // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
@@ -125,11 +225,10 @@ async function removeWhiteBackground(
 interface SaveImageOptions {
   isApparel?: boolean;
   targetDims?: TargetDimensions;
-  enclosedMinSize?: number;
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, targetDims, enclosedMinSize = 200 } = options || {};
+  const { isApparel = false, targetDims } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -137,10 +236,10 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   
   let buffer = Buffer.from(base64Data, "base64");
   
-  // For apparel, remove white background to make it transparent
+  // For apparel, remove pure white background to make it transparent
   if (isApparel) {
-    console.log(`Removing white background for apparel image (sensitivity: ${enclosedMinSize})...`);
-    buffer = await removeWhiteBackground(buffer, 240, enclosedMinSize);
+    console.log("Removing pure white background for apparel image...");
+    buffer = await removeWhiteBackground(buffer);
     // Force PNG for transparency support
     extension = "png";
     actualMimeType = "image/png";
@@ -619,16 +718,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
       
       // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
-      // Convert sensitivity slider (0-100) to minimum enclosed region size
-      // Higher slider = more aggressive = lower threshold (100→50px, 0→2000px)
-      const enclosedMinSize = bgRemovalSensitivity !== undefined 
-        ? Math.round(2000 - (bgRemovalSensitivity / 100) * 1950)
-        : 200;
-      
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims, enclosedMinSize });
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
@@ -682,95 +775,6 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error generating artwork:", error);
       res.status(500).json({ error: "Failed to generate artwork" });
-    }
-  });
-
-  // Reprocess background removal on an existing image with new sensitivity
-  app.post("/api/reprocess-background", isAuthenticated, async (req: Request, res: Response) => {
-    try {
-      const { imageUrl, bgRemovalSensitivity } = req.body;
-      
-      if (!imageUrl) {
-        return res.status(400).json({ error: "Image URL required" });
-      }
-      
-      if (bgRemovalSensitivity === undefined || bgRemovalSensitivity < 0 || bgRemovalSensitivity > 100) {
-        return res.status(400).json({ error: "bgRemovalSensitivity must be between 0 and 100" });
-      }
-      
-      // Download the existing image
-      let imageBuffer: Buffer;
-      const privateDir = process.env.PRIVATE_OBJECT_DIR || '.private';
-      
-      if (imageUrl.startsWith('data:')) {
-        // Handle base64 data URLs
-        const base64Data = imageUrl.split(',')[1];
-        imageBuffer = Buffer.from(base64Data, 'base64');
-      } else if (imageUrl.startsWith('/objects/')) {
-        // Read directly from object storage using the proper path resolution
-        try {
-          const file = await objectStorage.getObjectEntityFile(imageUrl);
-          const [contents] = await file.download();
-          imageBuffer = contents;
-        } catch (error) {
-          console.error("Failed to read from object storage:", error);
-          return res.status(400).json({ error: "Failed to read image from storage" });
-        }
-      } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-        // Fetch from external URL
-        const response = await fetch(imageUrl);
-        if (!response.ok) {
-          return res.status(400).json({ error: "Failed to fetch image from URL" });
-        }
-        const arrayBuffer = await response.arrayBuffer();
-        imageBuffer = Buffer.from(arrayBuffer);
-      } else {
-        return res.status(400).json({ error: "Invalid image URL format" });
-      }
-      
-      // Convert sensitivity slider (0-100) to minimum enclosed region size
-      // Higher slider = more aggressive = lower threshold (100→50px, 0→2000px)
-      const enclosedMinSize = Math.round(2000 - (bgRemovalSensitivity / 100) * 1950);
-      
-      console.log(`Reprocessing background with sensitivity ${bgRemovalSensitivity}% (enclosedMinSize: ${enclosedMinSize}px)`);
-      
-      // Apply background removal with new sensitivity
-      const processedBuffer = await removeWhiteBackground(imageBuffer, 240, enclosedMinSize);
-      
-      // Save the reprocessed image to object storage
-      const filename = `reprocessed-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.png`;
-      const fullPath = `${privateDir}/designs/${filename}`;
-      
-      // Parse the path: first segment is bucket name, rest is object name
-      const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
-      const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
-      
-      if (pathParts.length < 2) {
-        return res.status(500).json({ error: "Invalid object storage configuration" });
-      }
-      
-      const bucketName = pathParts[0];
-      const objectName = pathParts.slice(1).join("/");
-      const bucket = objectStorageClient.bucket(bucketName);
-      
-      const file = bucket.file(objectName);
-      await file.save(processedBuffer, {
-        contentType: "image/png",
-        metadata: {
-          metadata: {
-            "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
-          }
-        }
-      });
-      
-      const newImageUrl = `/objects/designs/${filename}`;
-      
-      console.log(`Reprocessed image saved to: ${newImageUrl}`);
-      
-      res.json({ imageUrl: newImageUrl });
-    } catch (error) {
-      console.error("Error reprocessing background:", error);
-      res.status(500).json({ error: "Failed to reprocess background" });
     }
   });
 
@@ -1154,15 +1158,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
       
       // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
-      // Convert sensitivity slider (0-100) to minimum enclosed region size
-      const enclosedMinSize = bgRemovalSensitivity !== undefined 
-        ? Math.round(2000 - (bgRemovalSensitivity / 100) * 1950)
-        : 200;
-      
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims, enclosedMinSize });
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
       } catch (storageError) {

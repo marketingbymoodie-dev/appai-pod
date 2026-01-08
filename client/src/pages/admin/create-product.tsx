@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, RefreshCw } from "lucide-react";
+import { Sparkles, Upload, Loader2, ZoomIn, Send, Package } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
 
@@ -58,9 +58,6 @@ export default function AdminCreateProduct() {
   const [mockupImages, setMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState<number | null>(null);
-  const [bgRemovalSensitivity, setBgRemovalSensitivity] = useState(50);
-  const [isReprocessing, setIsReprocessing] = useState(false);
-  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -114,15 +111,11 @@ export default function AdminCreateProduct() {
 
     setIsGenerating(true);
     setGeneratedImageUrl(null);
-    setOriginalImageUrl(null);
     setMockupImages([]);
     setSelectedMockupIndex(null);
     lastAppliedScaleRef.current = null;
 
     try {
-      // Only pass bgRemovalSensitivity for apparel products
-      const isApparel = designerConfig?.designerType === "apparel";
-      
       const response = await apiRequest("POST", "/api/generate", {
         prompt,
         size: selectedSize,
@@ -130,13 +123,11 @@ export default function AdminCreateProduct() {
         stylePreset: selectedStyle,
         productTypeId: selectedProductTypeId,
         referenceImageBase64: referenceImage,
-        ...(isApparel && { bgRemovalSensitivity }),
       });
 
       const data = await response.json();
       const imageUrl = data.design?.generatedImageUrl || data.generatedImageUrl;
       setGeneratedImageUrl(imageUrl);
-      setOriginalImageUrl(imageUrl);
       toast({ title: "Design generated!", description: "Your test design is ready" });
 
       // Generate mockups if available
@@ -182,34 +173,6 @@ export default function AdminCreateProduct() {
       console.error("Mockup generation failed:", error);
     } finally {
       setMockupLoading(false);
-    }
-  };
-
-  const handleReprocessBackground = async () => {
-    if (!originalImageUrl) return;
-    
-    setIsReprocessing(true);
-    try {
-      const response = await apiRequest("POST", "/api/reprocess-background", {
-        imageUrl: originalImageUrl,
-        bgRemovalSensitivity,
-      });
-      
-      const data = await response.json();
-      if (data.imageUrl) {
-        setGeneratedImageUrl(data.imageUrl);
-        setMockupImages([]);
-        setSelectedMockupIndex(null);
-        toast({ title: "Background reprocessed!", description: `Applied sensitivity: ${bgRemovalSensitivity}%` });
-        
-        if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId) {
-          await generateMockups(data.imageUrl);
-        }
-      }
-    } catch (error: any) {
-      toast({ title: "Reprocess failed", description: error.message, variant: "destructive" });
-    } finally {
-      setIsReprocessing(false);
     }
   };
 
@@ -421,47 +384,6 @@ export default function AdminCreateProduct() {
                   </Select>
                 </div>
 
-                {designerConfig?.designerType === "apparel" && (
-                  <div className="space-y-2 pt-2 border-t">
-                    <div className="flex items-center justify-between">
-                      <Label className="text-sm">Background Removal Sensitivity</Label>
-                      <span className="text-xs text-muted-foreground">{bgRemovalSensitivity}%</span>
-                    </div>
-                    <Slider
-                      value={[bgRemovalSensitivity]}
-                      onValueChange={(v) => setBgRemovalSensitivity(v[0])}
-                      min={0}
-                      max={100}
-                      step={5}
-                      data-testid="slider-bg-removal"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Low = preserve small white areas, High = remove more enclosed white regions (like letter holes)
-                    </p>
-                    {originalImageUrl && (
-                      <Button
-                        onClick={handleReprocessBackground}
-                        disabled={isReprocessing}
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        data-testid="button-reprocess"
-                      >
-                        {isReprocessing ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Reprocessing...
-                          </>
-                        ) : (
-                          <>
-                            <RefreshCw className="h-4 w-4 mr-2" />
-                            Reprocess Background
-                          </>
-                        )}
-                      </Button>
-                    )}
-                  </div>
-                )}
               </CardContent>
             </Card>
 
