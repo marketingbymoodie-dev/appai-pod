@@ -26,7 +26,9 @@ import {
   CreditCard, 
   Plus, 
   LogOut,
-  Store
+  Store,
+  Image,
+  ShoppingCart
 } from "lucide-react";
 import type { Merchant } from "@shared/schema";
 
@@ -42,6 +44,11 @@ const menuItems = [
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Settings", url: "/admin/settings", icon: Settings },
+];
+
+const customerLinks = [
+  { title: "My Designs", url: "/designs", icon: Image },
+  { title: "My Orders", url: "/orders", icon: ShoppingCart },
 ];
 
 export default function AdminLayout({ children }: AdminLayoutProps) {
@@ -103,6 +110,23 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                       </SidebarMenuItem>
                     );
                   })}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarGroup>
+              <SidebarGroupLabel>Customer Pages</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {customerLinks.map((item) => (
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton asChild>
+                        <Link href={item.url}>
+                          <item.icon className="h-4 w-4" />
+                          <span>{item.title}</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>

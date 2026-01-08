@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { Palette, Image, ShoppingCart, Sparkles, Settings } from "lucide-react";
+import { Palette, Image, ShoppingCart, Settings, Sparkles } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Merchant } from "@shared/schema";
 
@@ -63,27 +63,10 @@ export default function Home() {
       <main className="container mx-auto px-4 py-8">
         <div className="mb-8">
           <h2 className="text-2xl font-bold mb-2">Welcome back, {user?.firstName || "Artist"}!</h2>
-          <p className="text-muted-foreground">Create stunning AI artwork for premium framed prints.</p>
+          <p className="text-muted-foreground">Create stunning personalized AI artwork printed on premium products.</p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          <Link href="/design">
-            <Card className="cursor-pointer hover-elevate h-full">
-              <CardHeader>
-                <Sparkles className="h-8 w-8 text-primary mb-2" />
-                <CardTitle>Create New Design</CardTitle>
-                <CardDescription>
-                  Generate AI artwork from your ideas
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  Enter a prompt, choose a style, and watch AI bring your vision to life.
-                </p>
-              </CardContent>
-            </Card>
-          </Link>
-
+        <div className="grid gap-6 md:grid-cols-2">
           <Link href="/designs">
             <Card className="cursor-pointer hover-elevate h-full">
               <CardHeader>
@@ -141,11 +124,11 @@ function LandingPage() {
       <main className="container mx-auto px-4 py-16">
         <div className="max-w-3xl mx-auto text-center">
           <h1 className="text-4xl font-bold mb-6">
-            Create Custom AI Artwork for Premium Framed Prints
+            Create Stunning Personalized AI Artwork Printed on Premium Products
           </h1>
           <p className="text-xl text-muted-foreground mb-8">
-            Transform your ideas into stunning wall art. Simply describe what you want, 
-            choose a style, and our AI will generate beautiful artwork ready for printing.
+            Transform your ideas into stunning artwork. Simply describe what you want, 
+            choose a style, and our AI will generate beautiful designs ready for printing on premium products.
           </p>
           <Button size="lg" onClick={() => window.location.href = "/api/login"} data-testid="button-get-started">
             Get Started Free
