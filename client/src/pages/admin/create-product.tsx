@@ -57,6 +57,7 @@ export default function AdminCreateProduct() {
   
   const [mockupImages, setMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
+  const [selectedMainImage, setSelectedMainImage] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -111,6 +112,8 @@ export default function AdminCreateProduct() {
     setIsGenerating(true);
     setGeneratedImageUrl(null);
     setMockupImages([]);
+    setSelectedMainImage(null);
+    lastAppliedScaleRef.current = null;
 
     try {
       const response = await apiRequest("POST", "/api/generate", {
@@ -186,6 +189,37 @@ export default function AdminCreateProduct() {
       }
     }
   }, [designerConfig]);
+
+  // Track last applied scale to only regenerate when scale actually changes
+  const lastAppliedScaleRef = useRef<number | null>(null);
+  
+  // Regenerate mockups when zoom scale changes (debounced, queues if currently loading)
+  useEffect(() => {
+    // Skip if no image or no mockup support
+    if (!generatedImageUrl || !designerConfig?.hasPrintifyMockups) return;
+    
+    // Skip if scale hasn't actually changed since last application
+    if (lastAppliedScaleRef.current === imageScale) return;
+    
+    // Skip on initial render (mockups will be generated after design generation)
+    if (lastAppliedScaleRef.current === null && mockupImages.length > 0) {
+      lastAppliedScaleRef.current = imageScale;
+      return;
+    }
+    
+    // Skip if we don't have mockups yet (initial generation will handle it)
+    if (mockupImages.length === 0) return;
+    
+    // If currently loading, wait for it to complete - effect will re-run when mockupLoading changes
+    if (mockupLoading) return;
+    
+    const timer = setTimeout(() => {
+      lastAppliedScaleRef.current = imageScale;
+      generateMockups(generatedImageUrl);
+    }, 500); // 500ms debounce
+    
+    return () => clearTimeout(timer);
+  }, [imageScale, generatedImageUrl, designerConfig?.hasPrintifyMockups, mockupImages.length, mockupLoading]);
   
   const filteredStyles = config?.stylePresets.filter(style => 
     style.category === "all" || style.category === styleCategory
@@ -401,8 +435,8 @@ export default function AdminCreateProduct() {
                   <div className="space-y-4">
                     <div className="aspect-square bg-muted rounded-lg overflow-hidden">
                       <img 
-                        src={generatedImageUrl} 
-                        alt="Generated design" 
+                        src={selectedMainImage || generatedImageUrl} 
+                        alt="Selected preview" 
                         className="w-full h-full object-contain"
                         data-testid="img-generated-design"
                       />
@@ -432,17 +466,37 @@ export default function AdminCreateProduct() {
                         ))}
                       </div>
                     ) : mockupImages.length > 0 ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        {mockupImages.map((mockup, i) => (
-                          <div key={i} className="space-y-1">
+                      <div className="space-y-2">
+                        <p className="text-xs text-muted-foreground">Click a mockup to view it larger</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div 
+                            className={`space-y-1 cursor-pointer rounded-lg p-1 ${!selectedMainImage ? 'ring-2 ring-primary' : 'hover-elevate'}`}
+                            onClick={() => setSelectedMainImage(null)}
+                            data-testid="mockup-thumbnail-original"
+                          >
                             <img 
-                              src={mockup.url} 
-                              alt={mockup.label}
+                              src={generatedImageUrl} 
+                              alt="Original design"
                               className="w-full aspect-square object-contain rounded-lg border"
                             />
-                            <p className="text-xs text-center text-muted-foreground">{mockup.label}</p>
+                            <p className="text-xs text-center text-muted-foreground">original</p>
                           </div>
-                        ))}
+                          {mockupImages.map((mockup, i) => (
+                            <div 
+                              key={i} 
+                              className={`space-y-1 cursor-pointer rounded-lg p-1 ${selectedMainImage === mockup.url ? 'ring-2 ring-primary' : 'hover-elevate'}`}
+                              onClick={() => setSelectedMainImage(mockup.url)}
+                              data-testid={`mockup-thumbnail-${i}`}
+                            >
+                              <img 
+                                src={mockup.url} 
+                                alt={mockup.label}
+                                className="w-full aspect-square object-contain rounded-lg border"
+                              />
+                              <p className="text-xs text-center text-muted-foreground">{mockup.label}</p>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
                   </div>

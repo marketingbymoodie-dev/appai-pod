@@ -352,27 +352,49 @@ export async function registerRoutes(
       // Find size config - check product type sizes first, then fall back to PRINT_SIZES
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
       
+      // Helper function to calculate generation dimensions from aspect ratio
+      const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
+        const [w, h] = aspectRatioStr.split(":").map(Number);
+        if (!w || !h || isNaN(w) || isNaN(h)) {
+          return { genWidth: 1024, genHeight: 1024 };
+        }
+        const ratio = w / h;
+        const maxDim = 1024;
+        if (ratio >= 1) {
+          // Landscape or square
+          return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
+        } else {
+          // Portrait
+          return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
+        }
+      };
+
       if (!sizeConfig && productType) {
         // Try to find size in product type's sizes (for apparel, etc.)
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
         if (productSize) {
-          // Create a compatible size config from product type size
+          // Use size-specific aspect ratio if available, otherwise fall back to product type's
+          const aspectRatioStr = productSize.aspectRatio || productType.aspectRatio || "3:4";
+          const genDims = calculateGenDimensions(aspectRatioStr);
+          
           sizeConfig = {
             id: productSize.id,
             name: productSize.name,
             width: productSize.width || 12,
             height: productSize.height || 16,
-            aspectRatio: productType.aspectRatio || "1:1",
-            genWidth: 1024,
-            genHeight: 1024,
+            aspectRatio: aspectRatioStr,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
           } as any;
         }
       }
       
       if (!sizeConfig) {
-        // Default fallback for unknown sizes
-        sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: "1:1", genWidth: 1024, genHeight: 1024 } as any;
+        // Default fallback - use product type's aspect ratio if available
+        const aspectRatioStr = productType?.aspectRatio || "3:4";
+        const genDims = calculateGenDimensions(aspectRatioStr);
+        sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: aspectRatioStr, genWidth: genDims.genWidth, genHeight: genDims.genHeight } as any;
       }
 
       // Now sizeConfig is guaranteed to be defined
@@ -746,10 +768,44 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
-      // Find size config - use default if not matching internal sizes
+      // Helper function to calculate generation dimensions from aspect ratio
+      const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
+        const [w, h] = aspectRatioStr.split(":").map(Number);
+        if (!w || !h || isNaN(w) || isNaN(h)) {
+          return { genWidth: 1024, genHeight: 1024 };
+        }
+        const ratio = w / h;
+        const maxDim = 1024;
+        if (ratio >= 1) {
+          return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
+        } else {
+          return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
+        }
+      };
+
+      // Find size config - check product type first, then fall back to PRINT_SIZES
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
+      
+      if (!sizeConfig && productType) {
+        // Use size-specific or product type's aspect ratio to calculate proper generation dimensions
+        const productSizes = JSON.parse(productType.sizes || "[]");
+        const productSize = productSizes.find((s: any) => s.id === size);
+        const aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
+        const genDims = calculateGenDimensions(aspectRatioStr);
+        
+        sizeConfig = {
+          id: productSize?.id || size,
+          name: productSize?.name || size,
+          width: productSize?.width || 12,
+          height: productSize?.height || 16,
+          aspectRatio: aspectRatioStr,
+          genWidth: genDims.genWidth,
+          genHeight: genDims.genHeight,
+        } as any;
+      }
+      
       if (!sizeConfig) {
-        // For Shopify generation, use a sensible default
+        // Default fallback
         sizeConfig = PRINT_SIZES[0];
       }
 
@@ -2998,8 +3054,25 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Determine aspect ratio using GCD for accurate ratio
       const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
       
-      let aspectRatio = "1:1"; // Default for label-only or square products
-      if (!isApparelProduct && hasDimensionalSizes && sizes.length > 0) {
+      // Detect phone cases for special aspect ratio handling
+      const isPhoneCase = combined.includes("phone") || combined.includes("iphone") || 
+                          combined.includes("samsung") || combined.includes("case");
+      
+      // Start with product-type-appropriate defaults
+      let aspectRatio: string;
+      if (isApparelProduct) {
+        // Apparel print areas are typically portrait ~2:3
+        aspectRatio = "2:3";
+      } else if (isPhoneCase) {
+        // Phone cases are tall portrait ~9:16
+        aspectRatio = "9:16";
+      } else {
+        // Default for other products
+        aspectRatio = "3:4";
+      }
+      
+      // Override with calculated dimensions if available
+      if (hasDimensionalSizes && sizes.length > 0) {
         const firstDimensionalSize = sizes.find(s => s.width > 0 && s.height > 0);
         if (firstDimensionalSize) {
           const w = firstDimensionalSize.width;
