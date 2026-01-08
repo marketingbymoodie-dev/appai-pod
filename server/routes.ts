@@ -66,19 +66,19 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove edge-connected white background from an image and make it transparent.
- * Uses two-pass algorithm:
- * 1. Flood-fill from edges to remove outer background
- * 2. Find and remove enclosed white regions above a size threshold (like letter counters)
+ * Remove pure white background pixels from an image and make them transparent.
+ * Simple approach: AI is instructed to use PURE WHITE (#FFFFFF) for backgrounds
+ * and slightly off-white (#FEFEFE or darker) for white design elements.
+ * This allows clean removal of only background pixels.
  * @param buffer - The image buffer to process
- * @param threshold - How close to white a pixel must be (0-255, default 240)
- * @param enclosedMinSize - Minimum pixels for enclosed regions to be removed (default 200, 0 = skip second pass)
+ * @param _threshold - DEPRECATED: No longer used, kept for API compatibility
+ * @param _enclosedMinSize - DEPRECATED: No longer used, kept for API compatibility
  * @returns Buffer with transparent background as PNG
  */
 async function removeWhiteBackground(
   buffer: Buffer, 
-  threshold: number = 240,
-  enclosedMinSize: number = 200
+  _threshold: number = 255,
+  _enclosedMinSize: number = 0
 ): Promise<Buffer> {
   // Convert to raw RGBA pixels
   const { data, info } = await sharp(buffer)
@@ -91,167 +91,24 @@ async function removeWhiteBackground(
   const pixels = new Uint8Array(data);
   const totalPixels = width * height;
   
-  // Helper to check if a pixel is white/near-white and still opaque
-  const isWhite = (idx: number): boolean => {
+  // Simple scan: replace ALL pure white pixels with transparency
+  let pixelsRemoved = 0;
+  for (let pos = 0; pos < totalPixels; pos++) {
+    const idx = pos * 4;
     const r = pixels[idx];
     const g = pixels[idx + 1];
     const b = pixels[idx + 2];
     const a = pixels[idx + 3];
-    return a > 0 && r >= threshold && g >= threshold && b >= threshold;
-  };
-  
-  // Track which pixels have been visited
-  const visited = new Uint8Array(totalPixels);
-  
-  // Queue for flood fill - use pointer-based approach for O(1) dequeue
-  const queue = new Int32Array(totalPixels);
-  let queueHead = 0;
-  let queueTail = 0;
-  
-  // ========== PASS 1: Edge-connected flood fill ==========
-  // Add all edge pixels that are white to the queue
-  // Top and bottom edges
-  for (let x = 0; x < width; x++) {
-    const topPos = x;
-    const bottomPos = (height - 1) * width + x;
     
-    if (isWhite(topPos * 4) && !visited[topPos]) {
-      queue[queueTail++] = topPos;
-      visited[topPos] = 1;
-    }
-    if (isWhite(bottomPos * 4) && !visited[bottomPos]) {
-      queue[queueTail++] = bottomPos;
-      visited[bottomPos] = 1;
-    }
-  }
-  
-  // Left and right edges
-  for (let y = 0; y < height; y++) {
-    const leftPos = y * width;
-    const rightPos = y * width + (width - 1);
-    
-    if (isWhite(leftPos * 4) && !visited[leftPos]) {
-      queue[queueTail++] = leftPos;
-      visited[leftPos] = 1;
-    }
-    if (isWhite(rightPos * 4) && !visited[rightPos]) {
-      queue[queueTail++] = rightPos;
-      visited[rightPos] = 1;
-    }
-  }
-  
-  // BFS flood fill from edges - O(n) with pointer-based queue
-  let edgePixelsRemoved = 0;
-  while (queueHead < queueTail) {
-    const pos = queue[queueHead++];
-    const x = pos % width;
-    const y = Math.floor(pos / width);
-    const idx = pos * 4;
-    
-    // Make this pixel transparent
-    pixels[idx + 3] = 0;
-    edgePixelsRemoved++;
-    
-    // Check 4-connected neighbors inline for performance
-    if (y > 0) {
-      const neighborPos = pos - width;
-      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-        visited[neighborPos] = 1;
-        queue[queueTail++] = neighborPos;
-      }
-    }
-    if (y < height - 1) {
-      const neighborPos = pos + width;
-      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-        visited[neighborPos] = 1;
-        queue[queueTail++] = neighborPos;
-      }
-    }
-    if (x > 0) {
-      const neighborPos = pos - 1;
-      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-        visited[neighborPos] = 1;
-        queue[queueTail++] = neighborPos;
-      }
-    }
-    if (x < width - 1) {
-      const neighborPos = pos + 1;
-      if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-        visited[neighborPos] = 1;
-        queue[queueTail++] = neighborPos;
-      }
-    }
-  }
-  
-  // ========== PASS 2: Find and remove enclosed white regions ==========
-  let enclosedPixelsRemoved = 0;
-  let enclosedRegionsFound = 0;
-  
-  if (enclosedMinSize > 0) {
-    // Scan for unvisited white pixels (these are enclosed regions)
-    for (let startPos = 0; startPos < totalPixels; startPos++) {
-      if (visited[startPos] || !isWhite(startPos * 4)) continue;
-      
-      // Found an unvisited white region - measure its size first
-      const regionPixels: number[] = [];
-      queueHead = 0;
-      queueTail = 0;
-      queue[queueTail++] = startPos;
-      visited[startPos] = 1;
-      
-      while (queueHead < queueTail) {
-        const pos = queue[queueHead++];
-        regionPixels.push(pos);
-        
-        const x = pos % width;
-        const y = Math.floor(pos / width);
-        
-        // Check neighbors
-        if (y > 0) {
-          const neighborPos = pos - width;
-          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-            visited[neighborPos] = 1;
-            queue[queueTail++] = neighborPos;
-          }
-        }
-        if (y < height - 1) {
-          const neighborPos = pos + width;
-          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-            visited[neighborPos] = 1;
-            queue[queueTail++] = neighborPos;
-          }
-        }
-        if (x > 0) {
-          const neighborPos = pos - 1;
-          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-            visited[neighborPos] = 1;
-            queue[queueTail++] = neighborPos;
-          }
-        }
-        if (x < width - 1) {
-          const neighborPos = pos + 1;
-          if (!visited[neighborPos] && isWhite(neighborPos * 4)) {
-            visited[neighborPos] = 1;
-            queue[queueTail++] = neighborPos;
-          }
-        }
-      }
-      
-      enclosedRegionsFound++;
-      
-      // Only remove if region exceeds minimum size threshold
-      if (regionPixels.length >= enclosedMinSize) {
-        for (const pos of regionPixels) {
-          pixels[pos * 4 + 3] = 0; // Make transparent
-        }
-        enclosedPixelsRemoved += regionPixels.length;
-      }
+    // Only remove PURE WHITE (255, 255, 255) pixels that are opaque
+    if (a > 0 && r === 255 && g === 255 && b === 255) {
+      pixels[idx + 3] = 0; // Make transparent
+      pixelsRemoved++;
     }
   }
   
   console.log(`Background removal: ${width}x${height} image`);
-  console.log(`  Pass 1 (edges): removed ${edgePixelsRemoved} pixels`);
-  console.log(`  Pass 2 (enclosed): found ${enclosedRegionsFound} regions, removed ${enclosedPixelsRemoved} pixels (threshold: ${enclosedMinSize})`);
+  console.log(`  Removed ${pixelsRemoved} pure white pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
   
   // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
