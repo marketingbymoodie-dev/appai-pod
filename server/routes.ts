@@ -828,6 +828,95 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Reprocess background removal on an existing image with new sensitivity
+  app.post("/api/reprocess-background", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const { imageUrl, bgRemovalSensitivity } = req.body;
+      
+      if (!imageUrl) {
+        return res.status(400).json({ error: "Image URL required" });
+      }
+      
+      if (bgRemovalSensitivity === undefined || bgRemovalSensitivity < 0 || bgRemovalSensitivity > 100) {
+        return res.status(400).json({ error: "bgRemovalSensitivity must be between 0 and 100" });
+      }
+      
+      // Download the existing image
+      let imageBuffer: Buffer;
+      const privateDir = process.env.PRIVATE_OBJECT_DIR || '.private';
+      
+      if (imageUrl.startsWith('data:')) {
+        // Handle base64 data URLs
+        const base64Data = imageUrl.split(',')[1];
+        imageBuffer = Buffer.from(base64Data, 'base64');
+      } else if (imageUrl.startsWith('/objects/')) {
+        // Read directly from object storage using the proper path resolution
+        try {
+          const file = await objectStorage.getObjectEntityFile(imageUrl);
+          const [contents] = await file.download();
+          imageBuffer = contents;
+        } catch (error) {
+          console.error("Failed to read from object storage:", error);
+          return res.status(400).json({ error: "Failed to read image from storage" });
+        }
+      } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+        // Fetch from external URL
+        const response = await fetch(imageUrl);
+        if (!response.ok) {
+          return res.status(400).json({ error: "Failed to fetch image from URL" });
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        imageBuffer = Buffer.from(arrayBuffer);
+      } else {
+        return res.status(400).json({ error: "Invalid image URL format" });
+      }
+      
+      // Convert sensitivity slider (0-100) to minimum enclosed region size
+      // Higher slider = more aggressive = lower threshold (100→50px, 0→2000px)
+      const enclosedMinSize = Math.round(2000 - (bgRemovalSensitivity / 100) * 1950);
+      
+      console.log(`Reprocessing background with sensitivity ${bgRemovalSensitivity}% (enclosedMinSize: ${enclosedMinSize}px)`);
+      
+      // Apply background removal with new sensitivity
+      const processedBuffer = await removeWhiteBackground(imageBuffer, 240, enclosedMinSize);
+      
+      // Save the reprocessed image to object storage
+      const filename = `reprocessed-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.png`;
+      const fullPath = `${privateDir}/designs/${filename}`;
+      
+      // Parse the path: first segment is bucket name, rest is object name
+      const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
+      const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
+      
+      if (pathParts.length < 2) {
+        return res.status(500).json({ error: "Invalid object storage configuration" });
+      }
+      
+      const bucketName = pathParts[0];
+      const objectName = pathParts.slice(1).join("/");
+      const bucket = objectStorageClient.bucket(bucketName);
+      
+      const file = bucket.file(objectName);
+      await file.save(processedBuffer, {
+        contentType: "image/png",
+        metadata: {
+          metadata: {
+            "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
+          }
+        }
+      });
+      
+      const newImageUrl = `/objects/designs/${filename}`;
+      
+      console.log(`Reprocessed image saved to: ${newImageUrl}`);
+      
+      res.json({ imageUrl: newImageUrl });
+    } catch (error) {
+      console.error("Error reprocessing background:", error);
+      res.status(500).json({ error: "Failed to reprocess background" });
+    }
+  });
+
   // Rate limiting for Shopify generation (per shop per hour)
   const shopifyGenerationRateLimits = new Map<string, { count: number; resetAt: number }>();
   const SHOPIFY_RATE_LIMIT = 100; // 100 generations per shop per hour
