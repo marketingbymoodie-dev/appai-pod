@@ -149,3 +149,39 @@ The `/api/mockup/generate` endpoint:
 3. Creates a temporary Printify product with the resolved variant
 4. Retrieves mockup images from Printify
 5. Cleans up the temporary product (in `finally` block to ensure cleanup)
+
+## Custom Design Import
+
+### Overview
+Users can import custom designs from Kittl or other sources (in addition to AI generation) for use on print-on-demand products.
+
+### Features
+- Tabbed UI: "AI Generate" and "Import Design" tabs in the design studio
+- Kittl integration with direct link to Kittl designer
+- General custom upload support
+- Imported designs work with mockup preview, zoom controls, add-to-cart, and sharing
+
+### Security Controls
+- **Allowed file types**: PNG, JPG, WebP only (SVG rejected to prevent XSS)
+- **File size limit**: 10MB maximum
+- **Path validation**: Only accepts paths from `/objects/uploads/`
+- **Image validation**: Uses sharp to verify image dimensions
+
+### API Endpoint
+`POST /api/designs/import` validates and processes uploaded images:
+- Validates objectPath starts with `/objects/uploads/`
+- Fetches and validates content type and file size
+- Extracts image dimensions using sharp
+- Returns validated image URL and metadata
+
+### Database Schema
+The `designs` table includes a `designSource` field to track design origin:
+- `ai` - AI-generated designs
+- `upload` - Custom uploaded designs
+- `kittl` - Designs imported from Kittl
+
+### Future Security Enhancements
+For production deployment, consider:
+- Session-bound upload tokens (nonce validation)
+- Single-use presigned URLs
+- Content scanning for malicious payloads
