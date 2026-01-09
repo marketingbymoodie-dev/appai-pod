@@ -8,9 +8,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { Merchant } from "@shared/schema";
+
+interface ShopifyInstallation {
+  id: number;
+  shopDomain: string;
+  status: string;
+  scope: string | null;
+}
 
 export default function AdminSettings() {
   const { toast } = useToast();
@@ -25,6 +32,15 @@ export default function AdminSettings() {
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
   });
+
+  const { data: shopifyInstallations, isLoading: installationsLoading } = useQuery<ShopifyInstallation[]>({
+    queryKey: ["/api/shopify/installations"],
+  });
+
+  const handleReconnectStore = (shopDomain: string) => {
+    // Redirect to Shopify OAuth flow to refresh permissions
+    window.location.href = `/shopify/install?shop=${encodeURIComponent(shopDomain)}`;
+  };
 
   useEffect(() => {
     if (merchant) {
@@ -221,6 +237,81 @@ export default function AdminSettings() {
                   placeholder="Enter your custom API token"
                   data-testid="input-custom-token"
                 />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Store className="h-5 w-5" />
+              Shopify Integration
+            </CardTitle>
+            <CardDescription>Manage your connected Shopify stores</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {installationsLoading ? (
+              <Skeleton className="h-16 w-full" />
+            ) : shopifyInstallations && shopifyInstallations.length > 0 ? (
+              <div className="space-y-3">
+                {shopifyInstallations.map((installation) => {
+                  const hasWriteProducts = installation.scope?.includes('write_products');
+                  return (
+                    <div 
+                      key={installation.id}
+                      className="flex items-center justify-between p-3 border rounded-md"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Store className="h-5 w-5 text-muted-foreground" />
+                        <div>
+                          <p className="font-medium">{installation.shopDomain}</p>
+                          <div className="flex items-center gap-2 text-xs">
+                            {installation.status === 'active' ? (
+                              <span className="text-green-600 flex items-center gap-1">
+                                <CheckCircle className="h-3 w-3" /> Active
+                              </span>
+                            ) : (
+                              <span className="text-yellow-600 flex items-center gap-1">
+                                <AlertCircle className="h-3 w-3" /> {installation.status}
+                              </span>
+                            )}
+                            {!hasWriteProducts && (
+                              <span className="text-orange-600 flex items-center gap-1">
+                                <AlertCircle className="h-3 w-3" /> Missing product permissions
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleReconnectStore(installation.shopDomain)}
+                          data-testid={`button-reconnect-${installation.shopDomain}`}
+                        >
+                          <RefreshCw className="h-4 w-4 mr-1" />
+                          Reconnect
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => window.open(`https://${installation.shopDomain}/admin`, '_blank')}
+                          data-testid={`button-open-store-${installation.shopDomain}`}
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-6 text-muted-foreground">
+                <Store className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No Shopify stores connected yet</p>
+                <p className="text-xs mt-1">Install the app on your Shopify store to get started</p>
               </div>
             )}
           </CardContent>

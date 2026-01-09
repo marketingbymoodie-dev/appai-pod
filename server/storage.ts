@@ -85,6 +85,7 @@ export interface IStorage {
   getShopifyInstallation(id: number): Promise<ShopifyInstallation | undefined>;
   getShopifyInstallationByShop(shopDomain: string): Promise<ShopifyInstallation | undefined>;
   getShopifyInstallationsByMerchant(merchantId: string): Promise<ShopifyInstallation[]>;
+  getAllShopifyInstallations(): Promise<ShopifyInstallation[]>;
   createShopifyInstallation(installation: InsertShopifyInstallation): Promise<ShopifyInstallation>;
   updateShopifyInstallation(id: number, updates: Partial<ShopifyInstallation>): Promise<ShopifyInstallation | undefined>;
   
@@ -439,6 +440,10 @@ export class DatabaseStorage implements IStorage {
 
   async getShopifyInstallationsByMerchant(merchantId: string): Promise<ShopifyInstallation[]> {
     return db.select().from(shopifyInstallations).where(eq(shopifyInstallations.merchantId, merchantId));
+  }
+
+  async getAllShopifyInstallations(): Promise<ShopifyInstallation[]> {
+    return db.select().from(shopifyInstallations);
   }
 
   async createShopifyInstallation(installation: InsertShopifyInstallation): Promise<ShopifyInstallation> {

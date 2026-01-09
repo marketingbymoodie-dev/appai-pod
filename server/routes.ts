@@ -1612,6 +1612,39 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Get detailed Shopify installations for admin settings
+  app.get("/api/shopify/installations", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.json([]);
+      }
+
+      // Get installations linked to this merchant
+      const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
+      
+      // Also get unlinked installations (for first-time linking)
+      const allInstallations = await storage.getAllShopifyInstallations();
+      const unlinkedInstallations = allInstallations.filter(
+        (i: { merchantId: string | null }) => !i.merchantId
+      );
+      
+      const combined = [...installations, ...unlinkedInstallations];
+      
+      res.json(combined.map((i: { id: number; shopDomain: string; status: string; scope: string | null }) => ({
+        id: i.id,
+        shopDomain: i.shopDomain,
+        status: i.status,
+        scope: i.scope,
+      })));
+    } catch (error) {
+      console.error("Error fetching Shopify installations:", error);
+      res.status(500).json({ error: "Failed to fetch installations" });
+    }
+  });
+
   // Product Types API (public endpoint for Shopify embed)
   app.get("/api/product-types", async (_req: Request, res: Response) => {
     try {
