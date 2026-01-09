@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -106,6 +106,40 @@ export default function AdminCreateProduct() {
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
 
+  // Get the selected product type object for variant filtering
+  const selectedProductType = productTypes?.find(pt => pt.id === selectedProductTypeId);
+  
+  // Filter sizes/colors based on saved variant selections for the testing generator
+  const filteredSizes = useMemo(() => {
+    if (!designerConfig?.sizes) return [];
+    if (!selectedProductType) return designerConfig.sizes;
+    
+    const savedSizeIds: string[] = typeof selectedProductType.selectedSizeIds === 'string' 
+      ? JSON.parse(selectedProductType.selectedSizeIds || "[]") 
+      : selectedProductType.selectedSizeIds || [];
+    
+    // If no saved selections, show all sizes (legacy behavior)
+    if (savedSizeIds.length === 0) return designerConfig.sizes;
+    
+    const savedSizeSet = new Set(savedSizeIds);
+    return designerConfig.sizes.filter(size => savedSizeSet.has(size.id));
+  }, [designerConfig?.sizes, selectedProductType]);
+
+  const filteredColors = useMemo(() => {
+    if (!designerConfig?.frameColors) return [];
+    if (!selectedProductType) return designerConfig.frameColors;
+    
+    const savedColorIds: string[] = typeof selectedProductType.selectedColorIds === 'string' 
+      ? JSON.parse(selectedProductType.selectedColorIds || "[]") 
+      : selectedProductType.selectedColorIds || [];
+    
+    // If no saved selections, show all colors (legacy behavior)
+    if (savedColorIds.length === 0) return designerConfig.frameColors;
+    
+    const savedColorSet = new Set(savedColorIds);
+    return designerConfig.frameColors.filter(color => savedColorSet.has(color.id));
+  }, [designerConfig?.frameColors, selectedProductType]);
+
   // Track if we've set defaults for the current product type
   const [hasSetDefaults, setHasSetDefaults] = useState<number | null>(null);
 
@@ -114,12 +148,13 @@ export default function AdminCreateProduct() {
       // Only set defaults when product type changes (not on every re-render)
       const shouldSetDefaults = hasSetDefaults !== designerConfig.id;
       
-      if (designerConfig.sizes.length > 0 && !selectedSize) {
-        setSelectedSize(designerConfig.sizes[0].id);
+      // Use filtered sizes based on saved variant selections
+      if (filteredSizes.length > 0 && !selectedSize) {
+        setSelectedSize(filteredSizes[0].id);
       }
-      // Use first color if available, otherwise "default" for colorless products
-      if (designerConfig.frameColors.length > 0 && !selectedFrameColor) {
-        setSelectedFrameColor(designerConfig.frameColors[0].id);
+      // Use filtered colors based on saved variant selections, or "default" for colorless products
+      if (filteredColors.length > 0 && !selectedFrameColor) {
+        setSelectedFrameColor(filteredColors[0].id);
       } else if (designerConfig.frameColors.length === 0) {
         setSelectedFrameColor("default");
       }
@@ -131,7 +166,7 @@ export default function AdminCreateProduct() {
         setHasSetDefaults(designerConfig.id);
       }
     }
-  }, [designerConfig, selectedSize, selectedFrameColor, hasSetDefaults]);
+  }, [designerConfig, selectedSize, selectedFrameColor, hasSetDefaults, filteredSizes, filteredColors]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -412,10 +447,7 @@ export default function AdminCreateProduct() {
 
   // Load saved variant selections from product type
   const [savedVariantCount, setSavedVariantCount] = useState(0);
-  
-  // Get the selected product type object
-  const selectedProductType = productTypes?.find(pt => pt.id === selectedProductTypeId);
-  
+
   useEffect(() => {
     if (showPublishDialog && selectedProductType) {
       // Parse saved selections from product type
@@ -563,7 +595,7 @@ export default function AdminCreateProduct() {
                           <SelectValue placeholder="Select size" />
                         </SelectTrigger>
                         <SelectContent>
-                          {designerConfig.sizes.map((size) => (
+                          {filteredSizes.map((size) => (
                             <SelectItem key={size.id} value={size.id}>
                               {size.name}
                             </SelectItem>
@@ -572,11 +604,11 @@ export default function AdminCreateProduct() {
                       </Select>
                     </div>
 
-                    {designerConfig.frameColors.length > 0 && (
+                    {filteredColors.length > 0 && (
                       <div className="space-y-2">
                         <Label>{designerConfig.designerType === "framed-print" ? "Frame Color" : "Color"}</Label>
                         <div className="flex flex-wrap gap-2">
-                          {designerConfig.frameColors.map((color) => (
+                          {filteredColors.map((color) => (
                             <button
                               key={color.id}
                               className={`w-10 h-10 rounded-md border-2 transition-all ${
