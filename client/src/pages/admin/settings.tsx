@@ -38,8 +38,9 @@ export default function AdminSettings() {
   });
 
   const handleReconnectStore = (shopDomain: string) => {
-    // Redirect to Shopify OAuth flow to refresh permissions
-    window.location.href = `/shopify/install?shop=${encodeURIComponent(shopDomain)}`;
+    // Open Shopify OAuth in a new tab to avoid iframe restrictions
+    const installUrl = `${window.location.origin}/shopify/install?shop=${encodeURIComponent(shopDomain)}`;
+    window.open(installUrl, '_blank');
   };
 
   useEffect(() => {
