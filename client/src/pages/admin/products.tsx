@@ -281,7 +281,7 @@ export default function AdminProducts() {
         bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
         bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase());
       
-      const matchesLocation = !catalogLocationFilter || 
+      const matchesLocation = catalogLocationFilter === "all" || 
         blueprintLocationData[bp.id]?.includes(catalogLocationFilter);
       
       return matchesSearch && matchesLocation;
@@ -290,7 +290,7 @@ export default function AdminProducts() {
 
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];
-    if (!providerLocationFilter) return printifyProviders;
+    if (providerLocationFilter === "all") return printifyProviders;
     
     return printifyProviders.filter(p => 
       p.location?.country === providerLocationFilter ||
@@ -554,7 +554,7 @@ export default function AdminProducts() {
                     <SelectValue placeholder="Filter by location" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All locations</SelectItem>
+                    <SelectItem value="all">All locations</SelectItem>
                     {availableLocations.map(loc => (
                       <SelectItem key={loc} value={loc}>{loc}</SelectItem>
                     ))}
@@ -622,7 +622,7 @@ export default function AdminProducts() {
                   <SelectValue placeholder="Filter by location" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All locations</SelectItem>
+                  <SelectItem value="all">All locations</SelectItem>
                   {availableLocations.map(loc => (
                     <SelectItem key={loc} value={loc}>{loc}</SelectItem>
                   ))}
