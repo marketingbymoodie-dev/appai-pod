@@ -1343,6 +1343,275 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // ==================== SHOPIFY PRODUCT CREATION ====================
+  // Create a draft product in merchant's Shopify store with design studio widget
+  app.post("/api/shopify/products", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.status(403).json({ error: "Merchant not found" });
+      }
+
+      const { productTypeId, shopDomain } = req.body;
+
+      if (!productTypeId) {
+        return res.status(400).json({ error: "Product type ID is required" });
+      }
+
+      if (!shopDomain) {
+        return res.status(400).json({ error: "Shop domain is required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shopDomain)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Get the Shopify installation for this shop
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (!installation || installation.status !== "active") {
+        return res.status(400).json({ 
+          error: "Shopify store not connected",
+          details: "Please install the app on your Shopify store first"
+        });
+      }
+
+      // Security: Verify the installation belongs to this merchant
+      // If merchantId is set, it must match. If not set, link it to this merchant.
+      if (installation.merchantId && installation.merchantId !== merchant.id) {
+        return res.status(403).json({ 
+          error: "Access denied",
+          details: "This Shopify store is linked to a different merchant account"
+        });
+      }
+      
+      // Link unlinked installations to the current merchant
+      if (!installation.merchantId) {
+        await storage.updateShopifyInstallation(installation.id, {
+          merchantId: merchant.id,
+        });
+      }
+
+      // Get the product type data
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Security: Verify the product type belongs to this merchant
+      if (productType.merchantId && productType.merchantId !== merchant.id) {
+        return res.status(403).json({ 
+          error: "Access denied",
+          details: "This product type belongs to a different merchant"
+        });
+      }
+
+      // Parse product type data
+      const sizes = typeof productType.sizes === 'string' 
+        ? JSON.parse(productType.sizes) 
+        : productType.sizes || [];
+      const frameColors = typeof productType.frameColors === 'string' 
+        ? JSON.parse(productType.frameColors) 
+        : productType.frameColors || [];
+      const baseMockupImages = typeof productType.baseMockupImages === 'string'
+        ? JSON.parse(productType.baseMockupImages)
+        : productType.baseMockupImages || {};
+      const variantMap = typeof productType.variantMap === 'string'
+        ? JSON.parse(productType.variantMap)
+        : productType.variantMap || {};
+
+      // Build variants for Shopify
+      // For products with both sizes and colors, create a variant for each combination
+      // For products with only sizes (no colors), create a variant for each size
+      const shopifyVariants: Array<{
+        option1: string;
+        option2?: string;
+        price: string;
+        sku: string;
+        inventory_management: null;
+        inventory_policy: string;
+      }> = [];
+
+      if (frameColors.length > 0) {
+        // Product has both sizes and colors
+        for (const size of sizes) {
+          for (const color of frameColors) {
+            const variantKey = `${size.id}:${color.id}`;
+            if (variantMap[variantKey]) {
+              shopifyVariants.push({
+                option1: size.name,
+                option2: color.name,
+                price: "0.00", // Merchant sets pricing
+                sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`,
+                inventory_management: null,
+                inventory_policy: "continue", // Allow overselling (POD)
+              });
+            }
+          }
+        }
+      } else {
+        // Product has only sizes (e.g., phone cases)
+        for (const size of sizes) {
+          const variantKey = `${size.id}:default`;
+          if (variantMap[variantKey]) {
+            shopifyVariants.push({
+              option1: size.name,
+              price: "0.00", // Merchant sets pricing
+              sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`,
+              inventory_management: null,
+              inventory_policy: "continue", // Allow overselling (POD)
+            });
+          }
+        }
+      }
+
+      // Build product options
+      const productOptions: Array<{ name: string; values: string[] }> = [];
+      
+      if (sizes.length > 0) {
+        productOptions.push({
+          name: "Size",
+          values: Array.from(new Set(shopifyVariants.map(v => v.option1))),
+        });
+      }
+      
+      if (frameColors.length > 0) {
+        productOptions.push({
+          name: "Color",
+          values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
+        });
+      }
+
+      // Build images array from mockups
+      const images: Array<{ src: string; alt: string }> = [];
+      if (baseMockupImages.front) {
+        images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
+      }
+      if (baseMockupImages.lifestyle) {
+        images.push({ src: baseMockupImages.lifestyle, alt: `${productType.name} - Lifestyle` });
+      }
+
+      // Strip HTML from description for cleaner Shopify display
+      const cleanDescription = (productType.description || "")
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Get the app URL for the design studio embed
+      const appUrl = process.env.REPLIT_DEV_DOMAIN 
+        ? `https://${process.env.REPLIT_DEV_DOMAIN}`
+        : process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
+
+      // Create the product in Shopify
+      const shopifyProduct = {
+        product: {
+          title: `Custom ${productType.name}`,
+          body_html: `
+            <p>${cleanDescription}</p>
+            <p><strong>This product features our AI Design Studio.</strong> Create your own unique artwork using AI, or upload your own design!</p>
+          `,
+          vendor: merchant.storeName || "AI Art Studio",
+          product_type: productType.name,
+          status: "draft", // Leave as draft so merchant can set pricing
+          published: false,
+          tags: ["custom-design", "ai-artwork", "design-studio"],
+          options: productOptions.length > 0 ? productOptions : undefined,
+          variants: shopifyVariants.length > 0 ? shopifyVariants : [{ price: "0.00" }],
+          images: images.length > 0 ? images : undefined,
+          metafields: [
+            {
+              namespace: "ai_art_studio",
+              key: "product_type_id",
+              value: String(productType.id),
+              type: "single_line_text_field",
+            },
+            {
+              namespace: "ai_art_studio", 
+              key: "design_studio_url",
+              value: `${appUrl}/embed/design?productTypeId=${productType.id}`,
+              type: "single_line_text_field",
+            },
+            {
+              namespace: "ai_art_studio",
+              key: "hide_add_to_cart",
+              value: "true",
+              type: "single_line_text_field",
+            },
+          ],
+        },
+      };
+
+      // Call Shopify Admin API to create the product
+      const shopifyResponse = await fetch(
+        `https://${shopDomain}/admin/api/2024-01/products.json`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": installation.accessToken,
+          },
+          body: JSON.stringify(shopifyProduct),
+        }
+      );
+
+      if (!shopifyResponse.ok) {
+        const errorText = await shopifyResponse.text();
+        console.error("Shopify API error:", errorText);
+        return res.status(shopifyResponse.status).json({ 
+          error: "Failed to create Shopify product",
+          details: errorText
+        });
+      }
+
+      const createdProduct = await shopifyResponse.json();
+      
+      console.log(`Created Shopify product ${createdProduct.product.id} for product type ${productType.id}`);
+
+      res.json({
+        success: true,
+        shopifyProductId: createdProduct.product.id,
+        shopifyProductHandle: createdProduct.product.handle,
+        adminUrl: `https://${shopDomain}/admin/products/${createdProduct.product.id}`,
+        message: "Product created as draft. Set your retail prices and publish when ready.",
+      });
+
+    } catch (error) {
+      console.error("Error creating Shopify product:", error);
+      res.status(500).json({ error: "Failed to create Shopify product" });
+    }
+  });
+
+  // Get merchant's connected Shopify shops
+  app.get("/api/shopify/shops", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.json({ shops: [] });
+      }
+
+      // Get installations linked to this merchant
+      const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
+      
+      res.json({
+        shops: installations.map((i: { id: number; shopDomain: string; installedAt: Date }) => ({
+          id: i.id,
+          shopDomain: i.shopDomain,
+          installedAt: i.installedAt,
+        })),
+      });
+    } catch (error) {
+      console.error("Error fetching Shopify shops:", error);
+      res.status(500).json({ error: "Failed to fetch connected shops" });
+    }
+  });
+
   // Product Types API (public endpoint for Shopify embed)
   app.get("/api/product-types", async (_req: Request, res: Response) => {
     try {

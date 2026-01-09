@@ -126,7 +126,31 @@ shopify app extension push
 - Session tokens with referer validation and timestamp checks
 - Rate limiting: 100 generations per shop per hour
 - Shop installation verification for all requests
+- Merchant isolation: Shopify installations and product types are verified to belong to the current merchant
 - For enhanced security, implement Shopify App Bridge (see README in extensions folder)
+
+### Publish to Shopify ("Send to Store")
+The admin "Create Product" page includes a "Send to Store" button that creates draft products in the merchant's Shopify store.
+
+**Endpoint**: `POST /api/shopify/products`
+- Requires authenticated merchant
+- Takes `productTypeId` and `shopDomain` in request body
+- Validates merchant ownership of both Shopify installation and product type
+
+**Product Creation**:
+1. Creates a draft product with title, description, and tags
+2. Populates all size/color variants from the product type's variant map
+3. Adds base mockup images as product images
+4. Sets metafields for the theme extension:
+   - `ai_art_studio.product_type_id` - Links to the correct product type
+   - `ai_art_studio.design_studio_url` - Full URL to the embedded design studio
+   - `ai_art_studio.hide_add_to_cart` - Flag to disable native add-to-cart
+5. Leaves product as draft with $0.00 pricing for merchant to set before publishing
+
+**Variant Handling**:
+- Products with sizes AND colors create a variant for each combination
+- Products with only sizes (e.g., phone cases) create size-only variants
+- Each variant gets a SKU based on blueprint ID and size/color IDs
 
 ## Printify Integration
 

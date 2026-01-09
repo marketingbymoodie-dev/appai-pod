@@ -10,7 +10,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink } from "lucide-react";
+import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
@@ -64,6 +72,11 @@ export default function AdminCreateProduct() {
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  
+  // Shopify publishing state
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [shopDomain, setShopDomain] = useState("");
+  const [isPublishing, setIsPublishing] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -394,6 +407,53 @@ export default function AdminCreateProduct() {
   const filteredStyles = config?.stylePresets.filter(style => 
     style.category === "all" || style.category === styleCategory
   ) || [];
+
+  // Publish product to Shopify
+  const handlePublishToShopify = async () => {
+    if (!selectedProductTypeId || !shopDomain) {
+      toast({
+        title: "Missing information",
+        description: "Please select a product type and enter your Shopify store domain",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Format shop domain
+    let formattedDomain = shopDomain.trim().toLowerCase();
+    if (!formattedDomain.endsWith(".myshopify.com")) {
+      formattedDomain = `${formattedDomain}.myshopify.com`;
+    }
+
+    setIsPublishing(true);
+    try {
+      const response = await apiRequest("POST", "/api/shopify/products", {
+        productTypeId: selectedProductTypeId,
+        shopDomain: formattedDomain,
+      });
+
+      const data = await response.json();
+      
+      setShowPublishDialog(false);
+      toast({
+        title: "Product created!",
+        description: "Your product has been created as a draft in Shopify. Set your prices and publish when ready.",
+      });
+
+      // Open Shopify admin in new tab
+      if (data.adminUrl) {
+        window.open(data.adminUrl, "_blank");
+      }
+    } catch (error: any) {
+      toast({
+        title: "Failed to create product",
+        description: error.message || "Please check your Shopify connection and try again",
+        variant: "destructive",
+      });
+    } finally {
+      setIsPublishing(false);
+    }
+  };
 
   return (
     <AdminLayout>
@@ -824,21 +884,26 @@ export default function AdminCreateProduct() {
               </CardContent>
             </Card>
 
-            {generatedImageUrl && (
+            {/* Show "Send to Store" card when a product type is selected */}
+            {selectedProductTypeId && designerConfig && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-lg">Next Steps</CardTitle>
+                  <CardTitle className="text-lg">Publish to Shopify</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    Once you're happy with how the generator works for this product type, you can publish it to your Shopify store.
+                    Ready to add this product to your store? This will create a draft product with the design studio widget embedded.
                   </p>
-                  <Button className="w-full" data-testid="button-send-to-store">
-                    <Send className="h-4 w-4 mr-2" />
+                  <Button 
+                    className="w-full" 
+                    onClick={() => setShowPublishDialog(true)}
+                    data-testid="button-send-to-store"
+                  >
+                    <Store className="h-4 w-4 mr-2" />
                     Send to Store
                   </Button>
                   <p className="text-xs text-muted-foreground">
-                    This will create a new product page on your Shopify store with the product info, images, and specs from Printify.
+                    Creates a draft product on Shopify with variants, mockup images, and the design studio. You'll set prices before publishing.
                   </p>
                 </CardContent>
               </Card>
@@ -846,6 +911,87 @@ export default function AdminCreateProduct() {
           </div>
         </div>
       </div>
+
+      {/* Publish to Shopify Dialog */}
+      <Dialog open={showPublishDialog} onOpenChange={setShowPublishDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Publish to Shopify</DialogTitle>
+            <DialogDescription>
+              Enter your Shopify store domain to create this product as a draft.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="shop-domain">Store Domain</Label>
+              <div className="flex gap-2 items-center">
+                <Input
+                  id="shop-domain"
+                  placeholder="your-store"
+                  value={shopDomain}
+                  onChange={(e) => setShopDomain(e.target.value)}
+                  data-testid="input-shop-domain"
+                />
+                <span className="text-sm text-muted-foreground whitespace-nowrap">.myshopify.com</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Enter just the store name (e.g., "my-store" for my-store.myshopify.com)
+              </p>
+            </div>
+
+            {designerConfig && (
+              <div className="bg-muted p-3 rounded-lg space-y-2">
+                <p className="text-sm font-medium">Product: {designerConfig.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {designerConfig.sizes.length} size{designerConfig.sizes.length !== 1 ? 's' : ''}
+                  {designerConfig.frameColors.length > 0 && 
+                    ` × ${designerConfig.frameColors.length} color${designerConfig.frameColors.length !== 1 ? 's' : ''}`
+                  }
+                </p>
+              </div>
+            )}
+
+            <div className="text-sm text-muted-foreground space-y-1">
+              <p>This will:</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li>Create a draft product in your Shopify store</li>
+                <li>Add all size and color variants</li>
+                <li>Include mockup images</li>
+                <li>Enable the design studio widget</li>
+                <li>Leave prices at $0 for you to set</li>
+              </ul>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => setShowPublishDialog(false)}
+              data-testid="button-cancel-publish"
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handlePublishToShopify} 
+              disabled={isPublishing || !shopDomain.trim()}
+              data-testid="button-confirm-publish"
+            >
+              {isPublishing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-2" />
+                  Create Product
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AdminLayout>
   );
 }
