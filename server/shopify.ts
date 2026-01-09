@@ -133,26 +133,33 @@ export function registerShopifyRoutes(app: Express): void {
         return res.status(500).send("Failed to get access token from Shopify");
       }
 
-      const { access_token, scope } = await response.json();
+      const tokenData = await response.json();
+      const { access_token, scope } = tokenData;
+      
+      console.log(`Shopify OAuth completed for ${shop}`);
+      console.log(`Scopes granted: ${scope || 'NONE'}`);
+      console.log(`Requested scopes were: ${SHOPIFY_SCOPES}`);
 
       let installation = await storage.getShopifyInstallationByShop(shop);
       
       if (installation) {
         await storage.updateShopifyInstallation(installation.id, {
           accessToken: access_token,
-          scope: scope,
+          scope: scope || "",
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
         });
+        console.log(`Updated existing installation for ${shop}`);
       } else {
         installation = await storage.createShopifyInstallation({
           shopDomain: shop,
           accessToken: access_token,
-          scope: scope,
+          scope: scope || "",
           status: "active",
           installedAt: new Date(),
         });
+        console.log(`Created new installation for ${shop}`);
       }
 
       res.clearCookie("shopify_state");
@@ -208,6 +215,53 @@ export function registerShopifyRoutes(app: Express): void {
     }
 
     res.status(200).send("OK");
+  });
+
+  // Revoke token and redirect to reinstall (forces new permission prompt)
+  app.get("/shopify/reinstall", async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+
+    if (!shop || !isValidShopDomain(shop)) {
+      return res.status(400).send("Invalid or missing shop domain");
+    }
+
+    try {
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      
+      if (installation?.accessToken) {
+        // Revoke the existing token
+        console.log(`Revoking token for ${shop} to force re-authorization`);
+        
+        const revokeResponse = await fetch(
+          `https://${shop}/admin/api_permissions/current.json`,
+          {
+            method: "DELETE",
+            headers: {
+              "X-Shopify-Access-Token": installation.accessToken,
+            },
+          }
+        );
+        
+        if (revokeResponse.ok) {
+          console.log(`Token revoked successfully for ${shop}`);
+          // Mark as needing reinstall
+          await storage.updateShopifyInstallation(installation.id, {
+            status: "pending_reinstall",
+            accessToken: "",
+            scope: "",
+          });
+        } else {
+          console.log(`Token revoke response: ${revokeResponse.status}`);
+        }
+      }
+
+      // Redirect to install flow
+      res.redirect(`/shopify/install?shop=${encodeURIComponent(shop)}`);
+    } catch (error) {
+      console.error("Error revoking Shopify token:", error);
+      // Still try to reinstall even if revoke failed
+      res.redirect(`/shopify/install?shop=${encodeURIComponent(shop)}`);
+    }
   });
 
   console.log("Shopify OAuth routes registered");

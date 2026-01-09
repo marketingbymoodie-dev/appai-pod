@@ -38,9 +38,14 @@ export default function AdminSettings() {
   });
 
   const handleReconnectStore = (shopDomain: string) => {
-    // Open Shopify OAuth in a new tab to avoid iframe restrictions
-    const installUrl = `${window.location.origin}/shopify/install?shop=${encodeURIComponent(shopDomain)}`;
-    window.open(installUrl, '_blank');
+    // Open Shopify reinstall in a new tab (attempts to revoke and reinstall)
+    const reinstallUrl = `${window.location.origin}/shopify/reinstall?shop=${encodeURIComponent(shopDomain)}`;
+    window.open(reinstallUrl, '_blank');
+  };
+
+  const handleUninstallInstructions = (shopDomain: string) => {
+    // Open Shopify admin apps page where they can uninstall
+    window.open(`https://${shopDomain}/admin/settings/apps`, '_blank');
   };
 
   useEffect(() => {
@@ -258,52 +263,77 @@ export default function AdminSettings() {
               <div className="space-y-3">
                 {shopifyInstallations.map((installation) => {
                   const hasWriteProducts = installation.scope?.includes('write_products');
+                  const needsPermissionFix = !hasWriteProducts && installation.status === 'active';
                   return (
                     <div 
                       key={installation.id}
-                      className="flex items-center justify-between p-3 border rounded-md"
+                      className="space-y-2"
                     >
-                      <div className="flex items-center gap-3">
-                        <Store className="h-5 w-5 text-muted-foreground" />
-                        <div>
-                          <p className="font-medium">{installation.shopDomain}</p>
-                          <div className="flex items-center gap-2 text-xs">
-                            {installation.status === 'active' ? (
-                              <span className="text-green-600 flex items-center gap-1">
-                                <CheckCircle className="h-3 w-3" /> Active
-                              </span>
-                            ) : (
-                              <span className="text-yellow-600 flex items-center gap-1">
-                                <AlertCircle className="h-3 w-3" /> {installation.status}
-                              </span>
-                            )}
-                            {!hasWriteProducts && (
-                              <span className="text-orange-600 flex items-center gap-1">
-                                <AlertCircle className="h-3 w-3" /> Missing product permissions
-                              </span>
-                            )}
+                      <div className="flex items-center justify-between p-3 border rounded-md">
+                        <div className="flex items-center gap-3">
+                          <Store className="h-5 w-5 text-muted-foreground" />
+                          <div>
+                            <p className="font-medium">{installation.shopDomain}</p>
+                            <div className="flex items-center gap-2 text-xs">
+                              {installation.status === 'active' ? (
+                                <span className="text-green-600 flex items-center gap-1">
+                                  <CheckCircle className="h-3 w-3" /> Active
+                                </span>
+                              ) : (
+                                <span className="text-yellow-600 flex items-center gap-1">
+                                  <AlertCircle className="h-3 w-3" /> {installation.status}
+                                </span>
+                              )}
+                              {needsPermissionFix && (
+                                <span className="text-orange-600 flex items-center gap-1">
+                                  <AlertCircle className="h-3 w-3" /> Missing product permissions
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleReconnectStore(installation.shopDomain)}
+                            data-testid={`button-reconnect-${installation.shopDomain}`}
+                          >
+                            <RefreshCw className="h-4 w-4 mr-1" />
+                            Reconnect
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => window.open(`https://${installation.shopDomain}/admin`, '_blank')}
+                            data-testid={`button-open-store-${installation.shopDomain}`}
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleReconnectStore(installation.shopDomain)}
-                          data-testid={`button-reconnect-${installation.shopDomain}`}
-                        >
-                          <RefreshCw className="h-4 w-4 mr-1" />
-                          Reconnect
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => window.open(`https://${installation.shopDomain}/admin`, '_blank')}
-                          data-testid={`button-open-store-${installation.shopDomain}`}
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </Button>
-                      </div>
+                      {needsPermissionFix && (
+                        <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-900 rounded-md p-3 text-sm">
+                          <p className="font-medium text-orange-800 dark:text-orange-200 mb-2">
+                            To enable "Send to Store", you need to grant product permissions:
+                          </p>
+                          <ol className="list-decimal list-inside space-y-1 text-orange-700 dark:text-orange-300 text-xs">
+                            <li>
+                              <Button
+                                variant="link"
+                                size="sm"
+                                className="h-auto p-0 text-xs text-orange-700 dark:text-orange-300 underline"
+                                onClick={() => handleUninstallInstructions(installation.shopDomain)}
+                              >
+                                Open your Shopify Apps settings
+                              </Button>
+                              {" "}and uninstall this app
+                            </li>
+                            <li>Click "Reconnect" above to reinstall with the correct permissions</li>
+                            <li>Approve all requested permissions when prompted</li>
+                          </ol>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
