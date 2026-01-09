@@ -168,7 +168,7 @@ export default function AdminCreateProduct() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ 
-          fileName: file.name,
+          name: file.name,
           contentType: file.type 
         }),
       });
@@ -177,10 +177,10 @@ export default function AdminCreateProduct() {
         throw new Error("Failed to get upload URL");
       }
 
-      const { uploadUrl, objectPath } = await urlResponse.json();
+      const { uploadURL, objectPath } = await urlResponse.json();
 
       // Upload the file
-      const uploadResponse = await fetch(uploadUrl, {
+      const uploadResponse = await fetch(uploadURL, {
         method: "PUT",
         headers: { "Content-Type": file.type },
         body: file,
