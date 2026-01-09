@@ -103,22 +103,26 @@ export default function EmbedDesign() {
   useEffect(() => {
     Promise.all([
       fetch("/api/config").then(res => res.json()),
-      fetch(`/api/product-types/${productTypeId}`).then(res => res.ok ? res.json() : null)
+      // Use the designer endpoint to get proper designer config (same as design.tsx and admin pages)
+      fetch(`/api/product-types/${productTypeId}/designer`).then(res => res.ok ? res.json() : null)
     ])
-      .then(([configData, productType]) => {
+      .then(([configData, designerConfig]) => {
         if (configData.stylePresets) {
           setStylePresets(configData.stylePresets);
         }
-        if (productType) {
-          const sizes = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes;
-          const frameColors = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors;
+        if (designerConfig) {
+          // Designer endpoint returns properly formatted config
           setProductTypeConfig({
-            ...productType,
-            sizes: sizes || [],
-            frameColors: frameColors || []
+            id: designerConfig.id,
+            name: designerConfig.name,
+            description: designerConfig.description || null,
+            aspectRatio: designerConfig.aspectRatio,
+            designerType: designerConfig.designerType,
+            sizes: designerConfig.sizes || [],
+            frameColors: designerConfig.frameColors || []
           });
-          if (sizes?.length > 0) setSelectedSize(sizes[0].id);
-          if (frameColors?.length > 0) setSelectedFrameColor(frameColors[0].id);
+          if (designerConfig.sizes?.length > 0) setSelectedSize(designerConfig.sizes[0].id);
+          if (designerConfig.frameColors?.length > 0) setSelectedFrameColor(designerConfig.frameColors[0].id);
         } else {
           setProductTypeConfig(defaultProductTypeConfig);
           setSelectedSize(defaultProductTypeConfig.sizes[0].id);
