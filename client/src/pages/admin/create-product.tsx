@@ -10,7 +10,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Sparkles, Upload, Loader2, ZoomIn, Send, Package } from "lucide-react";
+import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
 
@@ -59,7 +60,14 @@ export default function AdminCreateProduct() {
   const [mockupLoading, setMockupLoading] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState<number | null>(null);
   
+  // Import design state
+  const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+  const customUploadInputRef = useRef<HTMLInputElement>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -118,6 +126,115 @@ export default function AdminCreateProduct() {
         setReferenceImage(reader.result as string);
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>, source: "kittl" | "upload") => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // Reset the input so the same file can be selected again
+    e.target.value = "";
+    
+    // Validate configuration is selected before importing
+    if (!selectedProductTypeId || !selectedSize) {
+      toast({ 
+        title: "Select product first", 
+        description: "Please select a product type and size before importing a design", 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    setIsImporting(true);
+    setImportError(null);
+
+    try {
+      // Check file type (SVG not supported for security reasons)
+      const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+      if (!allowedTypes.includes(file.type)) {
+        throw new Error("Please upload a PNG, JPG, or WebP image.");
+      }
+
+      // Check file size (max 10MB)
+      const MAX_SIZE = 10 * 1024 * 1024;
+      if (file.size > MAX_SIZE) {
+        throw new Error("File too large. Maximum size is 10MB.");
+      }
+
+      // Request presigned upload URL
+      const urlResponse = await fetch("/api/uploads/request-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ 
+          fileName: file.name,
+          contentType: file.type 
+        }),
+      });
+
+      if (!urlResponse.ok) {
+        throw new Error("Failed to get upload URL");
+      }
+
+      const { uploadUrl, objectPath } = await urlResponse.json();
+
+      // Upload the file
+      const uploadResponse = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Failed to upload file");
+      }
+
+      // Validate and import the design
+      const importResponse = await fetch("/api/designs/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          objectPath,
+          name: file.name.replace(/\.[^/.]+$/, ""),
+          source,
+        }),
+      });
+
+      if (!importResponse.ok) {
+        const error = await importResponse.json();
+        throw new Error(error.error || "Failed to import design");
+      }
+
+      const importData = await importResponse.json();
+      
+      // Clear previous state before setting new design
+      setMockupImages([]);
+      setSelectedMockupIndex(null);
+      
+      // Reset mockup tracking refs so variant changes work properly
+      lastAppliedScaleRef.current = null;
+      lastAppliedSizeRef.current = null;
+      lastAppliedColorRef.current = null;
+      
+      // Set the imported design as the generated image
+      setGeneratedImageUrl(importData.imageUrl);
+
+      toast({ 
+        title: "Design imported!", 
+        description: `Your ${source === "kittl" ? "Kittl" : "custom"} design is ready` 
+      });
+
+      // Generate mockups if available
+      if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId) {
+        await generateMockups(importData.imageUrl);
+      }
+    } catch (error: any) {
+      setImportError(error.message);
+      toast({ title: "Import failed", description: error.message, variant: "destructive" });
+    } finally {
+      setIsImporting(false);
     }
   };
 
@@ -406,74 +523,177 @@ export default function AdminCreateProduct() {
             </Card>
 
             <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Design Prompt</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="prompt">Describe Your Artwork</Label>
-                  <Textarea
-                    id="prompt"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    placeholder="A majestic golden retriever wearing a royal crown..."
-                    rows={4}
-                    data-testid="input-prompt"
-                  />
-                </div>
+              <CardContent className="pt-6">
+                <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "generate" | "import")}>
+                  <TabsList className="grid w-full grid-cols-2 mb-4">
+                    <TabsTrigger value="generate" data-testid="tab-ai-generate">
+                      <Sparkles className="h-4 w-4 mr-2" />
+                      AI Generate
+                    </TabsTrigger>
+                    <TabsTrigger value="import" data-testid="tab-import-design">
+                      <Upload className="h-4 w-4 mr-2" />
+                      Import Design
+                    </TabsTrigger>
+                  </TabsList>
+                  
+                  <TabsContent value="generate" className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="prompt">Describe Your Artwork</Label>
+                      <Textarea
+                        id="prompt"
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
+                        placeholder="A majestic golden retriever wearing a royal crown..."
+                        rows={4}
+                        data-testid="input-prompt"
+                      />
+                    </div>
 
-                <div className="space-y-2">
-                  <Label>Reference Image (optional)</Label>
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleFileChange}
-                    accept="image/*"
-                    className="hidden"
-                  />
-                  {referenceImage ? (
-                    <div className="relative">
-                      <img src={referenceImage} alt="Reference" className="w-full h-32 object-contain rounded-lg border" />
+                    <div className="space-y-2">
+                      <Label>Reference Image (optional)</Label>
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileChange}
+                        accept="image/*"
+                        className="hidden"
+                      />
+                      {referenceImage ? (
+                        <div className="relative">
+                          <img src={referenceImage} alt="Reference" className="w-full h-32 object-contain rounded-lg border" />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="absolute top-2 right-2"
+                            onClick={() => setReferenceImage(null)}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="w-full"
+                          data-testid="button-upload-reference"
+                        >
+                          <Upload className="h-4 w-4 mr-2" />
+                          Upload Reference Image
+                        </Button>
+                      )}
+                    </div>
+
+                    <Button
+                      onClick={handleGenerate}
+                      disabled={isGenerating || !prompt || !selectedProductTypeId || !selectedSize}
+                      className="w-full"
+                      data-testid="button-generate"
+                    >
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4 mr-2" />
+                          Generate Test Design
+                        </>
+                      )}
+                    </Button>
+                  </TabsContent>
+                  
+                  <TabsContent value="import" className="space-y-4">
+                    {(!selectedProductTypeId || !selectedSize) && (
+                      <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground text-center">
+                        Please select a product type and size above before importing
+                      </div>
+                    )}
+                    <Card className="border-dashed">
+                      <CardContent className="pt-4 space-y-4">
+                        <div className="text-center space-y-2">
+                          <h4 className="font-medium">Import from Kittl</h4>
+                          <p className="text-sm text-muted-foreground">
+                            Design in Kittl, then export as PNG to upload here
+                          </p>
+                        </div>
+                        
+                        <a
+                          href="https://www.kittl.com/editor"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center justify-center gap-2 text-sm text-primary hover:underline"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          Open Kittl Designer
+                        </a>
+                        
+                        <input
+                          ref={importFileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg,image/webp"
+                          onChange={(e) => handleImportFile(e, "kittl")}
+                          className="hidden"
+                          data-testid="input-import-kittl"
+                        />
+                        
+                        <Button
+                          variant="default"
+                          onClick={() => importFileInputRef.current?.click()}
+                          disabled={isImporting || !selectedProductTypeId || !selectedSize}
+                          className="w-full"
+                          data-testid="button-import-kittl"
+                        >
+                          {isImporting ? (
+                            <>
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              Importing...
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="h-4 w-4 mr-2" />
+                              Upload Kittl Design
+                            </>
+                          )}
+                        </Button>
+                      </CardContent>
+                    </Card>
+
+                    <div className="border-t pt-4">
+                      <p className="text-xs text-muted-foreground text-center mb-3">
+                        Or upload any custom design
+                      </p>
+                      <input
+                        ref={customUploadInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        onChange={(e) => handleImportFile(e, "upload")}
+                        className="hidden"
+                        data-testid="input-import-custom"
+                      />
                       <Button
                         variant="outline"
-                        size="sm"
-                        className="absolute top-2 right-2"
-                        onClick={() => setReferenceImage(null)}
+                        onClick={() => customUploadInputRef.current?.click()}
+                        disabled={isImporting || !selectedProductTypeId || !selectedSize}
+                        className="w-full"
+                        data-testid="button-import-custom"
                       >
-                        Remove
+                        <Upload className="h-4 w-4 mr-2" />
+                        Upload Custom Design
                       </Button>
                     </div>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="w-full"
-                      data-testid="button-upload-reference"
-                    >
-                      <Upload className="h-4 w-4 mr-2" />
-                      Upload Reference Image
-                    </Button>
-                  )}
-                </div>
+                    
+                    {importError && (
+                      <p className="text-sm text-destructive text-center">{importError}</p>
+                    )}
 
-                <Button
-                  onClick={handleGenerate}
-                  disabled={isGenerating || !prompt || !selectedProductTypeId || !selectedSize}
-                  className="w-full"
-                  data-testid="button-generate"
-                >
-                  {isGenerating ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Generating...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="h-4 w-4 mr-2" />
-                      Generate Test Design
-                    </>
-                  )}
-                </Button>
+                    <div className="text-xs text-muted-foreground space-y-1">
+                      <p>Supported formats: PNG, JPG, WebP</p>
+                      <p>Maximum file size: 10MB</p>
+                      <p>For best results, export from Kittl as high-resolution PNG</p>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </CardContent>
             </Card>
           </div>
