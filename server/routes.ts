@@ -66,16 +66,19 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove white/near-white background pixels from an image and make them transparent.
+ * Remove magenta chroma-key background pixels from an image and make them transparent.
  * 
- * Simple approach: Remove ALL pixels that match background criteria (high luminance,
- * low chroma) regardless of location. This works well with mask-friendly AI prompts
- * that generate vector-style graphics with flat colors, bold outlines, and no white
- * design elements.
+ * Uses a chroma-key approach: AI generates graphics on bright magenta (#FF00FF) background,
+ * which is then keyed out precisely. This preserves white design elements that would be
+ * lost with white background removal.
  * 
- * Background detection criteria:
- * - High luminance (>= 245 on 0-255 scale, ~96%)
- * - Low chroma/saturation (max-min channel distance <= 8)
+ * Magenta detection criteria:
+ * - Red channel >= 200
+ * - Green channel <= 80
+ * - Blue channel >= 200
+ * - This catches #FF00FF and close variations from JPEG compression
+ * 
+ * Falls back to white removal if very few magenta pixels found (legacy images).
  * 
  * @param buffer - The image buffer to process
  * @param _threshold - DEPRECATED: No longer used, kept for API compatibility
@@ -98,13 +101,17 @@ async function removeWhiteBackground(
   const pixels = new Uint8Array(data);
   const totalPixels = width * height;
   
-  // Configuration for background detection
-  const LUMINANCE_THRESHOLD = 245;  // ~96% brightness (handles JPEG at 253-255)
-  const MAX_CHROMA_DISTANCE = 8;    // Max difference between R, G, B channels
+  // Magenta chroma-key detection thresholds (for #FF00FF and JPEG variations)
+  const MIN_RED = 200;
+  const MAX_GREEN = 80;
+  const MIN_BLUE = 200;
   
-  let pixelsRemoved = 0;
+  // White fallback detection thresholds
+  const WHITE_LUMINANCE_THRESHOLD = 245;
+  const WHITE_MAX_CHROMA = 8;
   
-  // Simple approach: Remove ALL white/near-white pixels
+  // First pass: count magenta pixels to decide which mode to use
+  let magentaCount = 0;
   for (let i = 0; i < totalPixels; i++) {
     const idx = i * 4;
     const r = pixels[idx];
@@ -112,25 +119,52 @@ async function removeWhiteBackground(
     const b = pixels[idx + 2];
     const a = pixels[idx + 3];
     
-    if (a === 0) continue; // Already transparent
+    if (a === 0) continue;
     
-    // Calculate luminance (average of RGB)
-    const luminance = (r + g + b) / 3;
-    if (luminance < LUMINANCE_THRESHOLD) continue;
-    
-    // Calculate chroma (max - min of RGB)
-    const maxRGB = Math.max(r, g, b);
-    const minRGB = Math.min(r, g, b);
-    const chromaDistance = maxRGB - minRGB;
-    if (chromaDistance > MAX_CHROMA_DISTANCE) continue;
-    
-    // This pixel matches background criteria - make transparent
-    pixels[idx + 3] = 0;
-    pixelsRemoved++;
+    if (r >= MIN_RED && g <= MAX_GREEN && b >= MIN_BLUE) {
+      magentaCount++;
+    }
   }
   
-  console.log(`Background removal: ${width}x${height} image`);
-  console.log(`  Removed ${pixelsRemoved} white pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
+  // If magenta covers at least 5% of image, use magenta keying; otherwise fall back to white
+  const magentaPercent = magentaCount / totalPixels;
+  const useMagentaMode = magentaPercent >= 0.05;
+  
+  let pixelsRemoved = 0;
+  
+  for (let i = 0; i < totalPixels; i++) {
+    const idx = i * 4;
+    const r = pixels[idx];
+    const g = pixels[idx + 1];
+    const b = pixels[idx + 2];
+    const a = pixels[idx + 3];
+    
+    if (a === 0) continue;
+    
+    let shouldRemove = false;
+    
+    if (useMagentaMode) {
+      // Magenta chroma-key mode
+      shouldRemove = r >= MIN_RED && g <= MAX_GREEN && b >= MIN_BLUE;
+    } else {
+      // White fallback mode (for legacy images)
+      const luminance = (r + g + b) / 3;
+      const maxRGB = Math.max(r, g, b);
+      const minRGB = Math.min(r, g, b);
+      const chromaDistance = maxRGB - minRGB;
+      shouldRemove = luminance >= WHITE_LUMINANCE_THRESHOLD && chromaDistance <= WHITE_MAX_CHROMA;
+    }
+    
+    if (shouldRemove) {
+      pixels[idx + 3] = 0;
+      pixelsRemoved++;
+    }
+  }
+  
+  const mode = useMagentaMode ? 'magenta chroma-key' : 'white fallback';
+  console.log(`Background removal (${mode}): ${width}x${height} image`);
+  console.log(`  Magenta coverage: ${(magentaPercent * 100).toFixed(1)}%`);
+  console.log(`  Removed ${pixelsRemoved} pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
   
   // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
