@@ -78,8 +78,19 @@ export default function AdminCreateProduct() {
     enabled: !!selectedProductTypeId,
   });
 
+  // Computed zoom values based on product type (apparel uses 135%, others use 100%)
+  const isApparel = designerConfig?.designerType === "apparel";
+  const defaultZoom = isApparel ? 135 : 100;
+  const maxZoom = isApparel ? 135 : 200;
+
+  // Track if we've set defaults for the current product type
+  const [hasSetDefaults, setHasSetDefaults] = useState<number | null>(null);
+
   useEffect(() => {
     if (designerConfig) {
+      // Only set defaults when product type changes (not on every re-render)
+      const shouldSetDefaults = hasSetDefaults !== designerConfig.id;
+      
       if (designerConfig.sizes.length > 0 && !selectedSize) {
         setSelectedSize(designerConfig.sizes[0].id);
       }
@@ -89,8 +100,15 @@ export default function AdminCreateProduct() {
       } else if (designerConfig.frameColors.length === 0) {
         setSelectedFrameColor("default");
       }
+      // Set default zoom based on product type (135% for apparel, 100% for others)
+      // Only set when product type changes, not on every size/color change
+      if (shouldSetDefaults) {
+        const newDefaultZoom = designerConfig.designerType === "apparel" ? 135 : 100;
+        setImageScale(newDefaultZoom);
+        setHasSetDefaults(designerConfig.id);
+      }
     }
-  }, [designerConfig, selectedSize, selectedFrameColor]);
+  }, [designerConfig, selectedSize, selectedFrameColor, hasSetDefaults]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -487,8 +505,8 @@ export default function AdminCreateProduct() {
                         <Slider
                           value={[imageScale]}
                           onValueChange={(v) => setImageScale(v[0])}
-                          min={50}
-                          max={150}
+                          min={25}
+                          max={maxZoom}
                           step={5}
                           data-testid="slider-zoom"
                         />

@@ -112,7 +112,7 @@ export default function DesignPage() {
   const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
   
-  const [imageScale, setImageScale] = useState(135);
+  const [imageScale, setImageScale] = useState(100);
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
   const [mobileSlide, setMobileSlide] = useState(0);
   const [mobileViewMode, setMobileViewMode] = useState<"front" | "lifestyle">("front");
@@ -221,6 +221,11 @@ export default function DesignPage() {
     enabled: isAuthenticated,
   });
 
+  // Computed zoom values based on product type
+  const isApparel = designerConfig?.designerType === "apparel";
+  const defaultZoom = isApparel ? 135 : 100;
+  const maxZoom = isApparel ? 135 : 200;
+
   const handleSelectProductType = (productType: ProductType) => {
     setSelectedProductTypeId(productType.id);
     setGeneratedDesign(null);
@@ -228,7 +233,7 @@ export default function DesignPage() {
     setPrompt("");
     setSelectedSize("");
     setSelectedFrameColor("");
-    setImageScale(135);
+    setImageScale(100); // Will be updated by useEffect when designerConfig loads
     setImagePosition({ x: 50, y: 50 });
   };
 
@@ -240,8 +245,14 @@ export default function DesignPage() {
       if (designerConfig.frameColors.length > 0 && !selectedFrameColor) {
         setSelectedFrameColor(designerConfig.frameColors[0].id);
       }
+      // Only set default zoom when no design is loaded (fresh start)
+      // Don't overwrite saved/user-adjusted transformScale
+      if (!generatedDesign) {
+        const newDefaultZoom = designerConfig.designerType === "apparel" ? 135 : 100;
+        setImageScale(newDefaultZoom);
+      }
     }
-  }, [designerConfig, selectedSize, selectedFrameColor]);
+  }, [designerConfig, selectedSize, selectedFrameColor, generatedDesign]);
 
   // Load design from URL when coming from "Tweak" button in gallery
   useEffect(() => {
@@ -259,7 +270,8 @@ export default function DesignPage() {
               setSelectedSize(design.size);
               setSelectedFrameColor(design.frameColor);
               setSelectedStyle(design.stylePreset || "none");
-              setImageScale(Math.min(design.transformScale ?? 135, 135));
+              // Will be corrected by useEffect when designerConfig loads
+              setImageScale(design.transformScale ?? 100);
               setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
               setShowTweak(true);
             }
@@ -271,7 +283,7 @@ export default function DesignPage() {
     }
   }, []);
 
-  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 135) => {
+  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 100) => {
     setMockupLoading(true);
     // Don't clear existing mockups - preserve them while loading new ones
     try {
@@ -306,7 +318,10 @@ export default function DesignPage() {
       setGeneratedDesign(design);
       setSelectedSize(design.size);
       setSelectedFrameColor(design.frameColor);
-      setImageScale(Math.min(design.transformScale ?? 135, 135));
+      // Use conditional max based on product type
+      const currentMax = designerConfig?.designerType === "apparel" ? 135 : 200;
+      const currentDefault = designerConfig?.designerType === "apparel" ? 135 : 100;
+      setImageScale(Math.min(design.transformScale ?? currentDefault, currentMax));
       setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
       queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
@@ -317,7 +332,7 @@ export default function DesignPage() {
       
       if (designerConfig && designerConfig.designerType !== "framed-print" && designerConfig.hasPrintifyMockups) {
         const imageUrl = window.location.origin + design.generatedImageUrl;
-        fetchPrintifyMockups(imageUrl, designerConfig.id, design.size, design.frameColor);
+        fetchPrintifyMockups(imageUrl, designerConfig.id, design.size, design.frameColor, currentDefault);
       }
     },
     onError: (error: any) => {
@@ -461,7 +476,7 @@ export default function DesignPage() {
   };
 
   const resetTransform = () => {
-    setImageScale(135);
+    setImageScale(defaultZoom);
     setImagePosition({ x: 50, y: 50 });
   };
 
@@ -471,7 +486,7 @@ export default function DesignPage() {
 
   const handleSizeChange = (newSize: string) => {
     setSelectedSize(newSize);
-    setImageScale(135);
+    setImageScale(defaultZoom);
     setImagePosition({ x: 50, y: 50 });
   };
 
@@ -926,7 +941,7 @@ export default function DesignPage() {
         value={[imageScale]}
         onValueChange={([value]) => setImageScale(value)}
         min={25}
-        max={135}
+        max={maxZoom}
         step={5}
         className="flex-1"
         data-testid="slider-scale"

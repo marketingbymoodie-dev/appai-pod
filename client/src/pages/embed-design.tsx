@@ -35,6 +35,7 @@ interface ProductTypeConfig {
   name: string;
   description: string | null;
   aspectRatio: string;
+  designerType?: string;
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
 }
@@ -76,11 +77,17 @@ export default function EmbedDesign() {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
 
+  // Computed zoom values based on product type (apparel uses 135%, others use 100%)
+  const isApparel = productTypeConfig?.designerType === "apparel";
+  const defaultZoom = isApparel ? 135 : 100;
+  const maxZoom = isApparel ? 135 : 200;
+
   const defaultProductTypeConfig: ProductTypeConfig = {
     id: 0,
     name: "Custom Print",
     description: null,
     aspectRatio: "3:4",
+    designerType: "framed-print", // Default to framed print (non-apparel)
     sizes: [
       { id: "11x14", name: "11\" x 14\"", width: 11, height: 14 },
       { id: "12x16", name: "12\" x 16\"", width: 12, height: 16 },
@@ -199,7 +206,9 @@ export default function EmbedDesign() {
       if (data.creditsRemaining !== undefined && customer) {
         setCustomer({ ...customer, credits: data.creditsRemaining });
       }
-      setTransform({ scale: 100, x: 50, y: 50 });
+      // Use conditional default zoom (135% for apparel, 100% for others)
+      const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
+      setTransform({ scale: zoomDefault, x: 50, y: 50 });
       setLoginError(null);
     },
   });
@@ -520,7 +529,7 @@ export default function EmbedDesign() {
                 selectedSize={selectedSize}
                 onSizeChange={(sizeId) => {
                   setSelectedSize(sizeId);
-                  setTransform({ scale: 100, x: 50, y: 50 });
+                  setTransform({ scale: defaultZoom, x: 50, y: 50 });
                 }}
               />
             )}
