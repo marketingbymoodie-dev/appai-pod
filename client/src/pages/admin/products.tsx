@@ -11,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
 
@@ -54,8 +55,8 @@ export default function AdminProducts() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
-  const [providerLocationFilter, setProviderLocationFilter] = useState("all");
-  const [catalogLocationFilter, setCatalogLocationFilter] = useState("all");
+  const [providerLocationFilter, setProviderLocationFilter] = useState("");
+  const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
   const [blueprintLocationData, setBlueprintLocationData] = useState<Record<number, string[]>>({});
   const [locationDataLoading, setLocationDataLoading] = useState(false);
   
@@ -281,7 +282,7 @@ export default function AdminProducts() {
         bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
         bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase());
       
-      const matchesLocation = catalogLocationFilter === "all" || 
+      const matchesLocation = !catalogLocationFilter || catalogLocationFilter === "all" || 
         blueprintLocationData[bp.id]?.includes(catalogLocationFilter);
       
       return matchesSearch && matchesLocation;
@@ -290,7 +291,7 @@ export default function AdminProducts() {
 
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];
-    if (providerLocationFilter === "all") return printifyProviders;
+    if (!providerLocationFilter || providerLocationFilter === "all") return printifyProviders;
     
     return printifyProviders.filter(p => 
       p.location?.country === providerLocationFilter ||
@@ -549,17 +550,30 @@ export default function AdminProducts() {
                     data-testid="input-blueprint-search"
                   />
                 </div>
-                <Select value={catalogLocationFilter} onValueChange={setCatalogLocationFilter}>
-                  <SelectTrigger className="w-[180px]">
-                    <SelectValue placeholder="Filter by location" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All locations</SelectItem>
-                    {availableLocations.map(loc => (
-                      <SelectItem key={loc} value={loc}>{loc}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-1">
+                  <Select value={catalogLocationFilter || undefined} onValueChange={(val) => setCatalogLocationFilter(val === "all" ? "" : val)}>
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="Filter by location" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All locations</SelectItem>
+                      {availableLocations.map(loc => (
+                        <SelectItem key={loc} value={loc}>{loc}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-catalog-location-info">
+                        <Info className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-72 text-sm">
+                      <p><strong>Location</strong> refers to the production facility.</p>
+                      <p className="mt-2 text-muted-foreground">Suppliers may still ship internationally. Check the Printify listing for detailed shipping info.</p>
+                    </PopoverContent>
+                  </Popover>
+                </div>
               </div>
 
               {blueprintsFetching ? (
@@ -617,17 +631,33 @@ export default function AdminProducts() {
                 </div>
               )}
 
-              <Select value={providerLocationFilter} onValueChange={setProviderLocationFilter}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Filter by location" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All locations</SelectItem>
-                  {availableLocations.map(loc => (
-                    <SelectItem key={loc} value={loc}>{loc}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="space-y-1">
+                <div className="flex items-center gap-1">
+                  <Label className="text-sm font-medium">Filter by location</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" data-testid="button-provider-location-info">
+                        <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-72 text-sm">
+                      <p><strong>Location</strong> refers to the production facility.</p>
+                      <p className="mt-2 text-muted-foreground">Suppliers may still ship internationally. Check the Printify listing for detailed shipping info.</p>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+                <Select value={providerLocationFilter || undefined} onValueChange={(val) => setProviderLocationFilter(val === "all" ? "" : val)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Filter by location" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All locations</SelectItem>
+                    {availableLocations.map(loc => (
+                      <SelectItem key={loc} value={loc}>{loc}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
               {providersLoading ? (
                 <div className="flex items-center justify-center py-8">
@@ -649,9 +679,9 @@ export default function AdminProducts() {
                               {provider.location?.city}, {provider.location?.country}
                             </p>
                           </div>
-                          {provider.fulfillment_countries && (
+                          {provider.fulfillment_countries && provider.fulfillment_countries.length > 0 && (
                             <Badge variant="secondary" className="text-xs">
-                              Ships to {provider.fulfillment_countries.length} countries
+                              Ships to {provider.fulfillment_countries.length} {provider.fulfillment_countries.length === 1 ? 'country' : 'countries'}
                             </Badge>
                           )}
                         </div>
@@ -787,12 +817,12 @@ export default function AdminProducts() {
                               checked={selectedColorIds.has(color.id)}
                               onCheckedChange={() => toggleColor(color.id)}
                             />
-                            {color.hex && (
-                              <div 
-                                className="w-4 h-4 rounded-full border border-border flex-shrink-0"
-                                style={{ backgroundColor: color.hex }}
-                              />
-                            )}
+                            <div 
+                              className="w-4 h-4 rounded-full border border-border flex-shrink-0 flex items-center justify-center text-[8px] text-muted-foreground"
+                              style={color.hex ? { backgroundColor: color.hex } : { backgroundColor: 'var(--muted)' }}
+                            >
+                              {!color.hex && color.name?.charAt(0).toUpperCase()}
+                            </div>
                             <span className="text-sm truncate">{color.name}</span>
                           </label>
                         ))}
@@ -923,12 +953,12 @@ export default function AdminProducts() {
                             checked={selectedColorIds.has(color.id)}
                             onCheckedChange={() => toggleColor(color.id)}
                           />
-                          {color.hex && (
-                            <div 
-                              className="w-4 h-4 rounded-full border border-border flex-shrink-0"
-                              style={{ backgroundColor: color.hex }}
-                            />
-                          )}
+                          <div 
+                            className="w-4 h-4 rounded-full border border-border flex-shrink-0 flex items-center justify-center text-[8px] text-muted-foreground"
+                            style={color.hex ? { backgroundColor: color.hex } : { backgroundColor: 'var(--muted)' }}
+                          >
+                            {!color.hex && color.name?.charAt(0).toUpperCase()}
+                          </div>
                           <span className="text-sm truncate">{color.name}</span>
                         </label>
                       ))}
