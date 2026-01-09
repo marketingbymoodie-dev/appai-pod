@@ -151,6 +151,16 @@ The admin "Create Product" page includes a "Send to Store" button that creates d
 - Products with sizes AND colors create a variant for each combination
 - Products with only sizes (e.g., phone cases) create size-only variants
 - Each variant gets a SKU based on blueprint ID and size/color IDs
+- Shopify has a 100 variant limit per product
+
+**Variant Selection at Import**:
+- Merchants select which sizes and colors to include during Printify product import
+- A three-step wizard guides: select blueprint → select provider → select variants
+- Live variant count displayed (red if >100, green if ≤100)
+- Import blocked until count is ≤100 to enforce Shopify's limit
+- Selections stored in `selectedSizeIds` and `selectedColorIds` columns on productTypes table
+- "Edit Variants" button on products page allows updating selections after import
+- Backend uses saved selections when publishing to Shopify (not reconfigurable at publish time)
 
 ## Printify Integration
 
