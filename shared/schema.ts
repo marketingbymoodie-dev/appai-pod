@@ -5,6 +5,7 @@ import { z } from "zod";
 
 export * from "./models/auth";
 export * from "./models/chat";
+export * from "./colorUtils";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -85,6 +86,8 @@ export const designs = pgTable("designs", {
   transformScale: integer("transform_scale").notNull().default(100),
   transformX: integer("transform_x").notNull().default(50),
   transformY: integer("transform_y").notNull().default(50),
+  colorTier: text("color_tier"),
+  alternateImageUrl: text("alternate_image_url"),
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -292,6 +295,7 @@ export const STYLE_PRESETS = [
   
   // Apparel Artwork - Centered vector graphics for t-shirts, hoodies, etc.
   // Mask-friendly style: vector art, bold outlines, flat colors, no shadows/gradients/textures, hard edges
+  // Each apparel style has two prompt variants: one for light garments (dark designs) and one for dark garments (light designs)
   { id: "centered-graphic", name: "Centered Graphic", promptPrefix: "T-shirt graphic, vector style illustration, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting. Create a clean vector design of", category: "apparel" },
   { id: "vintage-logo", name: "Vintage Logo", promptPrefix: "T-shirt graphic, vintage logo style, vector illustration, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, distressed retro emblem. Create a vintage badge design of", category: "apparel" },
   { id: "minimalist-icon", name: "Minimalist Icon", promptPrefix: "T-shirt graphic, minimalist icon, vector style, bold clean outlines, flat solid vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, simple geometric shapes. Create a minimal icon of", category: "apparel" },
@@ -299,6 +303,17 @@ export const STYLE_PRESETS = [
   { id: "illustration-motif", name: "Illustrated Motif", promptPrefix: "T-shirt graphic, illustrated motif, vector art style, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, clean cartoon style. Create an illustrated design of", category: "apparel" },
   { id: "retro-badge", name: "Retro Badge", promptPrefix: "T-shirt graphic, retro badge design, vector style, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, circular or shield emblem. Create a retro badge of", category: "apparel" },
 ] as const;
+
+// Apparel prompt variants for dark garments (light/vibrant designs on dark background)
+export const APPAREL_DARK_TIER_PROMPTS: Record<string, string> = {
+  "centered-graphic": "T-shirt graphic, vector style illustration, bold outlines, bright vibrant colors including white and light tones (avoid dark and black colors in the design), high contrast, centered, isolated on plain dark charcoal gray background (#333333), no shadow, no texture, no gradient background, hard edges, flat lighting. Create a clean vector design of",
+  "vintage-logo": "T-shirt graphic, vintage logo style, vector illustration, bold outlines, bright vibrant colors including white and light tones (avoid dark and black colors in the design), high contrast, centered, isolated on plain dark charcoal gray background (#333333), no shadow, no texture, no gradient background, hard edges, flat lighting, distressed retro emblem. Create a vintage badge design of",
+  "minimalist-icon": "T-shirt graphic, minimalist icon, vector style, bold clean outlines, bright solid colors including white and light tones (avoid dark and black colors in the design), high contrast, centered, isolated on plain dark charcoal gray background (#333333), no shadow, no texture, no gradient background, hard edges, flat lighting, simple geometric shapes. Create a minimal icon of",
+  "typography": "T-shirt graphic, bold typography, vector lettering, bright solid colors including white and light tones (avoid dark and black colors in the design), high contrast, centered, isolated on plain dark charcoal gray background (#333333), no shadow, no texture, no gradient background, hard edges, flat lighting, clean type design. Create stylized text of",
+  "illustration-motif": "T-shirt graphic, illustrated motif, vector art style, bold outlines, bright vibrant colors including white and light tones (avoid dark and black colors in the design), high contrast, centered, isolated on plain dark charcoal gray background (#333333), no shadow, no texture, no gradient background, hard edges, flat lighting, clean cartoon style. Create an illustrated design of",
+  "retro-badge": "T-shirt graphic, retro badge design, vector style, bold outlines, bright vibrant colors including white and light tones (avoid dark and black colors in the design), high contrast, centered, isolated on plain dark charcoal gray background (#333333), no shadow, no texture, no gradient background, hard edges, flat lighting, circular or shield emblem. Create a retro badge of",
+  "none": "",
+};
 
 export type PrintSize = typeof PRINT_SIZES[number];
 export type FrameColor = typeof FRAME_COLORS[number];

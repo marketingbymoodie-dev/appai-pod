@@ -5,7 +5,7 @@ import sharp from "sharp";
 import { removeBackground } from "@imgly/background-removal-node";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
-import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
+import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { Modality } from "@google/genai";
 import { ai } from "./replit_integrations/image/client";
 import { registerShopifyRoutes } from "./shopify";
@@ -106,16 +106,18 @@ async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
     return resultBuffer;
   } catch (error) {
     console.error("ML background removal failed, falling back to pixel-based:", error);
-    // Fallback to simple white removal if ML fails
-    return removeWhiteBackgroundFallback(buffer);
+    // Fallback to pixel-based removal if ML fails
+    return removeBackgroundFallback(buffer, false);
   }
 }
 
 /**
- * Fallback: Simple pixel-based white background removal.
+ * Fallback: Simple pixel-based background removal.
  * Used when ML-based removal fails or for legacy compatibility.
+ * @param buffer - The image buffer to process
+ * @param isDarkBackground - Whether the background is dark (charcoal) instead of white
  */
-async function removeWhiteBackgroundFallback(buffer: Buffer): Promise<Buffer> {
+async function removeBackgroundFallback(buffer: Buffer, isDarkBackground: boolean = false): Promise<Buffer> {
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
     .raw()
@@ -126,7 +128,10 @@ async function removeWhiteBackgroundFallback(buffer: Buffer): Promise<Buffer> {
   const pixels = new Uint8Array(data);
   const totalPixels = width * height;
   
-  const LUMINANCE_THRESHOLD = 245;
+  // Thresholds for white background (luminance >= 245, low chroma)
+  // Thresholds for dark background (luminance <= 60, low chroma)
+  const LIGHT_LUMINANCE_THRESHOLD = 245;
+  const DARK_LUMINANCE_THRESHOLD = 60;
   const MAX_CHROMA = 8;
   
   let pixelsRemoved = 0;
@@ -145,13 +150,17 @@ async function removeWhiteBackgroundFallback(buffer: Buffer): Promise<Buffer> {
     const minRGB = Math.min(r, g, b);
     const chromaDistance = maxRGB - minRGB;
     
-    if (luminance >= LUMINANCE_THRESHOLD && chromaDistance <= MAX_CHROMA) {
+    const shouldRemove = isDarkBackground
+      ? (luminance <= DARK_LUMINANCE_THRESHOLD && chromaDistance <= MAX_CHROMA)
+      : (luminance >= LIGHT_LUMINANCE_THRESHOLD && chromaDistance <= MAX_CHROMA);
+    
+    if (shouldRemove) {
       pixels[idx + 3] = 0;
       pixelsRemoved++;
     }
   }
   
-  console.log(`Fallback background removal: removed ${pixelsRemoved} pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}%)`);
+  console.log(`Fallback background removal (${isDarkBackground ? 'dark' : 'light'}): removed ${pixelsRemoved} pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}%)`);
   
   return sharp(Buffer.from(pixels), {
     raw: { width, height, channels: 4 }
@@ -163,10 +172,11 @@ async function removeWhiteBackgroundFallback(buffer: Buffer): Promise<Buffer> {
 interface SaveImageOptions {
   isApparel?: boolean;
   targetDims?: TargetDimensions;
+  colorTier?: ColorTier;
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, targetDims } = options || {};
+  const { isApparel = false, targetDims, colorTier } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -566,26 +576,67 @@ export async function registerRoutes(
         }
       }
 
-      // Apply style prompt prefix if available
-      let fullPrompt = stylePromptPrefix 
-        ? `${stylePromptPrefix} ${prompt}` 
-        : prompt;
+      // Determine color tier for apparel products
+      let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
+      
+      if (isApparel && frameColor) {
+        // Look up the color's hex value from product type's frameColors
+        let colorHex = "#f5f5f5"; // Default to white/light
+        
+        if (productType) {
+          const frameColors = JSON.parse(productType.frameColors || "[]");
+          const selectedColor = frameColors.find((c: { id: string; hex: string }) => c.id === frameColor);
+          if (selectedColor?.hex) {
+            colorHex = selectedColor.hex;
+          }
+        } else {
+          // Fall back to FRAME_COLORS for framed prints
+          const selectedColor = FRAME_COLORS.find(c => c.id === frameColor);
+          if (selectedColor?.hex) {
+            colorHex = selectedColor.hex;
+          }
+        }
+        
+        colorTier = getColorTier(colorHex);
+        console.log(`[Generate] Apparel color tier: ${colorTier} (color: ${frameColor}, hex: ${colorHex})`);
+      }
+
+      // Apply style prompt prefix - use dark tier variant for apparel on dark colors
+      let fullPrompt: string;
+      
+      if (isApparel && colorTier === "dark" && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
+        // Use dark tier prompt for dark apparel (light designs on dark background)
+        const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+        fullPrompt = darkTierPrompt ? `${darkTierPrompt} ${prompt}` : prompt;
+        console.log(`[Generate] Using dark tier prompt for ${stylePreset}`);
+      } else {
+        fullPrompt = stylePromptPrefix 
+          ? `${stylePromptPrefix} ${prompt}` 
+          : prompt;
+      }
 
       // Different requirements for apparel vs wall art
       let sizingRequirements: string;
       
       if (isApparel) {
-        // Apparel needs centered isolated designs with solid white backgrounds (for easy removal)
+        // Apparel needs centered isolated designs with contrasting backgrounds (for easy removal)
+        const isDarkTier = colorTier === "dark";
+        const bgColor = isDarkTier ? "DARK CHARCOAL GRAY (#333333)" : "PURE WHITE (#FFFFFF)";
+        const designColors = isDarkTier 
+          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark and black colors in the design."
+          : "VIBRANT colors. AVOID white and light colors in the design.";
+        
         sizingRequirements = `
 
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID WHITE BACKGROUND: The design MUST be on a PURE WHITE (#FFFFFF) background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The white background can be easily removed for printing.
-3. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
-4. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
-5. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the white background.
-6. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic on white that can be printed on fabric of any color.
-7. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+2. SOLID ${bgColor} BACKGROUND: The design MUST be on a ${bgColor} background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The solid background can be easily removed for printing.
+3. DESIGN COLORS: Use ${designColors}
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
+7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
+8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
 `;
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -659,7 +710,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { 
+          isApparel, 
+          targetDims,
+          colorTier: isApparel ? colorTier : undefined
+        });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
@@ -678,6 +733,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         size,
         frameColor: frameColor || "black",
         aspectRatio: aspectRatioStr,
+        colorTier: isApparel ? colorTier : null,
         status: "completed",
       });
 
