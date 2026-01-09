@@ -10,9 +10,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
+
+interface VariantOption {
+  id: string;
+  name: string;
+  hex?: string;
+  width?: number;
+  height?: number;
+}
 
 interface PrintifyBlueprint {
   id: number;
@@ -49,6 +58,18 @@ export default function AdminProducts() {
   const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
   const [blueprintLocationData, setBlueprintLocationData] = useState<Record<number, string[]>>({});
   const [locationDataLoading, setLocationDataLoading] = useState(false);
+  
+  // Variant selection step
+  const [variantSelectionOpen, setVariantSelectionOpen] = useState(false);
+  const [availableSizes, setAvailableSizes] = useState<VariantOption[]>([]);
+  const [availableColors, setAvailableColors] = useState<VariantOption[]>([]);
+  const [selectedSizeIds, setSelectedSizeIds] = useState<Set<string>>(new Set());
+  const [selectedColorIds, setSelectedColorIds] = useState<Set<string>>(new Set());
+  const [variantDataLoading, setVariantDataLoading] = useState(false);
+  
+  // Edit variants for existing product
+  const [editVariantsOpen, setEditVariantsOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -104,8 +125,24 @@ export default function AdminProducts() {
     return Array.from(countries).sort();
   }, [allProviders]);
 
+  // Calculate variant count based on selections
+  const variantCount = useMemo(() => {
+    const sizeCount = selectedSizeIds.size || 1;
+    const colorCount = selectedColorIds.size || (availableColors.length === 0 ? 1 : 0);
+    return sizeCount * (colorCount || 1);
+  }, [selectedSizeIds.size, selectedColorIds.size, availableColors.length]);
+  
+  const isVariantCountValid = variantCount <= 100 && variantCount > 0;
+
   const importPrintifyMutation = useMutation({
-    mutationFn: async (data: { blueprintId: number; name: string; description?: string; providerId?: number }) => {
+    mutationFn: async (data: { 
+      blueprintId: number; 
+      name: string; 
+      description?: string; 
+      providerId?: number;
+      selectedSizeIds?: string[];
+      selectedColorIds?: string[];
+    }) => {
       const response = await apiRequest("POST", "/api/admin/printify/import", data);
       return response.json();
     },
@@ -113,8 +150,13 @@ export default function AdminProducts() {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       setPrintifyImportOpen(false);
       setProviderSelectionOpen(false);
+      setVariantSelectionOpen(false);
       setSelectedBlueprint(null);
       setSelectedProvider(null);
+      setSelectedSizeIds(new Set());
+      setSelectedColorIds(new Set());
+      setAvailableSizes([]);
+      setAvailableColors([]);
       setBlueprintSearch("");
       toast({ title: "Blueprint imported", description: "Product type created from Printify catalog." });
       
@@ -131,6 +173,27 @@ export default function AdminProducts() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to import blueprint", description: error.message, variant: "destructive" });
+    },
+  });
+  
+  const updateVariantsMutation = useMutation({
+    mutationFn: async (data: { productTypeId: number; selectedSizeIds: string[]; selectedColorIds: string[] }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.productTypeId}/variants`, {
+        selectedSizeIds: data.selectedSizeIds,
+        selectedColorIds: data.selectedColorIds,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      setEditVariantsOpen(false);
+      setEditingProduct(null);
+      setSelectedSizeIds(new Set());
+      setSelectedColorIds(new Set());
+      toast({ title: "Variants updated", description: "Selected variants have been saved." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update variants", description: error.message, variant: "destructive" });
     },
   });
 
@@ -235,13 +298,103 @@ export default function AdminProducts() {
     );
   }, [printifyProviders, providerLocationFilter]);
 
+  // Load variant data for the selected blueprint/provider
+  const loadVariantData = async () => {
+    if (!selectedBlueprint) return;
+    
+    setVariantDataLoading(true);
+    try {
+      const url = selectedProvider 
+        ? `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`
+        : `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants`;
+      
+      const response = await fetch(url, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch variants");
+      
+      const data = await response.json();
+      setAvailableSizes(data.sizes || []);
+      setAvailableColors(data.colors || []);
+      
+      // Select all by default
+      setSelectedSizeIds(new Set(data.sizes?.map((s: VariantOption) => s.id) || []));
+      setSelectedColorIds(new Set(data.colors?.map((c: VariantOption) => c.id) || []));
+    } catch (e) {
+      console.error("Failed to load variant data:", e);
+      toast({ title: "Failed to load variants", variant: "destructive" });
+    } finally {
+      setVariantDataLoading(false);
+    }
+  };
+  
+  const handleProceedToVariants = async () => {
+    setProviderSelectionOpen(false);
+    setVariantSelectionOpen(true);
+    await loadVariantData();
+  };
+
   const handleImportBlueprint = async () => {
     if (!selectedBlueprint) return;
+    if (!isVariantCountValid) return;
+    
     importPrintifyMutation.mutate({
       blueprintId: selectedBlueprint.id,
       name: selectedBlueprint.title,
       description: selectedBlueprint.description,
       providerId: selectedProvider?.id,
+      selectedSizeIds: Array.from(selectedSizeIds),
+      selectedColorIds: Array.from(selectedColorIds),
+    });
+  };
+  
+  const toggleSize = (sizeId: string) => {
+    setSelectedSizeIds(prev => {
+      const next = new Set(prev);
+      if (next.has(sizeId)) {
+        next.delete(sizeId);
+      } else {
+        next.add(sizeId);
+      }
+      return next;
+    });
+  };
+  
+  const toggleColor = (colorId: string) => {
+    setSelectedColorIds(prev => {
+      const next = new Set(prev);
+      if (next.has(colorId)) {
+        next.delete(colorId);
+      } else {
+        next.add(colorId);
+      }
+      return next;
+    });
+  };
+  
+  const handleEditVariants = (product: ProductType) => {
+    setEditingProduct(product);
+    
+    // Parse existing selections
+    const sizes = typeof product.sizes === 'string' ? JSON.parse(product.sizes || "[]") : product.sizes || [];
+    const colors = typeof product.frameColors === 'string' ? JSON.parse(product.frameColors || "[]") : product.frameColors || [];
+    const savedSizeIds = typeof product.selectedSizeIds === 'string' ? JSON.parse(product.selectedSizeIds || "[]") : product.selectedSizeIds || [];
+    const savedColorIds = typeof product.selectedColorIds === 'string' ? JSON.parse(product.selectedColorIds || "[]") : product.selectedColorIds || [];
+    
+    setAvailableSizes(sizes);
+    setAvailableColors(colors);
+    
+    // If no saved selection, select all
+    setSelectedSizeIds(new Set(savedSizeIds.length > 0 ? savedSizeIds : sizes.map((s: VariantOption) => s.id)));
+    setSelectedColorIds(new Set(savedColorIds.length > 0 ? savedColorIds : colors.map((c: VariantOption) => c.id)));
+    
+    setEditVariantsOpen(true);
+  };
+  
+  const handleSaveVariants = () => {
+    if (!editingProduct) return;
+    updateVariantsMutation.mutate({
+      productTypeId: editingProduct.id,
+      selectedSizeIds: Array.from(selectedSizeIds),
+      selectedColorIds: Array.from(selectedColorIds),
     });
   };
 
@@ -333,7 +486,7 @@ export default function AdminProducts() {
                       <div>Sizes: {JSON.parse(pt.sizes || "[]").length}</div>
                       <div>Colors: {JSON.parse(pt.frameColors || "[]").length}</div>
                     </div>
-                    <div className="flex gap-2 mt-4">
+                    <div className="flex gap-2 mt-4 flex-wrap">
                       <Button 
                         variant="outline" 
                         size="sm"
@@ -341,6 +494,15 @@ export default function AdminProducts() {
                         data-testid={`button-test-${pt.id}`}
                       >
                         Test Generator
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => handleEditVariants(pt)}
+                        data-testid={`button-edit-variants-${pt.id}`}
+                      >
+                        <Settings className="h-3 w-3 mr-1" />
+                        Variants
                       </Button>
                       <Button 
                         variant="ghost" 
@@ -504,13 +666,289 @@ export default function AdminProducts() {
                   Cancel
                 </Button>
                 <Button 
+                  onClick={handleProceedToVariants}
+                  disabled={!selectedBlueprint}
+                >
+                  Select Variants
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Variant Selection Dialog */}
+        <Dialog open={variantSelectionOpen} onOpenChange={setVariantSelectionOpen}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Select Variants</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              {selectedBlueprint && (
+                <div className="p-3 bg-muted rounded-lg">
+                  <p className="font-medium">{selectedBlueprint.title}</p>
+                  {selectedProvider && (
+                    <p className="text-sm text-muted-foreground">{selectedProvider.title}</p>
+                  )}
+                </div>
+              )}
+              
+              {/* Variant Count Display */}
+              <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                <span className="text-sm font-medium">Total Variants:</span>
+                <span className={`text-lg font-bold ${isVariantCountValid ? 'text-green-600' : 'text-red-600'}`}>
+                  {variantCount}
+                </span>
+              </div>
+              
+              {!isVariantCountValid && (
+                <p className="text-sm text-red-600">
+                  Shopify allows maximum 100 variants. Deselect some options to continue.
+                </p>
+              )}
+              
+              {variantDataLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* Sizes Section */}
+                  {availableSizes.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm font-medium">Sizes ({selectedSizeIds.size}/{availableSizes.length})</Label>
+                        <div className="flex gap-2">
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => setSelectedSizeIds(new Set(availableSizes.map(s => s.id)))}
+                          >
+                            Select all
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => setSelectedSizeIds(new Set())}
+                          >
+                            Clear all
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                        {availableSizes.map((size) => (
+                          <label 
+                            key={size.id}
+                            htmlFor={`size-${size.id}`}
+                            className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                          >
+                            <Checkbox 
+                              id={`size-${size.id}`}
+                              checked={selectedSizeIds.has(size.id)}
+                              onCheckedChange={() => toggleSize(size.id)}
+                            />
+                            <span className="text-sm">{size.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Colors Section */}
+                  {availableColors.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm font-medium">Colors ({selectedColorIds.size}/{availableColors.length})</Label>
+                        <div className="flex gap-2">
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => setSelectedColorIds(new Set(availableColors.map(c => c.id)))}
+                          >
+                            Select all
+                          </Button>
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => setSelectedColorIds(new Set())}
+                          >
+                            Clear all
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                        {availableColors.map((color) => (
+                          <label 
+                            key={color.id}
+                            htmlFor={`color-${color.id}`}
+                            className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                          >
+                            <Checkbox 
+                              id={`color-${color.id}`}
+                              checked={selectedColorIds.has(color.id)}
+                              onCheckedChange={() => toggleColor(color.id)}
+                            />
+                            {color.hex && (
+                              <div 
+                                className="w-4 h-4 rounded-full border border-border flex-shrink-0"
+                                style={{ backgroundColor: color.hex }}
+                              />
+                            )}
+                            <span className="text-sm truncate">{color.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setVariantSelectionOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
                   onClick={handleImportBlueprint}
-                  disabled={!selectedBlueprint || importPrintifyMutation.isPending}
+                  disabled={!isVariantCountValid || importPrintifyMutation.isPending}
                 >
                   {importPrintifyMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   ) : null}
                   Import Product
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Edit Variants Dialog */}
+        <Dialog open={editVariantsOpen} onOpenChange={setEditVariantsOpen}>
+          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Variants</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              {editingProduct && (
+                <div className="p-3 bg-muted rounded-lg">
+                  <p className="font-medium">{editingProduct.name}</p>
+                </div>
+              )}
+              
+              {/* Variant Count Display */}
+              <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                <span className="text-sm font-medium">Total Variants:</span>
+                <span className={`text-lg font-bold ${isVariantCountValid ? 'text-green-600' : 'text-red-600'}`}>
+                  {variantCount}
+                </span>
+              </div>
+              
+              {!isVariantCountValid && (
+                <p className="text-sm text-red-600">
+                  Shopify allows maximum 100 variants. Deselect some options to continue.
+                </p>
+              )}
+              
+              <div className="space-y-6">
+                {/* Sizes Section */}
+                {availableSizes.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium">Sizes ({selectedSizeIds.size}/{availableSizes.length})</Label>
+                      <div className="flex gap-2">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setSelectedSizeIds(new Set(availableSizes.map(s => s.id)))}
+                        >
+                          Select all
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setSelectedSizeIds(new Set())}
+                        >
+                          Clear all
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                      {availableSizes.map((size) => (
+                        <label 
+                          key={size.id}
+                          htmlFor={`edit-size-${size.id}`}
+                          className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                        >
+                          <Checkbox 
+                            id={`edit-size-${size.id}`}
+                            checked={selectedSizeIds.has(size.id)}
+                            onCheckedChange={() => toggleSize(size.id)}
+                          />
+                          <span className="text-sm">{size.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Colors Section */}
+                {availableColors.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium">Colors ({selectedColorIds.size}/{availableColors.length})</Label>
+                      <div className="flex gap-2">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setSelectedColorIds(new Set(availableColors.map(c => c.id)))}
+                        >
+                          Select all
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => setSelectedColorIds(new Set())}
+                        >
+                          Clear all
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                      {availableColors.map((color) => (
+                        <label 
+                          key={color.id}
+                          htmlFor={`edit-color-${color.id}`}
+                          className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                        >
+                          <Checkbox 
+                            id={`edit-color-${color.id}`}
+                            checked={selectedColorIds.has(color.id)}
+                            onCheckedChange={() => toggleColor(color.id)}
+                          />
+                          {color.hex && (
+                            <div 
+                              className="w-4 h-4 rounded-full border border-border flex-shrink-0"
+                              style={{ backgroundColor: color.hex }}
+                            />
+                          )}
+                          <span className="text-sm truncate">{color.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setEditVariantsOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleSaveVariants}
+                  disabled={!isVariantCountValid || updateVariantsMutation.isPending}
+                >
+                  {updateVariantsMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : null}
+                  Save Variants
                 </Button>
               </div>
             </div>

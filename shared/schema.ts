@@ -224,6 +224,8 @@ export const productTypes = pgTable("product_types", {
   sizes: text("sizes").notNull().default("[]"),
   frameColors: text("frame_colors").notNull().default("[]"),
   variantMap: text("variant_map").notNull().default("{}"),
+  selectedSizeIds: text("selected_size_ids").notNull().default("[]"),
+  selectedColorIds: text("selected_color_ids").notNull().default("[]"),
   aspectRatio: text("aspect_ratio").notNull().default("3:4"),
   printShape: text("print_shape").notNull().default("rectangle"),
   printAreaWidth: integer("print_area_width"),

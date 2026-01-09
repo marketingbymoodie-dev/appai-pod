@@ -1409,10 +1409,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
 
       // Parse product type data
-      const sizes = typeof productType.sizes === 'string' 
+      const allSizes = typeof productType.sizes === 'string' 
         ? JSON.parse(productType.sizes) 
         : productType.sizes || [];
-      const frameColors = typeof productType.frameColors === 'string' 
+      const allColors = typeof productType.frameColors === 'string' 
         ? JSON.parse(productType.frameColors) 
         : productType.frameColors || [];
       const baseMockupImages = typeof productType.baseMockupImages === 'string'
@@ -1421,6 +1421,14 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const variantMap = typeof productType.variantMap === 'string'
         ? JSON.parse(productType.variantMap)
         : productType.variantMap || {};
+      
+      // Parse saved variant selections from product type
+      const savedSizeIds: string[] = typeof productType.selectedSizeIds === 'string'
+        ? JSON.parse(productType.selectedSizeIds || "[]")
+        : productType.selectedSizeIds || [];
+      const savedColorIds: string[] = typeof productType.selectedColorIds === 'string'
+        ? JSON.parse(productType.selectedColorIds || "[]")
+        : productType.selectedColorIds || [];
 
       // Build variants for Shopify
       // For products with both sizes and colors, create a variant for each combination
@@ -1434,14 +1442,21 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         inventory_policy: string;
       }> = [];
 
-      // Filter colors if selectedColorIds is provided
-      const colorsToUse = frameColors.length > 0 && Array.isArray(selectedColorIds) && selectedColorIds.length > 0
-        ? frameColors.filter((c: { id: string }) => selectedColorIds.includes(c.id))
-        : frameColors;
+      // Use saved selections if available, otherwise use request params or all available
+      const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: { id: string }) => s.id);
+      const colorIdsToUse = selectedColorIds && selectedColorIds.length > 0 
+        ? selectedColorIds 
+        : savedColorIds.length > 0 
+          ? savedColorIds 
+          : allColors.map((c: { id: string }) => c.id);
+
+      // Filter sizes and colors based on selections
+      const sizesToUse = allSizes.filter((s: { id: string }) => sizeIdsToUse.includes(s.id));
+      const colorsToUse = allColors.filter((c: { id: string }) => colorIdsToUse.includes(c.id));
 
       if (colorsToUse.length > 0) {
         // Product has both sizes and colors
-        for (const size of sizes) {
+        for (const size of sizesToUse) {
           for (const color of colorsToUse) {
             const variantKey = `${size.id}:${color.id}`;
             if (variantMap[variantKey]) {
@@ -1456,9 +1471,9 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
             }
           }
         }
-      } else if (frameColors.length === 0) {
+      } else if (allColors.length === 0) {
         // Product has only sizes (e.g., phone cases)
-        for (const size of sizes) {
+        for (const size of sizesToUse) {
           const variantKey = `${size.id}:default`;
           if (variantMap[variantKey]) {
             shopifyVariants.push({
@@ -1491,14 +1506,14 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Build product options
       const productOptions: Array<{ name: string; values: string[] }> = [];
       
-      if (sizes.length > 0) {
+      if (allSizes.length > 0) {
         productOptions.push({
           name: "Size",
           values: Array.from(new Set(shopifyVariants.map(v => v.option1))),
         });
       }
       
-      if (frameColors.length > 0) {
+      if (allColors.length > 0) {
         productOptions.push({
           name: "Color",
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
@@ -3533,11 +3548,223 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Fetch parsed variant options (sizes/colors) for import wizard
+  app.get("/api/admin/printify/blueprints/:blueprintId/variants", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { blueprintId } = req.params;
+      const { providerId } = req.query;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant || !merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      // Get providers if no providerId specified
+      let actualProviderId = providerId;
+      if (!actualProviderId) {
+        const providersResponse = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+          {
+            headers: {
+              "Authorization": `Bearer ${merchant.printifyApiToken}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+        if (providersResponse.ok) {
+          const providers = await providersResponse.json();
+          if (providers && providers.length > 0) {
+            actualProviderId = providers[0].id;
+          }
+        }
+      }
+
+      if (!actualProviderId) {
+        return res.status(400).json({ error: "No provider available for this blueprint" });
+      }
+
+      const response = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${actualProviderId}/variants.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const variantsData = await response.json();
+      const variants = variantsData.variants || variantsData || [];
+      
+      // Parse variants to extract sizes and colors (simplified version of import logic)
+      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
+      const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
+      
+      const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
+      const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
+      const namedSizes = ["small", "medium", "large", "extra large", "king", "queen", "twin", "full", "one size"];
+      
+      const looksLikeSize = (str: string): boolean => {
+        const lower = str.toLowerCase().trim();
+        if (lower.match(/^\d+[""']?\s*[xX×]\s*\d+[""']?$/)) return true;
+        if (apparelSizesLower.includes(lower)) return true;
+        if (namedSizes.includes(lower)) return true;
+        if (lower.match(/^\d+\s*oz$/i)) return true;
+        if (lower.match(/^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i)) return true;
+        if (lower.match(/^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i)) return true;
+        if (lower.match(/^pixel\s+(\d|fold|pro)/i)) return true;
+        if (lower.match(/^(youth|kid'?s?|toddler|infant|baby)\s/i)) return true;
+        return false;
+      };
+      
+      for (const variant of variants) {
+        const title = variant.title || "";
+        const options = variant.options || {};
+        
+        const normalizedTitle = title
+          .replace(/[″″‶‴]/g, '"')
+          .replace(/[′′‵]/g, "'")
+          .replace(/[""]/g, '"')
+          .replace(/['']/g, "'");
+        
+        let extractedSizeId = "";
+        
+        // Try dimensional sizes
+        const dimMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
+        if (dimMatch) {
+          const width = parseInt(dimMatch[1]);
+          const height = parseInt(dimMatch[2]);
+          extractedSizeId = `${width}x${height}`;
+          const sizeName = `${width}" x ${height}"`;
+          if (!sizesMap.has(extractedSizeId)) {
+            sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeName, width, height });
+          }
+        }
+        
+        // Check options for size
+        if (!extractedSizeId && (options.size || options.Size)) {
+          const sizeVal = options.size || options.Size;
+          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          if (!sizesMap.has(extractedSizeId)) {
+            sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
+          }
+        }
+        
+        // Try title parts
+        if (!extractedSizeId && title && title.includes("/")) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          for (const part of parts) {
+            const volumeMatch = part.match(/^(\d+)\s*oz$/i);
+            if (volumeMatch) {
+              extractedSizeId = `${volumeMatch[1]}oz`;
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: `${volumeMatch[1]}oz`, width: 0, height: 0 });
+              }
+              break;
+            }
+            if (apparelSizesLower.includes(part.toLowerCase())) {
+              extractedSizeId = part.toLowerCase();
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
+              }
+              break;
+            }
+          }
+        }
+        
+        // Extract color
+        let colorName = "";
+        if (options.color || options.colour || options.Color || options.Colour || options.frame_color) {
+          colorName = options.color || options.colour || options.Color || options.Colour || options.frame_color;
+        } else if (title.includes("/")) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          for (let i = parts.length - 1; i >= 0; i--) {
+            if (!looksLikeSize(parts[i])) {
+              colorName = parts[i];
+              break;
+            }
+          }
+        }
+        
+        if (colorName && !colorsMap.has(colorName.toLowerCase())) {
+          const colorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          const colorHexMap: Record<string, string> = {
+            "black": "#1a1a1a", "white": "#f5f5f5", "red": "#C41E3A", "blue": "#2563EB",
+            "navy": "#1B2838", "green": "#22C55E", "yellow": "#FACC15", "orange": "#F97316",
+            "pink": "#EC4899", "purple": "#A855F7", "gray": "#9E9E9E", "grey": "#9E9E9E",
+            "brown": "#795548", "beige": "#F5F5DC", "cream": "#FFFDD0", "tan": "#D2B48C"
+          };
+          const hex = colorHexMap[colorName.toLowerCase()] || "#888888";
+          colorsMap.set(colorName.toLowerCase(), { id: colorId, name: colorName, hex });
+        }
+      }
+
+      res.json({
+        sizes: Array.from(sizesMap.values()),
+        colors: Array.from(colorsMap.values())
+      });
+    } catch (error) {
+      console.error("Error fetching variant options:", error);
+      res.status(500).json({ error: "Failed to fetch variant options" });
+    }
+  });
+
+  // Update variant selection for a product type
+  app.patch("/api/admin/product-types/:id/variants", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+      const { selectedSizeIds, selectedColorIds } = req.body;
+      
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Verify merchant ownership
+      if (productType.merchantId && productType.merchantId !== merchant.id) {
+        return res.status(403).json({ error: "Not authorized to modify this product" });
+      }
+
+      // Validate variant count
+      const sizeCount = Array.isArray(selectedSizeIds) ? selectedSizeIds.length : 0;
+      const colorCount = Array.isArray(selectedColorIds) ? selectedColorIds.length : 0;
+      const totalVariants = sizeCount * (colorCount || 1);
+      
+      if (totalVariants > 100) {
+        return res.status(400).json({ 
+          error: "Too many variants",
+          details: `Selected options would create ${totalVariants} variants. Maximum is 100.`
+        });
+      }
+
+      const updated = await storage.updateProductType(productTypeId, {
+        selectedSizeIds: JSON.stringify(selectedSizeIds || []),
+        selectedColorIds: JSON.stringify(selectedColorIds || []),
+      });
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Error updating variant selection:", error);
+      res.status(500).json({ error: "Failed to update variant selection" });
+    }
+  });
+
   // Import a Printify blueprint as a product type
   app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { blueprintId, name, description } = req.body;
+      const { blueprintId, name, description, selectedSizeIds, selectedColorIds } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant) {
@@ -4141,6 +4368,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
         variantMap: JSON.stringify(variantMap),
+        selectedSizeIds: JSON.stringify(selectedSizeIds || sizes.map((s: { id: string }) => s.id)),
+        selectedColorIds: JSON.stringify(selectedColorIds || frameColors.map((c: { id: string }) => c.id)),
         aspectRatio,
         printShape,
         printAreaWidth: maxWidth || null,
