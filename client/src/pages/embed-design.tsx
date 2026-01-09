@@ -5,7 +5,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2 } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2, Upload, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   MockupPreview,
@@ -82,6 +83,12 @@ export default function EmbedDesign() {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
+  const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [designSource, setDesignSource] = useState<"ai" | "upload" | "kittl">("ai");
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+  const customUploadInputRef = useRef<HTMLInputElement>(null);
   
   const { toast } = useToast();
 
@@ -321,6 +328,113 @@ export default function EmbedDesign() {
       sessionToken: isShopify ? sessionToken || undefined : undefined,
       productTypeId: productTypeId,
     });
+    setDesignSource("ai");
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>, source: "upload" | "kittl") => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    setImportError(null);
+
+    try {
+      // Check file type (SVG not supported for security reasons)
+      const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+      if (!allowedTypes.includes(file.type)) {
+        throw new Error("Please upload a PNG, JPG, or WebP image.");
+      }
+
+      // Check file size (max 10MB)
+      const MAX_SIZE = 10 * 1024 * 1024;
+      if (file.size > MAX_SIZE) {
+        throw new Error("File too large. Maximum size is 10MB.");
+      }
+
+      // Step 1: Get presigned upload URL
+      const uploadUrlResponse = await fetch("/api/uploads/request-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: file.name,
+          size: file.size,
+          contentType: file.type,
+        }),
+      });
+
+      if (!uploadUrlResponse.ok) {
+        throw new Error("Failed to get upload URL");
+      }
+
+      const { uploadURL, objectPath } = await uploadUrlResponse.json();
+
+      // Step 2: Upload the file directly to storage
+      const uploadResponse = await fetch(uploadURL, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Failed to upload file");
+      }
+
+      // Step 3: Validate and get image metadata
+      const importResponse = await fetch("/api/designs/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: objectPath,
+          source,
+          name: file.name,
+        }),
+      });
+
+      if (!importResponse.ok) {
+        const data = await importResponse.json();
+        throw new Error(data.error || "Failed to import design");
+      }
+
+      const importData = await importResponse.json();
+
+      // Step 4: Set the imported design as the current design
+      setGeneratedDesign({
+        id: crypto.randomUUID(),
+        imageUrl: importData.imageUrl,
+        prompt: source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`,
+      });
+      setPrompt(source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`);
+      setDesignSource(source);
+      
+      // Use conditional default zoom (135% for apparel, 100% for others)
+      const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
+      setTransform({ scale: zoomDefault, x: 50, y: 50 });
+
+      toast({
+        title: "Design imported!",
+        description: "Your design is now ready to preview on the product.",
+      });
+
+      // Switch back to generate tab to show the mockup
+      setActiveTab("generate");
+    } catch (error: any) {
+      console.error("Import error:", error);
+      setImportError(error.message || "Failed to import design");
+      toast({
+        variant: "destructive",
+        title: "Import failed",
+        description: error.message || "Failed to import design. Please try again.",
+      });
+    } finally {
+      setIsImporting(false);
+      // Reset file inputs
+      if (importFileInputRef.current) {
+        importFileInputRef.current.value = "";
+      }
+      if (customUploadInputRef.current) {
+        customUploadInputRef.current.value = "";
+      }
+    }
   };
 
   const [variants, setVariants] = useState<any[]>([]);
@@ -587,109 +701,234 @@ export default function EmbedDesign() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="prompt" data-testid="label-prompt">
-                Describe your artwork
-              </Label>
-              <Textarea
-                id="prompt"
-                data-testid="input-prompt"
-                placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                className="min-h-[80px]"
-              />
-            </div>
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "generate" | "import")}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="generate" data-testid="tab-generate">
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  AI Generate
+                </TabsTrigger>
+                <TabsTrigger value="import" data-testid="tab-import">
+                  <Upload className="w-4 h-4 mr-2" />
+                  Import Design
+                </TabsTrigger>
+              </TabsList>
 
-            <div className="space-y-2">
-              <Label data-testid="label-reference">Reference Image (optional)</Label>
-              <div className="flex items-center gap-4 flex-wrap">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleFileChange}
-                  className="hidden"
-                  data-testid="input-reference-file"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => fileInputRef.current?.click()}
-                  data-testid="button-upload-reference"
-                >
-                  <ImagePlus className="w-4 h-4 mr-2" />
-                  Upload
-                </Button>
-                {referencePreview && (
-                  <div className="relative">
-                    <img
-                      src={referencePreview}
-                      alt="Reference"
-                      className="w-12 h-12 object-cover rounded-md"
-                      data-testid="img-reference-preview"
+              <TabsContent value="generate" className="space-y-4 mt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="prompt" data-testid="label-prompt">
+                    Describe your artwork
+                  </Label>
+                  <Textarea
+                    id="prompt"
+                    data-testid="input-prompt"
+                    placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    className="min-h-[80px]"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label data-testid="label-reference">Reference Image (optional)</Label>
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileChange}
+                      className="hidden"
+                      data-testid="input-reference-file"
                     />
                     <Button
                       type="button"
-                      variant="destructive"
-                      size="icon"
-                      className="absolute -top-2 -right-2 w-5 h-5"
-                      onClick={clearReferenceImage}
-                      data-testid="button-clear-reference"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => fileInputRef.current?.click()}
+                      data-testid="button-upload-reference"
                     >
-                      <X className="w-3 h-3" />
+                      <ImagePlus className="w-4 h-4 mr-2" />
+                      Upload
                     </Button>
+                    {referencePreview && (
+                      <div className="relative">
+                        <img
+                          src={referencePreview}
+                          alt="Reference"
+                          className="w-12 h-12 object-cover rounded-md"
+                          data-testid="img-reference-preview"
+                        />
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="icon"
+                          className="absolute -top-2 -right-2 w-5 h-5"
+                          onClick={clearReferenceImage}
+                          data-testid="button-clear-reference"
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
+                </div>
+
+                {showPresetsParam && stylePresets.length > 0 && (
+                  <StyleSelector
+                    stylePresets={[{ id: "none", name: "None", promptSuffix: "" }, ...stylePresets]}
+                    selectedStyle={selectedPreset}
+                    onStyleChange={setSelectedPreset}
+                  />
                 )}
-              </div>
-            </div>
 
-            {showPresetsParam && stylePresets.length > 0 && (
-              <StyleSelector
-                stylePresets={[{ id: "none", name: "None", promptSuffix: "" }, ...stylePresets]}
-                selectedStyle={selectedPreset}
-                onStyleChange={setSelectedPreset}
-              />
-            )}
+                {printSizes.length > 0 && (
+                  <SizeSelector
+                    sizes={printSizes}
+                    selectedSize={selectedSize}
+                    onSizeChange={(sizeId) => {
+                      setSelectedSize(sizeId);
+                      setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                    }}
+                  />
+                )}
 
-            {printSizes.length > 0 && (
-              <SizeSelector
-                sizes={printSizes}
-                selectedSize={selectedSize}
-                onSizeChange={(sizeId) => {
-                  setSelectedSize(sizeId);
-                  setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                }}
-              />
-            )}
+                {frameColorObjects.length > 0 && (
+                  <FrameColorSelector
+                    frameColors={frameColorObjects}
+                    selectedFrameColor={selectedFrameColor}
+                    onFrameColorChange={setSelectedFrameColor}
+                  />
+                )}
 
-            {frameColorObjects.length > 0 && (
-              <FrameColorSelector
-                frameColors={frameColorObjects}
-                selectedFrameColor={selectedFrameColor}
-                onFrameColorChange={setSelectedFrameColor}
-              />
-            )}
+                <Button
+                  onClick={handleGenerate}
+                  disabled={!prompt.trim() || generateMutation.isPending || !isLoggedIn || credits <= 0}
+                  className="w-full"
+                  data-testid="button-generate"
+                >
+                  {generateMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 mr-2" />
+                      Generate (1 Credit)
+                    </>
+                  )}
+                </Button>
+              </TabsContent>
 
-            <Button
-              onClick={handleGenerate}
-              disabled={!prompt.trim() || generateMutation.isPending || !isLoggedIn || credits <= 0}
-              className="w-full"
-              data-testid="button-generate"
-            >
-              {generateMutation.isPending ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4 mr-2" />
-                  Generate (1 Credit)
-                </>
-              )}
-            </Button>
+              <TabsContent value="import" className="space-y-4 mt-4">
+                <Card>
+                  <CardContent className="pt-6 space-y-4">
+                    <div className="text-center space-y-2">
+                      <h3 className="font-medium">Import from Kittl</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Export your design from Kittl as PNG or SVG, then upload it here.
+                      </p>
+                    </div>
+                    
+                    <div className="flex flex-col gap-3">
+                      <a
+                        href="https://www.kittl.com"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary flex items-center justify-center gap-1 hover:underline"
+                        data-testid="link-kittl"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        Open Kittl Designer
+                      </a>
+                      
+                      <input
+                        ref={importFileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        onChange={(e) => handleImportFile(e, "kittl")}
+                        className="hidden"
+                        data-testid="input-import-kittl"
+                      />
+                      
+                      <Button
+                        variant="default"
+                        onClick={() => importFileInputRef.current?.click()}
+                        disabled={isImporting}
+                        className="w-full"
+                        data-testid="button-import-kittl"
+                      >
+                        {isImporting ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Importing...
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-4 h-4 mr-2" />
+                            Upload Kittl Design
+                          </>
+                        )}
+                      </Button>
+                    </div>
+
+                    {importError && (
+                      <p className="text-destructive text-sm text-center" data-testid="text-import-error">
+                        {importError}
+                      </p>
+                    )}
+
+                    <div className="border-t pt-4 mt-4">
+                      <p className="text-xs text-muted-foreground text-center mb-3">
+                        Or upload any custom design
+                      </p>
+                      <input
+                        ref={customUploadInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        onChange={(e) => handleImportFile(e, "upload")}
+                        className="hidden"
+                        data-testid="input-import-custom"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => customUploadInputRef.current?.click()}
+                        disabled={isImporting}
+                        className="w-full"
+                        data-testid="button-import-custom"
+                      >
+                        <ImagePlus className="w-4 h-4 mr-2" />
+                        Upload Custom Design
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <p>Supported formats: PNG, JPG, WebP</p>
+                  <p>Maximum file size: 10MB</p>
+                  <p>For best results, export from Kittl as high-resolution PNG</p>
+                </div>
+
+                {printSizes.length > 0 && (
+                  <SizeSelector
+                    sizes={printSizes}
+                    selectedSize={selectedSize}
+                    onSizeChange={(sizeId) => {
+                      setSelectedSize(sizeId);
+                      setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                    }}
+                  />
+                )}
+
+                {frameColorObjects.length > 0 && (
+                  <FrameColorSelector
+                    frameColors={frameColorObjects}
+                    selectedFrameColor={selectedFrameColor}
+                    onFrameColorChange={setSelectedFrameColor}
+                  />
+                )}
+              </TabsContent>
+            </Tabs>
           </div>
 
           <div className="space-y-3">

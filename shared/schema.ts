@@ -69,6 +69,10 @@ export const insertMerchantSchema = createInsertSchema(merchants).omit({
 export type Merchant = typeof merchants.$inferSelect;
 export type InsertMerchant = z.infer<typeof insertMerchantSchema>;
 
+// Design source types
+export const DESIGN_SOURCES = ["ai", "upload", "kittl"] as const;
+export type DesignSource = typeof DESIGN_SOURCES[number];
+
 // Designs created by customers
 export const designs = pgTable("designs", {
   id: serial("id").primaryKey(),
@@ -88,6 +92,7 @@ export const designs = pgTable("designs", {
   transformY: integer("transform_y").notNull().default(50),
   colorTier: text("color_tier"),
   alternateImageUrl: text("alternate_image_url"),
+  designSource: text("design_source").notNull().default("ai"),
   status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

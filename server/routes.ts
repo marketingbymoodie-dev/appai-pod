@@ -1772,6 +1772,115 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Validate and prepare imported design (for Kittl/custom uploads)
+  // This endpoint validates the uploaded image and returns metadata for previewing
+  app.post("/api/designs/import", async (req: Request, res: Response) => {
+    try {
+      const { 
+        imageUrl, 
+        source = "upload",
+        name = "Imported Design",
+      } = req.body;
+
+      if (!imageUrl) {
+        return res.status(400).json({ error: "Missing image URL" });
+      }
+
+      // Validate source
+      const validSources = ["upload", "kittl"];
+      if (!validSources.includes(source)) {
+        return res.status(400).json({ error: "Invalid design source" });
+      }
+
+      // SECURITY: Only accept internal /objects/ paths from our upload system
+      // This prevents users from importing arbitrary external URLs
+      if (!imageUrl.startsWith("/objects/")) {
+        return res.status(400).json({ error: "Invalid image path - please upload your design first" });
+      }
+
+      // Additional validation: ensure path is under expected upload directory
+      const expectedPrefix = "/objects/uploads/";
+      if (!imageUrl.startsWith(expectedPrefix)) {
+        return res.status(400).json({ error: "Invalid upload path" });
+      }
+
+      // Fetch the image to validate it and get dimensions
+      let width = 0;
+      let height = 0;
+      let contentType = "";
+      let finalImageUrl = imageUrl;
+      
+      try {
+        // Resolve internal path to full URL for fetching
+        const baseUrl = process.env.REPLIT_DEV_DOMAIN 
+          ? `https://${process.env.REPLIT_DEV_DOMAIN}` 
+          : `http://localhost:${process.env.PORT || 5000}`;
+        const fetchUrl = `${baseUrl}${imageUrl}`;
+
+        const response = await fetch(fetchUrl);
+        if (!response.ok) {
+          return res.status(400).json({ error: "Could not fetch uploaded image" });
+        }
+
+        contentType = response.headers.get("content-type") || "";
+        // SECURITY: Reject SVG files to avoid XSS risks from embedded scripts
+        // Only allow safe raster image formats
+        const allowedTypes = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+        if (contentType.includes("svg")) {
+          return res.status(400).json({ error: "SVG files are not supported. Please upload PNG, JPG, or WebP images." });
+        }
+        if (!allowedTypes.some(type => contentType.includes(type))) {
+          return res.status(400).json({ error: "Invalid file type. Please upload PNG, JPG, or WebP images." });
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
+        // Check file size (max 10MB)
+        const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+        if (buffer.length > MAX_SIZE) {
+          return res.status(400).json({ error: "File too large. Maximum size is 10MB." });
+        }
+
+        // For raster images, get dimensions using sharp
+        {
+          // For raster images, just get dimensions
+          const metadata = await sharp(buffer).metadata();
+          width = metadata.width || 0;
+          height = metadata.height || 0;
+        }
+      } catch (fetchError) {
+        console.error("Error validating image:", fetchError);
+        return res.status(400).json({ error: "Could not validate uploaded image" });
+      }
+
+      // Calculate aspect ratio
+      let aspectRatio = "1:1";
+      if (width && height) {
+        const ratio = width / height;
+        if (ratio > 1.3) aspectRatio = "4:3";
+        else if (ratio > 1.1) aspectRatio = "1:1";
+        else if (ratio > 0.9) aspectRatio = "1:1";
+        else if (ratio > 0.7) aspectRatio = "3:4";
+        else aspectRatio = "2:3";
+      }
+
+      res.json({
+        success: true,
+        imageUrl: finalImageUrl,
+        name,
+        source,
+        width,
+        height,
+        aspectRatio,
+        contentType,
+      });
+    } catch (error) {
+      console.error("Error importing design:", error);
+      res.status(500).json({ error: "Failed to import design" });
+    }
+  });
+
   // Purchase credits
   app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
     try {
