@@ -10,7 +10,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store } from "lucide-react";
+import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store, AlertTriangle, Check } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -77,6 +78,7 @@ export default function AdminCreateProduct() {
   const [showPublishDialog, setShowPublishDialog] = useState(false);
   const [shopDomain, setShopDomain] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
+  const [selectedColorsForPublish, setSelectedColorsForPublish] = useState<Set<string>>(new Set());
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -408,6 +410,52 @@ export default function AdminCreateProduct() {
     style.category === "all" || style.category === styleCategory
   ) || [];
 
+  // Initialize selected colors when dialog opens or product type changes
+  useEffect(() => {
+    if (showPublishDialog && designerConfig) {
+      // Start with all colors selected
+      setSelectedColorsForPublish(new Set(designerConfig.frameColors.map(c => c.id)));
+    }
+  }, [showPublishDialog, designerConfig]);
+
+  // Calculate variant count for Shopify
+  const calculateVariantCount = () => {
+    if (!designerConfig) return 0;
+    const sizeCount = designerConfig.sizes.length;
+    // If no colors, just return size count
+    if (designerConfig.frameColors.length === 0) {
+      return sizeCount;
+    }
+    // Otherwise it's sizes × selected colors
+    return sizeCount * selectedColorsForPublish.size;
+  };
+
+  const variantCount = calculateVariantCount();
+  const SHOPIFY_VARIANT_LIMIT = 100;
+  const isOverLimit = variantCount > SHOPIFY_VARIANT_LIMIT;
+
+  const toggleColorForPublish = (colorId: string) => {
+    setSelectedColorsForPublish(prev => {
+      const next = new Set(prev);
+      if (next.has(colorId)) {
+        next.delete(colorId);
+      } else {
+        next.add(colorId);
+      }
+      return next;
+    });
+  };
+
+  const selectAllColors = () => {
+    if (designerConfig) {
+      setSelectedColorsForPublish(new Set(designerConfig.frameColors.map(c => c.id)));
+    }
+  };
+
+  const deselectAllColors = () => {
+    setSelectedColorsForPublish(new Set());
+  };
+
   // Publish product to Shopify
   const handlePublishToShopify = async () => {
     if (!selectedProductTypeId || !shopDomain) {
@@ -425,11 +473,22 @@ export default function AdminCreateProduct() {
       formattedDomain = `${formattedDomain}.myshopify.com`;
     }
 
+    // Check variant limit
+    if (isOverLimit) {
+      toast({
+        title: "Too many variants",
+        description: `Shopify allows up to ${SHOPIFY_VARIANT_LIMIT} variants. Please deselect some colors.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsPublishing(true);
     try {
       const response = await apiRequest("POST", "/api/shopify/products", {
         productTypeId: selectedProductTypeId,
         shopDomain: formattedDomain,
+        selectedColorIds: designerConfig?.frameColors.length ? Array.from(selectedColorsForPublish) : undefined,
       });
 
       const data = await response.json();
@@ -941,14 +1000,88 @@ export default function AdminCreateProduct() {
             </div>
 
             {designerConfig && (
-              <div className="bg-muted p-3 rounded-lg space-y-2">
-                <p className="text-sm font-medium">Product: {designerConfig.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {designerConfig.sizes.length} size{designerConfig.sizes.length !== 1 ? 's' : ''}
-                  {designerConfig.frameColors.length > 0 && 
-                    ` × ${designerConfig.frameColors.length} color${designerConfig.frameColors.length !== 1 ? 's' : ''}`
-                  }
-                </p>
+              <div className="space-y-3">
+                <div className="bg-muted p-3 rounded-lg space-y-2">
+                  <p className="text-sm font-medium">Product: {designerConfig.name}</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      {designerConfig.sizes.length} size{designerConfig.sizes.length !== 1 ? 's' : ''}
+                      {designerConfig.frameColors.length > 0 && 
+                        ` × ${selectedColorsForPublish.size} color${selectedColorsForPublish.size !== 1 ? 's' : ''} selected`
+                      }
+                    </p>
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded ${
+                      isOverLimit 
+                        ? 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400' 
+                        : variantCount > 90 
+                          ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-400'
+                          : 'bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400'
+                    }`}>
+                      {variantCount} / {SHOPIFY_VARIANT_LIMIT} variants
+                    </span>
+                  </div>
+                </div>
+
+                {isOverLimit && (
+                  <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md">
+                    <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-sm text-red-700 dark:text-red-300">
+                      <p className="font-medium">Too many variants</p>
+                      <p className="text-xs mt-1">
+                        Shopify limits products to {SHOPIFY_VARIANT_LIMIT} variants. 
+                        Deselect {variantCount - SHOPIFY_VARIANT_LIMIT} or more colors below.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {designerConfig.frameColors.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">Colors to include</Label>
+                      <div className="flex gap-2">
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-auto py-1 px-2 text-xs"
+                          onClick={selectAllColors}
+                        >
+                          Select all
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-auto py-1 px-2 text-xs"
+                          onClick={deselectAllColors}
+                        >
+                          Clear all
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto border rounded-md p-2 space-y-1">
+                      {designerConfig.frameColors.map((color) => (
+                        <label 
+                          key={color.id}
+                          htmlFor={`color-${color.id}`}
+                          className="flex items-center gap-2 p-1.5 hover:bg-muted rounded cursor-pointer"
+                        >
+                          <Checkbox 
+                            id={`color-${color.id}`}
+                            checked={selectedColorsForPublish.has(color.id)}
+                            onCheckedChange={() => toggleColorForPublish(color.id)}
+                          />
+                          <div 
+                            className="w-4 h-4 rounded-full border border-border flex-shrink-0"
+                            style={{ backgroundColor: color.hex }}
+                          />
+                          <span className="text-sm flex-1">
+                            {color.name}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -974,7 +1107,7 @@ export default function AdminCreateProduct() {
             </Button>
             <Button 
               onClick={handlePublishToShopify} 
-              disabled={isPublishing || !shopDomain.trim()}
+              disabled={isPublishing || !shopDomain.trim() || isOverLimit || (designerConfig?.frameColors.length ? selectedColorsForPublish.size === 0 : false)}
               data-testid="button-confirm-publish"
             >
               {isPublishing ? (

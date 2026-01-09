@@ -1354,7 +1354,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         return res.status(403).json({ error: "Merchant not found" });
       }
 
-      const { productTypeId, shopDomain } = req.body;
+      const { productTypeId, shopDomain, selectedColorIds } = req.body;
 
       if (!productTypeId) {
         return res.status(400).json({ error: "Product type ID is required" });
@@ -1434,10 +1434,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         inventory_policy: string;
       }> = [];
 
-      if (frameColors.length > 0) {
+      // Filter colors if selectedColorIds is provided
+      const colorsToUse = frameColors.length > 0 && Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+        ? frameColors.filter((c: { id: string }) => selectedColorIds.includes(c.id))
+        : frameColors;
+
+      if (colorsToUse.length > 0) {
         // Product has both sizes and colors
         for (const size of sizes) {
-          for (const color of frameColors) {
+          for (const color of colorsToUse) {
             const variantKey = `${size.id}:${color.id}`;
             if (variantMap[variantKey]) {
               shopifyVariants.push({
@@ -1451,7 +1456,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
             }
           }
         }
-      } else {
+      } else if (frameColors.length === 0) {
         // Product has only sizes (e.g., phone cases)
         for (const size of sizes) {
           const variantKey = `${size.id}:default`;
@@ -1465,6 +1470,22 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
             });
           }
         }
+      }
+
+      // Validate Shopify's 100 variant limit
+      const SHOPIFY_VARIANT_LIMIT = 100;
+      if (shopifyVariants.length > SHOPIFY_VARIANT_LIMIT) {
+        return res.status(400).json({ 
+          error: `Too many variants (${shopifyVariants.length})`,
+          details: `Shopify allows a maximum of ${SHOPIFY_VARIANT_LIMIT} variants per product. Please select fewer colors.`
+        });
+      }
+
+      if (shopifyVariants.length === 0) {
+        return res.status(400).json({ 
+          error: "No variants to create",
+          details: "Please select at least one color to include in the product."
+        });
       }
 
       // Build product options
