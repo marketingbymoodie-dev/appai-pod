@@ -182,6 +182,10 @@
 
     const shopDomain = window.Shopify?.shop || window.location.hostname;
     
+    // Check URL for shared design ID
+    const urlParams = new URLSearchParams(window.location.search);
+    const sharedDesignId = urlParams.get('sharedDesignId');
+    
     const params = new URLSearchParams();
     params.set('embedded', 'true');
     params.set('shopify', 'true');
@@ -197,6 +201,10 @@
       params.set('customerId', customerId);
       params.set('customerEmail', customerEmail);
       params.set('customerName', customerName);
+    }
+    // Pass shared design ID to iframe if present
+    if (sharedDesignId) {
+      params.set('sharedDesignId', sharedDesignId);
     }
 
     const iframe = document.createElement('iframe');

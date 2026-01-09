@@ -1632,6 +1632,146 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Create share link for a design (public endpoint for Shopify embed)
+  app.post("/api/designs/share", async (req: Request, res: Response) => {
+    try {
+      const { 
+        imageUrl,
+        thumbnailUrl,
+        prompt,
+        stylePreset,
+        size,
+        frameColor,
+        transformScale,
+        transformX,
+        transformY,
+        productTypeId,
+        shopDomain,
+        productId,
+        productHandle,
+      } = req.body;
+
+      if (!imageUrl || !prompt || !size || !frameColor) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Validate image URL is from our storage domain (security check)
+      // Use strict hostname matching to prevent bypass via subdomains
+      const allowedDomains = [
+        "storage.googleapis.com",
+        "storage.cloud.google.com",
+        process.env.REPL_SLUG ? `${process.env.REPL_SLUG}.replit.app` : null,
+        "localhost",
+      ].filter(Boolean) as string[];
+      
+      try {
+        const imageUrlObj = new URL(imageUrl);
+        // Require https for non-localhost URLs
+        if (imageUrlObj.hostname !== "localhost" && imageUrlObj.protocol !== "https:") {
+          return res.status(400).json({ error: "Image URL must use HTTPS" });
+        }
+        // Strict hostname matching: exact match or ends with .domain
+        const isAllowedDomain = allowedDomains.some(domain => {
+          const hostname = imageUrlObj.hostname;
+          return hostname === domain || hostname.endsWith(`.${domain}`);
+        });
+        if (!isAllowedDomain) {
+          return res.status(400).json({ error: "Invalid image URL" });
+        }
+      } catch {
+        return res.status(400).json({ error: "Invalid image URL format" });
+      }
+
+      // Generate unique share token
+      const shareToken = crypto.randomBytes(16).toString("hex");
+      
+      // Set expiration to 30 days from now
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+
+      const sharedDesign = await storage.createSharedDesign({
+        designId: null, // Nullable for unsaved designs
+        shareToken,
+        imageUrl,
+        thumbnailUrl: thumbnailUrl || null,
+        prompt,
+        stylePreset: stylePreset || null,
+        size,
+        frameColor,
+        transformScale: transformScale ?? 100,
+        transformX: transformX ?? 50,
+        transformY: transformY ?? 50,
+        productTypeId: productTypeId || null,
+        shopDomain: shopDomain || null,
+        productId: productId || null,
+        productHandle: productHandle || null,
+        expiresAt,
+        viewCount: 0,
+      });
+
+      // Build share URL
+      let shareUrl = "";
+      if (shopDomain && productHandle) {
+        // For Shopify embeds, return the merchant's product page URL with design ID
+        shareUrl = `https://${shopDomain}/products/${productHandle}?sharedDesignId=${sharedDesign.id}`;
+      } else {
+        // For non-Shopify, use our embed design page
+        shareUrl = `/embed/design?productTypeId=${productTypeId}&sharedDesignId=${sharedDesign.id}`;
+      }
+
+      res.json({ 
+        sharedDesignId: sharedDesign.id,
+        shareToken: sharedDesign.shareToken,
+        shareUrl,
+        expiresAt: sharedDesign.expiresAt,
+      });
+    } catch (error) {
+      console.error("Error creating share link:", error);
+      res.status(500).json({ error: "Failed to create share link" });
+    }
+  });
+
+  // Get shared design by ID (public endpoint)
+  app.get("/api/shared-designs/:id", async (req: Request, res: Response) => {
+    try {
+      const sharedDesign = await storage.getSharedDesign(req.params.id);
+      
+      if (!sharedDesign) {
+        return res.status(404).json({ error: "Shared design not found" });
+      }
+
+      // Check if expired
+      if (sharedDesign.expiresAt && new Date(sharedDesign.expiresAt) < new Date()) {
+        return res.status(410).json({ error: "This shared design has expired" });
+      }
+
+      // Increment view count
+      await storage.incrementSharedDesignViewCount(sharedDesign.id);
+
+      res.json({
+        id: sharedDesign.id,
+        imageUrl: sharedDesign.imageUrl,
+        thumbnailUrl: sharedDesign.thumbnailUrl,
+        prompt: sharedDesign.prompt,
+        stylePreset: sharedDesign.stylePreset,
+        size: sharedDesign.size,
+        frameColor: sharedDesign.frameColor,
+        transformScale: sharedDesign.transformScale,
+        transformX: sharedDesign.transformX,
+        transformY: sharedDesign.transformY,
+        productTypeId: sharedDesign.productTypeId,
+        shopDomain: sharedDesign.shopDomain,
+        productId: sharedDesign.productId,
+        productHandle: sharedDesign.productHandle,
+        viewCount: sharedDesign.viewCount + 1,
+        createdAt: sharedDesign.createdAt,
+      });
+    } catch (error) {
+      console.error("Error fetching shared design:", error);
+      res.status(500).json({ error: "Failed to fetch shared design" });
+    }
+  });
+
   // Purchase credits
   app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
     try {

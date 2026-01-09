@@ -242,6 +242,36 @@ export const insertProductTypeSchema = createInsertSchema(productTypes).omit({
 export type ProductType = typeof productTypes.$inferSelect;
 export type InsertProductType = z.infer<typeof insertProductTypeSchema>;
 
+// Shared designs for public sharing via URLs
+export const sharedDesigns = pgTable("shared_designs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  designId: integer("design_id"), // Nullable for unsaved designs
+  shopDomain: text("shop_domain"),
+  productId: text("product_id"),
+  productHandle: text("product_handle"),
+  shareToken: text("share_token").notNull(),
+  imageUrl: text("image_url").notNull(),
+  thumbnailUrl: text("thumbnail_url"),
+  prompt: text("prompt").notNull(),
+  stylePreset: text("style_preset"),
+  size: text("size").notNull(),
+  frameColor: text("frame_color").notNull(),
+  transformScale: integer("transform_scale").notNull().default(100),
+  transformX: integer("transform_x").notNull().default(50),
+  transformY: integer("transform_y").notNull().default(50),
+  productTypeId: integer("product_type_id"),
+  expiresAt: timestamp("expires_at"),
+  viewCount: integer("view_count").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertSharedDesignSchema = createInsertSchema(sharedDesigns).omit({
+  id: true,
+  createdAt: true,
+});
+export type SharedDesign = typeof sharedDesigns.$inferSelect;
+export type InsertSharedDesign = z.infer<typeof insertSharedDesignSchema>;
+
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
   id: serial("id").primaryKey(),

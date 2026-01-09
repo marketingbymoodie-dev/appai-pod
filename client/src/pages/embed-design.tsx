@@ -5,7 +5,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import {
   MockupPreview,
   ZoomControls,
@@ -54,8 +55,12 @@ export default function EmbedDesign() {
   const shopifyCustomerId = searchParams.get("customerId") || "";
   const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
   const shopifyCustomerName = searchParams.get("customerName") || "";
+  const sharedDesignId = searchParams.get("sharedDesignId") || "";
 
   const [prompt, setPrompt] = useState("");
+  const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
+  const [sharedDesignError, setSharedDesignError] = useState<string | null>(null);
+  const [isSharedDesign, setIsSharedDesign] = useState(false);
   const [selectedSize, setSelectedSize] = useState("");
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
   const [selectedPreset, setSelectedPreset] = useState<string>("none");
@@ -76,6 +81,9 @@ export default function EmbedDesign() {
   const [customer, setCustomer] = useState<CustomerInfo | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+  
+  const { toast } = useToast();
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
@@ -139,6 +147,49 @@ export default function EmbedDesign() {
         setConfigLoading(false);
       });
   }, [productTypeId]);
+
+  // Load shared design if sharedDesignId is present in URL
+  useEffect(() => {
+    if (!sharedDesignId) {
+      setIsLoadingSharedDesign(false);
+      return;
+    }
+
+    fetch(`/api/shared-designs/${sharedDesignId}`)
+      .then(res => {
+        if (!res.ok) {
+          if (res.status === 410) {
+            throw new Error("This shared design has expired");
+          }
+          throw new Error("Shared design not found");
+        }
+        return res.json();
+      })
+      .then(sharedDesign => {
+        // Load the shared design data into state
+        setGeneratedDesign({
+          id: sharedDesign.id,
+          imageUrl: sharedDesign.imageUrl,
+          prompt: sharedDesign.prompt,
+        });
+        setPrompt(sharedDesign.prompt);
+        setSelectedPreset(sharedDesign.stylePreset || "none");
+        setSelectedSize(sharedDesign.size);
+        setSelectedFrameColor(sharedDesign.frameColor);
+        setTransform({
+          scale: sharedDesign.transformScale || 100,
+          x: sharedDesign.transformX || 50,
+          y: sharedDesign.transformY || 50,
+        });
+        setIsSharedDesign(true);
+        setIsLoadingSharedDesign(false);
+      })
+      .catch(err => {
+        console.error("Failed to load shared design:", err);
+        setSharedDesignError(err.message);
+        setIsLoadingSharedDesign(false);
+      });
+  }, [sharedDesignId]);
 
   useEffect(() => {
     if (isShopify && shopDomain) {
@@ -354,6 +405,71 @@ export default function EmbedDesign() {
     );
   };
 
+  const handleShare = async () => {
+    if (!generatedDesign) return;
+
+    setIsSharing(true);
+    try {
+      const response = await fetch("/api/designs/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageUrl: generatedDesign.imageUrl,
+          prompt: generatedDesign.prompt,
+          stylePreset: selectedPreset !== "none" ? selectedPreset : null,
+          size: selectedSize,
+          frameColor: selectedFrameColor,
+          transformScale: transform.scale,
+          transformX: transform.x,
+          transformY: transform.y,
+          productTypeId: parseInt(productTypeId) || null,
+          shopDomain: shopDomain || null,
+          productId: productId || null,
+          productHandle: productHandle || null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to create share link");
+      }
+
+      const data = await response.json();
+      const shareUrl = data.shareUrl;
+
+      // Use Web Share API if available
+      if (navigator.share) {
+        await navigator.share({
+          title: `Custom ${productTitle} Design`,
+          text: `Check out this custom design I created: "${prompt}"`,
+          url: shareUrl,
+        });
+        toast({
+          title: "Shared!",
+          description: "Your design was shared successfully.",
+        });
+      } else {
+        // Fallback: copy to clipboard
+        await navigator.clipboard.writeText(shareUrl);
+        toast({
+          title: "Link Copied!",
+          description: "Share link copied to clipboard.",
+        });
+      }
+    } catch (err: any) {
+      // Don't show error if user cancelled share dialog
+      if (err?.name !== "AbortError") {
+        console.error("Share failed:", err);
+        toast({
+          title: "Share Failed",
+          description: "Unable to share design. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data.type === "ai-art-studio:cart-updated") {
@@ -454,6 +570,16 @@ export default function EmbedDesign() {
             <CardContent className="py-3">
               <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-product-type-error">
                 {productTypeError}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {sharedDesignError && (
+          <Card className="border-destructive bg-destructive/10">
+            <CardContent className="py-3">
+              <p className="text-destructive text-sm" data-testid="text-shared-design-error">
+                {sharedDesignError}. You can still create a new design below.
               </p>
             </CardContent>
           </Card>
@@ -608,38 +734,58 @@ export default function EmbedDesign() {
             )}
 
             {generatedDesign && (
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={handleGenerate}
-                  disabled={generateMutation.isPending || credits <= 0}
-                  className="flex-1"
-                  data-testid="button-regenerate"
-                >
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Regenerate
-                </Button>
-
-                {isShopify && (
+              <div className="flex flex-col gap-2">
+                {isSharedDesign && (
+                  <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-2 text-center">
+                    Viewing a shared design. Generate your own or add to cart!
+                  </div>
+                )}
+                <div className="flex gap-2">
                   <Button
-                    onClick={handleAddToCart}
-                    disabled={isAddingToCart}
+                    variant="outline"
+                    onClick={handleGenerate}
+                    disabled={generateMutation.isPending || credits <= 0}
                     className="flex-1"
-                    data-testid="button-add-to-cart"
+                    data-testid="button-regenerate"
                   >
-                    {isAddingToCart ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Adding...
-                      </>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Regenerate
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    onClick={handleShare}
+                    disabled={isSharing}
+                    data-testid="button-share"
+                  >
+                    {isSharing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
-                      <>
-                        <ShoppingCart className="w-4 h-4 mr-2" />
-                        Add to Cart
-                      </>
+                      <Share2 className="w-4 h-4" />
                     )}
                   </Button>
-                )}
+
+                  {isShopify && (
+                    <Button
+                      onClick={handleAddToCart}
+                      disabled={isAddingToCart}
+                      className="flex-1"
+                      data-testid="button-add-to-cart"
+                    >
+                      {isAddingToCart ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Adding...
+                        </>
+                      ) : (
+                        <>
+                          <ShoppingCart className="w-4 h-4 mr-2" />
+                          Add to Cart
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
           </div>
