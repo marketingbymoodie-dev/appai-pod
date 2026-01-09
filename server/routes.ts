@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
 import sharp from "sharp";
+import { removeBackground } from "@imgly/background-removal-node";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, type InsertDesign } from "@shared/schema";
@@ -66,31 +67,55 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove magenta chroma-key background pixels from an image and make them transparent.
+ * Remove background from an image using ML-based segmentation (ONNX model).
  * 
- * Uses a chroma-key approach: AI generates graphics on bright magenta (#FF00FF) background,
- * which is then keyed out precisely. This preserves white design elements that would be
- * lost with white background removal.
- * 
- * Magenta detection criteria:
- * - Red channel >= 200
- * - Green channel <= 80
- * - Blue channel >= 200
- * - This catches #FF00FF and close variations from JPEG compression
- * 
- * Falls back to white removal if very few magenta pixels found (legacy images).
+ * Uses @imgly/background-removal-node which provides production-quality
+ * background removal using trained neural networks. This handles:
+ * - Anti-aliasing correctly
+ * - Preserves thin strokes and details
+ * - Works with any background color
+ * - No halos or artifacts
  * 
  * @param buffer - The image buffer to process
- * @param _threshold - DEPRECATED: No longer used, kept for API compatibility
- * @param _enclosedMinSize - DEPRECATED: No longer used, kept for API compatibility
  * @returns Buffer with transparent background as PNG
  */
-async function removeWhiteBackground(
-  buffer: Buffer, 
-  _threshold: number = 255,
-  _enclosedMinSize: number = 0
-): Promise<Buffer> {
-  // Convert to raw RGBA pixels
+async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
+  console.log("Starting ML-based background removal...");
+  const startTime = Date.now();
+  
+  try {
+    // Convert buffer to Blob for the library
+    const blob = new Blob([buffer], { type: 'image/png' });
+    
+    // Run ML background removal with small model for faster processing
+    const resultBlob = await removeBackground(blob, {
+      model: 'small',  // Use small model (44MB) for faster processing
+      output: {
+        format: 'image/png',
+        quality: 1.0
+      }
+    });
+    
+    // Convert result blob back to buffer
+    const arrayBuffer = await resultBlob.arrayBuffer();
+    const resultBuffer = Buffer.from(arrayBuffer);
+    
+    const elapsed = Date.now() - startTime;
+    console.log(`ML background removal complete in ${elapsed}ms`);
+    
+    return resultBuffer;
+  } catch (error) {
+    console.error("ML background removal failed, falling back to pixel-based:", error);
+    // Fallback to simple white removal if ML fails
+    return removeWhiteBackgroundFallback(buffer);
+  }
+}
+
+/**
+ * Fallback: Simple pixel-based white background removal.
+ * Used when ML-based removal fails or for legacy compatibility.
+ */
+async function removeWhiteBackgroundFallback(buffer: Buffer): Promise<Buffer> {
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
     .raw()
@@ -101,34 +126,8 @@ async function removeWhiteBackground(
   const pixels = new Uint8Array(data);
   const totalPixels = width * height;
   
-  // Magenta chroma-key detection thresholds (for #FF00FF and JPEG variations)
-  const MIN_RED = 200;
-  const MAX_GREEN = 80;
-  const MIN_BLUE = 200;
-  
-  // White fallback detection thresholds
-  const WHITE_LUMINANCE_THRESHOLD = 245;
-  const WHITE_MAX_CHROMA = 8;
-  
-  // First pass: count magenta pixels to decide which mode to use
-  let magentaCount = 0;
-  for (let i = 0; i < totalPixels; i++) {
-    const idx = i * 4;
-    const r = pixels[idx];
-    const g = pixels[idx + 1];
-    const b = pixels[idx + 2];
-    const a = pixels[idx + 3];
-    
-    if (a === 0) continue;
-    
-    if (r >= MIN_RED && g <= MAX_GREEN && b >= MIN_BLUE) {
-      magentaCount++;
-    }
-  }
-  
-  // If magenta covers at least 5% of image, use magenta keying; otherwise fall back to white
-  const magentaPercent = magentaCount / totalPixels;
-  const useMagentaMode = magentaPercent >= 0.05;
+  const LUMINANCE_THRESHOLD = 245;
+  const MAX_CHROMA = 8;
   
   let pixelsRemoved = 0;
   
@@ -141,38 +140,21 @@ async function removeWhiteBackground(
     
     if (a === 0) continue;
     
-    let shouldRemove = false;
+    const luminance = (r + g + b) / 3;
+    const maxRGB = Math.max(r, g, b);
+    const minRGB = Math.min(r, g, b);
+    const chromaDistance = maxRGB - minRGB;
     
-    if (useMagentaMode) {
-      // Magenta chroma-key mode
-      shouldRemove = r >= MIN_RED && g <= MAX_GREEN && b >= MIN_BLUE;
-    } else {
-      // White fallback mode (for legacy images)
-      const luminance = (r + g + b) / 3;
-      const maxRGB = Math.max(r, g, b);
-      const minRGB = Math.min(r, g, b);
-      const chromaDistance = maxRGB - minRGB;
-      shouldRemove = luminance >= WHITE_LUMINANCE_THRESHOLD && chromaDistance <= WHITE_MAX_CHROMA;
-    }
-    
-    if (shouldRemove) {
+    if (luminance >= LUMINANCE_THRESHOLD && chromaDistance <= MAX_CHROMA) {
       pixels[idx + 3] = 0;
       pixelsRemoved++;
     }
   }
   
-  const mode = useMagentaMode ? 'magenta chroma-key' : 'white fallback';
-  console.log(`Background removal (${mode}): ${width}x${height} image`);
-  console.log(`  Magenta coverage: ${(magentaPercent * 100).toFixed(1)}%`);
-  console.log(`  Removed ${pixelsRemoved} pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}% of image)`);
+  console.log(`Fallback background removal: removed ${pixelsRemoved} pixels (${(pixelsRemoved / totalPixels * 100).toFixed(1)}%)`);
   
-  // Convert back to PNG with transparency
   return sharp(Buffer.from(pixels), {
-    raw: {
-      width,
-      height,
-      channels: 4
-    }
+    raw: { width, height, channels: 4 }
   })
     .png()
     .toBuffer();
@@ -192,10 +174,10 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   
   let buffer = Buffer.from(base64Data, "base64");
   
-  // For apparel, remove pure white background to make it transparent
+  // For apparel, remove background using ML-based segmentation
   if (isApparel) {
-    console.log("Removing pure white background for apparel image...");
-    buffer = await removeWhiteBackground(buffer);
+    console.log("Removing background for apparel image using ML...");
+    buffer = await removeImageBackground(buffer);
     // Force PNG for transparency support
     extension = "png";
     actualMimeType = "image/png";
