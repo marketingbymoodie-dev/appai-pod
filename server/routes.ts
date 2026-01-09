@@ -415,7 +415,7 @@ export async function registerRoutes(
       const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
 
       const updateData: Partial<typeof design> = {
-        transformScale: clamp(transformScale ?? design.transformScale ?? 100, 50, 200),
+        transformScale: clamp(transformScale ?? design.transformScale ?? 135, 25, 135),
         transformX: clamp(transformX ?? design.transformX ?? 50, 0, 100),
         transformY: clamp(transformY ?? design.transformY ?? 50, 0, 100),
       };

@@ -101,7 +101,7 @@ export default function DesignPage() {
   const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
   
-  const [imageScale, setImageScale] = useState(100);
+  const [imageScale, setImageScale] = useState(135);
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
   const [mobileSlide, setMobileSlide] = useState(0);
   const [mobileViewMode, setMobileViewMode] = useState<"front" | "lifestyle">("front");
@@ -212,7 +212,7 @@ export default function DesignPage() {
     setPrompt("");
     setSelectedSize("");
     setSelectedFrameColor("");
-    setImageScale(100);
+    setImageScale(135);
     setImagePosition({ x: 50, y: 50 });
   };
 
@@ -243,7 +243,7 @@ export default function DesignPage() {
               setSelectedSize(design.size);
               setSelectedFrameColor(design.frameColor);
               setSelectedStyle(design.stylePreset || "none");
-              setImageScale(design.transformScale ?? 100);
+              setImageScale(Math.min(design.transformScale ?? 135, 135));
               setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
               setShowTweak(true);
             }
@@ -255,7 +255,7 @@ export default function DesignPage() {
     }
   }, []);
 
-  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 100) => {
+  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 135) => {
     setMockupLoading(true);
     // Don't clear existing mockups - preserve them while loading new ones
     try {
@@ -290,7 +290,7 @@ export default function DesignPage() {
       setGeneratedDesign(design);
       setSelectedSize(design.size);
       setSelectedFrameColor(design.frameColor);
-      setImageScale(design.transformScale ?? 100);
+      setImageScale(Math.min(design.transformScale ?? 135, 135));
       setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
       queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
@@ -445,7 +445,7 @@ export default function DesignPage() {
   };
 
   const resetTransform = () => {
-    setImageScale(100);
+    setImageScale(135);
     setImagePosition({ x: 50, y: 50 });
   };
 
@@ -455,7 +455,7 @@ export default function DesignPage() {
 
   const handleSizeChange = (newSize: string) => {
     setSelectedSize(newSize);
-    setImageScale(100);
+    setImageScale(135);
     setImagePosition({ x: 50, y: 50 });
   };
 
@@ -844,7 +844,7 @@ export default function DesignPage() {
         value={[imageScale]}
         onValueChange={([value]) => setImageScale(value)}
         min={25}
-        max={200}
+        max={135}
         step={5}
         className="flex-1"
         data-testid="slider-scale"
