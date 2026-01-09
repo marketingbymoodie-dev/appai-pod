@@ -933,6 +933,11 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
   const SHOPIFY_RATE_LIMIT = 100; // 100 generations per shop per hour
   const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
   
+  // Rate limiting for Shopify session creation (per IP per minute)
+  const shopifySessionRateLimits = new Map<string, { count: number; resetAt: number }>();
+  const SESSION_RATE_LIMIT = 10; // 10 session requests per IP per minute
+  const SESSION_RATE_WINDOW_MS = 60 * 1000; // 1 minute
+  
   // Session token store for Shopify storefronts (token -> { shop, expiresAt, clientIp, customerId?, customerEmail? })
   interface ShopifySession {
     shop: string;
@@ -947,7 +952,13 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
   const SESSION_TOKEN_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
   // Generate session token for Shopify storefront (called from iframe)
-  // Security: Validates referer header matches shop domain, requires active installation
+  // Security layers:
+  // 1. Origin validation (requests must come from our app's embed page)
+  // 2. Shop domain format validation (must be valid *.myshopify.com)
+  // 3. Active installation check (shop must be installed in our system)
+  // 4. Timestamp validation (request must be within 5 minutes)
+  // 5. Rate limiting (10 requests per IP per minute)
+  // 6. IP binding on session tokens
   app.post("/api/shopify/session", async (req: Request, res: Response) => {
     try {
       const { shop, productId, timestamp, customerId, customerEmail, customerName } = req.body;
@@ -956,57 +967,70 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
         return res.status(400).json({ error: "Shop domain required" });
       }
 
+      // Validate origin - requests must come from our embed page
+      // The iframe is hosted on our domain, so the referer should be our domain
+      const referer = req.headers.referer || req.headers.origin || "";
+      const host = req.headers.host || "";
+      const isDevelopment = process.env.NODE_ENV === "development";
+      
+      // In production, require referer to match our app's domain
+      // This ensures requests come from our iframe, not external sources
+      if (!isDevelopment) {
+        const isValidOrigin = referer.includes(host) || 
+          referer.includes(".replit.app") || 
+          referer.includes(".replit.dev");
+        
+        if (!isValidOrigin) {
+          console.warn(`Shopify session: Invalid origin - referer: ${referer}, host: ${host}`);
+          return res.status(403).json({ error: "Invalid request origin" });
+        }
+      }
+
       // Validate shop domain format
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).json({ error: "Invalid shop domain format" });
       }
 
-      // Verify referer header matches the claimed shop domain
-      // This provides defense-in-depth since the iframe is loaded from Shopify
-      const referer = req.headers.referer || req.headers.origin || "";
-      const shopBaseUrl = shop.replace(".myshopify.com", "");
-      const validRefererPatterns = [
-        `https://${shop}`,
-        `https://${shopBaseUrl}.myshopify.com`,
-        new RegExp(`^https://${shopBaseUrl}[a-z0-9-]*\\.myshopify\\.com`),
-      ];
-      
-      const isValidReferer = validRefererPatterns.some(pattern => {
-        if (typeof pattern === "string") {
-          return referer.startsWith(pattern);
+      // Rate limit session creation per IP to prevent abuse
+      const clientIp = req.ip || req.headers["x-forwarded-for"] || "unknown";
+      const ipKey = typeof clientIp === "string" ? clientIp : clientIp[0];
+      const now = Date.now();
+      const sessionRateLimit = shopifySessionRateLimits.get(ipKey);
+      if (sessionRateLimit) {
+        if (now < sessionRateLimit.resetAt) {
+          if (sessionRateLimit.count >= SESSION_RATE_LIMIT) {
+            console.warn(`Shopify session rate limit exceeded for IP: ${ipKey}`);
+            return res.status(429).json({ error: "Too many requests. Please wait before trying again." });
+          }
+          sessionRateLimit.count++;
+        } else {
+          shopifySessionRateLimits.set(ipKey, { count: 1, resetAt: now + SESSION_RATE_WINDOW_MS });
         }
-        return pattern.test(referer);
-      });
-
-      // In production, require valid referer. Allow bypass in development for testing
-      const isDevelopment = process.env.NODE_ENV === "development";
-      if (!isValidReferer && !isDevelopment) {
-        console.warn(`Shopify session: Invalid referer ${referer} for shop ${shop}`);
-        return res.status(403).json({ error: "Invalid request origin" });
+      } else {
+        shopifySessionRateLimits.set(ipKey, { count: 1, resetAt: now + SESSION_RATE_WINDOW_MS });
       }
 
-      // Verify shop is installed
+      // Verify shop is installed first (this is the primary security check)
+      // We check installation before referer since custom domains won't match myshopify.com patterns
       const installation = await storage.getShopifyInstallationByShop(shop);
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
       // Verify timestamp is recent (within 5 minutes)
-      const now = Date.now();
       const requestTimestamp = parseInt(timestamp) || 0;
       if (Math.abs(now - requestTimestamp) > 5 * 60 * 1000) {
         return res.status(400).json({ error: "Request timestamp expired" });
       }
 
       // Generate session token with IP binding for additional security
-      const clientIp = req.ip || req.headers["x-forwarded-for"] || "unknown";
       const sessionToken = crypto.randomBytes(32).toString("hex");
       
-      // Create session data
+      // Create session data (ipKey is already extracted for rate limiting)
       const sessionData: ShopifySession = {
         shop,
         expiresAt: now + SESSION_TOKEN_EXPIRY_MS,
-        clientIp: typeof clientIp === "string" ? clientIp : clientIp[0],
+        clientIp: ipKey,
       };
       
       // If customer is logged in, create/get their customer record

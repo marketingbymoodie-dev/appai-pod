@@ -82,6 +82,7 @@ export default function EmbedDesign() {
   const [customer, setCustomer] = useState<CustomerInfo | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
@@ -212,7 +213,13 @@ export default function EmbedDesign() {
           customerName: shopifyCustomerName || undefined,
         }),
       })
-        .then((res) => res.json())
+        .then(async (res) => {
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || `Session failed: ${res.status}`);
+          }
+          return data;
+        })
         .then((data) => {
           if (data.sessionToken) {
             setSessionToken(data.sessionToken);
@@ -220,10 +227,12 @@ export default function EmbedDesign() {
               setCustomer(data.customer);
             }
           }
+          setSessionError(null);
           setSessionLoading(false);
         })
         .catch((error) => {
           console.error("Failed to get session token:", error);
+          setSessionError(error.message || "Failed to connect to store");
           setSessionLoading(false);
         });
     } else {
@@ -694,6 +703,16 @@ export default function EmbedDesign() {
             <CardContent className="py-3">
               <p className="text-destructive text-sm" data-testid="text-shared-design-error">
                 {sharedDesignError}. You can still create a new design below.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {sessionError && isShopify && (
+          <Card className="border-destructive bg-destructive/10">
+            <CardContent className="py-3">
+              <p className="text-destructive text-sm" data-testid="text-session-error">
+                Unable to connect: {sessionError}. Please ensure the app is properly installed on your store.
               </p>
             </CardContent>
           </Card>
