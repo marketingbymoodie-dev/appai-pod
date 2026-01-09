@@ -54,8 +54,8 @@ export default function AdminProducts() {
   const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
-  const [providerLocationFilter, setProviderLocationFilter] = useState("");
-  const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
+  const [providerLocationFilter, setProviderLocationFilter] = useState("all");
+  const [catalogLocationFilter, setCatalogLocationFilter] = useState("all");
   const [blueprintLocationData, setBlueprintLocationData] = useState<Record<number, string[]>>({});
   const [locationDataLoading, setLocationDataLoading] = useState(false);
   
