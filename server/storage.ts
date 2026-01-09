@@ -207,6 +207,8 @@ export class DatabaseStorage implements IStorage {
         transformScale: designs.transformScale,
         transformX: designs.transformX,
         transformY: designs.transformY,
+        colorTier: designs.colorTier,
+        alternateImageUrl: designs.alternateImageUrl,
         status: designs.status,
         createdAt: designs.createdAt,
         updatedAt: designs.updatedAt,

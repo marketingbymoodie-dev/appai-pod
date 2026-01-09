@@ -772,6 +772,162 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Regenerate design for a different color tier (FREE - no credit cost)
+  // Used when user switches between light/dark apparel colors
+  app.post("/api/generate/regenerate-tier", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        return res.status(401).json({ error: "Customer not found" });
+      }
+
+      const { designId, newColorTier, newFrameColor } = req.body;
+      
+      if (!designId || !newColorTier) {
+        return res.status(400).json({ error: "Design ID and new color tier are required" });
+      }
+
+      // Get the original design
+      const originalDesign = await storage.getDesign(designId);
+      if (!originalDesign) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+
+      // Verify ownership
+      if (originalDesign.customerId !== customer.id) {
+        return res.status(403).json({ error: "Not authorized to modify this design" });
+      }
+
+      // Get the product type for style lookup
+      let productType = null;
+      if (originalDesign.productTypeId) {
+        productType = await storage.getProductType(originalDesign.productTypeId);
+      }
+
+      // Look up the original style preset
+      let stylePromptPrefix = "";
+      const stylePreset = originalDesign.stylePreset;
+      
+      if (stylePreset) {
+        // For dark tier, use the dark tier prompt variants
+        if (newColorTier === "dark" && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
+          stylePromptPrefix = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+        } else {
+          // Use regular prompt
+          const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
+            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          }
+        }
+      }
+
+      // Build the prompt
+      const prompt = originalDesign.prompt;
+      let fullPrompt = stylePromptPrefix ? `${stylePromptPrefix} ${prompt}` : prompt;
+      
+      // Add sizing requirements based on color tier
+      const isDarkTier = newColorTier === "dark";
+      const bgColor = isDarkTier ? "DARK CHARCOAL GRAY (#333333)" : "PURE WHITE (#FFFFFF)";
+      const designColors = isDarkTier 
+        ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark and black colors in the design."
+        : "VIBRANT colors. AVOID white and light colors in the design.";
+      
+      fullPrompt += `
+
+MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
+1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
+2. SOLID ${bgColor} BACKGROUND: The design MUST be on a ${bgColor} background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The solid background can be easily removed for printing.
+3. DESIGN COLORS: Use ${designColors}
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
+7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
+8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+`;
+
+      console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
+
+      // Generate the new image
+      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
+      
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-image",
+        contents,
+        config: {
+          responseModalities: [Modality.TEXT, Modality.IMAGE],
+        },
+      });
+
+      const candidate = response.candidates?.[0];
+      const imagePart = candidate?.content?.parts?.find(
+        (part: any) => part.inlineData
+      );
+
+      if (!imagePart?.inlineData?.data) {
+        return res.status(500).json({ error: "Failed to regenerate image" });
+      }
+
+      const mimeType = imagePart.inlineData.mimeType || "image/png";
+
+      // Save image with background removal
+      let generatedImageUrl: string;
+      let thumbnailImageUrl: string | undefined;
+      try {
+        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { 
+          isApparel: true, 
+          colorTier: newColorTier as ColorTier
+        });
+        generatedImageUrl = result.imageUrl;
+        thumbnailImageUrl = result.thumbnailUrl;
+      } catch (storageError) {
+        console.error("Failed to save regenerated image:", storageError);
+        generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+      }
+
+      // Store the current image as alternate before updating
+      const updateData: any = {
+        colorTier: newColorTier,
+        frameColor: newFrameColor || originalDesign.frameColor,
+      };
+
+      // If we have an existing image and it's different from the new one, store it as alternate
+      if (originalDesign.generatedImageUrl && !originalDesign.generatedImageUrl.startsWith('data:')) {
+        updateData.alternateImageUrl = originalDesign.generatedImageUrl;
+      }
+      
+      updateData.generatedImageUrl = generatedImageUrl;
+      if (thumbnailImageUrl) {
+        updateData.thumbnailImageUrl = thumbnailImageUrl;
+      }
+
+      // Update the design with new image and tier
+      const updatedDesign = await storage.updateDesign(designId, updateData);
+
+      // Log the free regeneration (no credit deducted)
+      await storage.createGenerationLog({
+        customerId: customer.id,
+        designId: designId,
+        promptLength: prompt.length,
+        hadReferenceImage: false,
+        stylePreset,
+        size: originalDesign.size,
+        success: true,
+      });
+
+      console.log(`[Regenerate-Tier] Successfully regenerated design ${designId} for ${newColorTier} tier`);
+
+      res.json({
+        design: updatedDesign,
+        message: `Design regenerated for ${newColorTier} colored apparel`,
+      });
+    } catch (error) {
+      console.error("Error regenerating design for tier:", error);
+      res.status(500).json({ error: "Failed to regenerate design" });
+    }
+  });
+
   // Rate limiting for Shopify generation (per shop per hour)
   const shopifyGenerationRateLimits = new Map<string, { count: number; resetAt: number }>();
   const SHOPIFY_RATE_LIMIT = 100; // 100 generations per shop per hour

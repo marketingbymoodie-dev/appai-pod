@@ -15,6 +15,17 @@ import { Link, useLocation } from "wouter";
 import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye, Package } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
+import { getColorTier, type ColorTier } from "@shared/colorUtils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 import lifestyle11x14blk from "@assets/11x14blk_1767584656742.png";
 import lifestyle11x14wht from "@assets/11x14wht_1767584656741.png";
@@ -108,6 +119,11 @@ export default function DesignPage() {
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [tweakPrompt, setTweakPrompt] = useState("");
   const [showTweak, setShowTweak] = useState(false);
+  
+  // Color tier mismatch modal state
+  const [showColorTierModal, setShowColorTierModal] = useState(false);
+  const [pendingColorChange, setPendingColorChange] = useState<{ newColor: string; newTier: ColorTier } | null>(null);
+  const [isRegenerating, setIsRegenerating] = useState(false);
   
   // Calibration mode for positioning lifestyle mockup artwork
   const [calibrationMode, setCalibrationMode] = useState(false);
@@ -460,7 +476,73 @@ export default function DesignPage() {
   };
 
   const handleFrameColorChange = (newColor: string) => {
+    // Check for color tier mismatch only for apparel products with an existing design
+    if (generatedDesign && designerConfig?.designerType === "apparel" && generatedDesign.colorTier) {
+      const colorConfig = activeFrameColors.find(c => c.id === newColor);
+      if (colorConfig?.hex) {
+        const newTier = getColorTier(colorConfig.hex);
+        const currentTier = generatedDesign.colorTier as ColorTier;
+        
+        if (newTier !== currentTier) {
+          // Show modal to warn about tier mismatch
+          setPendingColorChange({ newColor, newTier });
+          setShowColorTierModal(true);
+          return;
+        }
+      }
+    }
+    
     setSelectedFrameColor(newColor);
+  };
+  
+  const handleColorTierRegenerate = async () => {
+    if (!generatedDesign || !pendingColorChange) return;
+    
+    setIsRegenerating(true);
+    try {
+      const response = await apiRequest("POST", "/api/generate/regenerate-tier", {
+        designId: generatedDesign.id,
+        newColorTier: pendingColorChange.newTier,
+        newFrameColor: pendingColorChange.newColor,
+      });
+      
+      const result = await response.json();
+      if (result.design) {
+        setGeneratedDesign(result.design);
+        setSelectedFrameColor(pendingColorChange.newColor);
+        queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
+        toast({
+          title: "Design regenerated!",
+          description: `Your design has been optimized for ${pendingColorChange.newTier === "dark" ? "dark" : "light"} colored apparel.`,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to regenerate design:", error);
+      toast({
+        title: "Regeneration failed",
+        description: "Could not regenerate the design. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsRegenerating(false);
+      setShowColorTierModal(false);
+      setPendingColorChange(null);
+    }
+  };
+  
+  const handleColorTierKeepOriginal = () => {
+    // Cancel the color change - keep the current color that matches the design
+    setShowColorTierModal(false);
+    setPendingColorChange(null);
+  };
+  
+  const handleColorTierProceedAnyway = () => {
+    // User wants to proceed with the mismatched color without regenerating
+    if (pendingColorChange) {
+      setSelectedFrameColor(pendingColorChange.newColor);
+    }
+    setShowColorTierModal(false);
+    setPendingColorChange(null);
   };
 
   const handleSaveDesign = () => {
@@ -1639,6 +1721,61 @@ export default function DesignPage() {
           </Button>
         </div>
       </main>
+      
+      {/* Color Tier Mismatch Modal */}
+      <AlertDialog open={showColorTierModal} onOpenChange={(open) => { if (!open && !isRegenerating) handleColorTierKeepOriginal(); }}>
+        <AlertDialogContent data-testid="dialog-color-tier">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Design Colors May Not Match</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingColorChange?.newTier === "dark" ? (
+                <>
+                  This design was created with <strong>dark colors</strong> for light-colored apparel. 
+                  For best results on <strong>dark-colored</strong> apparel, the design should use lighter, brighter colors.
+                </>
+              ) : (
+                <>
+                  This design was created with <strong>light/bright colors</strong> for dark-colored apparel. 
+                  For best results on <strong>light-colored</strong> apparel, the design should use darker colors.
+                </>
+              )}
+              <br /><br />
+              Would you like to regenerate this design with optimized colors? This is <strong>free</strong> and uses the same prompt.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel 
+              onClick={handleColorTierKeepOriginal}
+              disabled={isRegenerating}
+              data-testid="button-cancel-color-change"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <Button
+              variant="outline"
+              onClick={handleColorTierProceedAnyway}
+              disabled={isRegenerating}
+              data-testid="button-proceed-anyway"
+            >
+              Use Anyway
+            </Button>
+            <AlertDialogAction 
+              onClick={handleColorTierRegenerate}
+              disabled={isRegenerating}
+              data-testid="button-regenerate-tier"
+            >
+              {isRegenerating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Regenerating...
+                </>
+              ) : (
+                "Regenerate (Free)"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
