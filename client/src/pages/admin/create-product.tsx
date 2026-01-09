@@ -196,7 +196,7 @@ export default function AdminCreateProduct() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          objectPath,
+          imageUrl: objectPath,
           name: file.name.replace(/\.[^/.]+$/, ""),
           source,
         }),
