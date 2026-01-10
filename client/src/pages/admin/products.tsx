@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
@@ -223,6 +223,25 @@ export default function AdminProducts() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to refresh images", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const refreshColorsMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/refresh-colors`);
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({ 
+        title: "Colors refreshed",
+        description: data.updatedCount > 0 
+          ? `Updated ${data.updatedCount} color${data.updatedCount !== 1 ? 's' : ''} with new hex values.`
+          : "All colors already have the latest hex values."
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to refresh colors", description: error.message, variant: "destructive" });
     },
   });
 
@@ -505,6 +524,18 @@ export default function AdminProducts() {
                         <Settings className="h-3 w-3 mr-1" />
                         Variants
                       </Button>
+                      {pt.printifyBlueprintId && JSON.parse(pt.frameColors || "[]").length > 0 && (
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => refreshColorsMutation.mutate(pt.id)}
+                          disabled={refreshColorsMutation.isPending}
+                          data-testid={`button-refresh-colors-${pt.id}`}
+                        >
+                          <Palette className={`h-3 w-3 mr-1 ${refreshColorsMutation.isPending ? 'animate-pulse' : ''}`} />
+                          Refresh Colors
+                        </Button>
+                      )}
                       <Button 
                         variant="ghost" 
                         size="icon"

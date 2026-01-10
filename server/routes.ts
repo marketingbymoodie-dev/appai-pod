@@ -1632,6 +1632,13 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       
       console.log(`Created Shopify product ${createdProduct.product.id} for product type ${productType.id}`);
 
+      // Save Shopify product ID to the product type for future updates
+      await storage.updateProductType(productType.id, {
+        shopifyProductId: String(createdProduct.product.id),
+        shopifyProductUrl: `https://${shopDomain}/admin/products/${createdProduct.product.id}`,
+        lastPushedToShopify: new Date(),
+      });
+
       res.json({
         success: true,
         shopifyProductId: createdProduct.product.id,
@@ -1643,6 +1650,225 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error creating Shopify product:", error);
       res.status(500).json({ error: "Failed to create Shopify product" });
+    }
+  });
+
+  // ==================== SHOPIFY PRODUCT UPDATE ====================
+  // Update an existing Shopify product with new variants/info from local product type
+  app.put("/api/shopify/products/:productTypeId", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      const productTypeId = parseInt(req.params.productTypeId);
+      
+      if (!merchant) {
+        return res.status(403).json({ error: "Merchant not found" });
+      }
+
+      const { shopDomain } = req.body;
+
+      if (!shopDomain) {
+        return res.status(400).json({ error: "Shop domain is required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shopDomain)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Get the product type
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Security: Verify ownership - must match current merchant
+      // Reject unowned product types - they need to be claimed via proper import flow first
+      if (!productType.merchantId) {
+        return res.status(403).json({ 
+          error: "Product not linked to merchant",
+          details: "This product type is not associated with any merchant. Please re-import it from Printify."
+        });
+      }
+      
+      if (productType.merchantId !== merchant.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      // Check if product was pushed to Shopify
+      if (!productType.shopifyProductId) {
+        return res.status(400).json({ 
+          error: "Product not yet published to Shopify",
+          details: "Use 'Send to Store' first to create the product in Shopify"
+        });
+      }
+
+      // Get installation
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (!installation || installation.status !== "active") {
+        return res.status(400).json({ error: "Shopify store not connected" });
+      }
+
+      // Security: Verify the installation belongs to this merchant
+      if (!installation.merchantId) {
+        // Link unlinked installations to the current merchant
+        await storage.updateShopifyInstallation(installation.id, {
+          merchantId: merchant.id,
+        });
+      } else if (installation.merchantId !== merchant.id) {
+        return res.status(403).json({ 
+          error: "Access denied",
+          details: "This Shopify store is linked to a different merchant account"
+        });
+      }
+
+      // Parse product type data
+      const allSizes = JSON.parse(productType.sizes || "[]");
+      const allColors = JSON.parse(productType.frameColors || "[]");
+      const savedSizeIds: string[] = JSON.parse(productType.selectedSizeIds || "[]");
+      const savedColorIds: string[] = JSON.parse(productType.selectedColorIds || "[]");
+      const variantMap = JSON.parse(productType.variantMap || "{}");
+      const baseMockupImages = JSON.parse(productType.baseMockupImages || "{}");
+
+      // Build variants
+      const shopifyVariants: Array<{
+        option1: string;
+        option2?: string;
+        price: string;
+        sku: string;
+        inventory_management: null;
+        inventory_policy: string;
+      }> = [];
+
+      const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: { id: string }) => s.id);
+      const colorIdsToUse = savedColorIds.length > 0 ? savedColorIds : allColors.map((c: { id: string }) => c.id);
+      
+      const sizesToUse = allSizes.filter((s: { id: string }) => sizeIdsToUse.includes(s.id));
+      const colorsToUse = allColors.filter((c: { id: string }) => colorIdsToUse.includes(c.id));
+
+      if (colorsToUse.length > 0) {
+        for (const size of sizesToUse) {
+          for (const color of colorsToUse) {
+            const variantKey = `${size.id}:${color.id}`;
+            if (variantMap[variantKey]) {
+              shopifyVariants.push({
+                option1: size.name,
+                option2: color.name,
+                price: "0.00",
+                sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`,
+                inventory_management: null,
+                inventory_policy: "continue",
+              });
+            }
+          }
+        }
+      } else if (allColors.length === 0) {
+        for (const size of sizesToUse) {
+          const variantKey = `${size.id}:default`;
+          if (variantMap[variantKey]) {
+            shopifyVariants.push({
+              option1: size.name,
+              price: "0.00",
+              sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`,
+              inventory_management: null,
+              inventory_policy: "continue",
+            });
+          }
+        }
+      }
+
+      // Validate variant limit
+      if (shopifyVariants.length > 100) {
+        return res.status(400).json({ 
+          error: `Too many variants (${shopifyVariants.length})`,
+          details: "Shopify allows a maximum of 100 variants per product."
+        });
+      }
+
+      // Build product options
+      const productOptions: Array<{ name: string; values: string[] }> = [];
+      
+      if (allSizes.length > 0) {
+        productOptions.push({
+          name: "Size",
+          values: Array.from(new Set(shopifyVariants.map(v => v.option1))),
+        });
+      }
+      
+      if (allColors.length > 0) {
+        productOptions.push({
+          name: "Color",
+          values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
+        });
+      }
+
+      // Build images
+      const images: Array<{ src: string; alt: string }> = [];
+      if (baseMockupImages.front) {
+        images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
+      }
+      if (baseMockupImages.lifestyle) {
+        images.push({ src: baseMockupImages.lifestyle, alt: `${productType.name} - Lifestyle` });
+      }
+
+      // Update product in Shopify (Note: Shopify doesn't allow updating variants directly, 
+      // we update what we can: description, images, etc.)
+      const cleanDescription = (productType.description || "")
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      const updatePayload = {
+        product: {
+          id: productType.shopifyProductId,
+          body_html: `
+            <p>${cleanDescription}</p>
+            <p><strong>This product features our AI Design Studio.</strong> Create your own unique artwork using AI, or upload your own design!</p>
+          `,
+          images: images.length > 0 ? images : undefined,
+        },
+      };
+
+      const shopifyResponse = await fetch(
+        `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": installation.accessToken,
+          },
+          body: JSON.stringify(updatePayload),
+        }
+      );
+
+      if (!shopifyResponse.ok) {
+        const errorText = await shopifyResponse.text();
+        console.error("Shopify API error:", errorText);
+        return res.status(shopifyResponse.status).json({ 
+          error: "Failed to update Shopify product",
+          details: errorText
+        });
+      }
+
+      const updatedProduct = await shopifyResponse.json();
+
+      // Update last pushed timestamp
+      await storage.updateProductType(productType.id, {
+        lastPushedToShopify: new Date(),
+      });
+
+      res.json({
+        success: true,
+        message: "Product updated in Shopify. Note: Variant changes may require recreating the product.",
+        adminUrl: `https://${shopDomain}/admin/products/${productType.shopifyProductId}`,
+      });
+
+    } catch (error) {
+      console.error("Error updating Shopify product:", error);
+      res.status(500).json({ error: "Failed to update Shopify product" });
     }
   });
 
@@ -4645,6 +4871,124 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     } catch (error) {
       console.error("Error refreshing product images:", error);
       res.status(500).json({ error: "Failed to refresh images" });
+    }
+  });
+
+  // POST /api/admin/product-types/:id/refresh-colors - Refresh color hex values using local lookup map
+  // This only updates hex values - does NOT modify size/color selections
+  // Note: Does NOT require Printify API token - uses local color lookup map
+  app.post("/api/admin/product-types/:id/refresh-colors", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Comprehensive color hex lookup - Printify API doesn't provide hex codes
+      const colorHexMap: Record<string, string> = {
+        // Basic colors
+        "black": "#1a1a1a", "white": "#f5f5f5", "red": "#C41E3A", "blue": "#2563EB",
+        "navy": "#1B2838", "green": "#22C55E", "yellow": "#FACC15", "orange": "#F97316",
+        "pink": "#EC4899", "purple": "#A855F7", "gray": "#9E9E9E", "grey": "#9E9E9E",
+        "brown": "#795548", "beige": "#F5F5DC", "cream": "#FFFDD0", "tan": "#D2B48C",
+        // Frame colors
+        "walnut": "#5D4037", "natural": "#D7CCC8", "gold": "#FFD700", "silver": "#C0C0C0",
+        "oak": "#C4A35A", "cherry": "#9B2335", "mahogany": "#4E2728", "espresso": "#3C2415",
+        // Heather variants
+        "heather grey": "#9CA3AF", "heather gray": "#9CA3AF", "dark heather": "#4B5563",
+        "heather navy": "#374151", "heather blue": "#60A5FA", "heather red": "#F87171",
+        "heather forest": "#166534", "heather purple": "#A855F7", "heather orange": "#FB923C",
+        // Common apparel colors
+        "arctic white": "#F8FAFC", "jet black": "#0a0a0a", "charcoal": "#36454F",
+        "burgundy": "#800020", "maroon": "#800000", "cardinal red": "#C41E3A",
+        "fire red": "#FF3131", "scarlet": "#FF2400", "coral": "#FF7F50",
+        "hot pink": "#FF69B4", "baby pink": "#F4C2C2", "light pink": "#FFB6C1",
+        "magenta": "#FF00FF", "fuchsia": "#FF00FF", "rose": "#FF007F",
+        "sky blue": "#87CEEB", "light blue": "#ADD8E6", "royal blue": "#4169E1",
+        "royal": "#4169E1", "navy blue": "#000080", "cobalt": "#0047AB", "steel blue": "#4682B4",
+        "oxford navy": "#1C2541", "indigo": "#4B0082", "midnight navy": "#191970",
+        "cool blue": "#4A90D9", "tahiti blue": "#3AB09E",
+        "kelly green": "#4CBB17", "forest green": "#228B22", "military green": "#4B5320",
+        "olive": "#808000", "sage": "#9DC183", "mint": "#98FF98", "lime": "#32CD32",
+        "bottle green": "#006A4E", "dark green": "#006400", "emerald": "#50C878",
+        "mustard": "#FFDB58", "lemon": "#FFF44F", "banana cream": "#FFE9A1",
+        "light yellow": "#FFFFE0", "sun yellow": "#FFE81F", "canary": "#FFEF00",
+        "orange crush": "#FF6600", "burnt orange": "#CC5500", "peach": "#FFCBA4",
+        "rust": "#B7410E", "terracotta": "#E2725B", "pumpkin": "#FF7518",
+        "lavender": "#E6E6FA", "violet": "#EE82EE", "plum": "#DDA0DD",
+        "lilac": "#C8A2C8", "grape": "#6F2DA8", "eggplant": "#614051", "purple rush": "#9B59B6",
+        "hot chocolate": "#4A2C2A", "chocolate": "#7B3F00", "coffee": "#6F4E37",
+        "mocha": "#967969", "dark chocolate": "#3D2314",
+        "sand": "#C2B280", "khaki": "#C3B091", "taupe": "#483C32",
+        "camel": "#C19A6B", "nude": "#E3BC9A", "champagne": "#F7E7CE", "desert pink": "#EDC9AF",
+        "ash": "#B2BEB5", "slate": "#708090",
+        "steel grey": "#71797E", "gunmetal": "#2A3439", "anthracite": "#293133",
+        "light grey": "#D3D3D3", "light gray": "#D3D3D3", "heavy metal": "#3D3D3D",
+        "teal": "#008080", "cyan": "#00FFFF", "aqua": "#00FFFF",
+        "turquoise": "#40E0D0", "seafoam": "#93E9BE",
+        "ivory": "#FFFFF0", "pearl": "#FDEEF4", "oatmeal": "#D5C4A1", "ecru": "#C2B280",
+        // Sport specific
+        "athletic heather": "#B8B8B8", "sport grey": "#9E9E9E",
+        "dark grey heather": "#4B4B4B", "ice grey": "#D3D3D3",
+        "vintage black": "#2B2B2B", "vintage navy": "#2C3E50",
+        "washed black": "#3D3D3D", "stonewash blue": "#5DADE2"
+      };
+
+      // Get existing colors
+      const existingColors: Array<{ id: string; name: string; hex: string }> = JSON.parse(productType.frameColors || "[]");
+      
+      // Update each color's hex value using the lookup map
+      let updatedCount = 0;
+      const updatedColors = existingColors.map(color => {
+        const colorName = color.name.toLowerCase();
+        const baseColorName = colorName
+          .replace(/^solid\s+/i, '')
+          .replace(/^heather\s+/i, 'heather ')
+          .trim();
+        
+        // Try to find a matching hex: 1) exact match, 2) normalized match, 3) partial match
+        let newHex = colorHexMap[colorName] || colorHexMap[baseColorName];
+        
+        // Partial matching if no exact match
+        if (!newHex) {
+          for (const [mapKey, mapHex] of Object.entries(colorHexMap)) {
+            if (baseColorName.includes(mapKey) || mapKey.includes(baseColorName)) {
+              newHex = mapHex;
+              break;
+            }
+          }
+        }
+        
+        if (newHex && newHex !== color.hex) {
+          updatedCount++;
+          return { ...color, hex: newHex };
+        }
+        return color;
+      });
+
+      // Update the product type
+      const updated = await storage.updateProductType(productTypeId, {
+        frameColors: JSON.stringify(updatedColors)
+      });
+
+      res.json({ 
+        success: true, 
+        message: `Updated ${updatedCount} color${updatedCount !== 1 ? 's' : ''} with new hex values`,
+        updatedCount,
+        frameColors: updatedColors,
+        productType: updated 
+      });
+    } catch (error) {
+      console.error("Error refreshing product colors:", error);
+      res.status(500).json({ error: "Failed to refresh colors" });
     }
   });
 

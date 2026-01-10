@@ -237,6 +237,9 @@ export const productTypes = pgTable("product_types", {
   baseMockupImages: text("base_mockup_images").notNull().default("{}"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
+  shopifyProductId: text("shopify_product_id"),
+  shopifyProductUrl: text("shopify_product_url"),
+  lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
