@@ -975,9 +975,11 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
       // Note: Origin validation is relaxed to allow Shopify storefronts (custom domains, CDN, etc.)
       // Security is enforced by verifying the shop installation exists and is active (below)
 
-      // Validate shop domain format
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
-        return res.status(400).json({ error: "Invalid shop domain format" });
+      // Validate shop domain format - accept myshopify.com domains
+      // Custom domains are also accepted and will be looked up
+      const isMyshopifyDomain = /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop);
+      if (!isMyshopifyDomain) {
+        console.log(`Shopify session: Non-myshopify domain received: ${shop}, will attempt to look up`);
       }
 
       // Rate limit session creation per IP to prevent abuse
@@ -1001,8 +1003,21 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 
       // Verify shop is installed first (this is the primary security check)
       // We check installation before referer since custom domains won't match myshopify.com patterns
-      const installation = await storage.getShopifyInstallationByShop(shop);
+      let installation = await storage.getShopifyInstallationByShop(shop);
+      
+      // If not found and it's not a myshopify domain, the frontend might be passing a custom domain
+      // Log this for debugging and return a helpful error
+      if (!installation && !isMyshopifyDomain) {
+        console.log(`Shopify session: No installation found for custom domain: ${shop}`);
+        // Try to give a helpful error - the theme extension needs to pass the myshopify.com domain
+        return res.status(403).json({ 
+          error: "Shop not authorized",
+          details: "Custom domain detected. Theme extension may need to be updated to pass the myshopify.com domain."
+        });
+      }
+      
       if (!installation || installation.status !== "active") {
+        console.log(`Shopify session: Installation not found or inactive for: ${shop}`);
         return res.status(403).json({ error: "Shop not authorized" });
       }
 

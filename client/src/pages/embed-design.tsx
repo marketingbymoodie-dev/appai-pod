@@ -77,7 +77,42 @@ export default function EmbedDesign() {
   const [configLoading, setConfigLoading] = useState(true);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
 
-  const shopDomain = searchParams.get("shop") || "";
+  // Resolve shop domain - try URL param first, then try to extract from referrer
+  // This handles cases where the theme extension hasn't been redeployed with the latest changes
+  const resolveShopDomain = (): string => {
+    // First try the URL param (set by theme extension)
+    const shopParam = searchParams.get("shop") || "";
+    if (shopParam && shopParam.endsWith(".myshopify.com")) {
+      return shopParam;
+    }
+    
+    // If shop param is a custom domain or empty, try to get from referrer
+    // The referrer in Shopify embeds is the product page URL
+    try {
+      const referrer = document.referrer;
+      if (referrer) {
+        const referrerUrl = new URL(referrer);
+        // Check if referrer hostname is a myshopify.com domain
+        if (referrerUrl.hostname.endsWith(".myshopify.com")) {
+          return referrerUrl.hostname;
+        }
+        // Otherwise, return whatever shop param we have (could be custom domain)
+        // Backend will try to resolve it
+        if (shopParam) {
+          return shopParam;
+        }
+        // Last resort: use referrer hostname
+        return referrerUrl.hostname;
+      }
+    } catch (e) {
+      console.warn("Failed to parse referrer for shop domain:", e);
+    }
+    
+    // Return whatever we have
+    return shopParam;
+  };
+  
+  const shopDomain = resolveShopDomain();
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [customer, setCustomer] = useState<CustomerInfo | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
