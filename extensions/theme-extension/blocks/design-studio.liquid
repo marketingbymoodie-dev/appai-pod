@@ -72,7 +72,6 @@
     data-product-handle="{{ product.handle }}"
     data-product-title="{{ product.title | escape }}"
     data-show-presets="{{ block.settings.show_style_presets }}"
-    data-variants='{{ product.variants | json | escape }}'
     data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
     data-customer-id="{% if customer %}{{ customer.id }}{% endif %}"
     data-customer-email="{% if customer %}{{ customer.email | escape }}{% endif %}"
@@ -174,13 +173,6 @@
     const customerEmail = container.dataset.customerEmail || '';
     const customerName = container.dataset.customerName || '';
     
-    let variants = [];
-    try {
-      variants = JSON.parse(container.dataset.variants || '[]');
-    } catch (e) {
-      console.error('Failed to parse variants:', e);
-    }
-
     // Use the permanent myshopify.com domain from Liquid for consistent API calls
     // This ensures the shop is always identified correctly regardless of custom domains
     const shopDomain = container.dataset.shopDomain || window.Shopify?.shop || window.location.hostname;
@@ -199,7 +191,8 @@
     params.set('productTitle', productTitle);
     params.set('showPresets', showPresets.toString());
     params.set('selectedVariant', selectedVariant);
-    params.set('variants', JSON.stringify(variants));
+    // Note: We no longer pass variants in URL - they're too large and cause 431 errors
+    // The embed page gets variant info from the product type config via API
     if (customerId) {
       params.set('customerId', customerId);
       params.set('customerEmail', customerEmail);
