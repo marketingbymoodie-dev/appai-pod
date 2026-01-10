@@ -967,24 +967,13 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
         return res.status(400).json({ error: "Shop domain required" });
       }
 
-      // Validate origin - requests must come from our embed page
-      // The iframe is hosted on our domain, so the referer should be our domain
+      // Log the session request for debugging
       const referer = req.headers.referer || req.headers.origin || "";
       const host = req.headers.host || "";
-      const isDevelopment = process.env.NODE_ENV === "development";
+      console.log(`Shopify session request: shop=${shop}, referer=${referer}, host=${host}`);
       
-      // In production, require referer to match our app's domain
-      // This ensures requests come from our iframe, not external sources
-      if (!isDevelopment) {
-        const isValidOrigin = referer.includes(host) || 
-          referer.includes(".replit.app") || 
-          referer.includes(".replit.dev");
-        
-        if (!isValidOrigin) {
-          console.warn(`Shopify session: Invalid origin - referer: ${referer}, host: ${host}`);
-          return res.status(403).json({ error: "Invalid request origin" });
-        }
-      }
+      // Note: Origin validation is relaxed to allow Shopify storefronts (custom domains, CDN, etc.)
+      // Security is enforced by verifying the shop installation exists and is active (below)
 
       // Validate shop domain format
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
