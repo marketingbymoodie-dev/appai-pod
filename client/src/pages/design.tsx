@@ -140,47 +140,52 @@ export default function DesignPage() {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const carouselRef = useRef<HTMLDivElement>(null);
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
-
+  const dragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
   const dragContainerRef = useRef<HTMLDivElement | null>(null);
+  
+  // Drag state for visual feedback (ghost overlay and cursor)
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHoveringMockup, setIsHoveringMockup] = useState(false);
   
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!generatedDesign?.generatedImageUrl) return;
     e.preventDefault();
     e.stopPropagation();
-    isDraggingRef.current = true;
-    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    setIsDragging(true);
+    dragStartRef.current = { 
+      x: e.clientX, 
+      y: e.clientY,
+      startX: imagePosition.x,
+      startY: imagePosition.y,
+    };
     dragContainerRef.current = e.currentTarget;
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDraggingRef.current || !dragContainerRef.current) return;
+    if (!isDragging || !dragStartRef.current || !dragContainerRef.current) return;
     e.preventDefault();
     e.stopPropagation();
     
     const rect = dragContainerRef.current.getBoundingClientRect();
-    
     if (rect.width === 0 || rect.height === 0) return;
     
     const dx = e.clientX - dragStartRef.current.x;
     const dy = e.clientY - dragStartRef.current.y;
     
-    if (dx === 0 && dy === 0) return;
+    // Convert pixel movement to percentage of container
+    const sensitivity = 0.5;
+    const newX = Math.max(-50, Math.min(150, dragStartRef.current.startX + (dx / rect.width) * 100 * sensitivity));
+    const newY = Math.max(-50, Math.min(150, dragStartRef.current.startY + (dy / rect.height) * 100 * sensitivity));
     
-    const deltaX = (dx / rect.width) * 100;
-    const deltaY = (dy / rect.height) * 100;
-    
-    setImagePosition(prev => ({
-      x: Math.max(-50, Math.min(150, prev.x + deltaX)),
-      y: Math.max(-50, Math.min(150, prev.y + deltaY)),
-    }));
-    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    setImagePosition({ x: newX, y: newY });
   };
 
   const handleMouseUp = () => {
-    isDraggingRef.current = false;
-    dragContainerRef.current = null;
+    if (isDragging) {
+      setIsDragging(false);
+      dragStartRef.current = null;
+      dragContainerRef.current = null;
+    }
   };
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -1153,15 +1158,22 @@ export default function DesignPage() {
   const isFramedProduct = designerConfig?.designerType === "framed-print" || designerConfig?.designerType === "framed_print";
   const hasBaseMockup = designerConfig?.baseMockupImages?.front;
   // For products with Printify mockups, prefer showing those over static base mockup
+  // But only when mockups are actually loaded/loading - otherwise fall back to base mockup view
   const usePrintifyMockups = designerConfig?.hasPrintifyMockups && (printifyMockups.length > 0 || mockupLoading);
+  // For apparel with hasPrintifyMockups but no mockups loaded yet, show artwork on base template
+  const showApparelBaseWithArtwork = designerConfig?.hasPrintifyMockups && hasBaseMockup && !usePrintifyMockups && generatedDesign?.generatedImageUrl;
+  // Can drag if we have artwork and (have mockups OR showing base with artwork)
+  const canDragDesign = generatedDesign?.generatedImageUrl && (usePrintifyMockups || showApparelBaseWithArtwork || hasBaseMockup);
 
   const previewMockup = (
     <div 
-      className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full ${generatedDesign?.generatedImageUrl ? 'cursor-move select-none' : ''}`}
+      className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full select-none`}
+      style={{ cursor: canDragDesign ? (isDragging ? 'grabbing' : 'grab') : 'default' }}
+      onMouseEnter={() => setIsHoveringMockup(true)}
+      onMouseLeave={() => { setIsHoveringMockup(false); handleMouseUp(); }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
     >
       {isFramedProduct ? (
         // Framed print preview with frame and mat
@@ -1231,6 +1243,39 @@ export default function DesignPage() {
               <p className="text-xs">Your artwork will appear here</p>
             </div>
           )}
+        </div>
+      ) : showApparelBaseWithArtwork ? (
+        // Apparel product with hasPrintifyMockups but mockups not yet loaded - show artwork on base template
+        <div className="absolute inset-0 flex items-center justify-center" style={{ pointerEvents: 'none' }}>
+          <div className="relative w-full h-full">
+            <img
+              src={designerConfig!.baseMockupImages!.front!}
+              alt="Product preview"
+              className="w-full h-full object-contain rounded-md"
+              data-testid="img-base-mockup"
+            />
+            {/* Overlay generated artwork on the product mockup - uses same positioning as hasBaseMockup branch */}
+            <div 
+              className="absolute overflow-hidden"
+              style={{
+                top: '25%',
+                left: '30%',
+                width: '40%',
+                height: '40%',
+              }}
+            >
+              <img
+                src={generatedDesign!.generatedImageUrl!}
+                alt="Generated artwork"
+                className="w-full h-full object-cover"
+                style={{
+                  transform: `scale(${imageScale / 100}) translate(${(imagePosition.x - 50)}%, ${(imagePosition.y - 50)}%)`,
+                }}
+                draggable={false}
+                data-testid="img-generated"
+              />
+            </div>
+          </div>
         </div>
       ) : hasBaseMockup ? (
         // Base product mockup (for apparel, etc.) with optional generated artwork overlay
@@ -1319,6 +1364,38 @@ export default function DesignPage() {
               <p className="text-xs">Your artwork will appear here</p>
             </div>
           )}
+        </div>
+      )}
+      
+      {/* Ghost overlay while dragging - shows design position in real-time */}
+      {isDragging && generatedDesign?.generatedImageUrl && canDragDesign && (
+        <div 
+          className="absolute pointer-events-none z-10"
+          style={{
+            width: `${imageScale * 0.35}%`,
+            height: `${imageScale * 0.35}%`,
+            left: `${imagePosition.x}%`,
+            top: `${imagePosition.y}%`,
+            transform: 'translate(-50%, -50%)',
+          }}
+        >
+          <div className="w-full h-full border-2 border-primary border-dashed rounded-lg bg-primary/10 flex items-center justify-center">
+            <img 
+              src={generatedDesign.generatedImageUrl} 
+              alt="Position preview" 
+              className="w-3/4 h-3/4 object-contain opacity-60"
+              draggable={false}
+            />
+          </div>
+        </div>
+      )}
+      
+      {/* Hover indicator - shows move icon when hovering over draggable area */}
+      {canDragDesign && isHoveringMockup && !isDragging && !generateMutation.isPending && !mockupLoading && (
+        <div className="absolute inset-0 bg-black/20 flex items-center justify-center transition-opacity pointer-events-none z-10 rounded-md">
+          <div className="bg-background/90 rounded-full p-3 shadow-lg">
+            <Move className="h-6 w-6 text-foreground" />
+          </div>
         </div>
       )}
     </div>
