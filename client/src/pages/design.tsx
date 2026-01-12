@@ -122,6 +122,7 @@ export default function DesignPage() {
   const [isReuseMode, setIsReuseMode] = useState(false);
   const [reuseSourceDesign, setReuseSourceDesign] = useState<Design | null>(null);
   const loadingFromUrlRef = useRef(false);
+  const lastAutoFetchKeyRef = useRef<string | null>(null);
   
   // Color tier mismatch modal state
   const [showColorTierModal, setShowColorTierModal] = useState(false);
@@ -293,6 +294,10 @@ export default function DesignPage() {
               setImageScale(design.transformScale ?? 100);
               setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
               setShowTweak(true);
+              // Clear any stale mockups so auto-fetch can generate new ones
+              setPrintifyMockups([]);
+              setPrintifyMockupImages([]);
+              lastAutoFetchKeyRef.current = null;
             }
             // Clean up URL
             window.history.replaceState({}, "", "/design");
@@ -323,6 +328,10 @@ export default function DesignPage() {
               // Don't set size/color - let them choose
               setImageScale(design.transformScale ?? 100);
               setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
+              // Clear any stale mockups so auto-fetch can generate new ones when user selects product/size
+              setPrintifyMockups([]);
+              setPrintifyMockupImages([]);
+              lastAutoFetchKeyRef.current = null;
             }
             // Clean up URL
             window.history.replaceState({}, "", "/design");
@@ -356,6 +365,29 @@ export default function DesignPage() {
       setMockupLoading(false);
     }
   }, []);
+
+  // Auto-fetch Printify mockups in reuse/tweak mode when design, product, and selection are ready
+  useEffect(() => {
+    if (
+      (isReuseMode || showTweak) &&
+      generatedDesign?.generatedImageUrl &&
+      designerConfig &&
+      designerConfig.designerType !== "framed-print" &&
+      designerConfig.designerType !== "framed_print" &&
+      designerConfig.hasPrintifyMockups &&
+      selectedSize &&
+      selectedFrameColor &&
+      !mockupLoading
+    ) {
+      // Create a unique key for this combination to prevent redundant fetches
+      const fetchKey = `${designerConfig.id}-${selectedSize}-${selectedFrameColor}-${generatedDesign.generatedImageUrl}`;
+      if (lastAutoFetchKeyRef.current !== fetchKey && printifyMockups.length === 0) {
+        lastAutoFetchKeyRef.current = fetchKey;
+        const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
+        fetchPrintifyMockups(imageUrl, designerConfig.id, selectedSize, selectedFrameColor, imageScale);
+      }
+    }
+  }, [isReuseMode, showTweak, generatedDesign?.generatedImageUrl, designerConfig, selectedSize, selectedFrameColor, mockupLoading, printifyMockups.length, imageScale, fetchPrintifyMockups]);
 
   const generateMutation = useMutation({
     mutationFn: async (data: { prompt: string; stylePreset: string; size: string; frameColor: string; referenceImage?: string; productTypeId?: number }) => {
@@ -592,6 +624,10 @@ export default function DesignPage() {
     setSelectedSize(newSize);
     setImageScale(defaultZoom);
     setImagePosition({ x: 50, y: 50 });
+    // Clear mockups so new ones can be fetched for the new size
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    lastAutoFetchKeyRef.current = null;
   };
 
   const handleFrameColorChange = (newColor: string) => {
@@ -612,6 +648,10 @@ export default function DesignPage() {
     }
     
     setSelectedFrameColor(newColor);
+    // Clear mockups so new ones can be fetched for the new color
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    lastAutoFetchKeyRef.current = null;
   };
   
   const handleColorTierRegenerate = async () => {
@@ -629,6 +669,10 @@ export default function DesignPage() {
       if (result.design) {
         setGeneratedDesign(result.design);
         setSelectedFrameColor(pendingColorChange.newColor);
+        // Clear mockups so new ones can be fetched for the regenerated design
+        setPrintifyMockups([]);
+        setPrintifyMockupImages([]);
+        lastAutoFetchKeyRef.current = null;
         queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
         toast({
           title: "Design regenerated!",
@@ -659,6 +703,10 @@ export default function DesignPage() {
     // User wants to proceed with the mismatched color without regenerating
     if (pendingColorChange) {
       setSelectedFrameColor(pendingColorChange.newColor);
+      // Clear mockups so new ones can be fetched for the new color
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      lastAutoFetchKeyRef.current = null;
     }
     setShowColorTierModal(false);
     setPendingColorChange(null);
@@ -763,7 +811,11 @@ export default function DesignPage() {
   const selectedSizeConfig = activeSizes.find(s => s.id === selectedSize);
   const selectedFrameColorConfig = activeFrameColors.find(f => f.id === selectedFrameColor);
   
+  // Only return framed print lifestyle mockups for framed product types
   const getLifestyleMockup = () => {
+    // Only use framed lifestyle mockups for framed print products
+    const isFramed = designerConfig?.designerType === "framed-print" || designerConfig?.designerType === "framed_print";
+    if (!isFramed) return null;
     if (!selectedSize) return null;
     const sizeConfig = lifestyleMockups[selectedSize];
     if (!sizeConfig) return null;
