@@ -237,9 +237,14 @@ export default function DesignPage() {
 
   const handleSelectProductType = (productType: ProductType) => {
     setSelectedProductTypeId(productType.id);
-    setGeneratedDesign(null);
+    // In reuse mode, preserve the design - we're applying same artwork to different product
+    if (!isReuseMode) {
+      setGeneratedDesign(null);
+      setPrompt("");
+    }
     setPrintifyMockups([]);
-    setPrompt("");
+    setPrintifyMockupImages([]);
+    lastAutoFetchKeyRef.current = null;
     setSelectedSize("");
     setSelectedFrameColor("");
     setImageScale(100); // Will be updated by useEffect when designerConfig loads
@@ -377,11 +382,13 @@ export default function DesignPage() {
       designerConfig.hasPrintifyMockups &&
       selectedSize &&
       selectedFrameColor &&
-      !mockupLoading
+      !mockupLoading &&
+      printifyMockups.length === 0
     ) {
       // Create a unique key for this combination to prevent redundant fetches
       const fetchKey = `${designerConfig.id}-${selectedSize}-${selectedFrameColor}-${generatedDesign.generatedImageUrl}`;
-      if (lastAutoFetchKeyRef.current !== fetchKey && printifyMockups.length === 0) {
+      // Only fetch if we haven't already fetched for this exact combination
+      if (lastAutoFetchKeyRef.current !== fetchKey) {
         lastAutoFetchKeyRef.current = fetchKey;
         const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
         fetchPrintifyMockups(imageUrl, designerConfig.id, selectedSize, selectedFrameColor, imageScale);
