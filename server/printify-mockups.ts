@@ -8,6 +8,8 @@ interface MockupRequest {
   printifyApiToken: string;
   printifyShopId: string;
   scale?: number; // 0-2 range, default 1
+  x?: number; // -1 to 1 range, default 0 (center)
+  y?: number; // -1 to 1 range, default 0 (center)
 }
 
 interface MockupImage {
@@ -98,9 +100,17 @@ async function createTemporaryProduct(
   variantId: number,
   imageId: string,
   apiToken: string,
-  scale: number = 1
+  scale: number = 1,
+  x: number = 0,
+  y: number = 0
 ): Promise<string | null> {
   try {
+    // Printify uses 0-1 range where 0.5 is center
+    // Our x/y comes in as -1 to 1 range, convert to Printify's 0-1 range
+    // -1 = 0.0 (left/top), 0 = 0.5 (center), 1 = 1.0 (right/bottom)
+    const printifyX = 0.5 + (x * 0.5);
+    const printifyY = 0.5 + (y * 0.5);
+    
     const response = await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
       {
@@ -130,8 +140,8 @@ async function createTemporaryProduct(
                   images: [
                     {
                       id: imageId,
-                      x: 0.5,
-                      y: 0.5,
+                      x: printifyX,
+                      y: printifyY,
                       scale: scale, // Use provided scale
                       angle: 0,
                     },
@@ -243,6 +253,8 @@ export async function generatePrintifyMockup(
     printifyApiToken,
     printifyShopId,
     scale = 1,
+    x = 0,
+    y = 0,
   } = request;
 
   if (!printifyApiToken || !printifyShopId) {
@@ -276,7 +288,9 @@ export async function generatePrintifyMockup(
       variantId,
       uploadedImage.id,
       printifyApiToken,
-      scale
+      scale,
+      x,
+      y
     );
 
     if (!productId) {

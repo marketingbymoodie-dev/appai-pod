@@ -64,6 +64,8 @@ export default function AdminCreateProduct() {
   const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [imageScale, setImageScale] = useState(100);
+  const [imageX, setImageX] = useState(50);
+  const [imageY, setImageY] = useState(50);
   
   const [mockupImages, setMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
@@ -343,6 +345,8 @@ export default function AdminCreateProduct() {
           sizeId: selectedSize,
           colorId: selectedFrameColor || "default",
           scale: imageScale,
+          x: imageX,
+          y: imageY,
         }),
       });
 
@@ -894,19 +898,63 @@ export default function AdminCreateProduct() {
                     </div>
 
                     {designerConfig?.hasPrintifyMockups && (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <ZoomIn className="h-4 w-4" />
-                          <Label className="text-sm">Zoom: {imageScale}%</Label>
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <ZoomIn className="h-4 w-4" />
+                            <Label className="text-sm">Zoom: {imageScale}%</Label>
+                          </div>
+                          <Slider
+                            value={[imageScale]}
+                            onValueChange={(v) => setImageScale(v[0])}
+                            min={25}
+                            max={maxZoom}
+                            step={5}
+                            data-testid="slider-zoom"
+                          />
                         </div>
-                        <Slider
-                          value={[imageScale]}
-                          onValueChange={(v) => setImageScale(v[0])}
-                          min={25}
-                          max={maxZoom}
-                          step={5}
-                          data-testid="slider-zoom"
-                        />
+                        
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-sm">X Position: {imageX}%</Label>
+                          </div>
+                          <Slider
+                            value={[imageX]}
+                            onValueChange={(v) => setImageX(v[0])}
+                            min={0}
+                            max={100}
+                            step={1}
+                            data-testid="slider-x-position"
+                          />
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-sm">Y Position: {imageY}%</Label>
+                          </div>
+                          <Slider
+                            value={[imageY]}
+                            onValueChange={(v) => setImageY(v[0])}
+                            min={0}
+                            max={100}
+                            step={1}
+                            data-testid="slider-y-position"
+                          />
+                        </div>
+                        
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => { setImageScale(defaultZoom); setImageX(50); setImageY(50); }}
+                          className="w-full"
+                          data-testid="button-reset-position"
+                        >
+                          Reset to Center
+                        </Button>
+                        
+                        <p className="text-xs text-muted-foreground text-center">
+                          Adjust zoom and position before generating mockups
+                        </p>
                       </div>
                     )}
 

@@ -5175,7 +5175,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, sizeId, colorId, scale } = req.body;
+      const { productTypeId, designImageUrl, sizeId, colorId, scale, x, y } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -5248,6 +5248,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         printifyApiToken: merchant.printifyApiToken,
         printifyShopId: merchant.printifyShopId,
         scale: scale ? scale / 100 : 1, // Convert from percentage to 0-2 range
+        x: x !== undefined ? (x - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
+        y: y !== undefined ? (y - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
       });
 
       res.json(result);
