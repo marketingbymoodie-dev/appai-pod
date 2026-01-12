@@ -983,7 +983,29 @@ export default function AdminCreateProduct() {
                         draggable={false}
                       />
                       
-                      {mockupImages.length > 0 && (isHoveringMockup || isDragging) && !mockupLoading && (
+                      {isDragging && generatedImageUrl && mockupImages.length > 0 && (
+                        <div 
+                          className="absolute pointer-events-none transition-none"
+                          style={{
+                            width: `${imageScale * 0.4}%`,
+                            height: `${imageScale * 0.4}%`,
+                            left: `${imageX}%`,
+                            top: `${imageY}%`,
+                            transform: 'translate(-50%, -50%)',
+                          }}
+                        >
+                          <div className="w-full h-full border-2 border-primary border-dashed rounded-lg bg-primary/10 flex items-center justify-center">
+                            <img 
+                              src={generatedImageUrl} 
+                              alt="Position preview" 
+                              className="w-3/4 h-3/4 object-contain opacity-60"
+                              draggable={false}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      
+                      {mockupImages.length > 0 && isHoveringMockup && !isDragging && !mockupLoading && (
                         <div className="absolute inset-0 bg-black/20 flex items-center justify-center transition-opacity pointer-events-none">
                           <div className="bg-background/90 rounded-full p-3 shadow-lg">
                             <Move className="h-6 w-6 text-foreground" />
