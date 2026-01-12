@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye, Package } from "lucide-react";
+import { ArrowLeft, Upload, X, Loader2, Sparkles, ShoppingCart, Save, ZoomIn, Move, ChevronLeft, ChevronRight, Crosshair, Eye, Package, Copy } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
 import type { Customer, Design, PrintSize, FrameColor, StylePreset, ProductType } from "@shared/schema";
 import { getColorTier, type ColorTier } from "@shared/colorUtils";
@@ -119,6 +119,9 @@ export default function DesignPage() {
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [tweakPrompt, setTweakPrompt] = useState("");
   const [showTweak, setShowTweak] = useState(false);
+  const [isReuseMode, setIsReuseMode] = useState(false);
+  const [reuseSourceDesign, setReuseSourceDesign] = useState<Design | null>(null);
+  const loadingFromUrlRef = useRef(false);
   
   // Color tier mismatch modal state
   const [showColorTierModal, setShowColorTierModal] = useState(false);
@@ -239,6 +242,12 @@ export default function DesignPage() {
 
   useEffect(() => {
     if (designerConfig) {
+      // Skip setting defaults if we're loading from URL (tweak/reuse)
+      // The URL load effect will set the proper values
+      if (loadingFromUrlRef.current) {
+        loadingFromUrlRef.current = false;
+        return;
+      }
       if (designerConfig.sizes.length > 0 && !selectedSize) {
         setSelectedSize(designerConfig.sizes[0].id);
       }
@@ -265,12 +274,17 @@ export default function DesignPage() {
           .then(res => res.ok ? res.json() : null)
           .then((design: Design | null) => {
             if (design) {
+              // Mark that we're loading from URL to prevent default values from overwriting
+              loadingFromUrlRef.current = true;
+              // Set product type first so designer config loads
+              if (design.productTypeId) {
+                setSelectedProductTypeId(design.productTypeId);
+              }
               setGeneratedDesign(design);
               setPrompt(design.prompt);
               setSelectedSize(design.size);
               setSelectedFrameColor(design.frameColor);
               setSelectedStyle(design.stylePreset || "none");
-              // Will be corrected by useEffect when designerConfig loads
               setImageScale(design.transformScale ?? 100);
               setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
               setShowTweak(true);
@@ -279,6 +293,36 @@ export default function DesignPage() {
             window.history.replaceState({}, "", "/design");
           })
           .catch(e => console.error("Failed to load design:", e));
+      }
+    }
+    
+    // Handle reuse query param - load artwork for applying to different product/size
+    const reuseId = urlParams.get("reuse");
+    if (reuseId) {
+      const designId = parseInt(reuseId);
+      if (!isNaN(designId)) {
+        fetch(`/api/designs/${designId}`, { credentials: "include" })
+          .then(res => res.ok ? res.json() : null)
+          .then((design: Design | null) => {
+            if (design) {
+              setReuseSourceDesign(design);
+              setIsReuseMode(true);
+              // Set the artwork as the current design for preview
+              // but keep prompt editable for the new design
+              setGeneratedDesign({
+                ...design,
+                id: 0, // Mark as unsaved new design
+              });
+              setPrompt(design.prompt);
+              // Don't set product type - let user choose a new one
+              // Don't set size/color - let them choose
+              setImageScale(design.transformScale ?? 100);
+              setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
+            }
+            // Clean up URL
+            window.history.replaceState({}, "", "/design");
+          })
+          .catch(e => console.error("Failed to load design for reuse:", e));
       }
     }
   }, []);
@@ -369,6 +413,61 @@ export default function DesignPage() {
       });
     },
   });
+
+  const reuseMutation = useMutation({
+    mutationFn: async (data: { 
+      sourceDesignId: number; 
+      productTypeId: number;
+      size: string;
+      frameColor: string;
+      transformScale: number; 
+      transformX: number; 
+      transformY: number;
+    }) => {
+      const response = await apiRequest("POST", "/api/designs/reuse", data);
+      return response.json();
+    },
+    onSuccess: (data) => {
+      const design = data.design;
+      setGeneratedDesign(design);
+      setIsReuseMode(false);
+      setReuseSourceDesign(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
+      toast({
+        title: "Design saved!",
+        description: "Your reused design has been saved to your gallery.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Save failed",
+        description: error.message || "Failed to save reused design",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSaveReusedDesign = () => {
+    if (!reuseSourceDesign || !selectedProductTypeId || !selectedSize || !selectedFrameColor) {
+      toast({
+        title: "Missing selection",
+        description: "Please select a product type, size, and color before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    reuseMutation.mutate({
+      sourceDesignId: reuseSourceDesign.id,
+      productTypeId: selectedProductTypeId,
+      size: selectedSize,
+      frameColor: selectedFrameColor,
+      transformScale: imageScale,
+      transformX: imagePosition.x,
+      transformY: imagePosition.y,
+    });
+  };
 
   const handleRegenerateMockup = useCallback(() => {
     if (generatedDesign && designerConfig && selectedProductTypeId) {
@@ -932,6 +1031,39 @@ export default function DesignPage() {
         </>
       )}
     </Button>
+  );
+
+  const reuseSaveButton = isReuseMode && reuseSourceDesign && (
+    <Button
+      size="default"
+      className="w-full"
+      onClick={handleSaveReusedDesign}
+      disabled={reuseMutation.isPending || !selectedProductTypeId || !selectedSize || !selectedFrameColor}
+      data-testid="button-save-reuse"
+    >
+      {reuseMutation.isPending ? (
+        <>
+          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          Saving...
+        </>
+      ) : (
+        <>
+          <Save className="h-4 w-4 mr-2" />
+          Save as New Design
+        </>
+      )}
+    </Button>
+  );
+
+  const reuseBanner = isReuseMode && reuseSourceDesign && (
+    <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-3 mb-4">
+      <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300">
+        <Copy className="h-4 w-4 shrink-0" />
+        <div className="text-sm">
+          <strong>Reusing artwork:</strong> Select a product, size, and color to save this design to your gallery.
+        </div>
+      </div>
+    </div>
   );
 
   const zoomControls = generatedDesign?.generatedImageUrl && (
@@ -1557,11 +1689,12 @@ export default function DesignPage() {
           <div className="flex-1 flex gap-4 min-h-0">
             {/* Left column: Controls */}
             <div className="w-72 shrink-0 space-y-3 overflow-y-auto">
+              {reuseBanner}
               {styleSelector}
               {sizeSelector}
               {frameColorSelector}
               {promptInput}
-              {generateButton}
+              {isReuseMode ? reuseSaveButton : generateButton}
             </div>
             
             {/* Center: Front view */}
@@ -1639,11 +1772,12 @@ export default function DesignPage() {
           >
             {/* Slide 1: Style, Size, Frame, Prompt, Generate */}
             <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-4">
+              {reuseBanner}
               {styleSelector}
               {sizeSelector}
               {frameColorSelector}
               {promptInput}
-              {generateButton}
+              {isReuseMode ? reuseSaveButton : generateButton}
             </div>
             
             {/* Slide 2: Preview with Front/Lifestyle toggle */}

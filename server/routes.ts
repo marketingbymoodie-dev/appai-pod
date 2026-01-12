@@ -2575,6 +2575,88 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
+  // Reuse existing artwork on a different product/size/color
+  // Creates a new design record using the same image from an existing design
+  app.post("/api/designs/reuse", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      let customer = await storage.getCustomerByUserId(userId);
+      
+      if (!customer) {
+        customer = await storage.createCustomer({
+          userId,
+          credits: 5,
+          freeGenerationsUsed: 0,
+          totalGenerations: 0,
+          totalSpent: "0.00",
+        });
+      }
+
+      // Check design gallery limit (50 max)
+      const designCount = await storage.getDesignCountByCustomer(customer.id);
+      if (designCount >= 50) {
+        return res.status(400).json({ 
+          error: "Your design gallery is full (50 designs max). Please delete some designs to save new ones.",
+          galleryFull: true 
+        });
+      }
+
+      const { 
+        sourceDesignId, 
+        productTypeId, 
+        size, 
+        frameColor,
+        transformScale = 100,
+        transformX = 50,
+        transformY = 50,
+      } = req.body;
+
+      if (!sourceDesignId) {
+        return res.status(400).json({ error: "Source design ID is required" });
+      }
+
+      if (!productTypeId || !size || !frameColor) {
+        return res.status(400).json({ error: "Product type, size, and color are required" });
+      }
+
+      // Fetch the source design
+      const sourceDesign = await storage.getDesign(parseInt(sourceDesignId));
+      if (!sourceDesign) {
+        return res.status(404).json({ error: "Source design not found" });
+      }
+
+      // Verify the user owns the source design
+      if (sourceDesign.customerId !== customer.id) {
+        return res.status(403).json({ error: "You can only reuse your own designs" });
+      }
+
+      // Create a new design record with the same image
+      const newDesign = await storage.createDesign({
+        customerId: customer.id,
+        prompt: sourceDesign.prompt,
+        stylePreset: sourceDesign.stylePreset,
+        size,
+        frameColor: frameColor || sourceDesign.frameColor,
+        generatedImageUrl: sourceDesign.generatedImageUrl,
+        thumbnailImageUrl: sourceDesign.thumbnailImageUrl,
+        transformScale,
+        transformX,
+        transformY,
+        productTypeId: parseInt(productTypeId),
+        designSource: "ai", // Mark as AI-generated since it came from an AI design
+      });
+
+      res.json({
+        success: true,
+        design: newDesign,
+        message: "Design saved to your gallery",
+      });
+    } catch (error) {
+      console.error("Error reusing design:", error);
+      res.status(500).json({ error: "Failed to save reused design" });
+    }
+  });
+
   // Purchase credits
   app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
     try {

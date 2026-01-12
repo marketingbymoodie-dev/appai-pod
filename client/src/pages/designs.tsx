@@ -7,7 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Trash2, ShoppingCart, Plus, Image, Pencil, Loader2, X, ZoomIn } from "lucide-react";
+import { ArrowLeft, Trash2, ShoppingCart, Plus, Image, Pencil, Loader2, X, ZoomIn, Copy } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -105,6 +105,10 @@ export default function DesignsPage() {
 
   const handleTweak = (designId: number) => {
     setLocation(`/design?tweak=${designId}`);
+  };
+
+  const handleReuse = (designId: number) => {
+    setLocation(`/design?reuse=${designId}`);
   };
 
   if (authLoading) {
@@ -205,6 +209,18 @@ export default function DesignsPage() {
                         <Pencil className="h-4 w-4 mr-1" />
                         Tweak
                       </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="flex-1"
+                        onClick={() => handleReuse(design.id)}
+                        data-testid={`button-reuse-${design.id}`}
+                      >
+                        <Copy className="h-4 w-4 mr-1" />
+                        Reuse
+                      </Button>
+                    </div>
+                    <div className="flex gap-2 mt-2">
                       <Button variant="outline" size="sm" className="flex-1" data-testid={`button-order-${design.id}`}>
                         <ShoppingCart className="h-4 w-4 mr-1" />
                         Order
