@@ -108,16 +108,23 @@ function PillowMockup({
             className={`relative w-full h-full ${isCircular ? 'rounded-full' : ''}`}
             style={{
               overflow: "hidden",
+              position: "relative",
             }}
           >
             <img
               src={imageUrl}
               alt="Pillow design"
-              className="w-full h-full object-cover"
+              className="absolute select-none"
               style={{
-                transform: `scale(${transform.scale / 100})`,
-                transformOrigin: `${transform.x}% ${transform.y}%`,
+                width: `${transform.scale}%`,
+                height: `${transform.scale}%`,
+                objectFit: "cover",
+                left: `${transform.x}%`,
+                top: `${transform.y}%`,
+                transform: "translate(-50%, -50%)",
+                pointerEvents: "none",
               }}
+              draggable={false}
             />
             
             <SafeZoneMask

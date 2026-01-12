@@ -85,15 +85,21 @@ function FramedPrintMockup({
             borderRadius: "2px",
           }}
         >
-          <div className="relative overflow-hidden bg-white">
+          <div className="relative overflow-hidden bg-white" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/5", width: "320px" }}>
             <img
               src={imageUrl}
               alt="Generated artwork"
-              className="w-full max-w-sm"
+              className="absolute select-none"
               style={{
-                transform: `scale(${transform.scale / 100})`,
-                transformOrigin: `${transform.x}% ${transform.y}%`,
+                width: `${transform.scale}%`,
+                height: `${transform.scale}%`,
+                objectFit: "cover",
+                left: `${transform.x}%`,
+                top: `${transform.y}%`,
+                transform: "translate(-50%, -50%)",
+                pointerEvents: "none",
               }}
+              draggable={false}
             />
             <SafeZoneMask
               shape={printShape}
