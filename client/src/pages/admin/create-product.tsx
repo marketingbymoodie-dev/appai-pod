@@ -79,6 +79,8 @@ export default function AdminCreateProduct() {
   const [shopDomain, setShopDomain] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
   const [selectedColorsForPublish, setSelectedColorsForPublish] = useState<Set<string>>(new Set());
+  const [shopifyInstallations, setShopifyInstallations] = useState<Array<{ id: number; shopDomain: string; shopName: string }>>([]);
+  const [installationsLoading, setInstallationsLoading] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -447,6 +449,34 @@ export default function AdminCreateProduct() {
 
   // Load saved variant selections from product type
   const [savedVariantCount, setSavedVariantCount] = useState(0);
+
+  // Fetch Shopify installations when dialog opens
+  useEffect(() => {
+    const fetchInstallations = async () => {
+      setInstallationsLoading(true);
+      try {
+        const response = await fetch("/api/shopify/installations", { credentials: "include" });
+        if (response.ok) {
+          const data = await response.json();
+          setShopifyInstallations(data.installations || []);
+          // Auto-fill if there's only one installation - use shopDomain (the canonical domain)
+          if (data.installations && data.installations.length === 1) {
+            // Strip .myshopify.com suffix for the input format
+            const domain = data.installations[0].shopDomain || "";
+            setShopDomain(domain.replace(".myshopify.com", ""));
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch Shopify installations:", error);
+      } finally {
+        setInstallationsLoading(false);
+      }
+    };
+
+    if (showPublishDialog) {
+      fetchInstallations();
+    }
+  }, [showPublishDialog]);
 
   useEffect(() => {
     if (showPublishDialog && selectedProductType) {
@@ -1011,20 +1041,51 @@ export default function AdminCreateProduct() {
           
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="shop-domain">Store Domain</Label>
-              <div className="flex gap-2 items-center">
-                <Input
-                  id="shop-domain"
-                  placeholder="your-store"
-                  value={shopDomain}
-                  onChange={(e) => setShopDomain(e.target.value)}
-                  data-testid="input-shop-domain"
-                />
-                <span className="text-sm text-muted-foreground whitespace-nowrap">.myshopify.com</span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Enter just the store name (e.g., "my-store" for my-store.myshopify.com)
-              </p>
+              <Label htmlFor="shop-domain">Store</Label>
+              {installationsLoading ? (
+                <Skeleton className="h-10 w-full" />
+              ) : shopifyInstallations.length > 1 ? (
+                <Select 
+                  value={shopDomain} 
+                  onValueChange={setShopDomain}
+                >
+                  <SelectTrigger data-testid="select-shop-domain">
+                    <SelectValue placeholder="Select your store" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {shopifyInstallations.map((inst) => {
+                      const domainSlug = (inst.shopDomain || "").replace(".myshopify.com", "");
+                      return (
+                        <SelectItem key={inst.id} value={domainSlug}>
+                          {inst.shopDomain || `${domainSlug}.myshopify.com`}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              ) : shopifyInstallations.length === 1 ? (
+                <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
+                  <Check className="h-4 w-4 text-green-600" />
+                  <span className="text-sm font-medium">{shopifyInstallations[0].shopDomain}</span>
+                </div>
+              ) : (
+                <div className="flex gap-2 items-center">
+                  <Input
+                    id="shop-domain"
+                    placeholder="your-store"
+                    value={shopDomain}
+                    onChange={(e) => setShopDomain(e.target.value)}
+                    data-testid="input-shop-domain"
+                  />
+                  <span className="text-sm text-muted-foreground whitespace-nowrap">.myshopify.com</span>
+                </div>
+              )}
+              {shopifyInstallations.length === 0 && !installationsLoading && (
+                <p className="text-xs text-muted-foreground">
+                  No connected stores found. Enter your store name manually or{' '}
+                  <a href="/shopify/install" className="underline text-primary">connect your Shopify store</a> first.
+                </p>
+              )}
             </div>
 
             {designerConfig && (

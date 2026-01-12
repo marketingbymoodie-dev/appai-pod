@@ -1,11 +1,11 @@
-# Design Guidelines: Shopify Pillow Artwork Customization App
+# Design Guidelines: Shopify Print-on-Demand Artwork Customization App
 
 ## Design Approach
 **Reference-Based**: Drawing from successful product customization platforms (Printful, Printify) combined with Shopify's design language for seamless merchant integration. Focus on intuitive visual customization with professional merchant-facing controls.
 
 ## Core Design Principles
 1. **Dual Interface Design**: Merchant admin panel (efficiency-focused) + Customer customization interface (experience-focused)
-2. **Visual Primacy**: Large preview dominates the interface - pillow customization is a visual experience
+2. **Visual Primacy**: Large preview dominates the interface - product customization is a visual experience
 3. **Progressive Disclosure**: Start simple, reveal advanced options as needed
 
 ## Typography
@@ -33,10 +33,10 @@
 
 ### Customer Customization Interface
 **Layout**: Split-screen design (60/40 split desktop, stacked mobile)
-- **Left Panel (60%)**: Live pillow preview with 3D mockup rotation
+- **Left Panel (60%)**: Live product preview with mockup rotation
 - **Right Panel (40%)**: Customization controls in collapsible sections
   - Upload artwork
-  - Choose pillow size/shape
+  - Choose product size/variant
   - Pattern library
   - Text overlay tools
   - Color adjustments
@@ -71,7 +71,7 @@
 
 ### Hero Section (Marketing Page)
 **Large Hero Image**: Full-width, 70vh height
-- Content: Lifestyle photo showing decorated living space with custom pillows
+- Content: Lifestyle photo showing custom products in use
 - Placement: Top of merchant-facing landing page
 - Treatment: Subtle gradient overlay (bottom to top) for text legibility
 - CTA buttons on hero should have blurred backgrounds
@@ -79,15 +79,15 @@
 ### Product Previews
 - Square thumbnails (300x300px) in grids
 - Large preview (800x800px) in customization interface
-- 3D mockup renders showing pillow from multiple angles
+- Mockup renders showing product from multiple angles
 
 ### Pattern Library
 - Grid of pattern thumbnails (150x150px)
 - Hover state shows full-resolution preview in tooltip
 
 ## Key Interactions
-- **Real-time Preview**: Changes reflect immediately on pillow mockup
-- **Drag-to-Position**: Move uploaded artwork on pillow surface
+- **Real-time Preview**: Changes reflect immediately on product mockup
+- **Drag-to-Position**: Move uploaded artwork on product surface
 - **Pinch-to-Zoom**: On mobile for detailed artwork placement
 - **No distracting animations** - smooth transitions only (200ms ease)
 

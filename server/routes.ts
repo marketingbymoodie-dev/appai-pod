@@ -1571,7 +1571,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         ? `https://${process.env.REPLIT_DEV_DOMAIN}`
         : process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
 
-      // Create the product in Shopify
+      // Create display name for dynamic text (strip "Custom" prefix if product title would have it)
+      const displayName = productType.name;
+
+      // Create the product in Shopify with template suffix for automatic configuration
       const shopifyProduct = {
         product: {
           title: `Custom ${productType.name}`,
@@ -1583,6 +1586,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
           product_type: productType.name,
           status: "draft", // Leave as draft so merchant can set pricing
           published: false,
+          template_suffix: "ai-art-studio", // Use pre-configured template
           tags: ["custom-design", "ai-artwork", "design-studio"],
           options: productOptions.length > 0 ? productOptions : undefined,
           variants: shopifyVariants.length > 0 ? shopifyVariants : [{ price: "0.00" }],
@@ -1592,6 +1596,24 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
               namespace: "ai_art_studio",
               key: "product_type_id",
               value: String(productType.id),
+              type: "single_line_text_field",
+            },
+            {
+              namespace: "ai_art_studio", 
+              key: "app_url",
+              value: appUrl,
+              type: "single_line_text_field",
+            },
+            {
+              namespace: "ai_art_studio", 
+              key: "display_name",
+              value: displayName,
+              type: "single_line_text_field",
+            },
+            {
+              namespace: "ai_art_studio", 
+              key: "description",
+              value: `Use AI to generate a unique artwork for your ${displayName.toLowerCase()}. Describe your vision and our AI will bring it to life.`,
               type: "single_line_text_field",
             },
             {
@@ -1633,27 +1655,107 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
 
       const createdProduct = await shopifyResponse.json();
+      const shopifyProductId = createdProduct.product.id;
       
-      console.log(`Created Shopify product ${createdProduct.product.id} for product type ${productType.id}`);
+      console.log(`Created Shopify product ${shopifyProductId} for product type ${productType.id}`);
+
+      // Publish to Online Store only (not POS) by finding and using the Online Store publication
+      try {
+        // Get all publications (sales channels)
+        const publicationsResponse = await fetch(
+          `https://${shopDomain}/admin/api/2024-01/publications.json`,
+          {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Shopify-Access-Token": installation.accessToken,
+            },
+          }
+        );
+
+        if (publicationsResponse.ok) {
+          const publicationsData = await publicationsResponse.json();
+          const onlineStorePublication = publicationsData.publications?.find(
+            (pub: { name: string; id: number }) => pub.name === "Online Store"
+          );
+
+          if (onlineStorePublication) {
+            // Publish to Online Store
+            await fetch(
+              `https://${shopDomain}/admin/api/2024-01/publications/${onlineStorePublication.id}/product_listings.json`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({
+                  product_listing: {
+                    product_id: shopifyProductId,
+                  },
+                }),
+              }
+            );
+            console.log(`Published product ${shopifyProductId} to Online Store`);
+          }
+        }
+      } catch (pubError) {
+        // Non-critical - product is created, just not auto-published to channel
+        console.log("Could not auto-publish to Online Store:", pubError);
+      }
 
       // Save Shopify product ID to the product type for future updates
       await storage.updateProductType(productType.id, {
-        shopifyProductId: String(createdProduct.product.id),
-        shopifyProductUrl: `https://${shopDomain}/admin/products/${createdProduct.product.id}`,
+        shopifyProductId: String(shopifyProductId),
+        shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
         lastPushedToShopify: new Date(),
       });
 
       res.json({
         success: true,
-        shopifyProductId: createdProduct.product.id,
+        shopifyProductId: shopifyProductId,
         shopifyProductHandle: createdProduct.product.handle,
-        adminUrl: `https://${shopDomain}/admin/products/${createdProduct.product.id}`,
-        message: "Product created as draft. Set your retail prices and publish when ready.",
+        adminUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
+        message: "Product created and configured automatically. Set your retail prices and publish when ready.",
       });
 
     } catch (error) {
       console.error("Error creating Shopify product:", error);
       res.status(500).json({ error: "Failed to create Shopify product" });
+    }
+  });
+
+  // ==================== MERCHANT SHOPIFY INSTALLATIONS ====================
+  // Get all Shopify stores connected to the current merchant (for auto-fill in publish dialog)
+  app.get("/api/shopify/installations", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      
+      if (!merchant) {
+        return res.json({ installations: [] });
+      }
+
+      // Get all installations for this merchant
+      const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
+      
+      // Filter to active installations only and return minimal data
+      const activeInstallations = installations
+        .filter(inst => inst.status === "active")
+        .map(inst => ({
+          id: inst.id,
+          shopDomain: inst.shopDomain,
+          shopName: inst.shopDomain.replace(".myshopify.com", ""),
+          installedAt: inst.installedAt,
+        }));
+
+      res.json({ 
+        installations: activeInstallations,
+        hasInstallations: activeInstallations.length > 0,
+      });
+    } catch (error) {
+      console.error("Error fetching Shopify installations:", error);
+      res.status(500).json({ error: "Failed to fetch Shopify installations" });
     }
   });
 

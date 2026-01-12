@@ -1,8 +1,8 @@
-# AI Art Studio - Shopify Pillow Artwork Customization App
+# AI Art Studio - Shopify Print-on-Demand Artwork Customization App
 
 ## Overview
 
-This is an AI-powered art generation and customization platform designed for creating pillow artwork. The application enables customers to generate unique designs using AI (via Google's Gemini models), customize print sizes and frame colors, and integrates with Printify for print-on-demand fulfillment. The platform includes both customer-facing design tools and merchant administration features for managing orders, settings, and API integrations.
+This is an AI-powered art generation and customization platform designed for creating custom print-on-demand products. The application enables customers to generate unique designs using AI (via Google's Gemini models) or import custom artwork, customize print sizes and variants, and integrates with Printify for print-on-demand fulfillment. The platform includes both customer-facing design tools and merchant administration features for managing orders, settings, and API integrations.
 
 ## User Preferences
 

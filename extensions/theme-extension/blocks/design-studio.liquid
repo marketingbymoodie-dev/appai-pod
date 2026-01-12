@@ -1,8 +1,41 @@
 {% comment %}
   AI Art Studio - Product Page Design Block
   Embeds the AI artwork customization studio directly on product pages.
-  Reads product variants to populate size/frame color options.
+  
+  Configuration priority:
+  1. Product metafields (set automatically when publishing from admin)
+  2. Block settings (manual fallback)
+  
+  When products are published via "Send to Store", metafields are automatically
+  configured - no manual theme editor setup required.
 {% endcomment %}
+
+{% comment %} Read metafields - these are set automatically when publishing from admin {% endcomment %}
+{% assign meta_app_url = product.metafields.ai_art_studio.app_url.value %}
+{% assign meta_product_type_id = product.metafields.ai_art_studio.product_type_id.value %}
+{% assign meta_display_name = product.metafields.ai_art_studio.display_name.value %}
+{% assign meta_description = product.metafields.ai_art_studio.description.value %}
+
+{% comment %} Use metafields first, fall back to block settings {% endcomment %}
+{% assign app_url = meta_app_url | default: block.settings.app_url %}
+{% assign product_type_id = meta_product_type_id | default: block.settings.product_type_id | default: "1" %}
+{% assign display_name = meta_display_name | default: product.title | remove: "Custom " %}
+{% assign custom_description = meta_description %}
+
+{% comment %} Generate dynamic heading and description if not manually set {% endcomment %}
+{% if block.settings.heading != blank and block.settings.heading != "Create Your Custom Design" %}
+  {% assign heading = block.settings.heading %}
+{% else %}
+  {% assign heading = "Create Your Custom " | append: display_name | append: " Design" %}
+{% endif %}
+
+{% if block.settings.description != blank and block.settings.description != "Use AI to generate a unique artwork for your product. Describe your vision and our AI will bring it to life." %}
+  {% assign description = block.settings.description %}
+{% elsif custom_description != blank %}
+  {% assign description = custom_description %}
+{% else %}
+  {% assign description = "Use AI to generate a unique artwork for your " | append: display_name | downcase | append: ". Describe your vision and our AI will bring it to life." %}
+{% endif %}
 
 {% schema %}
 {
@@ -13,26 +46,27 @@
       "type": "url",
       "id": "app_url",
       "label": "App URL",
-      "info": "The URL of your AI Art Studio app (e.g., https://your-app.replit.app)"
+      "info": "Leave blank for auto-configured products. Only set manually if needed."
     },
     {
       "type": "text",
       "id": "product_type_id",
       "label": "Product Type ID",
-      "info": "Enter the product type ID from your AI Art Studio admin (e.g., 1 for Framed Prints)",
-      "default": "1"
+      "info": "Leave blank for auto-configured products. Only set manually if needed."
     },
     {
       "type": "text",
       "id": "heading",
       "label": "Section Heading",
-      "default": "Create Your Custom Design"
+      "default": "Create Your Custom Design",
+      "info": "Leave as default to use dynamic product name"
     },
     {
       "type": "textarea",
       "id": "description",
       "label": "Section Description",
-      "default": "Use AI to generate a unique artwork for your pillow. Describe your vision and our AI will bring it to life."
+      "default": "Use AI to generate a unique artwork for your product. Describe your vision and our AI will bring it to life.",
+      "info": "Leave as default to use dynamic product description"
     },
     {
       "type": "checkbox",
@@ -55,22 +89,23 @@
 {% endschema %}
 
 <div class="ai-art-studio-block" data-block-id="{{ block.id }}">
-  {% if block.settings.heading != blank %}
-    <h2 class="ai-art-studio__heading">{{ block.settings.heading }}</h2>
+  {% if heading != blank %}
+    <h2 class="ai-art-studio__heading">{{ heading }}</h2>
   {% endif %}
   
-  {% if block.settings.description != blank %}
-    <p class="ai-art-studio__description">{{ block.settings.description }}</p>
+  {% if description != blank %}
+    <p class="ai-art-studio__description">{{ description }}</p>
   {% endif %}
 
   <div 
     id="ai-art-studio-container-{{ block.id }}"
     class="ai-art-studio__container"
-    data-app-url="{{ block.settings.app_url }}"
-    data-product-type-id="{{ block.settings.product_type_id }}"
+    data-app-url="{{ app_url }}"
+    data-product-type-id="{{ product_type_id }}"
     data-product-id="{{ product.id }}"
     data-product-handle="{{ product.handle }}"
     data-product-title="{{ product.title | escape }}"
+    data-display-name="{{ display_name | escape }}"
     data-show-presets="{{ block.settings.show_style_presets }}"
     data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
     data-customer-id="{% if customer %}{{ customer.id }}{% endif %}"
@@ -159,7 +194,7 @@
 
     const appUrl = container.dataset.appUrl;
     if (!appUrl) {
-      container.innerHTML = '<div class="ai-art-studio__error">Please configure the App URL in the theme editor.</div>';
+      container.innerHTML = '<div class="ai-art-studio__error">This product has not been configured for the design studio. Please publish it from the AI Art Studio admin.</div>';
       return;
     }
 
@@ -167,17 +202,15 @@
     const productId = container.dataset.productId;
     const productHandle = container.dataset.productHandle;
     const productTitle = container.dataset.productTitle;
+    const displayName = container.dataset.displayName || productTitle;
     const showPresets = container.dataset.showPresets === 'true';
     const selectedVariant = container.dataset.selectedVariant;
     const customerId = container.dataset.customerId || '';
     const customerEmail = container.dataset.customerEmail || '';
     const customerName = container.dataset.customerName || '';
     
-    // Use the permanent myshopify.com domain from Liquid for consistent API calls
-    // This ensures the shop is always identified correctly regardless of custom domains
     const shopDomain = container.dataset.shopDomain || window.Shopify?.shop || window.location.hostname;
     
-    // Check URL for shared design ID
     const urlParams = new URLSearchParams(window.location.search);
     const sharedDesignId = urlParams.get('sharedDesignId');
     
@@ -189,16 +222,14 @@
     params.set('productId', productId);
     params.set('productHandle', productHandle);
     params.set('productTitle', productTitle);
+    params.set('displayName', displayName);
     params.set('showPresets', showPresets.toString());
     params.set('selectedVariant', selectedVariant);
-    // Note: We no longer pass variants in URL - they're too large and cause 431 errors
-    // The embed page gets variant info from the product type config via API
     if (customerId) {
       params.set('customerId', customerId);
       params.set('customerEmail', customerEmail);
       params.set('customerName', customerName);
     }
-    // Pass shared design ID to iframe if present
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
     }

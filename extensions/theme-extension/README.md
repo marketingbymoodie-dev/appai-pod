@@ -1,6 +1,6 @@
 # AI Art Studio - Shopify Theme App Extension
 
-This Theme App Extension embeds the AI Art Design Studio directly on your Shopify product pages, allowing customers to create custom AI-generated artwork for pillows.
+This Theme App Extension embeds the AI Art Design Studio directly on your Shopify product pages, allowing customers to create custom AI-generated artwork for print-on-demand products.
 
 ## Installation
 

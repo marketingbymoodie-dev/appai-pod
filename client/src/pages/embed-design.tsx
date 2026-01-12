@@ -50,7 +50,8 @@ export default function EmbedDesign() {
   const productTypeId = searchParams.get("productTypeId") || "1";
   const productId = searchParams.get("productId") || "";
   const productHandle = searchParams.get("productHandle") || "";
-  const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Framed Print");
+  const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Product");
+  const displayName = decodeURIComponent(searchParams.get("displayName") || productTitle.replace("Custom ", ""));
   const showPresetsParam = searchParams.get("showPresets") !== "false";
   const selectedVariantParam = searchParams.get("selectedVariant") || "";
   const shopifyCustomerId = searchParams.get("customerId") || "";
