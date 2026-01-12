@@ -174,9 +174,10 @@ export default function DesignPage() {
     const dy = e.clientY - dragStartRef.current.y;
     
     // Convert pixel movement to percentage of container
+    // Constrain to 0-100 range to match Printify API expectations
     const sensitivity = 0.5;
-    const newX = Math.max(-50, Math.min(150, dragStartRef.current.startX + (dx / rect.width) * 100 * sensitivity));
-    const newY = Math.max(-50, Math.min(150, dragStartRef.current.startY + (dy / rect.height) * 100 * sensitivity));
+    const newX = Math.max(0, Math.min(100, dragStartRef.current.startX + (dx / rect.width) * 100 * sensitivity));
+    const newY = Math.max(0, Math.min(100, dragStartRef.current.startY + (dy / rect.height) * 100 * sensitivity));
     
     setImagePosition({ x: newX, y: newY });
   };
@@ -346,8 +347,14 @@ export default function DesignPage() {
     }
   }, []);
 
-  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 100) => {
+  const fetchPrintifyMockups = useCallback(async (designImageUrl: string, productTypeId: number, sizeId: string, colorId: string, scale: number = 100, x: number = 50, y: number = 50) => {
     setMockupLoading(true);
+    // Clamp x/y to 0-100 range expected by backend conversion
+    // Our drag allows -50 to 150 but Printify expects centered positioning
+    const clampedX = Math.max(0, Math.min(100, x));
+    const clampedY = Math.max(0, Math.min(100, y));
+    // Clamp scale to reasonable Printify range (10-200%)
+    const clampedScale = Math.max(10, Math.min(200, scale));
     // Don't clear existing mockups - preserve them while loading new ones
     try {
       const response = await apiRequest("POST", "/api/mockup/generate", {
@@ -355,7 +362,9 @@ export default function DesignPage() {
         designImageUrl,
         sizeId,
         colorId,
-        scale,
+        scale: clampedScale,
+        x: clampedX,
+        y: clampedY,
       });
       const result = await response.json();
       if (result.success && result.mockupUrls?.length > 0) {
@@ -386,15 +395,16 @@ export default function DesignPage() {
       printifyMockups.length === 0
     ) {
       // Create a unique key for this combination to prevent redundant fetches
-      const fetchKey = `${designerConfig.id}-${selectedSize}-${selectedFrameColor}-${generatedDesign.generatedImageUrl}`;
+      // Include position in key since we now pass it to Printify
+      const fetchKey = `${designerConfig.id}-${selectedSize}-${selectedFrameColor}-${generatedDesign.generatedImageUrl}-${imageScale}-${imagePosition.x}-${imagePosition.y}`;
       // Only fetch if we haven't already fetched for this exact combination
       if (lastAutoFetchKeyRef.current !== fetchKey) {
         lastAutoFetchKeyRef.current = fetchKey;
         const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
-        fetchPrintifyMockups(imageUrl, designerConfig.id, selectedSize, selectedFrameColor, imageScale);
+        fetchPrintifyMockups(imageUrl, designerConfig.id, selectedSize, selectedFrameColor, imageScale, imagePosition.x, imagePosition.y);
       }
     }
-  }, [isReuseMode, showTweak, generatedDesign?.generatedImageUrl, designerConfig, selectedSize, selectedFrameColor, mockupLoading, printifyMockups.length, imageScale, fetchPrintifyMockups]);
+  }, [isReuseMode, showTweak, generatedDesign?.generatedImageUrl, designerConfig, selectedSize, selectedFrameColor, mockupLoading, printifyMockups.length, imageScale, imagePosition.x, imagePosition.y, fetchPrintifyMockups]);
 
   const generateMutation = useMutation({
     mutationFn: async (data: { prompt: string; stylePreset: string; size: string; frameColor: string; referenceImage?: string; productTypeId?: number }) => {
@@ -420,7 +430,7 @@ export default function DesignPage() {
       
       if (designerConfig && designerConfig.designerType !== "framed-print" && designerConfig.hasPrintifyMockups) {
         const imageUrl = window.location.origin + design.generatedImageUrl;
-        fetchPrintifyMockups(imageUrl, designerConfig.id, design.size, design.frameColor, currentDefault);
+        fetchPrintifyMockups(imageUrl, designerConfig.id, design.size, design.frameColor, currentDefault, 50, 50);
       }
     },
     onError: (error: any) => {
@@ -516,36 +526,41 @@ export default function DesignPage() {
   const handleRegenerateMockup = useCallback(() => {
     if (generatedDesign && designerConfig && selectedProductTypeId) {
       const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
-      fetchPrintifyMockups(imageUrl, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale);
+      fetchPrintifyMockups(imageUrl, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, imagePosition.x, imagePosition.y);
     }
-  }, [generatedDesign, designerConfig, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, fetchPrintifyMockups]);
+  }, [generatedDesign, designerConfig, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, imagePosition.x, imagePosition.y, fetchPrintifyMockups]);
 
-  // Debounced auto-update for mockups when scale changes
-  const scaleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastScaleRef = useRef(imageScale);
+  // Debounced auto-update for mockups when scale or position changes
+  const transformTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTransformRef = useRef({ scale: imageScale, x: imagePosition.x, y: imagePosition.y });
   
   useEffect(() => {
-    // Only trigger if we have mockups and scale actually changed
+    // Only trigger if we have mockups and transform actually changed
     if (printifyMockups.length > 0 && designerConfig?.hasPrintifyMockups && generatedDesign) {
-      if (lastScaleRef.current !== imageScale) {
+      const transformChanged = 
+        lastTransformRef.current.scale !== imageScale ||
+        lastTransformRef.current.x !== imagePosition.x ||
+        lastTransformRef.current.y !== imagePosition.y;
+        
+      if (transformChanged) {
         // Clear any existing timeout
-        if (scaleTimeoutRef.current) {
-          clearTimeout(scaleTimeoutRef.current);
+        if (transformTimeoutRef.current) {
+          clearTimeout(transformTimeoutRef.current);
         }
-        // Set new timeout for 1 second after slider stops
-        scaleTimeoutRef.current = setTimeout(() => {
+        // Set new timeout for 1 second after adjustment stops
+        transformTimeoutRef.current = setTimeout(() => {
           handleRegenerateMockup();
-          lastScaleRef.current = imageScale;
+          lastTransformRef.current = { scale: imageScale, x: imagePosition.x, y: imagePosition.y };
         }, 1000);
       }
     }
     // Cleanup on unmount
     return () => {
-      if (scaleTimeoutRef.current) {
-        clearTimeout(scaleTimeoutRef.current);
+      if (transformTimeoutRef.current) {
+        clearTimeout(transformTimeoutRef.current);
       }
     };
-  }, [imageScale, printifyMockups.length, designerConfig?.hasPrintifyMockups, generatedDesign, handleRegenerateMockup]);
+  }, [imageScale, imagePosition.x, imagePosition.y, printifyMockups.length, designerConfig?.hasPrintifyMockups, generatedDesign, handleRegenerateMockup]);
 
   // Initialize calibration area when size/frame changes in calibration mode
   // Note: We compute currentLifestyle inline here since we can't call it before hooks
@@ -1304,7 +1319,7 @@ export default function DesignPage() {
           )}
         </div>
       ) : showApparelBaseWithArtwork ? (
-        // Apparel product with hasPrintifyMockups but mockups not yet loaded - show artwork on base template
+        // Product with hasPrintifyMockups but mockups not yet loaded - show artwork on base template
         <div className="absolute inset-0 flex items-center justify-center" style={{ pointerEvents: 'none' }}>
           <div className="relative w-full h-full">
             <img
@@ -1313,10 +1328,17 @@ export default function DesignPage() {
               className="w-full h-full object-contain rounded-md"
               data-testid="img-base-mockup"
             />
-            {/* Overlay generated artwork on the product mockup - uses same positioning as hasBaseMockup branch */}
+            {/* Overlay generated artwork - different positioning for pillows vs apparel */}
             <div 
-              className="absolute overflow-hidden"
-              style={{
+              className={`absolute overflow-hidden ${designerConfig?.designerType === 'pillow' && designerConfig?.printShape === 'circle' ? 'rounded-full' : ''}`}
+              style={designerConfig?.designerType === 'pillow' ? {
+                // Pillow: larger centered area to accommodate the full pillow print surface
+                top: '10%',
+                left: '10%',
+                width: '80%',
+                height: '80%',
+              } : {
+                // Apparel: smaller centered print area on chest
                 top: '25%',
                 left: '30%',
                 width: '40%',
@@ -1329,6 +1351,7 @@ export default function DesignPage() {
                 className="w-full h-full object-cover"
                 style={{
                   transform: `scale(${imageScale / 100}) translate(${(imagePosition.x - 50)}%, ${(imagePosition.y - 50)}%)`,
+                  borderRadius: designerConfig?.designerType === 'pillow' && designerConfig?.printShape === 'circle' ? '50%' : undefined,
                 }}
                 draggable={false}
                 data-testid="img-generated"
@@ -1352,11 +1375,17 @@ export default function DesignPage() {
                 className="w-full h-full object-contain rounded-md"
                 data-testid="img-base-mockup"
               />
-              {/* Overlay generated artwork on the product mockup */}
+              {/* Overlay generated artwork on the product mockup - different positioning for pillows vs other products */}
               {generatedDesign?.generatedImageUrl && (
                 <div 
-                  className="absolute overflow-hidden"
-                  style={{
+                  className={`absolute overflow-hidden ${designerConfig?.designerType === 'pillow' && designerConfig?.printShape === 'circle' ? 'rounded-full' : ''}`}
+                  style={designerConfig?.designerType === 'pillow' ? {
+                    top: '10%',
+                    left: '10%',
+                    width: '80%',
+                    height: '80%',
+                    pointerEvents: 'auto',
+                  } : {
                     top: '25%',
                     left: '30%',
                     width: '40%',
@@ -1370,6 +1399,7 @@ export default function DesignPage() {
                     className="w-full h-full object-cover"
                     style={{
                       transform: `scale(${imageScale / 100}) translate(${(imagePosition.x - 50)}%, ${(imagePosition.y - 50)}%)`,
+                      borderRadius: designerConfig?.designerType === 'pillow' && designerConfig?.printShape === 'circle' ? '50%' : undefined,
                     }}
                     draggable={false}
                     data-testid="img-generated"
@@ -1546,7 +1576,7 @@ export default function DesignPage() {
             )}
           </div>
         ) : hasBaseLifestyleMockup ? (
-          // Base product lifestyle mockup (for apparel, etc.) with generated artwork overlay
+          // Base product lifestyle mockup with generated artwork overlay - different positioning for pillows
           <div className="relative">
             <img
               src={designerConfig!.baseMockupImages!.lifestyle!}
@@ -1557,8 +1587,15 @@ export default function DesignPage() {
             {/* Overlay generated artwork on lifestyle mockup */}
             {generatedDesign?.generatedImageUrl && (
               <div 
-                className="absolute overflow-hidden"
-                style={{
+                className={`absolute overflow-hidden ${designerConfig?.designerType === 'pillow' && designerConfig?.printShape === 'circle' ? 'rounded-full' : ''}`}
+                style={designerConfig?.designerType === 'pillow' ? {
+                  // Pillow lifestyle has pillow in center - adjust for typical lifestyle image
+                  top: '15%',
+                  left: '20%',
+                  width: '60%',
+                  height: '60%',
+                } : {
+                  // Apparel lifestyle positioning
                   top: '20%',
                   left: '25%',
                   width: '50%',
@@ -1571,6 +1608,7 @@ export default function DesignPage() {
                   className="w-full h-full object-cover"
                   style={{
                     transform: `scale(${imageScale / 100}) translate(${(imagePosition.x - 50)}%, ${(imagePosition.y - 50)}%)`,
+                    borderRadius: designerConfig?.designerType === 'pillow' && designerConfig?.printShape === 'circle' ? '50%' : undefined,
                   }}
                   data-testid="img-generated-lifestyle"
                 />

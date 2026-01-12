@@ -69,8 +69,9 @@ export function ProductMockup({
 
       onTransformChange({
         ...transform,
-        x: Math.max(-50, Math.min(150, transform.x + deltaX)),
-        y: Math.max(-50, Math.min(150, transform.y + deltaY)),
+        // Constrain to 0-100 range to match Printify API expectations
+        x: Math.max(0, Math.min(100, transform.x + deltaX)),
+        y: Math.max(0, Math.min(100, transform.y + deltaY)),
       });
       dragStartRef.current = { x: e.clientX, y: e.clientY };
     },
