@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store, AlertTriangle, Check } from "lucide-react";
+import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store, AlertTriangle, Check, Move } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -385,6 +385,13 @@ export default function AdminCreateProduct() {
   const lastAppliedScaleRef = useRef<number | null>(null);
   const lastAppliedSizeRef = useRef<string | null>(null);
   const lastAppliedColorRef = useRef<string | null>(null);
+  const lastAppliedXRef = useRef<number | null>(null);
+  const lastAppliedYRef = useRef<number | null>(null);
+  
+  // Drag state for position control
+  const [isDragging, setIsDragging] = useState(false);
+  const [isHoveringMockup, setIsHoveringMockup] = useState(false);
+  const dragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
   
   // Regenerate mockups when zoom scale changes (debounced, queues if currently loading)
   useEffect(() => {
@@ -446,6 +453,42 @@ export default function AdminCreateProduct() {
     
     return () => clearTimeout(timer);
   }, [selectedSize, selectedFrameColor, generatedImageUrl, designerConfig?.hasPrintifyMockups, mockupImages.length, mockupLoading]);
+  
+  // Regenerate mockups when position changes (after drag ends)
+  useEffect(() => {
+    // Skip if no image or no mockup support
+    if (!generatedImageUrl || !designerConfig?.hasPrintifyMockups) return;
+    
+    // Skip if we don't have mockups yet (initial generation will handle it)
+    if (mockupImages.length === 0) return;
+    
+    // Skip while dragging
+    if (isDragging) return;
+    
+    // Initialize refs on first run
+    if (lastAppliedXRef.current === null) {
+      lastAppliedXRef.current = imageX;
+      lastAppliedYRef.current = imageY;
+      return;
+    }
+    
+    // Check if position has changed
+    const xChanged = lastAppliedXRef.current !== imageX;
+    const yChanged = lastAppliedYRef.current !== imageY;
+    
+    if (!xChanged && !yChanged) return;
+    
+    // If currently loading, wait for it to complete
+    if (mockupLoading) return;
+    
+    const timer = setTimeout(() => {
+      lastAppliedXRef.current = imageX;
+      lastAppliedYRef.current = imageY;
+      generateMockups(generatedImageUrl);
+    }, 500); // 500ms debounce for position changes
+    
+    return () => clearTimeout(timer);
+  }, [imageX, imageY, isDragging, generatedImageUrl, designerConfig?.hasPrintifyMockups, mockupImages.length, mockupLoading]);
   
   const filteredStyles = config?.stylePresets.filter(style => 
     style.category === "all" || style.category === styleCategory
@@ -573,6 +616,41 @@ export default function AdminCreateProduct() {
       });
     } finally {
       setIsPublishing(false);
+    }
+  };
+
+  // Drag handlers for position control on mockup
+  const handleDragStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!mockupImages.length) return;
+    e.preventDefault();
+    setIsDragging(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      startX: imageX,
+      startY: imageY,
+    };
+  };
+
+  const handleDragMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging || !dragStartRef.current) return;
+    
+    const dx = e.clientX - dragStartRef.current.x;
+    const dy = e.clientY - dragStartRef.current.y;
+    
+    // Convert pixel movement to percentage (adjust sensitivity)
+    const sensitivity = 0.25;
+    const newX = Math.max(0, Math.min(100, dragStartRef.current.startX + dx * sensitivity));
+    const newY = Math.max(0, Math.min(100, dragStartRef.current.startY + dy * sensitivity));
+    
+    setImageX(Math.round(newX));
+    setImageY(Math.round(newY));
+  };
+
+  const handleDragEnd = () => {
+    if (isDragging) {
+      setIsDragging(false);
+      dragStartRef.current = null;
     }
   };
 
@@ -888,13 +966,39 @@ export default function AdminCreateProduct() {
               <CardContent>
                 {generatedImageUrl ? (
                   <div className="space-y-4">
-                    <div className="aspect-square bg-muted rounded-lg overflow-hidden">
+                    <div 
+                      className="relative aspect-square bg-muted rounded-lg overflow-hidden select-none"
+                      onMouseEnter={() => setIsHoveringMockup(true)}
+                      onMouseLeave={() => { setIsHoveringMockup(false); handleDragEnd(); }}
+                      onMouseDown={handleDragStart}
+                      onMouseMove={handleDragMove}
+                      onMouseUp={handleDragEnd}
+                      style={{ cursor: mockupImages.length > 0 ? (isDragging ? 'grabbing' : 'grab') : 'default' }}
+                    >
                       <img 
                         src={selectedMockupIndex !== null && mockupImages[selectedMockupIndex] ? mockupImages[selectedMockupIndex].url : generatedImageUrl} 
                         alt="Selected preview" 
-                        className="w-full h-full object-contain"
+                        className="w-full h-full object-contain pointer-events-none"
                         data-testid="img-generated-design"
+                        draggable={false}
                       />
+                      
+                      {mockupImages.length > 0 && (isHoveringMockup || isDragging) && !mockupLoading && (
+                        <div className="absolute inset-0 bg-black/20 flex items-center justify-center transition-opacity pointer-events-none">
+                          <div className="bg-background/90 rounded-full p-3 shadow-lg">
+                            <Move className="h-6 w-6 text-foreground" />
+                          </div>
+                        </div>
+                      )}
+                      
+                      {mockupLoading && (
+                        <div className="absolute inset-0 bg-background/80 flex items-center justify-center">
+                          <div className="flex flex-col items-center gap-2">
+                            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                            <p className="text-sm text-muted-foreground">Updating mockup...</p>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {designerConfig?.hasPrintifyMockups && (
@@ -914,47 +1018,23 @@ export default function AdminCreateProduct() {
                           />
                         </div>
                         
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Label className="text-sm">X Position: {imageX}%</Label>
-                          </div>
-                          <Slider
-                            value={[imageX]}
-                            onValueChange={(v) => setImageX(v[0])}
-                            min={0}
-                            max={100}
-                            step={1}
-                            data-testid="slider-x-position"
-                          />
-                        </div>
+                        {mockupImages.length > 0 && (imageX !== 50 || imageY !== 50) && (
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={() => { setImageX(50); setImageY(50); }}
+                            className="w-full"
+                            data-testid="button-reset-position"
+                          >
+                            Reset Position
+                          </Button>
+                        )}
                         
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Label className="text-sm">Y Position: {imageY}%</Label>
-                          </div>
-                          <Slider
-                            value={[imageY]}
-                            onValueChange={(v) => setImageY(v[0])}
-                            min={0}
-                            max={100}
-                            step={1}
-                            data-testid="slider-y-position"
-                          />
-                        </div>
-                        
-                        <Button 
-                          variant="outline" 
-                          size="sm" 
-                          onClick={() => { setImageScale(defaultZoom); setImageX(50); setImageY(50); }}
-                          className="w-full"
-                          data-testid="button-reset-position"
-                        >
-                          Reset to Center
-                        </Button>
-                        
-                        <p className="text-xs text-muted-foreground text-center">
-                          Adjust zoom and position before generating mockups
-                        </p>
+                        {mockupImages.length > 0 && (
+                          <p className="text-xs text-muted-foreground text-center">
+                            Drag the mockup to reposition the design
+                          </p>
+                        )}
                       </div>
                     )}
 
