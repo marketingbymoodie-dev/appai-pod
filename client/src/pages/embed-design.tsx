@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -72,6 +73,9 @@ export default function EmbedDesign() {
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [transform, setTransform] = useState<ImageTransform>({ scale: 100, x: 50, y: 50 });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Track the initial transform to detect changes for auto-save
+  const initialTransformRef = useRef<ImageTransform | null>(null);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
@@ -315,7 +319,10 @@ export default function EmbedDesign() {
       }
       // Use conditional default zoom (135% for apparel, 100% for others)
       const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
-      setTransform({ scale: zoomDefault, x: 50, y: 50 });
+      const newTransform = { scale: zoomDefault, x: 50, y: 50 };
+      setTransform(newTransform);
+      // Reset the initial transform ref for the new design
+      initialTransformRef.current = newTransform;
       setLoginError(null);
     },
   });
@@ -662,6 +669,49 @@ export default function EmbedDesign() {
       return () => observer.disconnect();
     }
   }, [isEmbedded]);
+
+  // Set initial transform when design is loaded/created
+  useEffect(() => {
+    if (generatedDesign?.id && !initialTransformRef.current) {
+      initialTransformRef.current = { ...transform };
+    }
+  }, [generatedDesign?.id]);
+
+  // Debounced save of transform changes for owned designs
+  useEffect(() => {
+    // Only save if we have a real design ID (not a crypto UUID which means imported/shared)
+    // and if the design is not a shared design from another user
+    if (!generatedDesign?.id || isSharedDesign) return;
+    
+    // Don't save if this is the initial load
+    if (!initialTransformRef.current) return;
+    
+    // Check if transform actually changed
+    const hasChanged = 
+      transform.scale !== initialTransformRef.current.scale ||
+      transform.x !== initialTransformRef.current.x ||
+      transform.y !== initialTransformRef.current.y;
+    
+    if (!hasChanged) return;
+    
+    // Debounce the save - wait 1 second after last change
+    const timer = setTimeout(async () => {
+      try {
+        await apiRequest("PATCH", `/api/designs/${generatedDesign.id}`, {
+          transformScale: transform.scale,
+          transformX: transform.x,
+          transformY: transform.y,
+        });
+        // Update the initial ref to the new saved values
+        initialTransformRef.current = { ...transform };
+      } catch (error) {
+        console.error("Failed to save transform:", error);
+        // Silent fail - don't interrupt user experience
+      }
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, [transform, generatedDesign?.id, isSharedDesign]);
 
   const printSizes: PrintSize[] = (productTypeConfig?.sizes || []).map((s) => ({
     id: s.id,
