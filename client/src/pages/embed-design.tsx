@@ -683,6 +683,11 @@ export default function EmbedDesign() {
     // and if the design is not a shared design from another user
     if (!generatedDesign?.id || isSharedDesign) return;
     
+    // Skip if ID is a UUID string (imported designs use crypto.randomUUID())
+    // Real database IDs are numeric
+    const designId = String(generatedDesign.id);
+    if (isNaN(parseInt(designId, 10)) || designId.includes("-")) return;
+    
     // Don't save if this is the initial load
     if (!initialTransformRef.current) return;
     
