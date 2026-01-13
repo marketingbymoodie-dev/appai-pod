@@ -1534,6 +1534,18 @@ ${textEdgeRestrictions}
       );
 
       if (!imagePart?.inlineData?.data) {
+        // Log detailed Gemini response for debugging
+        console.error("[Shopify Generate] No image in response:", {
+          hasResponse: !!response,
+          candidatesCount: response.candidates?.length || 0,
+          finishReason: candidate?.finishReason,
+          safetyRatings: candidate?.safetyRatings,
+          parts: candidate?.content?.parts?.map((p: any) => ({
+            hasText: !!p.text,
+            hasInlineData: !!p.inlineData,
+            textPreview: p.text?.substring(0, 100)
+          }))
+        });
         return res.status(500).json({ error: "Failed to generate image" });
       }
 
