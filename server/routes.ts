@@ -1572,20 +1572,22 @@ ${textEdgeRestrictions}
       
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-      // Log the generation (credit was already deducted atomically above)
-      await storage.createCreditTransaction({
-        customerId: customer!.id,
-        type: "generation",
-        amount: -1,
-        description: `Shopify artwork: ${prompt.substring(0, 50)}...`,
-      });
+      // Log the generation only if credits were deducted from a customer account
+      if (creditDeducted && customer) {
+        await storage.createCreditTransaction({
+          customerId: customer.id,
+          type: "generation",
+          amount: -1,
+          description: `Shopify artwork: ${prompt.substring(0, 50)}...`,
+        });
+      }
 
       res.json({
         imageUrl,
         thumbnailUrl,
         designId,
         prompt,
-        creditsRemaining: customer!.credits,
+        creditsRemaining: customer?.credits ?? 0,
       });
     } catch (error) {
       console.error("Error generating Shopify artwork:", error);
