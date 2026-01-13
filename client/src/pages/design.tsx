@@ -1498,7 +1498,9 @@ export default function DesignPage() {
       )}
       
       {/* Ghost overlay while dragging - shows design position in real-time */}
-      {isDragging && generatedDesign?.generatedImageUrl && canDragDesign && (
+      {/* Only show for non-Printify mockup products (framed prints, pillows with base mockups) */}
+      {/* For Printify mockup products (phone cases, apparel), the overlay is misleading since print area isn't centered */}
+      {isDragging && generatedDesign?.generatedImageUrl && canDragDesign && !usePrintifyMockups && (
         <div 
           className="absolute pointer-events-none z-10"
           style={{
@@ -1517,6 +1519,14 @@ export default function DesignPage() {
               draggable={false}
             />
           </div>
+        </div>
+      )}
+      
+      {/* Drag indicator for Printify mockup products - shows position is updating */}
+      {isDragging && usePrintifyMockups && canDragDesign && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-background/90 rounded-full px-3 py-1 shadow-lg flex items-center gap-2 pointer-events-none z-10">
+          <Move className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">Dragging...</span>
         </div>
       )}
       
