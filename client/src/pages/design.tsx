@@ -1270,10 +1270,13 @@ export default function DesignPage() {
   const isFramedProduct = designerConfig?.designerType === "framed-print" || designerConfig?.designerType === "framed_print";
   const hasBaseMockup = designerConfig?.baseMockupImages?.front;
   // For products with Printify mockups, prefer showing those over static base mockup
-  // But only when mockups are actually loaded/loading - otherwise fall back to base mockup view
-  const usePrintifyMockups = designerConfig?.hasPrintifyMockups && (printifyMockups.length > 0 || mockupLoading);
+  // In reuse mode: always show loading/mockups flow (not base overlay) when we have a design
+  // This prevents the confusing base image flash before mockups generate
+  const reuseWaitingForMockups = isReuseMode && generatedDesign?.generatedImageUrl && designerConfig?.hasPrintifyMockups && printifyMockups.length === 0;
+  const usePrintifyMockups = designerConfig?.hasPrintifyMockups && (printifyMockups.length > 0 || mockupLoading || reuseWaitingForMockups);
   // For apparel with hasPrintifyMockups but no mockups loaded yet, show artwork on base template
-  const showApparelBaseWithArtwork = designerConfig?.hasPrintifyMockups && hasBaseMockup && !usePrintifyMockups && generatedDesign?.generatedImageUrl;
+  // Don't show base overlay in reuse mode - use the loading/mockups flow instead
+  const showApparelBaseWithArtwork = designerConfig?.hasPrintifyMockups && hasBaseMockup && !usePrintifyMockups && generatedDesign?.generatedImageUrl && !isReuseMode;
   // Can drag if we have artwork and (have mockups OR showing base with artwork)
   const canDragDesign = generatedDesign?.generatedImageUrl && (usePrintifyMockups || showApparelBaseWithArtwork || hasBaseMockup);
 
@@ -1335,7 +1338,7 @@ export default function DesignPage() {
               <Loader2 className="h-8 w-8 animate-spin" />
               <span className="text-xs">Creating artwork...</span>
             </div>
-          ) : mockupLoading ? (
+          ) : mockupLoading || reuseWaitingForMockups ? (
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <Loader2 className="h-8 w-8 animate-spin" />
               <span className="text-xs">Generating product preview...</span>
@@ -1536,8 +1539,11 @@ export default function DesignPage() {
   
   // Check if we have additional Printify mockups to show
   const hasPrintifyLifestyleMockup = printifyMockups.length > 1;
+  
+  // In reuse mode waiting for mockups, show loading instead of base lifestyle
+  const showLifestyleLoading = reuseWaitingForMockups || (mockupLoading && !hasPrintifyLifestyleMockup);
 
-  const lifestyleMockup = (currentLifestyle || hasBaseLifestyleMockup || hasPrintifyLifestyleMockup) && (
+  const lifestyleMockup = (currentLifestyle || hasBaseLifestyleMockup || hasPrintifyLifestyleMockup || showLifestyleLoading) && (
     <div 
       ref={calibrationRef}
       className="relative w-full flex items-center justify-center"
@@ -1546,7 +1552,15 @@ export default function DesignPage() {
       onMouseLeave={calibrationMode ? handleCalibrationMouseUp : undefined}
     >
       <div className="relative">
-        {currentLifestyle ? (
+        {showLifestyleLoading && !currentLifestyle && !hasPrintifyLifestyleMockup ? (
+          // Loading state for reuse mode
+          <div className="w-full h-64 flex items-center justify-center bg-muted rounded-md">
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-xs">Generating preview...</span>
+            </div>
+          </div>
+        ) : currentLifestyle ? (
           // Framed product lifestyle with artwork overlay
           <>
             <img
