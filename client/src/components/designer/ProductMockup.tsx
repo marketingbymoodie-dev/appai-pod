@@ -35,6 +35,7 @@ export function ProductMockup({
   canvasConfig,
   showSafeZone = false,
 }: ProductMockupProps) {
+  console.log("[ProductMockup] designerType:", designerType, "imageUrl:", imageUrl);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
