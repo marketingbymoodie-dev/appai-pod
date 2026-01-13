@@ -1091,9 +1091,15 @@ export default function EmbedDesign() {
             <div
               className="w-full rounded-md overflow-hidden"
               style={{
-                aspectRatio: selectedSizeConfig
-                  ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}`
-                  : "3/4",
+                aspectRatio: (() => {
+                  // For product types with dimensional sizes (width/height > 0), use those
+                  if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
+                    return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
+                  }
+                  // Otherwise use the product type's aspectRatio string (e.g., "4:3" for mugs/tumblers)
+                  const ar = productTypeConfig?.aspectRatio || "3:4";
+                  return ar.replace(":", "/");
+                })(),
               }}
               data-testid="container-mockup"
             >
