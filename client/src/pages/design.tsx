@@ -265,6 +265,9 @@ export default function DesignPage() {
       }
       if (designerConfig.frameColors.length > 0 && !selectedFrameColor) {
         setSelectedFrameColor(designerConfig.frameColors[0].id);
+      } else if (designerConfig.frameColors.length === 0 && !selectedFrameColor) {
+        // For products with no colors (phone cases, pillows), use "default" to match variantMap
+        setSelectedFrameColor("default");
       }
       // Only set default zoom when no design is loaded (fresh start)
       // Don't overwrite saved/user-adjusted transformScale
