@@ -679,10 +679,22 @@ export default function DesignPage() {
   const handleColorTierRegenerate = async () => {
     if (!generatedDesign || !pendingColorChange) return;
     
+    // In reuse mode, use the source design ID; otherwise use the current design ID
+    const designIdToUse = isReuseMode && reuseSourceDesign ? reuseSourceDesign.id : generatedDesign.id;
+    
+    if (!designIdToUse) {
+      toast({
+        title: "Cannot regenerate",
+        description: "Please save the design first before regenerating for a different color.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
     setIsRegenerating(true);
     try {
       const response = await apiRequest("POST", "/api/generate/regenerate-tier", {
-        designId: generatedDesign.id,
+        designId: designIdToUse,
         newColorTier: pendingColorChange.newTier,
         newFrameColor: pendingColorChange.newColor,
       });
@@ -696,22 +708,32 @@ export default function DesignPage() {
         setPrintifyMockupImages([]);
         lastAutoFetchKeyRef.current = null;
         queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
         toast({
           title: "Design regenerated!",
           description: `Your design has been optimized for ${pendingColorChange.newTier === "dark" ? "dark" : "light"} colored apparel.`,
         });
+        // Success - close modal and clean up
+        setIsRegenerating(false);
+        setShowColorTierModal(false);
+        setPendingColorChange(null);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to regenerate design:", error);
+      // Error format from apiRequest is "${status}: ${responseText}"
+      const errorMsg = error?.message || "";
+      const isInsufficientCredits = errorMsg.startsWith("402") || errorMsg.includes("Insufficient credits");
+      const errorMessage = isInsufficientCredits 
+        ? "You don't have enough credits to regenerate. Please purchase more credits."
+        : "Could not regenerate the design. Please try again.";
       toast({
         title: "Regeneration failed",
-        description: "Could not regenerate the design. Please try again.",
+        description: errorMessage,
         variant: "destructive",
       });
-    } finally {
       setIsRegenerating(false);
-      setShowColorTierModal(false);
-      setPendingColorChange(null);
+      // Keep modal open on failure so user can retry or cancel
+      // Don't clear pendingColorChange so they can try again after buying credits
     }
   };
   
@@ -1201,16 +1223,29 @@ export default function DesignPage() {
 
   const actionButtons = generatedDesign && (
     <div className="flex gap-2">
-      <Button 
-        variant="outline" 
-        className="flex-1" 
-        onClick={handleSaveDesign}
-        disabled={saveMutation.isPending}
-        data-testid="button-save"
-      >
-        <Save className="h-4 w-4 mr-2" />
-        {saveMutation.isPending ? "Saving..." : "Save"}
-      </Button>
+      {isReuseMode ? (
+        <Button 
+          variant="outline" 
+          className="flex-1" 
+          onClick={handleSaveReusedDesign}
+          disabled={reuseMutation.isPending || !selectedProductTypeId || !selectedSize || !selectedFrameColor}
+          data-testid="button-save"
+        >
+          <Save className="h-4 w-4 mr-2" />
+          {reuseMutation.isPending ? "Saving..." : "Save"}
+        </Button>
+      ) : (
+        <Button 
+          variant="outline" 
+          className="flex-1" 
+          onClick={handleSaveDesign}
+          disabled={saveMutation.isPending}
+          data-testid="button-save"
+        >
+          <Save className="h-4 w-4 mr-2" />
+          {saveMutation.isPending ? "Saving..." : "Save"}
+        </Button>
+      )}
       <Button className="flex-1" data-testid="button-order">
         <ShoppingCart className="h-4 w-4 mr-2" />
         Order Print
@@ -2063,7 +2098,7 @@ export default function DesignPage() {
                 </>
               )}
               <br /><br />
-              Would you like to regenerate this design with optimized colors? This is <strong>free</strong> and uses the same prompt.
+              Would you like to regenerate this design with optimized colors? This costs <strong>1 credit</strong> and uses the same prompt.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col sm:flex-row gap-2">
@@ -2093,7 +2128,7 @@ export default function DesignPage() {
                   Regenerating...
                 </>
               ) : (
-                "Regenerate (Free)"
+                "Regenerate (1 Credit)"
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

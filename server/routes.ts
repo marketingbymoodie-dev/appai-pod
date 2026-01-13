@@ -772,7 +772,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
     }
   });
 
-  // Regenerate design for a different color tier (FREE - no credit cost)
+  // Regenerate design for a different color tier (costs 1 credit)
   // Used when user switches between light/dark apparel colors
   app.post("/api/generate/regenerate-tier", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -787,6 +787,15 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       
       if (!designId || !newColorTier) {
         return res.status(400).json({ error: "Design ID and new color tier are required" });
+      }
+
+      // Check credits (regeneration costs 1 credit)
+      if (customer.credits < 1) {
+        return res.status(402).json({ 
+          error: "Insufficient credits", 
+          creditsRequired: 1,
+          creditsRemaining: customer.credits
+        });
       }
 
       // Get the original design
@@ -905,7 +914,10 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
       // Update the design with new image and tier
       const updatedDesign = await storage.updateDesign(designId, updateData);
 
-      // Log the free regeneration (no credit deducted)
+      // Deduct 1 credit for regeneration
+      await storage.updateCustomer(customer.id, { credits: customer.credits - 1 });
+
+      // Log the regeneration
       await storage.createGenerationLog({
         customerId: customer.id,
         designId: designId,
@@ -916,10 +928,19 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
         success: true,
       });
 
-      console.log(`[Regenerate-Tier] Successfully regenerated design ${designId} for ${newColorTier} tier`);
+      // Create credit transaction
+      await storage.createCreditTransaction({
+        customerId: customer.id,
+        type: "generation",
+        amount: -1,
+        description: `Regenerated design for ${newColorTier} apparel colors`,
+      });
+
+      console.log(`[Regenerate-Tier] Successfully regenerated design ${designId} for ${newColorTier} tier (1 credit deducted)`);
 
       res.json({
         design: updatedDesign,
+        creditsRemaining: customer.credits - 1,
         message: `Design regenerated for ${newColorTier} colored apparel`,
       });
     } catch (error) {
