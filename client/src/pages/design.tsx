@@ -111,6 +111,7 @@ export default function DesignPage() {
   const [printifyMockups, setPrintifyMockups] = useState<string[]>([]);
   const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
+  const [selectedMockupIndex, setSelectedMockupIndex] = useState<number>(0);
   
   const [imageScale, setImageScale] = useState(100);
   const [imagePosition, setImagePosition] = useState({ x: 50, y: 50 });
@@ -372,9 +373,11 @@ export default function DesignPage() {
       const result = await response.json();
       if (result.success && result.mockupUrls?.length > 0) {
         setPrintifyMockups(result.mockupUrls);
+        setSelectedMockupIndex(0); // Auto-select first mockup
       }
       if (result.success && result.mockupImages?.length > 0) {
         setPrintifyMockupImages(result.mockupImages);
+        setSelectedMockupIndex(0); // Auto-select first mockup
       }
     } catch (error) {
       console.error("Failed to generate mockups:", error);
@@ -1930,12 +1933,16 @@ export default function DesignPage() {
               {isReuseMode ? reuseSaveButton : generateButton}
             </div>
             
-            {/* Center: Front view */}
+            {/* Center: Main preview - shows selected mockup or front view */}
             <div className="flex-1 flex flex-col items-center min-w-0">
-              <h3 className="text-sm font-medium mb-2">Front</h3>
+              <h3 className="text-sm font-medium mb-2">
+                {printifyMockupImages.length > 0 && selectedMockupIndex < printifyMockupImages.length
+                  ? printifyMockupImages[selectedMockupIndex].label.charAt(0).toUpperCase() + printifyMockupImages[selectedMockupIndex].label.slice(1).replace(/-/g, ' ')
+                  : "Front"}
+              </h3>
               <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
                 <div 
-                  key={`front-${selectedSize}`}
+                  key={`front-${selectedSize}-${selectedMockupIndex}`}
                   className="max-h-full max-w-full"
                   style={{ 
                     aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
@@ -1943,7 +1950,27 @@ export default function DesignPage() {
                     height: selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width ? '100%' : 'auto',
                   }}
                 >
-                  {previewMockup}
+                  {/* Show selected Printify mockup if available, otherwise show regular previewMockup */}
+                  {printifyMockups.length > 0 && selectedMockupIndex < printifyMockups.length ? (
+                    <div className="relative w-full h-full">
+                      <img
+                        src={printifyMockups[selectedMockupIndex]}
+                        alt={printifyMockupImages[selectedMockupIndex]?.label || "Mockup preview"}
+                        className="w-full h-full object-contain rounded-md"
+                        data-testid="img-selected-mockup"
+                      />
+                      {mockupLoading && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-md">
+                          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                            <Loader2 className="h-6 w-6 animate-spin" />
+                            <span className="text-xs">Updating...</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    previewMockup
+                  )}
                 </div>
               </div>
               <div className="mt-1 h-6 flex items-center justify-center">
@@ -1952,34 +1979,69 @@ export default function DesignPage() {
               {tweakPanel && <div className="mt-2 w-full max-w-xs">{tweakPanel}</div>}
             </div>
             
-            {/* Right: Secondary view (Back, Lifestyle, etc) */}
+            {/* Right: Secondary view OR Mockup Gallery when there are many mockups */}
             <div className="flex-1 flex flex-col items-center min-w-0">
-              <h3 className="text-sm font-medium mb-2">
-                {printifyMockupImages.length > 1 
-                  ? printifyMockupImages[1].label.charAt(0).toUpperCase() + printifyMockupImages[1].label.slice(1).replace(/-/g, ' ')
-                  : currentLifestyle ? "Lifestyle" : "Preview"}
-              </h3>
-              <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
-                <div 
-                  key={`lifestyle-${selectedSize}-${selectedFrameColor}`} 
-                  className="max-h-full max-w-full flex items-center justify-center"
-                  style={{ 
-                    aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
-                    width: selectedSizeConfig && selectedSizeConfig.width >= selectedSizeConfig.height ? '100%' : 'auto',
-                    height: selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width ? '100%' : 'auto',
-                  }}
-                >
-                  {lifestyleMockup || (
-                    <div className="h-full w-full flex items-center justify-center bg-muted rounded-md">
-                      <p className="text-xs text-muted-foreground">Select a size to see lifestyle view</p>
+              {printifyMockupImages.length > 2 ? (
+                /* Mockup gallery when there are 3+ mockups */
+                <>
+                  <h3 className="text-sm font-medium mb-2">All Views ({printifyMockupImages.length})</h3>
+                  <div className="flex-1 w-full overflow-y-auto">
+                    <div className="grid grid-cols-2 gap-2 p-1">
+                      {printifyMockupImages.map((mockup, index) => (
+                        <div
+                          key={index}
+                          onClick={() => setSelectedMockupIndex(index)}
+                          className={`cursor-pointer rounded-lg p-1 transition-all ${
+                            selectedMockupIndex === index 
+                              ? 'ring-2 ring-primary bg-primary/10' 
+                              : 'hover-elevate'
+                          }`}
+                          data-testid={`mockup-thumbnail-${index}`}
+                        >
+                          <img
+                            src={mockup.url}
+                            alt={mockup.label}
+                            className="w-full aspect-square object-contain rounded-md border"
+                          />
+                          <p className="text-xs text-center text-muted-foreground mt-1 truncate">
+                            {mockup.label.charAt(0).toUpperCase() + mockup.label.slice(1).replace(/-/g, ' ')}
+                          </p>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                </div>
-              </div>
-              <div className="mt-1 h-6 flex items-center justify-center">
-                {/* Calibration panel hidden - enable when needed for positioning adjustments */}
-                {/* {currentLifestyle && calibrationPanel} */}
-              </div>
+                  </div>
+                </>
+              ) : (
+                /* Show secondary mockup for 1-2 mockups or lifestyle for framed prints */
+                <>
+                  <h3 className="text-sm font-medium mb-2">
+                    {printifyMockupImages.length > 1 
+                      ? printifyMockupImages[1].label.charAt(0).toUpperCase() + printifyMockupImages[1].label.slice(1).replace(/-/g, ' ')
+                      : currentLifestyle ? "Lifestyle" : "Preview"}
+                  </h3>
+                  <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
+                    <div 
+                      key={`lifestyle-${selectedSize}-${selectedFrameColor}`} 
+                      className="max-h-full max-w-full flex items-center justify-center"
+                      style={{ 
+                        aspectRatio: selectedSizeConfig ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}` : "3/4",
+                        width: selectedSizeConfig && selectedSizeConfig.width >= selectedSizeConfig.height ? '100%' : 'auto',
+                        height: selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width ? '100%' : 'auto',
+                      }}
+                    >
+                      {lifestyleMockup || (
+                        <div className="h-full w-full flex items-center justify-center bg-muted rounded-md">
+                          <p className="text-xs text-muted-foreground">Select a size to see lifestyle view</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-1 h-6 flex items-center justify-center">
+                    {/* Calibration panel hidden - enable when needed for positioning adjustments */}
+                    {/* {currentLifestyle && calibrationPanel} */}
+                  </div>
+                </>
+              )}
             </div>
           </div>
           
