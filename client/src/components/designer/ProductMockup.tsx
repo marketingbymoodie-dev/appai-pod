@@ -225,23 +225,20 @@ export function ProductMockup({
     }
 
     if (imageUrl) {
+      console.log("[ProductMockup] Rendering image with URL:", imageUrl, "scale:", transform.scale);
       return (
         <img
           src={imageUrl}
           alt="Generated artwork"
-          className="select-none absolute"
+          className="select-none absolute inset-0 w-full h-full object-cover"
           style={{
-            width: `${transform.scale}%`,
-            height: `${transform.scale}%`,
-            objectFit: "cover",
-            left: `${transform.x}%`,
-            top: `${transform.y}%`,
-            transform: "translate(-50%, -50%)",
             pointerEvents: "none",
             borderRadius: printShape === "circle" ? "50%" : undefined,
           }}
           draggable={false}
           data-testid="img-generated"
+          onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
+          onError={(e) => console.error("[ProductMockup] Image failed to load:", e)}
         />
       );
     }
