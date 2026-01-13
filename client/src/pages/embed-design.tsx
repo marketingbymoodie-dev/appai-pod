@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2, Upload, ExternalLink } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
-  MockupPreview,
+  ProductMockup,
   ZoomControls,
   FrameColorSelector,
   SizeSelector,
@@ -19,6 +19,9 @@ import {
   type PrintSize,
   type FrameColor,
   type StylePreset,
+  type DesignerType,
+  type PrintShape,
+  type CanvasConfig,
 } from "@/components/designer";
 
 interface CustomerInfo {
@@ -38,7 +41,9 @@ interface ProductTypeConfig {
   name: string;
   description: string | null;
   aspectRatio: string;
-  designerType?: string;
+  designerType?: DesignerType;
+  printShape?: PrintShape;
+  canvasConfig?: CanvasConfig;
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
 }
@@ -174,6 +179,8 @@ export default function EmbedDesign() {
             description: designerConfig.description || null,
             aspectRatio: designerConfig.aspectRatio,
             designerType: designerConfig.designerType,
+            printShape: designerConfig.printShape,
+            canvasConfig: designerConfig.canvasConfig,
             sizes: designerConfig.sizes || [],
             frameColors: designerConfig.frameColors || []
           });
@@ -1055,7 +1062,7 @@ export default function EmbedDesign() {
               }}
               data-testid="container-mockup"
             >
-              <MockupPreview
+              <ProductMockup
                 imageUrl={generatedDesign?.imageUrl}
                 isLoading={generateMutation.isPending}
                 selectedSize={selectedSizeConfig}
@@ -1063,6 +1070,9 @@ export default function EmbedDesign() {
                 transform={transform}
                 onTransformChange={setTransform}
                 enableDrag={!!generatedDesign?.imageUrl}
+                designerType={productTypeConfig?.designerType || "generic"}
+                printShape={productTypeConfig?.printShape || "rectangle"}
+                canvasConfig={productTypeConfig?.canvasConfig}
               />
             </div>
 
