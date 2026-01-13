@@ -1777,7 +1777,14 @@ export default function DesignPage() {
                   </div>
                   <CardTitle className="text-lg mb-1">{productType.name}</CardTitle>
                   <CardDescription className="text-sm line-clamp-2">
-                    {productType.description || "Custom AI artwork design"}
+                    {productType.description 
+                      ? productType.description
+                          .replace(/<[^>]*>/g, '') // Strip HTML tags
+                          .replace(/&lt;/g, '<').replace(/&gt;/g, '>') // Decode entities
+                          .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+                          .replace(/<[^>]*>/g, '') // Strip again after decoding
+                          .replace(/\s+/g, ' ').trim() // Normalize whitespace
+                      : "Custom AI artwork design"}
                   </CardDescription>
                 </CardContent>
               </Card>

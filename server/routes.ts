@@ -4865,12 +4865,17 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         bleedMarginPercent = 8;
       }
 
-      // Detect double-sided print from description
-      const doubleSidedPrint = combined.includes("double sided") || 
-                               combined.includes("double-sided") || 
-                               combined.includes("two sided") ||
-                               combined.includes("two-sided") ||
-                               combined.includes("both sides");
+      // Detect double-sided print from description (decode HTML entities first)
+      const decodedCombined = combined
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+        .replace(/<[^>]*>/g, ' ') // Strip HTML tags
+        .toLowerCase();
+      const doubleSidedPrint = decodedCombined.includes("double sided") || 
+                               decodedCombined.includes("double-sided") || 
+                               decodedCombined.includes("two sided") ||
+                               decodedCombined.includes("two-sided") ||
+                               decodedCombined.includes("both sides");
 
       // Create the product type with parsed data
       const productType = await storage.createProductType({
