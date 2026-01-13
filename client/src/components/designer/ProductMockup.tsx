@@ -230,10 +230,11 @@ export function ProductMockup({
         <img
           src={imageUrl}
           alt="Generated artwork"
-          className="select-none absolute inset-0 w-full h-full object-cover"
+          className="select-none w-full h-full object-cover"
           style={{
             pointerEvents: "none",
             borderRadius: printShape === "circle" ? "50%" : undefined,
+            zIndex: 10,
           }}
           draggable={false}
           data-testid="img-generated"
