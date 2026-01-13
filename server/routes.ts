@@ -673,16 +673,35 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 `;
       } else {
         // Wall art needs full-bleed edge-to-edge designs
+        // Determine if this is landscape, portrait, or square based on aspect ratio
+        const [arW, arH] = aspectRatioStr.split(":").map(Number);
+        const aspectRatioValue = arW / arH;
+        let orientationDescription: string;
+        if (aspectRatioValue > 1.05) {
+          orientationDescription = `HORIZONTAL LANDSCAPE ${aspectRatioStr} composition (wider than tall)`;
+        } else if (aspectRatioValue < 0.95) {
+          orientationDescription = `VERTICAL PORTRAIT ${aspectRatioStr} composition (taller than wide)`;
+        } else {
+          orientationDescription = `SQUARE 1:1 composition`;
+        }
+        
+        // For wrap-around products like tumblers, add specific guidance
+        const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
+        const safeZonePercent = isWrapAround ? 60 : 75;
+        const safeZoneNote = isWrapAround 
+          ? `This is a WRAP-AROUND product - the image will wrap around a cylindrical surface. Keep ALL text and important elements within the central ${safeZonePercent}% both horizontally and vertically to ensure nothing is cut off or wrapped to an unseen area.`
+          : `Keep all important elements (text, faces, key subjects) within the central ${safeZonePercent}% of the image to ensure nothing is cut off when framed.`;
+        
         sizingRequirements = `
 
 MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
 2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
 3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image. The image will be printed and framed separately.
-4. COMPOSITION: ${aspectRatioStr === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${aspectRatioStr} composition`} - the artwork fills the entire canvas.
-5. SAFE ZONE: Keep all important elements (text, faces, key subjects) within the central 75% of the image to ensure nothing is cut off when framed.
+4. ASPECT RATIO: You MUST create an image with ${orientationDescription}. The artwork fills the entire canvas in this exact aspect ratio.
+5. SAFE ZONE: ${safeZoneNote}
 6. BACKGROUND: The background/scene must extend fully to all four edges of the image with NO visible canvas edges or cutoffs.
-7. PRINT-READY: This is for high-quality wall art printing - create a complete, finished artwork that fills the entire image area.
+7. PRINT-READY: This is for high-quality printing - create a complete, finished artwork that fills the entire image area.
 `;
       }
 
@@ -1342,14 +1361,32 @@ SQUARE PRINT AREA: This design is for a square product.
       }
 
       // CRITICAL: Full-bleed requirements for ALL generations
+      // Determine if this is landscape, portrait, or square based on aspect ratio
+      const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
+      const aspectRatioValue = arW / arH;
+      let orientationDescription: string;
+      if (aspectRatioValue > 1.05) {
+        orientationDescription = `HORIZONTAL LANDSCAPE ${sizeConfig.aspectRatio} composition (wider than tall)`;
+      } else if (aspectRatioValue < 0.95) {
+        orientationDescription = `VERTICAL PORTRAIT ${sizeConfig.aspectRatio} composition (taller than wide)`;
+      } else {
+        orientationDescription = `SQUARE 1:1 composition`;
+      }
+      
+      // For wrap-around products like tumblers, add specific guidance
+      const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
+      const wrapAroundSafeZone = isWrapAround 
+        ? `\nWRAP-AROUND PRODUCT: This image will wrap around a cylindrical surface. Keep ALL text and important elements within the central 60% both horizontally and vertically.`
+        : "";
+      
       const sizingRequirements = `
 
 MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
 1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
 2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
 3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image.
-4. COMPOSITION: ${sizeConfig.aspectRatio === "1:1" ? "Square 1:1 composition" : `Vertical portrait ${sizeConfig.aspectRatio} composition`} - the artwork fills the entire canvas.
-5. SAFE ZONE: ${shapeInstructions}
+4. ASPECT RATIO: You MUST create an image with ${orientationDescription}. The artwork fills the entire canvas in this exact aspect ratio.
+5. SAFE ZONE: ${shapeInstructions}${wrapAroundSafeZone}
 6. BACKGROUND: The background/scene must extend fully to all four edges.
 7. PRINT-READY: This is for high-quality printing - create a complete, finished artwork.
 `;
