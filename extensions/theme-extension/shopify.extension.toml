@@ -12,3 +12,7 @@ handle = "ai-art-studio"
   [[extensions.targeting]]
     module = "./blocks/design-studio.liquid"
     target = "section"
+
+  [[extensions.targeting]]
+    module = "./blocks/ai-art-embed.liquid"
+    target = "body"

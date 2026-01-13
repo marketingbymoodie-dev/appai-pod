@@ -1,0 +1,369 @@
+{% comment %}
+  AI Art Studio - App Embed Script
+  This script runs on ALL pages and automatically:
+  1. Detects products with ai_art_studio.enable metafield
+  2. Injects the AI design studio
+  3. Hides the native add-to-cart button when configured
+  
+  No manual theme configuration required - just publish products from the admin!
+{% endcomment %}
+
+{% schema %}
+{
+  "name": "AI Art Studio",
+  "target": "body",
+  "settings": []
+}
+{% endschema %}
+
+<script>
+(function() {
+  'use strict';
+  
+  // Only run on product pages - check URL pattern
+  if (!window.location.pathname.includes('/products/')) {
+    return;
+  }
+  
+  // Skip if already initialized
+  if (document.getElementById('ai-art-studio-auto-embed')) {
+    return;
+  }
+  
+  function hideNativeAddToCart() {
+    const selectors = [
+      'form[action="/cart/add"]',
+      '.product-form__submit',
+      '.product-form__buttons',
+      '[data-add-to-cart]',
+      '.add-to-cart',
+      '#AddToCart',
+      '.shopify-payment-button',
+      '.product__submit',
+      'button[name="add"]',
+      '.product-form__cart-submit'
+    ];
+    
+    selectors.forEach(selector => {
+      document.querySelectorAll(selector).forEach(el => {
+        if (!el.closest('.ai-art-studio-embed')) {
+          el.style.display = 'none';
+        }
+      });
+    });
+    
+    const productForms = document.querySelectorAll('form[action*="/cart/add"]');
+    productForms.forEach(form => {
+      if (!form.closest('.ai-art-studio-embed')) {
+        form.style.display = 'none';
+      }
+    });
+  }
+  
+  function createDesignStudio(config) {
+    const container = document.createElement('div');
+    container.className = 'ai-art-studio-embed';
+    container.id = 'ai-art-studio-auto-embed';
+    
+    container.innerHTML = `
+      <div class="ai-art-studio-embed__wrapper">
+        <h2 class="ai-art-studio-embed__heading">Create Your Custom Design</h2>
+        <p class="ai-art-studio-embed__description">${config.description || 'Use AI to generate a unique artwork. Describe your vision and our AI will bring it to life.'}</p>
+        <div class="ai-art-studio-embed__studio" style="height: 600px;">
+          <div class="ai-art-studio-embed__loading">
+            <div class="ai-art-studio-embed__spinner"></div>
+            <p>Loading design studio...</p>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    const studioContainer = container.querySelector('.ai-art-studio-embed__studio');
+    
+    const params = new URLSearchParams();
+    params.set('embedded', 'true');
+    params.set('shopify', 'true');
+    params.set('shop', config.shopDomain);
+    params.set('productTypeId', config.productTypeId);
+    params.set('productId', config.productId);
+    params.set('productHandle', config.productHandle);
+    params.set('productTitle', config.productTitle);
+    params.set('displayName', config.displayName);
+    params.set('showPresets', 'true');
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const sharedDesignId = urlParams.get('sharedDesignId');
+    if (sharedDesignId) {
+      params.set('sharedDesignId', sharedDesignId);
+    }
+    
+    const iframe = document.createElement('iframe');
+    iframe.src = `${config.appUrl}/embed/design?${params.toString()}`;
+    iframe.allow = 'clipboard-write';
+    iframe.title = 'AI Art Design Studio';
+    iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
+    
+    iframe.onload = function() {
+      const loading = studioContainer.querySelector('.ai-art-studio-embed__loading');
+      if (loading) loading.remove();
+    };
+    
+    studioContainer.appendChild(iframe);
+    
+    window.addEventListener('message', function(event) {
+      try {
+        const appOrigin = new URL(config.appUrl).origin;
+        if (event.origin !== appOrigin) return;
+      } catch (e) {
+        return;
+      }
+      
+      const data = event.data;
+      
+      if (data.type === 'ai-art-studio:add-to-cart') {
+        const formData = {
+          items: [{
+            id: data.variantId,
+            quantity: 1,
+            properties: {
+              '_artwork_url': data.artworkUrl,
+              '_design_id': data.designId,
+              'Artwork': 'Custom AI Design'
+            }
+          }]
+        };
+        
+        fetch('/cart/add.js', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData)
+        })
+        .then(response => response.json())
+        .then(result => {
+          iframe.contentWindow.postMessage({
+            type: 'ai-art-studio:cart-updated',
+            success: true,
+            cart: result
+          }, config.appUrl);
+          
+          document.dispatchEvent(new CustomEvent('cart:refresh'));
+        })
+        .catch(error => {
+          console.error('Failed to add to cart:', error);
+          iframe.contentWindow.postMessage({
+            type: 'ai-art-studio:cart-updated',
+            success: false,
+            error: error.message
+          }, config.appUrl);
+        });
+      }
+      
+      if (data.type === 'ai-art-studio:resize') {
+        studioContainer.style.height = data.height + 'px';
+      }
+    });
+    
+    return container;
+  }
+  
+  function insertStudioAfterProductInfo(studioElement) {
+    const insertionPoints = [
+      '.product__info-wrapper',
+      '.product-single__meta',
+      '.product__content',
+      '.product-info',
+      '[data-product-info]',
+      '.product__description',
+      '.product-description'
+    ];
+    
+    for (const selector of insertionPoints) {
+      const target = document.querySelector(selector);
+      if (target) {
+        target.parentNode.insertBefore(studioElement, target.nextSibling);
+        return true;
+      }
+    }
+    
+    const productContainer = document.querySelector('.product, [data-product], .product-template, main');
+    if (productContainer) {
+      productContainer.appendChild(studioElement);
+      return true;
+    }
+    
+    return false;
+  }
+  
+  function init() {
+    if (!window.location.pathname.includes('/products/')) {
+      return;
+    }
+    
+    if (document.getElementById('ai-art-studio-auto-embed')) {
+      return;
+    }
+    
+    const productMeta = document.querySelector('[data-product-json]');
+    let productData = null;
+    
+    if (productMeta) {
+      try {
+        productData = JSON.parse(productMeta.textContent);
+      } catch (e) {}
+    }
+    
+    if (!productData && window.ShopifyAnalytics && window.ShopifyAnalytics.meta) {
+      productData = window.ShopifyAnalytics.meta.product;
+    }
+    
+    checkMetafieldsAndInit();
+  }
+  
+  function checkMetafieldsAndInit() {
+    const metaTags = document.querySelectorAll('meta[property^="product:"]');
+    
+    let appUrl = null;
+    let productTypeId = null;
+    let displayName = null;
+    let description = null;
+    let hideAddToCart = false;
+    let enabled = false;
+    
+    const metaAppUrl = document.querySelector('meta[name="ai_art_studio:app_url"]');
+    const metaProductTypeId = document.querySelector('meta[name="ai_art_studio:product_type_id"]');
+    const metaEnabled = document.querySelector('meta[name="ai_art_studio:enable"]');
+    const metaHideCart = document.querySelector('meta[name="ai_art_studio:hide_add_to_cart"]');
+    const metaDisplayName = document.querySelector('meta[name="ai_art_studio:display_name"]');
+    const metaDescription = document.querySelector('meta[name="ai_art_studio:description"]');
+    
+    if (metaAppUrl) appUrl = metaAppUrl.content;
+    if (metaProductTypeId) productTypeId = metaProductTypeId.content;
+    if (metaEnabled) enabled = metaEnabled.content === 'true';
+    if (metaHideCart) hideAddToCart = metaHideCart.content === 'true';
+    if (metaDisplayName) displayName = metaDisplayName.content;
+    if (metaDescription) description = metaDescription.content;
+    
+    if (!appUrl || !productTypeId) {
+      const scriptData = document.querySelector('[data-ai-art-studio]');
+      if (scriptData) {
+        try {
+          const data = JSON.parse(scriptData.textContent);
+          appUrl = data.appUrl;
+          productTypeId = data.productTypeId;
+          displayName = data.displayName;
+          description = data.description;
+          hideAddToCart = data.hideAddToCart === true || data.hideAddToCart === 'true';
+          enabled = data.enabled === true || data.enabled === 'true';
+        } catch (e) {}
+      }
+    }
+    
+    if (!appUrl || !productTypeId) {
+      return;
+    }
+    
+    // Only proceed if the product is enabled for AI Art Studio
+    if (!enabled) {
+      return;
+    }
+    
+    if (hideAddToCart) {
+      hideNativeAddToCart();
+      
+      const observer = new MutationObserver(() => {
+        hideNativeAddToCart();
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+    
+    const productHandle = window.location.pathname.split('/products/')[1]?.split('?')[0]?.split('#')[0] || '';
+    const productTitle = document.querySelector('h1')?.textContent?.trim() || 'Product';
+    const productId = window.ShopifyAnalytics?.meta?.product?.id || '';
+    
+    const config = {
+      appUrl: appUrl,
+      productTypeId: productTypeId,
+      productId: productId,
+      productHandle: productHandle,
+      productTitle: productTitle,
+      displayName: displayName || productTitle.replace('Custom ', ''),
+      description: description,
+      shopDomain: window.Shopify?.shop || window.location.hostname
+    };
+    
+    const studioElement = createDesignStudio(config);
+    
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => {
+        insertStudioAfterProductInfo(studioElement);
+      });
+    } else {
+      insertStudioAfterProductInfo(studioElement);
+    }
+  }
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+<style>
+.ai-art-studio-embed {
+  padding: 2rem 0;
+  margin: 2rem 0;
+}
+
+.ai-art-studio-embed__wrapper {
+  max-width: 100%;
+}
+
+.ai-art-studio-embed__heading {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+.ai-art-studio-embed__description {
+  color: #666;
+  text-align: center;
+  margin-bottom: 1.5rem;
+  max-width: 600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.ai-art-studio-embed__studio {
+  width: 100%;
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fafafa;
+  position: relative;
+}
+
+.ai-art-studio-embed__loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.ai-art-studio-embed__spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e5e5e5;
+  border-top-color: #333;
+  border-radius: 50%;
+  animation: ai-art-embed-spin 1s linear infinite;
+  margin: 0 auto 1rem;
+}
+
+@keyframes ai-art-embed-spin {
+  to { transform: rotate(360deg); }
+}
+</style>

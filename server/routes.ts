@@ -1807,24 +1807,40 @@ ${textEdgeRestrictions}
       // Create display name for dynamic text (strip "Custom" prefix if product title would have it)
       const displayName = productType.name;
 
-      // Create the product in Shopify with template suffix for automatic configuration
+      // Create the product in Shopify configured for Online Store only
+      // The theme app embed will automatically detect metafields and show the design studio
       const shopifyProduct = {
         product: {
           title: `Custom ${productType.name}`,
           body_html: `
             <p>${cleanDescription}</p>
             <p><strong>This product features our AI Design Studio.</strong> Create your own unique artwork using AI, or upload your own design!</p>
+            <script type="application/json" data-ai-art-studio>
+              ${JSON.stringify({
+                enabled: true,
+                appUrl: appUrl,
+                productTypeId: String(productType.id),
+                displayName: displayName,
+                description: `Use AI to generate a unique artwork for your ${displayName.toLowerCase()}. Describe your vision and our AI will bring it to life.`,
+                hideAddToCart: true
+              })}
+            </script>
           `,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: productType.name,
-          status: "draft", // Leave as draft so merchant can set pricing
-          published: false,
-          template_suffix: "ai-art-studio", // Use pre-configured template
-          tags: ["custom-design", "ai-artwork", "design-studio"],
+          status: "draft",
+          published_scope: "web",
+          tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
           variants: shopifyVariants.length > 0 ? shopifyVariants : [{ price: "0.00" }],
           images: images.length > 0 ? images : undefined,
           metafields: [
+            {
+              namespace: "ai_art_studio",
+              key: "enable",
+              value: "true",
+              type: "single_line_text_field",
+            },
             {
               namespace: "ai_art_studio",
               key: "product_type_id",
@@ -1892,50 +1908,9 @@ ${textEdgeRestrictions}
       
       console.log(`Created Shopify product ${shopifyProductId} for product type ${productType.id}`);
 
-      // Publish to Online Store only (not POS) by finding and using the Online Store publication
-      try {
-        // Get all publications (sales channels)
-        const publicationsResponse = await fetch(
-          `https://${shopDomain}/admin/api/2024-01/publications.json`,
-          {
-            method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Shopify-Access-Token": installation.accessToken,
-            },
-          }
-        );
-
-        if (publicationsResponse.ok) {
-          const publicationsData = await publicationsResponse.json();
-          const onlineStorePublication = publicationsData.publications?.find(
-            (pub: { name: string; id: number }) => pub.name === "Online Store"
-          );
-
-          if (onlineStorePublication) {
-            // Publish to Online Store
-            await fetch(
-              `https://${shopDomain}/admin/api/2024-01/publications/${onlineStorePublication.id}/product_listings.json`,
-              {
-                method: "PUT",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-Shopify-Access-Token": installation.accessToken,
-                },
-                body: JSON.stringify({
-                  product_listing: {
-                    product_id: shopifyProductId,
-                  },
-                }),
-              }
-            );
-            console.log(`Published product ${shopifyProductId} to Online Store`);
-          }
-        }
-      } catch (pubError) {
-        // Non-critical - product is created, just not auto-published to channel
-        console.log("Could not auto-publish to Online Store:", pubError);
-      }
+      // Product is pre-configured for Online Store only via published_scope: "web"
+      // When merchant activates the product, it will only appear on Online Store (not POS)
+      console.log(`Product ${shopifyProductId} configured for Online Store only (published_scope: web)`);
 
       // Save Shopify product ID to the product type for future updates
       await storage.updateProductType(productType.id, {
@@ -1949,7 +1924,7 @@ ${textEdgeRestrictions}
         shopifyProductId: shopifyProductId,
         shopifyProductHandle: createdProduct.product.handle,
         adminUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
-        message: "Product created and configured automatically. Set your retail prices and publish when ready.",
+        message: "Product created as draft for Online Store only. The AI Design Studio will appear automatically when you activate the product. Set your retail prices and publish when ready.",
       });
 
     } catch (error) {
