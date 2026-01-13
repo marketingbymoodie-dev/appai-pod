@@ -179,17 +179,19 @@ export function ProductMockup({
   const renderMug = () => {
     return (
       <div
-        className="absolute inset-0 overflow-hidden rounded-md"
+        className="absolute inset-0"
         style={{ pointerEvents: "none" }}
       >
-        {renderImageContent()}
-        {showSafeZone && canvasConfig && (
-          <SafeZoneMask 
-            shape={printShape} 
-            canvasConfig={canvasConfig}
-            showMask={true}
-          />
-        )}
+        <div className="relative w-full h-full overflow-hidden rounded-md">
+          {renderImageContent()}
+          {showSafeZone && canvasConfig && (
+            <SafeZoneMask 
+              shape={printShape} 
+              canvasConfig={canvasConfig}
+              showMask={true}
+            />
+          )}
+        </div>
       </div>
     );
   };
