@@ -911,7 +911,7 @@ export default function EmbedDesign() {
 
                 <Button
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || generateMutation.isPending || !isLoggedIn || credits <= 0}
+                  disabled={!prompt.trim() || generateMutation.isPending || (!isShopify && (!isLoggedIn || credits <= 0))}
                   className="w-full"
                   data-testid="button-generate"
                 >
@@ -923,7 +923,7 @@ export default function EmbedDesign() {
                   ) : (
                     <>
                       <Sparkles className="w-4 h-4 mr-2" />
-                      Generate (1 Credit)
+                      {isShopify ? "Generate Design" : "Generate (1 Credit)"}
                     </>
                   )}
                 </Button>
@@ -1093,7 +1093,7 @@ export default function EmbedDesign() {
                   <Button
                     variant="outline"
                     onClick={handleGenerate}
-                    disabled={generateMutation.isPending || credits <= 0}
+                    disabled={generateMutation.isPending || (!isShopify && credits <= 0)}
                     className="flex-1"
                     data-testid="button-regenerate"
                   >
