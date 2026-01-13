@@ -269,9 +269,10 @@ export function ProductMockup({
 
   return (
     <div
-      className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full ${
+      className={`relative bg-muted rounded-md w-full ${
         imageUrl && enableDrag ? "cursor-move select-none" : ""
       }`}
+      style={{ aspectRatio: "inherit", minHeight: "200px" }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
