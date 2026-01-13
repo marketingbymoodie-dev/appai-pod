@@ -757,19 +757,23 @@ export default function EmbedDesign() {
           <h2 className="text-lg font-semibold" data-testid="text-title">
             Create Your Design
           </h2>
-          {isLoggedIn ? (
-            <span className="text-sm text-muted-foreground" data-testid="text-credits">
-              {credits} credits
-            </span>
-          ) : (
-            <span className="text-sm text-muted-foreground flex items-center gap-1" data-testid="text-login-prompt">
-              <LogIn className="w-4 h-4" />
-              Log in to create
-            </span>
+          {/* Only show login/credits info for non-Shopify mode */}
+          {!isShopify && (
+            isLoggedIn ? (
+              <span className="text-sm text-muted-foreground" data-testid="text-credits">
+                {credits} credits
+              </span>
+            ) : (
+              <span className="text-sm text-muted-foreground flex items-center gap-1" data-testid="text-login-prompt">
+                <LogIn className="w-4 h-4" />
+                Log in to create
+              </span>
+            )
           )}
         </div>
 
-        {loginError && (
+        {/* Only show login errors for non-Shopify mode */}
+        {!isShopify && loginError && (
           <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
             <CardContent className="py-3">
               <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error">

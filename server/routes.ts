@@ -1815,8 +1815,7 @@ ${textEdgeRestrictions}
         product: {
           title: `Custom ${productType.name}`,
           body_html: `
-            <p>${cleanDescription}</p>
-            <div id="ai-art-studio-container" style="margin: 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
+            <div id="ai-art-studio-container" style="margin: 0 0 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
               <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
               <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
               <iframe 
@@ -1826,6 +1825,10 @@ ${textEdgeRestrictions}
                 loading="lazy"
                 title="AI Design Studio"
               ></iframe>
+            </div>
+            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4>
+              <p>${cleanDescription}</p>
             </div>
           `,
           vendor: merchant.storeName || "AI Art Studio",
@@ -2150,8 +2153,7 @@ ${textEdgeRestrictions}
         product: {
           id: productType.shopifyProductId,
           body_html: `
-            <p>${cleanDescription}</p>
-            <div id="ai-art-studio-container" style="margin: 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
+            <div id="ai-art-studio-container" style="margin: 0 0 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
               <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
               <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
               <iframe 
@@ -2161,6 +2163,10 @@ ${textEdgeRestrictions}
                 loading="lazy"
                 title="AI Design Studio"
               ></iframe>
+            </div>
+            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+              <h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4>
+              <p>${cleanDescription}</p>
             </div>
           `,
           images: images.length > 0 ? images : undefined,
