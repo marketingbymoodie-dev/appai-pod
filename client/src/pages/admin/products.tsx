@@ -56,7 +56,6 @@ export default function AdminProducts() {
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
   const [providerLocationFilter, setProviderLocationFilter] = useState("");
-  const [catalogLocationFilter, setCatalogLocationFilter] = useState("");
   const [blueprintLocationData, setBlueprintLocationData] = useState<Record<number, string[]>>({});
   const [locationDataLoading, setLocationDataLoading] = useState(false);
   
@@ -248,7 +247,6 @@ export default function AdminProducts() {
   const handleOpenPrintifyImport = async () => {
     setPrintifyImportOpen(true);
     setBlueprintLocationData({});
-    setCatalogLocationFilter("");
     if (!printifyBlueprints) {
       refetchBlueprints();
     }
@@ -301,12 +299,9 @@ export default function AdminProducts() {
         bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
         bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase());
       
-      const matchesLocation = !catalogLocationFilter || catalogLocationFilter === "all" || 
-        blueprintLocationData[bp.id]?.includes(catalogLocationFilter);
-      
-      return matchesSearch && matchesLocation;
+      return matchesSearch;
     });
-  }, [printifyBlueprints, blueprintSearch, catalogLocationFilter, blueprintLocationData]);
+  }, [printifyBlueprints, blueprintSearch]);
 
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];
@@ -581,30 +576,6 @@ export default function AdminProducts() {
                     data-testid="input-blueprint-search"
                   />
                 </div>
-                <div className="flex items-center gap-1">
-                  <Select value={catalogLocationFilter || undefined} onValueChange={(val) => setCatalogLocationFilter(val === "all" ? "" : val)}>
-                    <SelectTrigger className="w-[180px]">
-                      <SelectValue placeholder="Filter by location" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All locations</SelectItem>
-                      {availableLocations.map(loc => (
-                        <SelectItem key={loc} value={loc}>{loc}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" data-testid="button-catalog-location-info">
-                        <Info className="h-4 w-4 text-muted-foreground" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-72 text-sm">
-                      <p><strong>Location</strong> refers to the production facility.</p>
-                      <p className="mt-2 text-muted-foreground">Suppliers may still ship internationally. Check the Printify listing for detailed shipping info.</p>
-                    </PopoverContent>
-                  </Popover>
-                </div>
               </div>
 
               {blueprintsFetching ? (
@@ -629,7 +600,7 @@ export default function AdminProducts() {
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium truncate">{bp.title}</h4>
                           <p className="text-sm text-muted-foreground">{bp.brand}</p>
-                          {blueprintLocationData[bp.id] && (
+                          {blueprintLocationData[bp.id] && blueprintLocationData[bp.id].length > 0 && (
                             <div className="flex gap-1 flex-wrap mt-1">
                               {blueprintLocationData[bp.id].slice(0, 3).map(loc => (
                                 <Badge key={loc} variant="secondary" className="text-xs">{loc}</Badge>
@@ -694,6 +665,11 @@ export default function AdminProducts() {
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-8 w-8 animate-spin" />
                 </div>
+              ) : filteredProviders.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p className="text-sm">No print providers available for this product.</p>
+                  <p className="text-xs mt-1">Try selecting a different product or adjusting the location filter.</p>
+                </div>
               ) : (
                 <div className="space-y-2 max-h-[300px] overflow-y-auto">
                   {filteredProviders.map((provider) => (
@@ -706,9 +682,11 @@ export default function AdminProducts() {
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <p className="font-medium">{provider.title}</p>
-                            <p className="text-sm text-muted-foreground">
-                              {provider.location?.city}, {provider.location?.country}
-                            </p>
+                            {(provider.location?.city || provider.location?.country) && (
+                              <p className="text-sm text-muted-foreground">
+                                {[provider.location?.city, provider.location?.country].filter(Boolean).join(', ')}
+                              </p>
+                            )}
                           </div>
                           {provider.fulfillment_countries && provider.fulfillment_countries.length > 0 && (
                             <Badge variant="secondary" className="text-xs">

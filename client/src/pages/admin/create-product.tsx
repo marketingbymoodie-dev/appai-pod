@@ -358,6 +358,8 @@ export default function AdminCreateProduct() {
             url: m.url || m,
             label: m.label || "Mockup",
           })));
+          // Auto-select first mockup to show artwork on product
+          setSelectedMockupIndex(0);
         }
       }
     } catch (error) {
