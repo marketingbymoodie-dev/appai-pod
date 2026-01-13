@@ -1808,23 +1808,25 @@ ${textEdgeRestrictions}
       const displayName = productType.name;
 
       // Create the product in Shopify configured for Online Store only
-      // The theme app embed will automatically detect metafields and show the design studio
+      // Embed the design studio iframe directly in the product description
+      const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true`;
+      
       const shopifyProduct = {
         product: {
           title: `Custom ${productType.name}`,
           body_html: `
             <p>${cleanDescription}</p>
-            <p><strong>This product features our AI Design Studio.</strong> Create your own unique artwork using AI, or upload your own design!</p>
-            <script type="application/json" data-ai-art-studio>
-              ${JSON.stringify({
-                enabled: true,
-                appUrl: appUrl,
-                productTypeId: String(productType.id),
-                displayName: displayName,
-                description: `Use AI to generate a unique artwork for your ${displayName.toLowerCase()}. Describe your vision and our AI will bring it to life.`,
-                hideAddToCart: true
-              })}
-            </script>
+            <div id="ai-art-studio-container" style="margin: 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
+              <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
+              <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
+              <iframe 
+                src="${embedUrl}" 
+                style="width: 100%; height: 700px; border: none; border-radius: 8px; background: white;"
+                allow="clipboard-write"
+                loading="lazy"
+                title="AI Design Studio"
+              ></iframe>
+            </div>
           `,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: productType.name,
