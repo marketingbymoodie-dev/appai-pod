@@ -4396,6 +4396,11 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const variantMap: Record<string, { printifyVariantId: number; providerId: number }> = {};
       let maxWidth = 0;
       let maxHeight = 0;
+      
+      // Track print area dimensions in pixels from Printify placeholders by position
+      // These are used ONLY for aspect ratio calculation, not storage
+      // Store per-position to handle multi-placement products correctly
+      const placeholderDimensions: Record<string, { width: number; height: number }> = {};
 
       // Known size patterns for various product types
       const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
@@ -4437,6 +4442,24 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       for (const variant of variants) {
         const title = variant.title || "";
         const options = variant.options || {};
+        
+        // Extract print area dimensions from placeholders (if available)
+        // Printify API returns placeholders[].width/height in pixels
+        // Track dimensions per position (front, back, wrap, etc.) across all variants
+        const placeholders = variant.placeholders || [];
+        for (const placeholder of placeholders) {
+          if (placeholder.width && placeholder.height) {
+            const position = placeholder.position || "default";
+            const existing = placeholderDimensions[position];
+            // Keep the largest dimensions for each position across variants
+            if (!existing || placeholder.width * placeholder.height > existing.width * existing.height) {
+              placeholderDimensions[position] = { 
+                width: placeholder.width, 
+                height: placeholder.height 
+              };
+            }
+          }
+        }
         
         // Normalize Unicode quotes/primes to standard characters
         const normalizedTitle = title
@@ -4782,6 +4805,13 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       // Determine aspect ratio using GCD for accurate ratio
       const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
       
+      // Get primary placeholder dimensions - prefer "front", then "default", then first available
+      const primaryPosition = placeholderDimensions["front"] || 
+                              placeholderDimensions["default"] || 
+                              Object.values(placeholderDimensions)[0];
+      const printAreaWidthPx = primaryPosition?.width || 0;
+      const printAreaHeightPx = primaryPosition?.height || 0;
+      
       // Detect phone cases for special aspect ratio handling
       const isPhoneCase = combined.includes("phone") || combined.includes("iphone") || 
                           combined.includes("samsung") || combined.includes("case");
@@ -4799,8 +4829,31 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         aspectRatio = "3:4";
       }
       
-      // Override with calculated dimensions if available
-      if (hasDimensionalSizes && sizes.length > 0) {
+      // PRIORITY 1: Use print area pixel dimensions from Printify placeholders (most accurate)
+      // This handles wrap-around products like tumblers correctly
+      if (printAreaWidthPx > 0 && printAreaHeightPx > 0) {
+        const w = printAreaWidthPx;
+        const h = printAreaHeightPx;
+        const divisor = gcd(w, h);
+        const simplifiedW = w / divisor;
+        const simplifiedH = h / divisor;
+        // Limit simplification to reasonable ratios (avoid things like 2795:2100)
+        if (simplifiedW <= 20 && simplifiedH <= 20) {
+          aspectRatio = `${simplifiedW}:${simplifiedH}`;
+        } else {
+          // For complex ratios, approximate to common aspect ratios
+          const ratio = w / h;
+          if (ratio >= 1.7) aspectRatio = "16:9";
+          else if (ratio >= 1.4) aspectRatio = "3:2";
+          else if (ratio >= 1.2) aspectRatio = "4:3";
+          else if (ratio >= 0.9) aspectRatio = "1:1";
+          else if (ratio >= 0.7) aspectRatio = "3:4";
+          else if (ratio >= 0.6) aspectRatio = "2:3";
+          else aspectRatio = "9:16";
+        }
+      }
+      // PRIORITY 2: Override with calculated dimensions from size names if no placeholder data
+      else if (hasDimensionalSizes && sizes.length > 0) {
         const firstDimensionalSize = sizes.find(s => s.width > 0 && s.height > 0);
         if (firstDimensionalSize) {
           const w = firstDimensionalSize.width;
@@ -4891,6 +4944,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         selectedColorIds: JSON.stringify(selectedColorIds || frameColors.map((c: { id: string }) => c.id)),
         aspectRatio,
         printShape,
+        // Store only physical dimensions (inches) for unit consistency
+        // Pixel dimensions are used only for aspect ratio calculation above
         printAreaWidth: maxWidth || null,
         printAreaHeight: maxHeight || null,
         bleedMarginPercent,
