@@ -1809,7 +1809,7 @@ ${textEdgeRestrictions}
 
       // Create the product in Shopify configured for Online Store only
       // Embed the design studio iframe directly in the product description
-      const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true`;
+      const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true&shop=${encodeURIComponent(shopDomain)}`;
       
       const shopifyProduct = {
         product: {
