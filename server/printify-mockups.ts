@@ -1,4 +1,5 @@
 import pRetry from "p-retry";
+import sharp from "sharp";
 
 interface MockupRequest {
   blueprintId: number;
@@ -48,15 +49,58 @@ function extractBase64FromDataUrl(dataUrl: string): string {
   return base64Match ? base64Match[1] : "";
 }
 
+async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
+  let imageBuffer: Buffer;
+  
+  if (isDataUrl(imageUrl)) {
+    const base64Data = extractBase64FromDataUrl(imageUrl);
+    imageBuffer = Buffer.from(base64Data, 'base64');
+  } else {
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status}`);
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    imageBuffer = Buffer.from(arrayBuffer);
+  }
+  
+  const metadata = await sharp(imageBuffer).metadata();
+  const width = metadata.width || 1024;
+  const height = metadata.height || 1024;
+  
+  const duplicatedImage = await sharp({
+    create: {
+      width: width * 2,
+      height: height,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: 0 }
+    }
+  })
+    .composite([
+      { input: imageBuffer, left: 0, top: 0 },
+      { input: imageBuffer, left: width, top: 0 }
+    ])
+    .png()
+    .toBuffer();
+  
+  return duplicatedImage;
+}
+
 async function uploadImageToPrintify(
-  imageUrl: string,
+  imageUrlOrBuffer: string | Buffer,
   apiToken: string
 ): Promise<PrintifyImage | null> {
   try {
     let requestBody: Record<string, string>;
 
-    if (isDataUrl(imageUrl)) {
-      const base64Data = extractBase64FromDataUrl(imageUrl);
+    if (Buffer.isBuffer(imageUrlOrBuffer)) {
+      const base64Data = imageUrlOrBuffer.toString('base64');
+      requestBody = {
+        file_name: `design-${Date.now()}.png`,
+        contents: base64Data,
+      };
+    } else if (isDataUrl(imageUrlOrBuffer)) {
+      const base64Data = extractBase64FromDataUrl(imageUrlOrBuffer);
       if (!base64Data) {
         console.error("Failed to extract base64 from data URL");
         return null;
@@ -68,7 +112,7 @@ async function uploadImageToPrintify(
     } else {
       requestBody = {
         file_name: `design-${Date.now()}.png`,
-        url: imageUrl,
+        url: imageUrlOrBuffer,
       };
     }
 
