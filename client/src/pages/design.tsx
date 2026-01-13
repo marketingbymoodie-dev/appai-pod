@@ -120,6 +120,7 @@ export default function DesignPage() {
   const [touchStart, setTouchStart] = useState<number | null>(null);
   const [tweakPrompt, setTweakPrompt] = useState("");
   const [showTweak, setShowTweak] = useState(false);
+  const [isTweakMode, setIsTweakMode] = useState(false);
   const [isReuseMode, setIsReuseMode] = useState(false);
   const [reuseSourceDesign, setReuseSourceDesign] = useState<Design | null>(null);
   const loadingFromUrlRef = useRef(false);
@@ -239,13 +240,17 @@ export default function DesignPage() {
 
   const handleSelectProductType = (productType: ProductType) => {
     setSelectedProductTypeId(productType.id);
-    // In reuse mode, preserve the design - we're applying same artwork to different product
-    if (!isReuseMode) {
+    // In reuse or tweak mode, preserve the design - we're applying same artwork to different product
+    if (!isReuseMode && !isTweakMode) {
       setGeneratedDesign(null);
       setPrompt("");
       // Reset tweak state when switching products without a design
       setShowTweak(false);
       setTweakPrompt("");
+    }
+    // Clear tweak mode after first product selection (design is now associated with this product)
+    if (isTweakMode) {
+      setIsTweakMode(false);
     }
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
@@ -295,6 +300,8 @@ export default function DesignPage() {
             if (design) {
               // Mark that we're loading from URL to prevent default values from overwriting
               loadingFromUrlRef.current = true;
+              // Set tweak mode to preserve design when user selects a product
+              setIsTweakMode(true);
               // Set product type first so designer config loads
               if (design.productTypeId) {
                 setSelectedProductTypeId(design.productTypeId);
