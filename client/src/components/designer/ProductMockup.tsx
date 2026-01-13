@@ -177,11 +177,11 @@ export function ProductMockup({
   };
 
   const renderMug = () => {
-    // For mugs/tumblers, render directly without absolute positioning
-    // This ensures the image establishes its own height based on aspect ratio
+    // For mugs/tumblers, use absolute positioning to fill the parent container
+    // Parent has h-full which inherits from container with aspectRatio
     if (isLoading) {
       return (
-        <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground w-full" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/3" }}>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
           <Loader2 className="h-8 w-8 animate-spin" />
           <span className="text-xs">Creating...</span>
         </div>
@@ -191,11 +191,11 @@ export function ProductMockup({
     if (imageUrl) {
       console.log("[ProductMockup] renderMug with URL:", imageUrl);
       return (
-        <div className="relative w-full overflow-hidden rounded-md" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/3" }}>
+        <div className="absolute inset-0 overflow-hidden rounded-md">
           <img
             src={imageUrl}
             alt="Generated artwork"
-            className="absolute inset-0 w-full h-full object-cover"
+            className="w-full h-full object-cover"
             draggable={false}
             data-testid="img-generated-mug"
             onLoad={() => console.log("[ProductMockup] Mug image loaded successfully")}
@@ -213,7 +213,7 @@ export function ProductMockup({
     }
     
     return (
-      <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground w-full" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/3" }}>
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
         <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
         <p className="text-xs">Your artwork will appear here</p>
       </div>
@@ -293,7 +293,7 @@ export function ProductMockup({
 
   return (
     <div
-      className={`relative bg-muted rounded-md w-full flex items-center justify-center ${
+      className={`relative bg-muted rounded-md w-full h-full ${
         imageUrl && enableDrag ? "cursor-move select-none" : ""
       }`}
       onMouseDown={handleMouseDown}
