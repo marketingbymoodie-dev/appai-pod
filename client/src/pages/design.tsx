@@ -243,6 +243,9 @@ export default function DesignPage() {
     if (!isReuseMode) {
       setGeneratedDesign(null);
       setPrompt("");
+      // Reset tweak state when switching products without a design
+      setShowTweak(false);
+      setTweakPrompt("");
     }
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
@@ -818,12 +821,6 @@ export default function DesignPage() {
   };
 
   const handleTweak = () => {
-    console.log("[Tweak] Button clicked, tweakPrompt:", tweakPrompt);
-    console.log("[Tweak] generatedDesign:", generatedDesign?.id, generatedDesign?.generatedImageUrl);
-    console.log("[Tweak] credits:", customer?.credits);
-    console.log("[Tweak] prompt state:", prompt);
-    console.log("[Tweak] designerConfig:", designerConfig?.id, designerConfig?.aspectRatio);
-    
     if (!tweakPrompt.trim()) {
       toast({
         title: "Tweak description required",
@@ -833,7 +830,6 @@ export default function DesignPage() {
       return;
     }
     if (!generatedDesign?.generatedImageUrl) {
-      console.log("[Tweak] Early return: no generatedImageUrl");
       return;
     }
     if ((customer?.credits ?? 0) <= 0) {
@@ -846,7 +842,6 @@ export default function DesignPage() {
     }
 
     const tweakFullPrompt = `${prompt.trim()}. Modification: ${tweakPrompt.trim()}`;
-    console.log("[Tweak] Calling mutation with prompt:", tweakFullPrompt);
     
     generateMutation.mutate({
       prompt: tweakFullPrompt,
@@ -1724,7 +1719,7 @@ export default function DesignPage() {
     </button>
   );
 
-  const tweakPanel = showTweak && (
+  const tweakPanel = showTweak && generatedDesign?.generatedImageUrl && (
     <div className="space-y-2 p-2 bg-muted/50 rounded-md">
       <Textarea
         placeholder="e.g., Remove the text, change the sky to night, add more clouds..."
