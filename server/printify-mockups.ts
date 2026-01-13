@@ -49,6 +49,23 @@ function extractBase64FromDataUrl(dataUrl: string): string {
   return base64Match ? base64Match[1] : "";
 }
 
+function isAllowedImageUrl(url: string): boolean {
+  if (isDataUrl(url)) return true;
+  
+  try {
+    const parsedUrl = new URL(url);
+    const allowedHosts = [
+      process.env.REPLIT_DEV_DOMAIN,
+      process.env.REPL_SLUG ? `${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co` : null,
+      'storage.googleapis.com',
+    ].filter(Boolean);
+    
+    return allowedHosts.some(host => host && parsedUrl.hostname.includes(host as string));
+  } catch {
+    return false;
+  }
+}
+
 async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
   let imageBuffer: Buffer;
   
@@ -56,6 +73,9 @@ async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
     const base64Data = extractBase64FromDataUrl(imageUrl);
     imageBuffer = Buffer.from(base64Data, 'base64');
   } else {
+    if (!isAllowedImageUrl(imageUrl)) {
+      throw new Error("Image URL not from allowed source");
+    }
     const response = await fetch(imageUrl);
     if (!response.ok) {
       throw new Error(`Failed to fetch image: ${response.status}`);
@@ -336,7 +356,15 @@ export async function generatePrintifyMockup(
   let productId: string | null = null;
 
   try {
-    const uploadedImage = await uploadImageToPrintify(imageUrl, printifyApiToken);
+    let imageToUpload: string | Buffer = imageUrl;
+    
+    if (doubleSided) {
+      console.log("Duplicating image side-by-side for double-sided product...");
+      imageToUpload = await duplicateImageSideBySide(imageUrl);
+      console.log("Image duplicated successfully, uploading to Printify...");
+    }
+    
+    const uploadedImage = await uploadImageToPrintify(imageToUpload, printifyApiToken);
     if (!uploadedImage) {
       return {
         success: false,
