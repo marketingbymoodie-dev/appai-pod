@@ -177,13 +177,30 @@ export function ProductMockup({
   };
 
   const renderMug = () => {
-    return (
-      <div
-        className="absolute inset-0"
-        style={{ pointerEvents: "none" }}
-      >
-        <div className="relative w-full h-full overflow-hidden rounded-md">
-          {renderImageContent()}
+    // For mugs/tumblers, render directly without absolute positioning
+    // This ensures the image establishes its own height based on aspect ratio
+    if (isLoading) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground w-full" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/3" }}>
+          <Loader2 className="h-8 w-8 animate-spin" />
+          <span className="text-xs">Creating...</span>
+        </div>
+      );
+    }
+    
+    if (imageUrl) {
+      console.log("[ProductMockup] renderMug with URL:", imageUrl);
+      return (
+        <div className="relative w-full overflow-hidden rounded-md" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/3" }}>
+          <img
+            src={imageUrl}
+            alt="Generated artwork"
+            className="absolute inset-0 w-full h-full object-cover"
+            draggable={false}
+            data-testid="img-generated-mug"
+            onLoad={() => console.log("[ProductMockup] Mug image loaded successfully")}
+            onError={(e) => console.error("[ProductMockup] Mug image failed to load:", e)}
+          />
           {showSafeZone && canvasConfig && (
             <SafeZoneMask 
               shape={printShape} 
@@ -192,6 +209,13 @@ export function ProductMockup({
             />
           )}
         </div>
+      );
+    }
+    
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground w-full" style={{ aspectRatio: canvasConfig ? `${canvasConfig.width}/${canvasConfig.height}` : "4/3" }}>
+        <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
+        <p className="text-xs">Your artwork will appear here</p>
       </div>
     );
   };
@@ -269,10 +293,9 @@ export function ProductMockup({
 
   return (
     <div
-      className={`relative bg-muted rounded-md w-full ${
+      className={`relative bg-muted rounded-md w-full flex items-center justify-center ${
         imageUrl && enableDrag ? "cursor-move select-none" : ""
       }`}
-      style={{ aspectRatio: "inherit", minHeight: "200px" }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
