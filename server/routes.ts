@@ -565,6 +565,27 @@ export async function registerRoutes(
           return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
         }
       };
+      
+      // Helper function to map aspect ratio to Gemini-supported aspect ratios
+      // Supported: 21:9, 16:9, 4:3, 3:2, 5:4, 1:1, 9:16, 4:5, 3:4, 2:3
+      const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
+        const [w, h] = aspectRatioStr.split(":").map(Number);
+        if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
+        
+        const ratio = w / h;
+        
+        // Map to closest supported Gemini aspect ratio
+        if (ratio >= 2.1) return "21:9";      // Ultra-wide landscape
+        if (ratio >= 1.65) return "16:9";     // Wide landscape
+        if (ratio >= 1.4) return "3:2";       // Standard landscape
+        if (ratio >= 1.2) return "4:3";       // Mild landscape (tumblers etc)
+        if (ratio >= 1.1) return "5:4";       // Near square landscape
+        if (ratio >= 0.9) return "1:1";       // Square
+        if (ratio >= 0.75) return "4:5";      // Near square portrait
+        if (ratio >= 0.65) return "3:4";      // Standard portrait
+        if (ratio >= 0.55) return "2:3";      // Tall portrait
+        return "9:16";                         // Very tall portrait
+      };
 
       if (!sizeConfig && productType) {
         // Try to find size in product type's sizes (for apparel, etc.)
@@ -673,40 +694,83 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 `;
       } else {
         // Wall art needs full-bleed edge-to-edge designs
+        // Build shape-specific safe zone instructions
+        const printShape = productType?.printShape || "rectangle";
+        const bleedMargin = productType?.bleedMarginPercent || 5;
+        const safeZonePercent = 100 - (bleedMargin * 2);
+        
+        let shapeInstructions = "";
+        if (printShape === "circle") {
+          shapeInstructions = `
+CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
+- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
+- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
+- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
+- Design with radial/circular composition in mind`;
+        } else if (printShape === "square") {
+          shapeInstructions = `
+SQUARE PRINT AREA: This design is for a square product.
+- Center important elements within the inner ${safeZonePercent}% of the canvas
+- Keep a ${bleedMargin}% margin from all edges for bleed`;
+        } else {
+          shapeInstructions = `
+RECTANGULAR PRINT AREA:
+- Keep important elements within the inner ${safeZonePercent}% of the canvas
+- Maintain a ${bleedMargin}% margin from edges for bleed`;
+        }
+        
         // Determine if this is landscape, portrait, or square based on aspect ratio
         const [arW, arH] = aspectRatioStr.split(":").map(Number);
         const aspectRatioValue = arW / arH;
         let orientationDescription: string;
         if (aspectRatioValue > 1.05) {
-          orientationDescription = `HORIZONTAL LANDSCAPE ${aspectRatioStr} composition (wider than tall)`;
+          orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
         } else if (aspectRatioValue < 0.95) {
-          orientationDescription = `VERTICAL PORTRAIT ${aspectRatioStr} composition (taller than wide)`;
+          orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
         } else {
-          orientationDescription = `SQUARE 1:1 composition`;
+          orientationDescription = `SQUARE`;
         }
         
         // For wrap-around products like tumblers, add specific guidance
         const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
-        const safeZonePercent = isWrapAround ? 60 : 75;
-        const safeZoneNote = isWrapAround 
-          ? `This is a WRAP-AROUND product - the image will wrap around a cylindrical surface. Keep ALL text and important elements within the central ${safeZonePercent}% both horizontally and vertically to ensure nothing is cut off or wrapped to an unseen area.`
-          : `Keep all important elements (text, faces, key subjects) within the central ${safeZonePercent}% of the image to ensure nothing is cut off when framed.`;
+        const textEdgeRestrictions = isWrapAround 
+          ? `
+TEXT AND ELEMENT PLACEMENT - CRITICAL:
+- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
+- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
+- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
+- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
+          : `
+TEXT AND ELEMENT PLACEMENT:
+- Keep all text and important elements within the central 75% of the image
+- Avoid placing critical content near the edges where it may be cut off during printing`;
         
         sizingRequirements = `
 
-MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
-1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
-2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
-3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image. The image will be printed and framed separately.
-4. ASPECT RATIO: You MUST create an image with ${orientationDescription}. The artwork fills the entire canvas in this exact aspect ratio.
-5. SAFE ZONE: ${safeZoneNote}
-6. BACKGROUND: The background/scene must extend fully to all four edges of the image with NO visible canvas edges or cutoffs.
-7. PRINT-READY: This is for high-quality printing - create a complete, finished artwork that fills the entire image area.
+=== CRITICAL CANVAS REQUIREMENTS (MUST FOLLOW) ===
+CANVAS: ${orientationDescription} format
+FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
+${shapeInstructions}
+${textEdgeRestrictions}
+
+=== IMAGE CONTENT REQUIREMENTS ===
+1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
+2. NO decorative borders, picture frames, drop shadows, or vignettes
+3. The subject must NOT appear floating - complete the background behind and around it
+4. This is for high-quality printing - create finished artwork that bleeds to all edges
 `;
       }
 
-      // Append sizing requirements to prompt
-      fullPrompt += sizingRequirements;
+      // Build final prompt: CONSTRAINTS FIRST, then style, then user description
+      // This ensures Gemini prioritizes our dimensional requirements over style biases
+      const geminiAspectRatio = isApparel ? "1:1" : mapToGeminiAspectRatio(aspectRatioStr);
+      
+      // Restructure prompt: constraints first, then style/content
+      const constraintsFirst = sizingRequirements;
+      const styleAndContent = fullPrompt; // Already has style prefix + user prompt
+      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      
+      console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
       // Generate image using Nano Banana
       const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
@@ -745,6 +809,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         contents,
         config: {
           responseModalities: [Modality.TEXT, Modality.IMAGE],
+          // Force Gemini to generate at the correct aspect ratio
+          imageConfig: {
+            aspectRatio: geminiAspectRatio,
+          },
         },
       });
 
@@ -1304,6 +1372,23 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
           return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
         }
       };
+      
+      // Helper function to map aspect ratio to Gemini-supported aspect ratios
+      const mapToGeminiAspectRatioEmbed = (aspectRatioStr: string): string => {
+        const [w, h] = aspectRatioStr.split(":").map(Number);
+        if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
+        const ratio = w / h;
+        if (ratio >= 2.1) return "21:9";
+        if (ratio >= 1.65) return "16:9";
+        if (ratio >= 1.4) return "3:2";
+        if (ratio >= 1.2) return "4:3";
+        if (ratio >= 1.1) return "5:4";
+        if (ratio >= 0.9) return "1:1";
+        if (ratio >= 0.75) return "4:5";
+        if (ratio >= 0.65) return "3:4";
+        if (ratio >= 0.55) return "2:3";
+        return "9:16";
+      };
 
       // Find size config - check product type first, then fall back to PRINT_SIZES
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
@@ -1356,42 +1441,59 @@ SQUARE PRINT AREA: This design is for a square product.
 - Keep a ${bleedMargin}% margin from all edges for bleed`;
       } else {
         shapeInstructions = `
+RECTANGULAR PRINT AREA:
 - Keep important elements within the inner ${safeZonePercent}% of the canvas
 - Maintain a ${bleedMargin}% margin from edges for bleed`;
       }
 
-      // CRITICAL: Full-bleed requirements for ALL generations
-      // Determine if this is landscape, portrait, or square based on aspect ratio
+      // Determine aspect ratio and orientation
       const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
       const aspectRatioValue = arW / arH;
       let orientationDescription: string;
       if (aspectRatioValue > 1.05) {
-        orientationDescription = `HORIZONTAL LANDSCAPE ${sizeConfig.aspectRatio} composition (wider than tall)`;
+        orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
       } else if (aspectRatioValue < 0.95) {
-        orientationDescription = `VERTICAL PORTRAIT ${sizeConfig.aspectRatio} composition (taller than wide)`;
+        orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
       } else {
-        orientationDescription = `SQUARE 1:1 composition`;
+        orientationDescription = `SQUARE`;
       }
       
       // For wrap-around products like tumblers, add specific guidance
       const isWrapAround = aspectRatioValue >= 1.2; // 4:3 or wider is wrap-around
-      const wrapAroundSafeZone = isWrapAround 
-        ? `\nWRAP-AROUND PRODUCT: This image will wrap around a cylindrical surface. Keep ALL text and important elements within the central 60% both horizontally and vertically.`
-        : "";
+      const textEdgeRestrictions = isWrapAround 
+        ? `
+TEXT AND ELEMENT PLACEMENT - CRITICAL:
+- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
+- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
+- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
+- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
+        : `
+TEXT AND ELEMENT PLACEMENT:
+- Keep all text and important elements within the central 75% of the image
+- Avoid placing critical content near the edges where it may be cut off during printing`;
       
       const sizingRequirements = `
 
-MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
-1. FULL-BLEED: The image MUST extend edge-to-edge, filling the ENTIRE canvas with NO margins, borders, frames, or empty space around the edges.
-2. NO FLOATING: The subject must NOT appear to be floating or cropped. The artwork must have a complete background that extends to all edges.
-3. NO PICTURE FRAMES: Do NOT include any decorative borders, picture frames, drop shadows, or vignettes around the image.
-4. ASPECT RATIO: You MUST create an image with ${orientationDescription}. The artwork fills the entire canvas in this exact aspect ratio.
-5. SAFE ZONE: ${shapeInstructions}${wrapAroundSafeZone}
-6. BACKGROUND: The background/scene must extend fully to all four edges.
-7. PRINT-READY: This is for high-quality printing - create a complete, finished artwork.
+=== CRITICAL CANVAS REQUIREMENTS (MUST FOLLOW) ===
+CANVAS: ${orientationDescription} format
+FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
+${shapeInstructions}
+${textEdgeRestrictions}
+
+=== IMAGE CONTENT REQUIREMENTS ===
+1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
+2. NO decorative borders, picture frames, drop shadows, or vignettes
+3. The subject must NOT appear floating - complete the background behind and around it
+4. This is for high-quality printing - create finished artwork that bleeds to all edges
 `;
 
-      fullPrompt += sizingRequirements;
+      // Build final prompt: CONSTRAINTS FIRST, then style, then user description
+      const geminiAspectRatio = mapToGeminiAspectRatioEmbed(sizeConfig.aspectRatio);
+      const constraintsFirst = sizingRequirements;
+      const styleAndContent = fullPrompt;
+      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      
+      console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
       // Generate image
       const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
@@ -1429,6 +1531,10 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         contents,
         config: {
           responseModalities: [Modality.TEXT, Modality.IMAGE],
+          // Force Gemini to generate at the correct aspect ratio
+          imageConfig: {
+            aspectRatio: geminiAspectRatio,
+          },
         },
       });
 
