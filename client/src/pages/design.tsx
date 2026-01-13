@@ -240,8 +240,13 @@ export default function DesignPage() {
 
   const handleSelectProductType = (productType: ProductType) => {
     setSelectedProductTypeId(productType.id);
+    
+    // Capture mode states before potentially clearing them
+    const wasInTweakMode = isTweakMode;
+    const wasInReuseMode = isReuseMode;
+    
     // In reuse or tweak mode, preserve the design - we're applying same artwork to different product
-    if (!isReuseMode && !isTweakMode) {
+    if (!wasInReuseMode && !wasInTweakMode) {
       setGeneratedDesign(null);
       setPrompt("");
       // Reset tweak state when switching products without a design
@@ -249,16 +254,19 @@ export default function DesignPage() {
       setTweakPrompt("");
     }
     // Clear tweak mode after first product selection (design is now associated with this product)
-    if (isTweakMode) {
+    if (wasInTweakMode) {
       setIsTweakMode(false);
     }
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     lastAutoFetchKeyRef.current = null;
-    setSelectedSize("");
-    setSelectedFrameColor("");
-    setImageScale(100); // Will be updated by useEffect when designerConfig loads
-    setImagePosition({ x: 50, y: 50 });
+    // In tweak or reuse mode, don't reset size/color - we'll validate them against the new product's options in useEffect
+    if (!wasInReuseMode && !wasInTweakMode) {
+      setSelectedSize("");
+      setSelectedFrameColor("");
+      setImageScale(100); // Will be updated by useEffect when designerConfig loads
+      setImagePosition({ x: 50, y: 50 });
+    }
   };
 
   useEffect(() => {
@@ -269,12 +277,20 @@ export default function DesignPage() {
         loadingFromUrlRef.current = false;
         return;
       }
-      if (designerConfig.sizes.length > 0 && !selectedSize) {
+      // Check if selectedSize is valid for this product's sizes
+      const sizeIsValid = selectedSize && designerConfig.sizes.some(s => s.id === selectedSize);
+      if (designerConfig.sizes.length > 0 && !sizeIsValid) {
         setSelectedSize(designerConfig.sizes[0].id);
       }
-      if (designerConfig.frameColors.length > 0 && !selectedFrameColor) {
+      // Check if selectedFrameColor is valid for this product's colors
+      const colorIsValid = selectedFrameColor && (
+        designerConfig.frameColors.length === 0 
+          ? selectedFrameColor === "default"
+          : designerConfig.frameColors.some(c => c.id === selectedFrameColor)
+      );
+      if (designerConfig.frameColors.length > 0 && !colorIsValid) {
         setSelectedFrameColor(designerConfig.frameColors[0].id);
-      } else if (designerConfig.frameColors.length === 0 && !selectedFrameColor) {
+      } else if (designerConfig.frameColors.length === 0 && !colorIsValid) {
         // For products with no colors (phone cases, pillows), use "default" to match variantMap
         setSelectedFrameColor("default");
       }
