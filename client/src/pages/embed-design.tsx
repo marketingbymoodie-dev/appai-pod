@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -142,6 +142,41 @@ export default function EmbedDesign() {
   const isApparel = productTypeConfig?.designerType === "apparel";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
+
+  // Filter styles based on designerType
+  // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
+  // - apparel -> "apparel" category (centered graphics)
+  // - generic -> show all styles
+  const filteredStylePresets = useMemo(() => {
+    if (!productTypeConfig?.designerType) return stylePresets;
+    
+    const designerType = productTypeConfig.designerType;
+    let targetCategory: "decor" | "apparel" | null = null;
+    
+    if (designerType === "framed-print" || designerType === "pillow" || designerType === "mug") {
+      targetCategory = "decor";
+    } else if (designerType === "apparel") {
+      targetCategory = "apparel";
+    }
+    // For "generic" or unknown types, show all styles
+    
+    if (!targetCategory) return stylePresets;
+    
+    // Return styles that match the category or are "all" (universal styles)
+    return stylePresets.filter(s => 
+      s.category === targetCategory || s.category === "all" || !s.category
+    );
+  }, [stylePresets, productTypeConfig]);
+
+  // Reset selectedPreset if it's not in the filtered list (e.g., after product type loads)
+  useEffect(() => {
+    if (selectedPreset && selectedPreset !== "none" && filteredStylePresets.length > 0) {
+      const isValidPreset = filteredStylePresets.some(p => p.id === selectedPreset);
+      if (!isValidPreset) {
+        setSelectedPreset("none");
+      }
+    }
+  }, [filteredStylePresets, selectedPreset]);
 
   const defaultProductTypeConfig: ProductTypeConfig = {
     id: 0,
@@ -359,7 +394,7 @@ export default function EmbedDesign() {
 
     let fullPrompt = prompt;
     if (selectedPreset && selectedPreset !== "none") {
-      const preset = stylePresets.find((p) => p.id === selectedPreset);
+      const preset = filteredStylePresets.find((p) => p.id === selectedPreset);
       if (preset?.promptSuffix) {
         fullPrompt = `${prompt}. ${preset.promptSuffix}`;
       }
@@ -893,9 +928,9 @@ export default function EmbedDesign() {
                   </div>
                 </div>
 
-                {showPresetsParam && stylePresets.length > 0 && (
+                {showPresetsParam && filteredStylePresets.length > 0 && (
                   <StyleSelector
-                    stylePresets={[{ id: "none", name: "None", promptSuffix: "" }, ...stylePresets]}
+                    stylePresets={[{ id: "none", name: "None", promptSuffix: "" }, ...filteredStylePresets]}
                     selectedStyle={selectedPreset}
                     onStyleChange={setSelectedPreset}
                   />
