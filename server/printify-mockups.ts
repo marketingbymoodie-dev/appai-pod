@@ -177,7 +177,9 @@ async function createTemporaryProduct(
     const printifyX = 0.5 + (x * 0.5);
     const printifyY = 0.5 + (y * 0.5);
     
-    // Build placeholders array - front always, back if double-sided
+    // Build placeholders array
+    // For double-sided products: the image has already been duplicated side-by-side,
+    // so we only send to the "front" placeholder - Printify wraps it around
     const placeholders = [
       {
         position: "front",
@@ -192,22 +194,6 @@ async function createTemporaryProduct(
         ],
       },
     ];
-    
-    // Add back print for double-sided products (pillows, etc.)
-    if (doubleSided) {
-      placeholders.push({
-        position: "back",
-        images: [
-          {
-            id: imageId,
-            x: printifyX,
-            y: printifyY,
-            scale: scale,
-            angle: 0,
-          },
-        ],
-      });
-    }
     
     const response = await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
