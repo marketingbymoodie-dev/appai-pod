@@ -15,6 +15,39 @@ const objectStorage = new ObjectStorageService();
 
 const THUMBNAIL_SIZE = 256; // Max dimension for thumbnails
 
+// Helper function to fetch an image from object storage and convert to base64
+async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base64: string; mimeType: string }> {
+  // objectPath is like /objects/designs/abc123.png
+  // We need to convert it to the actual bucket path
+  const privateDir = objectStorage.getPrivateObjectDir();
+  
+  // Parse privateDir to get bucket name
+  const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
+  const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
+  
+  if (pathParts.length < 1) {
+    throw new Error("Invalid private directory structure");
+  }
+  
+  const bucketName = pathParts[0];
+  
+  // objectPath is like /objects/designs/abc123.png
+  // The actual object name is .private/designs/abc123.png
+  const objectName = objectPath.replace(/^\/objects\//, ".private/");
+  
+  const bucket = objectStorageClient.bucket(bucketName);
+  const file = bucket.file(objectName);
+  
+  const [buffer] = await file.download();
+  const base64 = buffer.toString("base64");
+  
+  // Determine mime type from extension
+  const extension = objectPath.split(".").pop()?.toLowerCase() || "png";
+  const mimeType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
+  
+  return { base64, mimeType };
+}
+
 async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
   return sharp(buffer)
     .resize(THUMBNAIL_SIZE, THUMBNAIL_SIZE, {
@@ -661,10 +694,28 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       
       // Add reference image if provided
       if (referenceImage) {
-        const base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        let base64Data: string;
+        let refMimeType = "image/png";
+        
+        // Check if referenceImage is an object storage path (starts with /objects/)
+        if (referenceImage.startsWith("/objects/")) {
+          // Fetch from object storage and convert to base64
+          try {
+            const imageData = await fetchImageFromStorageAsBase64(referenceImage);
+            base64Data = imageData.base64;
+            refMimeType = imageData.mimeType;
+          } catch (fetchError) {
+            console.error("Failed to fetch reference image from storage:", fetchError);
+            return res.status(400).json({ error: "Failed to load reference image" });
+          }
+        } else {
+          // Assume it's a base64 data URL
+          base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        }
+        
         contents[0].parts.unshift({
           inlineData: {
-            mimeType: "image/png",
+            mimeType: refMimeType,
             data: base64Data,
           },
         });
@@ -1309,10 +1360,28 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
       
       if (referenceImage) {
-        const base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        let base64Data: string;
+        let refMimeType = "image/png";
+        
+        // Check if referenceImage is an object storage path (starts with /objects/)
+        if (referenceImage.startsWith("/objects/")) {
+          // Fetch from object storage and convert to base64
+          try {
+            const imageData = await fetchImageFromStorageAsBase64(referenceImage);
+            base64Data = imageData.base64;
+            refMimeType = imageData.mimeType;
+          } catch (fetchError) {
+            console.error("Failed to fetch reference image from storage:", fetchError);
+            return res.status(400).json({ error: "Failed to load reference image" });
+          }
+        } else {
+          // Assume it's a base64 data URL
+          base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        }
+        
         contents[0].parts.unshift({
           inlineData: {
-            mimeType: "image/png",
+            mimeType: refMimeType,
             data: base64Data,
           },
         });
