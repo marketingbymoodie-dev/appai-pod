@@ -56,8 +56,6 @@ export default function AdminProducts() {
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
   const [providerLocationFilter, setProviderLocationFilter] = useState("");
-  const [blueprintLocationData, setBlueprintLocationData] = useState<Record<number, string[]>>({});
-  const [locationDataLoading, setLocationDataLoading] = useState(false);
   
   // Variant selection step
   const [variantSelectionOpen, setVariantSelectionOpen] = useState(false);
@@ -246,51 +244,11 @@ export default function AdminProducts() {
 
   const handleOpenPrintifyImport = async () => {
     setPrintifyImportOpen(true);
-    setBlueprintLocationData({});
     if (!printifyBlueprints) {
       refetchBlueprints();
     }
   };
 
-  useEffect(() => {
-    const loadLocationData = async () => {
-      if (!printifyBlueprints || printifyBlueprints.length === 0) return;
-      if (Object.keys(blueprintLocationData).length > 0) return;
-      
-      setLocationDataLoading(true);
-      const locationMap: Record<number, string[]> = {};
-      
-      const batchSize = 10;
-      for (let i = 0; i < printifyBlueprints.length; i += batchSize) {
-        const batch = printifyBlueprints.slice(i, i + batchSize);
-        await Promise.all(batch.map(async (bp) => {
-          try {
-            const response = await fetch(`/api/admin/printify/blueprints/${bp.id}/providers`, {
-              credentials: "include"
-            });
-            if (response.ok) {
-              const providers: PrintifyProvider[] = await response.json();
-              const countries = new Set<string>();
-              providers.forEach(p => {
-                if (p.location?.country) countries.add(p.location.country);
-                p.fulfillment_countries?.forEach(c => countries.add(c));
-              });
-              locationMap[bp.id] = Array.from(countries);
-            }
-          } catch (e) {
-            locationMap[bp.id] = [];
-          }
-        }));
-      }
-      
-      setBlueprintLocationData(locationMap);
-      setLocationDataLoading(false);
-    };
-    
-    if (printifyImportOpen && printifyBlueprints) {
-      loadLocationData();
-    }
-  }, [printifyBlueprints, printifyImportOpen, blueprintLocationData]);
 
   const filteredBlueprints = useMemo(() => {
     if (!printifyBlueprints) return [];
@@ -600,16 +558,6 @@ export default function AdminProducts() {
                         <div className="flex-1 min-w-0">
                           <h4 className="font-medium truncate">{bp.title}</h4>
                           <p className="text-sm text-muted-foreground">{bp.brand}</p>
-                          {blueprintLocationData[bp.id] && blueprintLocationData[bp.id].length > 0 && (
-                            <div className="flex gap-1 flex-wrap mt-1">
-                              {blueprintLocationData[bp.id].slice(0, 3).map(loc => (
-                                <Badge key={loc} variant="secondary" className="text-xs">{loc}</Badge>
-                              ))}
-                              {blueprintLocationData[bp.id].length > 3 && (
-                                <Badge variant="secondary" className="text-xs">+{blueprintLocationData[bp.id].length - 3}</Badge>
-                              )}
-                            </div>
-                          )}
                         </div>
                       </CardContent>
                     </Card>
