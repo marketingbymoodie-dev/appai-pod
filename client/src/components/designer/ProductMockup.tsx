@@ -179,7 +179,7 @@ export function ProductMockup({
   const renderMug = () => {
     return (
       <div
-        className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md"
+        className="absolute inset-0 overflow-hidden rounded-md"
         style={{ pointerEvents: "none" }}
       >
         {renderImageContent()}
