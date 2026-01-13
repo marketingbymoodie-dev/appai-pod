@@ -10,6 +10,7 @@ interface MockupRequest {
   scale?: number; // 0-2 range, default 1
   x?: number; // -1 to 1 range, default 0 (center)
   y?: number; // -1 to 1 range, default 0 (center)
+  doubleSided?: boolean; // Send image to both front and back
 }
 
 interface MockupImage {
@@ -102,7 +103,8 @@ async function createTemporaryProduct(
   apiToken: string,
   scale: number = 1,
   x: number = 0,
-  y: number = 0
+  y: number = 0,
+  doubleSided: boolean = false
 ): Promise<string | null> {
   try {
     // Printify uses 0-1 range where 0.5 is center
@@ -110,6 +112,38 @@ async function createTemporaryProduct(
     // -1 = 0.0 (left/top), 0 = 0.5 (center), 1 = 1.0 (right/bottom)
     const printifyX = 0.5 + (x * 0.5);
     const printifyY = 0.5 + (y * 0.5);
+    
+    // Build placeholders array - front always, back if double-sided
+    const placeholders = [
+      {
+        position: "front",
+        images: [
+          {
+            id: imageId,
+            x: printifyX,
+            y: printifyY,
+            scale: scale,
+            angle: 0,
+          },
+        ],
+      },
+    ];
+    
+    // Add back print for double-sided products (pillows, etc.)
+    if (doubleSided) {
+      placeholders.push({
+        position: "back",
+        images: [
+          {
+            id: imageId,
+            x: printifyX,
+            y: printifyY,
+            scale: scale,
+            angle: 0,
+          },
+        ],
+      });
+    }
     
     const response = await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
@@ -134,20 +168,7 @@ async function createTemporaryProduct(
           print_areas: [
             {
               variant_ids: [variantId],
-              placeholders: [
-                {
-                  position: "front",
-                  images: [
-                    {
-                      id: imageId,
-                      x: printifyX,
-                      y: printifyY,
-                      scale: scale, // Use provided scale
-                      angle: 0,
-                    },
-                  ],
-                },
-              ],
+              placeholders,
             },
           ],
         }),
@@ -255,6 +276,7 @@ export async function generatePrintifyMockup(
     scale = 1,
     x = 0,
     y = 0,
+    doubleSided = false,
   } = request;
 
   if (!printifyApiToken || !printifyShopId) {
@@ -290,7 +312,8 @@ export async function generatePrintifyMockup(
       printifyApiToken,
       scale,
       x,
-      y
+      y,
+      doubleSided
     );
 
     if (!productId) {

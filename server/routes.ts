@@ -422,7 +422,7 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Unauthorized" });
       }
 
-      const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
+      const clamp = (val: number, min: number, max: number) => Math.round(Math.max(min, Math.min(max, val)));
 
       const updateData: Partial<typeof design> = {
         transformScale: clamp(transformScale ?? design.transformScale ?? 135, 25, 135),
@@ -2141,6 +2141,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizeType,
         hasPrintifyMockups: productType.hasPrintifyMockups || false,
         baseMockupImages,
+        primaryMockupIndex: productType.primaryMockupIndex || 0,
+        doubleSidedPrint: productType.doubleSidedPrint || false,
         sizes: sizes.map((s: any) => {
           // Calculate aspect ratio from dimensions if available
           let sizeAspectRatio = s.aspectRatio || productType.aspectRatio;
@@ -2413,9 +2415,9 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         stylePreset: stylePreset || null,
         size,
         frameColor,
-        transformScale: transformScale ?? 100,
-        transformX: transformX ?? 50,
-        transformY: transformY ?? 50,
+        transformScale: Math.round(transformScale ?? 100),
+        transformX: Math.round(transformX ?? 50),
+        transformY: Math.round(transformY ?? 50),
         productTypeId: productTypeId || null,
         shopDomain: shopDomain || null,
         productId: productId || null,
@@ -2652,6 +2654,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
       }
 
       // Create a new design record with the same image
+      // Ensure transform values are integers (database columns are integer type)
       const newDesign = await storage.createDesign({
         customerId: customer.id,
         prompt: sourceDesign.prompt,
@@ -2660,9 +2663,9 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         frameColor: frameColor || sourceDesign.frameColor,
         generatedImageUrl: sourceDesign.generatedImageUrl,
         thumbnailImageUrl: sourceDesign.thumbnailImageUrl,
-        transformScale,
-        transformX,
-        transformY,
+        transformScale: Math.round(transformScale),
+        transformX: Math.round(transformX),
+        transformY: Math.round(transformY),
         productTypeId: parseInt(productTypeId),
         designSource: "ai", // Mark as AI-generated since it came from an AI design
       });
@@ -4862,6 +4865,13 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         bleedMarginPercent = 8;
       }
 
+      // Detect double-sided print from description
+      const doubleSidedPrint = combined.includes("double sided") || 
+                               combined.includes("double-sided") || 
+                               combined.includes("two sided") ||
+                               combined.includes("two-sided") ||
+                               combined.includes("both sides");
+
       // Create the product type with parsed data
       const productType = await storage.createProductType({
         merchantId: merchant.id,
@@ -4883,6 +4893,8 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         sizeType,
         hasPrintifyMockups: true,
         baseMockupImages: JSON.stringify(baseMockupImages),
+        primaryMockupIndex: 0,
+        doubleSidedPrint,
         isActive: true,
         sortOrder: existingTypes.length,
       });
@@ -5353,6 +5365,7 @@ MANDATORY IMAGE REQUIREMENTS - FOLLOW EXACTLY:
         scale: scale ? scale / 100 : 1, // Convert from percentage to 0-2 range
         x: x !== undefined ? (x - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
         y: y !== undefined ? (y - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
+        doubleSided: productType.doubleSidedPrint || false, // Send to front and back for pillows, etc.
       });
 
       res.json(result);

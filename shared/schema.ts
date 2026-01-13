@@ -235,6 +235,8 @@ export const productTypes = pgTable("product_types", {
   sizeType: text("size_type").notNull().default("dimensional"),
   hasPrintifyMockups: boolean("has_printify_mockups").notNull().default(false),
   baseMockupImages: text("base_mockup_images").notNull().default("{}"),
+  primaryMockupIndex: integer("primary_mockup_index").notNull().default(0),
+  doubleSidedPrint: boolean("double_sided_print").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   shopifyProductId: text("shopify_product_id"),
