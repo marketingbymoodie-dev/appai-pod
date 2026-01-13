@@ -2137,12 +2137,31 @@ ${textEdgeRestrictions}
         .replace(/\s+/g, ' ')
         .trim();
 
+      // Get the app URL for the design studio embed
+      const appUrl = process.env.REPLIT_DEV_DOMAIN 
+        ? `https://${process.env.REPLIT_DEV_DOMAIN}`
+        : process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
+      
+      // Build the embed URL with shop parameter for authorization
+      const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true&shop=${encodeURIComponent(shopDomain)}`;
+      const displayName = productType.name;
+
       const updatePayload = {
         product: {
           id: productType.shopifyProductId,
           body_html: `
             <p>${cleanDescription}</p>
-            <p><strong>This product features our AI Design Studio.</strong> Create your own unique artwork using AI, or upload your own design!</p>
+            <div id="ai-art-studio-container" style="margin: 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
+              <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
+              <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
+              <iframe 
+                src="${embedUrl}" 
+                style="width: 100%; height: 700px; border: none; border-radius: 8px; background: white;"
+                allow="clipboard-write"
+                loading="lazy"
+                title="AI Design Studio"
+              ></iframe>
+            </div>
           `,
           images: images.length > 0 ? images : undefined,
         },

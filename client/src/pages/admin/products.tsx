@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
@@ -241,6 +241,64 @@ export default function AdminProducts() {
       toast({ title: "Failed to refresh colors", description: error.message, variant: "destructive" });
     },
   });
+
+  // Fetch connected Shopify shops
+  const { data: shopifyShops } = useQuery<{ shops: Array<{ id: number; shopDomain: string }> }>({
+    queryKey: ["/api/shopify/shops"],
+  });
+
+  // Update Shopify product mutation
+  const updateShopifyProductMutation = useMutation({
+    mutationFn: async (data: { productTypeId: number; shopDomain: string }) => {
+      const response = await apiRequest("PUT", `/api/shopify/products/${data.productTypeId}`, {
+        shopDomain: data.shopDomain,
+      });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({ 
+        title: "Shopify product updated",
+        description: "The product description has been refreshed with the latest design studio embed."
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update Shopify product", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleUpdateShopifyProduct = (productType: ProductType) => {
+    if (!productType.shopifyProductId) {
+      toast({ title: "Not published", description: "This product hasn't been sent to Shopify yet.", variant: "destructive" });
+      return;
+    }
+    
+    // Extract shop domain from the stored shopifyProductUrl (e.g., https://shop.myshopify.com/admin/products/123)
+    let shopDomain = "";
+    if (productType.shopifyProductUrl) {
+      try {
+        const url = new URL(productType.shopifyProductUrl);
+        shopDomain = url.hostname;
+      } catch (e) {
+        console.error("Failed to parse shopifyProductUrl:", e);
+      }
+    }
+    
+    // Fallback to first connected shop if URL parsing fails
+    if (!shopDomain || !shopDomain.includes(".myshopify.com")) {
+      const shop = shopifyShops?.shops?.[0];
+      if (!shop) {
+        toast({ title: "No Shopify store", description: "Please connect a Shopify store first.", variant: "destructive" });
+        return;
+      }
+      shopDomain = shop.shopDomain;
+    }
+    
+    updateShopifyProductMutation.mutate({ 
+      productTypeId: productType.id, 
+      shopDomain: shopDomain 
+    });
+  };
 
   const handleOpenPrintifyImport = async () => {
     setPrintifyImportOpen(true);
@@ -487,6 +545,18 @@ export default function AdminProducts() {
                         >
                           <Palette className={`h-3 w-3 mr-1 ${refreshColorsMutation.isPending ? 'animate-pulse' : ''}`} />
                           Refresh Colors
+                        </Button>
+                      )}
+                      {pt.shopifyProductId && (
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => handleUpdateShopifyProduct(pt)}
+                          disabled={updateShopifyProductMutation.isPending}
+                          data-testid={`button-update-shopify-${pt.id}`}
+                        >
+                          <Upload className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-spin' : ''}`} />
+                          Update Shopify
                         </Button>
                       )}
                       <Button 
