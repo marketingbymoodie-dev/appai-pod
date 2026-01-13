@@ -1278,37 +1278,27 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      // Check if customer is logged in and has credits - atomic decrement to prevent race conditions
+      // For Shopify embedded mode, customer login is OPTIONAL
+      // Business model: Shop pays for generation capacity via rate limits.
+      // If a customer is logged in with personal credits, we deduct from their credits first.
+      // If no credits or not logged in, generation is allowed under shop's rate limit.
       let customer = null;
       let creditDeducted = false;
       if (session.internalCustomerId) {
         customer = await storage.getCustomer(session.internalCustomerId);
-        if (!customer || customer.credits <= 0) {
-          return res.status(403).json({ 
-            error: "No credits remaining. Please log in to your account to purchase more credits.",
-            requiresCredits: true,
-            credits: customer?.credits || 0
-          });
+        if (customer && customer.credits > 0) {
+          // Atomically decrement credits BEFORE generation
+          const updatedCustomer = await storage.decrementCreditsIfAvailable(customer.id);
+          if (updatedCustomer) {
+            customer = updatedCustomer;
+            creditDeducted = true;
+          }
+          // If decrement fails (race condition), still allow generation via shop's rate limit
         }
-        
-        // Atomically decrement credits BEFORE generation to prevent race conditions
-        const updatedCustomer = await storage.decrementCreditsIfAvailable(customer.id);
-        if (!updatedCustomer) {
-          return res.status(403).json({ 
-            error: "No credits remaining. Please try again later.",
-            requiresCredits: true,
-            credits: 0
-          });
-        }
-        customer = updatedCustomer;
-        creditDeducted = true;
-      } else {
-        // Require customer login to generate
-        return res.status(401).json({ 
-          error: "Please log in to your account to create designs.",
-          requiresLogin: true
-        });
+        // If customer has no personal credits, generation is allowed via shop's rate limit
+        // This is intentional - shop is paying for capacity, individual credits are optional
       }
+      // Anonymous Shopify customers are allowed - shop-level rate limiting handles abuse
 
       // Rate limiting per shop
       const now = Date.now();
