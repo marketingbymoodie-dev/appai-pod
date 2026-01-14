@@ -1089,7 +1089,7 @@ export default function EmbedDesign() {
 
           <div className="space-y-3">
             <div
-              className="w-full rounded-md overflow-hidden"
+              className="w-full rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
                   // For product types with dimensional sizes (width/height > 0), use those
@@ -1103,18 +1103,20 @@ export default function EmbedDesign() {
               }}
               data-testid="container-mockup"
             >
-              <ProductMockup
-                imageUrl={generatedDesign?.imageUrl}
-                isLoading={generateMutation.isPending}
-                selectedSize={selectedSizeConfig}
-                selectedFrameColor={selectedFrameColorConfig}
-                transform={transform}
-                onTransformChange={setTransform}
-                enableDrag={!!generatedDesign?.imageUrl}
-                designerType={productTypeConfig?.designerType || "generic"}
-                printShape={productTypeConfig?.printShape || "rectangle"}
-                canvasConfig={productTypeConfig?.canvasConfig}
-              />
+              <div className="absolute inset-0">
+                <ProductMockup
+                  imageUrl={generatedDesign?.imageUrl}
+                  isLoading={generateMutation.isPending}
+                  selectedSize={selectedSizeConfig}
+                  selectedFrameColor={selectedFrameColorConfig}
+                  transform={transform}
+                  onTransformChange={setTransform}
+                  enableDrag={!!generatedDesign?.imageUrl}
+                  designerType={productTypeConfig?.designerType || "generic"}
+                  printShape={productTypeConfig?.printShape || "rectangle"}
+                  canvasConfig={productTypeConfig?.canvasConfig}
+                />
+              </div>
             </div>
 
             {generatedDesign?.imageUrl && (
