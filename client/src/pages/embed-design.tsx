@@ -46,6 +46,7 @@ interface ProductTypeConfig {
   canvasConfig?: CanvasConfig;
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
+  hasPrintifyMockups?: boolean;
 }
 
 export default function EmbedDesign() {
@@ -136,6 +137,13 @@ export default function EmbedDesign() {
   const importFileInputRef = useRef<HTMLInputElement>(null);
   const customUploadInputRef = useRef<HTMLInputElement>(null);
   
+  // Printify composite mockup state
+  const [printifyMockups, setPrintifyMockups] = useState<string[]>([]);
+  const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
+  const [mockupLoading, setMockupLoading] = useState(false);
+  const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
+  const mockupRegenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
   const { toast } = useToast();
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
@@ -217,7 +225,8 @@ export default function EmbedDesign() {
             printShape: designerConfig.printShape,
             canvasConfig: designerConfig.canvasConfig,
             sizes: designerConfig.sizes || [],
-            frameColors: designerConfig.frameColors || []
+            frameColors: designerConfig.frameColors || [],
+            hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
           });
           if (designerConfig.sizes?.length > 0) setSelectedSize(designerConfig.sizes[0].id);
           if (designerConfig.frameColors?.length > 0) setSelectedFrameColor(designerConfig.frameColors[0].id);
@@ -322,6 +331,116 @@ export default function EmbedDesign() {
     }
   }, [isShopify, shopDomain, productId, shopifyCustomerId, shopifyCustomerEmail, shopifyCustomerName]);
 
+  // Fetch Printify composite mockups (artwork overlaid on product photos)
+  const fetchPrintifyMockups = useCallback(async (
+    designImageUrl: string, 
+    ptId: number, 
+    sizeId: string, 
+    colorId: string, 
+    scale: number = 100, 
+    x: number = 50, 
+    y: number = 50
+  ) => {
+    setMockupLoading(true);
+    // Clamp values to valid ranges
+    const clampedX = Math.max(0, Math.min(100, x));
+    const clampedY = Math.max(0, Math.min(100, y));
+    const clampedScale = Math.max(10, Math.min(200, scale));
+    
+    try {
+      const response = await apiRequest("POST", "/api/mockup/generate", {
+        productTypeId: ptId,
+        designImageUrl,
+        sizeId,
+        colorId,
+        scale: clampedScale,
+        x: clampedX,
+        y: clampedY,
+      });
+      const result = await response.json();
+      if (result.success && result.mockupUrls?.length > 0) {
+        setPrintifyMockups(result.mockupUrls);
+        setSelectedMockupIndex(0);
+      }
+      if (result.success && result.mockupImages?.length > 0) {
+        setPrintifyMockupImages(result.mockupImages);
+        setSelectedMockupIndex(0);
+      }
+    } catch (error) {
+      console.error("Failed to generate Printify mockups:", error);
+    } finally {
+      setMockupLoading(false);
+    }
+  }, []);
+
+  // Fetch Printify mockups for shared designs once product config is loaded
+  useEffect(() => {
+    if (
+      isSharedDesign &&
+      generatedDesign?.imageUrl &&
+      productTypeConfig?.hasPrintifyMockups &&
+      selectedSize &&
+      selectedFrameColor &&
+      printifyMockups.length === 0 &&
+      !mockupLoading
+    ) {
+      const fullImageUrl = generatedDesign.imageUrl.startsWith("http") 
+        ? generatedDesign.imageUrl 
+        : window.location.origin + generatedDesign.imageUrl;
+      fetchPrintifyMockups(
+        fullImageUrl, 
+        productTypeConfig.id, 
+        selectedSize, 
+        selectedFrameColor, 
+        transform.scale, 
+        transform.x, 
+        transform.y
+      );
+    }
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, transform, fetchPrintifyMockups]);
+
+  // Debounced regeneration of Printify mockups when transform changes
+  useEffect(() => {
+    // Only regenerate if we already have mockups and user is adjusting placement
+    if (
+      !productTypeConfig?.hasPrintifyMockups ||
+      !generatedDesign?.imageUrl ||
+      !selectedSize ||
+      !selectedFrameColor ||
+      printifyMockups.length === 0
+    ) {
+      return;
+    }
+
+    // Clear any existing timeout
+    if (mockupRegenerationTimeoutRef.current) {
+      clearTimeout(mockupRegenerationTimeoutRef.current);
+    }
+
+    // Debounce the regeneration by 1 second after user stops adjusting
+    mockupRegenerationTimeoutRef.current = setTimeout(() => {
+      const fullImageUrl = generatedDesign.imageUrl.startsWith("http") 
+        ? generatedDesign.imageUrl 
+        : window.location.origin + generatedDesign.imageUrl;
+      fetchPrintifyMockups(
+        fullImageUrl, 
+        productTypeConfig.id, 
+        selectedSize, 
+        selectedFrameColor, 
+        transform.scale, 
+        transform.x, 
+        transform.y
+      );
+    }, 1000);
+
+    // Cleanup timeout on unmount or when deps change
+    return () => {
+      if (mockupRegenerationTimeoutRef.current) {
+        clearTimeout(mockupRegenerationTimeoutRef.current);
+      }
+    };
+  }, [transform.scale, transform.x, transform.y, productTypeConfig, generatedDesign?.imageUrl, selectedSize, selectedFrameColor, printifyMockups.length, fetchPrintifyMockups]);
+
   const generateMutation = useMutation({
     mutationFn: async (payload: {
       prompt: string;
@@ -351,9 +470,10 @@ export default function EmbedDesign() {
       return data;
     },
     onSuccess: (data) => {
+      const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
       setGeneratedDesign({
         id: data.designId || data.design?.id || crypto.randomUUID(),
-        imageUrl: data.imageUrl || data.design?.generatedImageUrl,
+        imageUrl: imageUrl,
         prompt: prompt,
       });
       if (data.creditsRemaining !== undefined && customer) {
@@ -366,6 +486,14 @@ export default function EmbedDesign() {
       // Reset the initial transform ref for the new design
       initialTransformRef.current = newTransform;
       setLoginError(null);
+      
+      // Clear any existing mockups and fetch new Printify composite mockups
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      if (productTypeConfig?.hasPrintifyMockups && imageUrl && selectedSize && selectedFrameColor) {
+        const fullImageUrl = imageUrl.startsWith("http") ? imageUrl : window.location.origin + imageUrl;
+        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor, zoomDefault, 50, 50);
+      }
     },
   });
 
@@ -492,9 +620,10 @@ export default function EmbedDesign() {
       const importData = await importResponse.json();
 
       // Step 4: Set the imported design as the current design
+      const importedImageUrl = importData.imageUrl;
       setGeneratedDesign({
         id: crypto.randomUUID(),
-        imageUrl: importData.imageUrl,
+        imageUrl: importedImageUrl,
         prompt: source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`,
       });
       setPrompt(source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`);
@@ -503,6 +632,14 @@ export default function EmbedDesign() {
       // Use conditional default zoom (135% for apparel, 100% for others)
       const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
+      
+      // Clear any existing mockups and fetch Printify composite mockups for imported design
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize && selectedFrameColor) {
+        const fullImageUrl = importedImageUrl.startsWith("http") ? importedImageUrl : window.location.origin + importedImageUrl;
+        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor, zoomDefault, 50, 50);
+      }
 
       toast({
         title: "Design imported!",
@@ -1088,6 +1225,7 @@ export default function EmbedDesign() {
           </div>
 
           <div className="space-y-3">
+            {/* Main interactive canvas - full size, always visible for editing */}
             <div
               className="w-full rounded-md overflow-hidden relative"
               style={{
@@ -1125,6 +1263,61 @@ export default function EmbedDesign() {
                 onTransformChange={setTransform}
                 disabled={!generatedDesign?.imageUrl}
               />
+            )}
+
+            {/* Printify composite mockup preview - secondary panel showing realistic product render */}
+            {productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
+              <div className="space-y-2 border-t pt-3">
+                <p className="text-xs text-muted-foreground text-center font-medium">Product Preview</p>
+                <div
+                  className="w-full rounded-md overflow-hidden relative bg-muted"
+                  style={{ aspectRatio: "1/1" }}
+                  data-testid="container-printify-mockup"
+                >
+                  {mockupLoading ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                      <span className="text-xs text-muted-foreground mt-2">Updating preview...</span>
+                    </div>
+                  ) : printifyMockups.length > 0 ? (
+                    <img
+                      src={printifyMockups[selectedMockupIndex] || printifyMockups[0]}
+                      alt="Product mockup"
+                      className="absolute inset-0 w-full h-full object-contain"
+                      data-testid="img-printify-mockup"
+                    />
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
+                      <Loader2 className="h-6 w-6 animate-spin" />
+                      <span className="text-xs mt-2">Loading product preview...</span>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Mockup thumbnails if multiple views available */}
+                {printifyMockupImages.length > 1 && (
+                  <div className="flex gap-2 overflow-x-auto pb-2 justify-center">
+                    {printifyMockupImages.map((mockup, index) => (
+                      <button
+                        key={index}
+                        onClick={() => setSelectedMockupIndex(index)}
+                        className={`flex-shrink-0 w-14 h-14 rounded-md overflow-hidden border-2 transition-colors ${
+                          selectedMockupIndex === index 
+                            ? "border-primary" 
+                            : "border-transparent hover:border-muted-foreground/50"
+                        }`}
+                        data-testid={`button-mockup-thumbnail-${index}`}
+                      >
+                        <img
+                          src={mockup.url}
+                          alt={mockup.label || `View ${index + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
 
             {generateMutation.isError && (

@@ -265,15 +265,11 @@ export function ProductMockup({
     }
   };
 
-  // Debug: add visible border to diagnose rendering issues
-  const debugStyle = imageUrl ? { border: "3px solid red" } : {};
-  
   return (
     <div
       className={`relative bg-muted rounded-md w-full h-full ${
         imageUrl && enableDrag ? "cursor-move select-none" : ""
       }`}
-      style={debugStyle}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
