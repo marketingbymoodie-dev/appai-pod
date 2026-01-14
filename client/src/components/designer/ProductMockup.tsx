@@ -181,45 +181,18 @@ export function ProductMockup({
   };
 
   const renderMug = () => {
-    // For mugs/tumblers, use absolute positioning to fill the parent container
-    // Parent has h-full which inherits from container with aspectRatio
-    if (isLoading) {
-      return (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-          <Loader2 className="h-8 w-8 animate-spin" />
-          <span className="text-xs">Creating...</span>
-        </div>
-      );
-    }
-    
-    if (imageUrl) {
-      console.log("[ProductMockup] renderMug with URL:", imageUrl);
-      return (
-        <div className="absolute inset-0 overflow-hidden rounded-md">
-          <img
-            src={imageUrl}
-            alt="Generated artwork"
-            className="w-full h-full object-cover"
-            draggable={false}
-            data-testid="img-generated-mug"
-            onLoad={() => console.log("[ProductMockup] Mug image loaded successfully")}
-            onError={(e) => console.error("[ProductMockup] Mug image failed to load:", e)}
-          />
-          {showSafeZone && canvasConfig && (
-            <SafeZoneMask 
-              shape={printShape} 
-              canvasConfig={canvasConfig}
-              showMask={true}
-            />
-          )}
-        </div>
-      );
-    }
-    
+    // For mugs/tumblers, use the shared renderImageContent like other types
+    // but with simplified absolute positioning
     return (
-      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-        <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
-        <p className="text-xs">Your artwork will appear here</p>
+      <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
+        {renderImageContent()}
+        {showSafeZone && canvasConfig && (
+          <SafeZoneMask 
+            shape={printShape} 
+            canvasConfig={canvasConfig}
+            showMask={true}
+          />
+        )}
       </div>
     );
   };
@@ -258,11 +231,8 @@ export function ProductMockup({
         <img
           src={imageUrl}
           alt="Generated artwork"
+          className="absolute inset-0 w-full h-full object-cover"
           style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "cover",
-            display: "block",
             pointerEvents: "none",
             borderRadius: printShape === "circle" ? "50%" : undefined,
           }}
