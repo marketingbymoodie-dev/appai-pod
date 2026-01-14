@@ -35,7 +35,11 @@ export function ProductMockup({
   canvasConfig,
   showSafeZone = false,
 }: ProductMockupProps) {
-  console.log("[ProductMockup] designerType:", designerType, "imageUrl:", imageUrl);
+  // Debug: log to window to ensure we can see it
+  if (typeof window !== 'undefined') {
+    (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
+  }
+  console.log("[ProductMockup] RENDER designerType:", designerType, "imageUrl:", imageUrl, "isLoading:", isLoading);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -291,11 +295,15 @@ export function ProductMockup({
     }
   };
 
+  // Debug: add visible border to diagnose rendering issues
+  const debugStyle = imageUrl ? { border: "3px solid red" } : {};
+  
   return (
     <div
       className={`relative bg-muted rounded-md w-full h-full ${
         imageUrl && enableDrag ? "cursor-move select-none" : ""
       }`}
+      style={debugStyle}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
