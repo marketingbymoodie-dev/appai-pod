@@ -185,6 +185,52 @@
     text-align: center;
     color: #dc2626;
   }
+
+  /* Mockup Preview Section - Guaranteed fallback for all themes */
+  .ai-art-mockup-preview {
+    display: none;
+    margin-bottom: 2rem;
+    padding: 1.5rem;
+    background: #fff;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+  }
+
+  .ai-art-mockup-preview__title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    text-align: center;
+    color: #333;
+  }
+
+  .ai-art-mockup-preview__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  .ai-art-mockup-preview__item {
+    aspect-ratio: 1;
+    overflow: hidden;
+    border-radius: 6px;
+    border: 1px solid #e5e5e5;
+    background: #fafafa;
+  }
+
+  .ai-art-mockup-preview__item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  @media (min-width: 768px) {
+    .ai-art-mockup-preview__grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+  }
 </style>
 
 <script>
@@ -311,29 +357,7 @@
         
         console.log('[AI Art Studio] Received mockup URLs:', mockupUrls.length);
         
-        // Find the product gallery/media container
-        // Common selectors for Shopify themes
-        const gallerySelectors = [
-          '.product__media-list',
-          '.product-gallery',
-          '[data-product-media-container]',
-          '.product-media-container',
-          '.product__images',
-          '.product-images',
-          '.product-single__photos',
-          '.product__photos',
-          '[data-product-images]',
-          '.product-featured-media',
-          '.product__main-photos'
-        ];
-        
-        let gallery = null;
-        for (const selector of gallerySelectors) {
-          gallery = document.querySelector(selector);
-          if (gallery) break;
-        }
-        
-        // Also try to find individual product images
+        // STRATEGY 1: Try common theme-specific selectors first
         const imageSelectors = [
           '.product__media-item img',
           '.product-gallery__image',
@@ -341,81 +365,274 @@
           '.product__photo img',
           '[data-product-featured-image]',
           '.product-featured-media img',
-          '.product__main-photos img'
+          '.product__main-photos img',
+          '.product__media img',
+          '.product-image img',
+          '.product-single__media img',
+          '[data-media-id] img',
+          '.product-gallery img',
+          '.product__images img',
+          '.product-images img'
         ];
         
         let productImages = [];
         for (const selector of imageSelectors) {
           productImages = document.querySelectorAll(selector);
-          if (productImages.length > 0) break;
+          if (productImages.length > 0) {
+            console.log('[AI Art Studio] Found images via selector:', selector);
+            break;
+          }
         }
         
-        // Replace product images with mockups
-        if (productImages.length > 0) {
-          console.log('[AI Art Studio] Found product images:', productImages.length);
-          mockupUrls.forEach((url, index) => {
-            if (productImages[index]) {
-              const img = productImages[index];
-              // Store original src for potential reset
-              if (!img.dataset.originalSrc) {
-                img.dataset.originalSrc = img.src;
-              }
-              img.src = url;
-              img.srcset = ''; // Clear srcset to prevent override
-              
-              // Also update any parent picture element sources
-              const picture = img.closest('picture');
-              if (picture) {
-                picture.querySelectorAll('source').forEach(source => {
-                  source.srcset = url;
-                });
-              }
-            }
+        // Find the product media container for scoped searches
+        const productMediaContainer = 
+          document.querySelector('[data-product-media-container]') ||
+          document.querySelector('[data-product-media]') ||
+          document.querySelector('.product__media-list') ||
+          document.querySelector('.product__media') ||
+          document.querySelector('.product-media') ||
+          document.querySelector('.product-gallery') ||
+          document.querySelector('.product__images') ||
+          document.querySelector('[data-section-type="product"]') ||
+          document.querySelector('.product') ||
+          document.querySelector('main');
+        
+        // STRATEGY 2: Find images by Shopify CDN URL pattern (scoped to product area)
+        if (productImages.length === 0 && productMediaContainer) {
+          const containerImages = productMediaContainer.querySelectorAll('img');
+          const shopifyProductImages = Array.from(containerImages).filter(img => {
+            const src = img.src || img.dataset.src || '';
+            // Shopify CDN patterns: cdn.shopify.com/s/files or /products/
+            return (src.includes('cdn.shopify.com') && src.includes('/products/')) ||
+                   (src.includes('cdn.shopify.com') && src.includes('/files/'));
           });
           
-          // If we have more mockups than current images and a gallery exists
-          if (gallery && mockupUrls.length > productImages.length) {
-            for (let i = productImages.length; i < mockupUrls.length; i++) {
-              const newImg = document.createElement('img');
-              newImg.src = mockupUrls[i];
-              newImg.alt = 'AI Generated Design Preview';
-              newImg.className = productImages[0]?.className || '';
-              newImg.dataset.aiMockup = 'true';
-              gallery.appendChild(newImg);
+          if (shopifyProductImages.length > 0) {
+            console.log('[AI Art Studio] Found images via CDN pattern:', shopifyProductImages.length);
+            productImages = shopifyProductImages;
+          }
+        }
+        
+        // STRATEGY 3: Find large images in product section
+        if (productImages.length === 0 && productMediaContainer) {
+          const sectionImages = productMediaContainer.querySelectorAll('img');
+          // Filter to reasonably sized images (likely product images, not icons)
+          const largeImages = Array.from(sectionImages).filter(img => {
+            return img.naturalWidth > 200 || img.width > 200 ||
+                   (img.style.width && parseInt(img.style.width) > 200);
+          });
+          
+          if (largeImages.length > 0) {
+            console.log('[AI Art Studio] Found large images in product section:', largeImages.length);
+            productImages = largeImages;
+          }
+        }
+        
+        // STRATEGY 4: Handle data-media-id wrappers (common in OS 2.0 themes)
+        if (productImages.length === 0 && productMediaContainer) {
+          const mediaWrappers = productMediaContainer.querySelectorAll('[data-media-id]');
+          if (mediaWrappers.length > 0) {
+            console.log('[AI Art Studio] Found media wrappers:', mediaWrappers.length);
+            mockupUrls.forEach((url, index) => {
+              if (mediaWrappers[index]) {
+                const wrapper = mediaWrappers[index];
+                // Check for img inside
+                const img = wrapper.querySelector('img');
+                if (img) {
+                  updateImageElement(img, url);
+                }
+                // Update background-image if present
+                if (wrapper.style.backgroundImage) {
+                  wrapper.dataset.originalBg = wrapper.style.backgroundImage;
+                  wrapper.style.backgroundImage = `url('${url}')`;
+                }
+                // Handle model-viewer elements (3D models - update poster)
+                const modelViewer = wrapper.querySelector('model-viewer');
+                if (modelViewer) {
+                  modelViewer.dataset.originalPoster = modelViewer.poster || '';
+                  modelViewer.poster = url;
+                }
+                // Handle video elements (update poster)
+                const video = wrapper.querySelector('video');
+                if (video) {
+                  video.dataset.originalPoster = video.poster || '';
+                  video.poster = url;
+                }
+              }
+            });
+            // Mark that we updated something
+            productImages = mediaWrappers;
+          }
+        }
+        
+        // STRATEGY 5: Find and update background-image galleries (no img elements)
+        if (productImages.length === 0 && productMediaContainer) {
+          // Find elements with computed background-image containing Shopify CDN
+          const allElements = productMediaContainer.querySelectorAll('*');
+          const bgImageElements = Array.from(allElements).filter(el => {
+            const bgImage = window.getComputedStyle(el).backgroundImage;
+            return bgImage && bgImage !== 'none' && 
+                   (bgImage.includes('cdn.shopify.com') || bgImage.includes('shopify.com/s/files'));
+          });
+          
+          if (bgImageElements.length > 0) {
+            console.log('[AI Art Studio] Found background-image elements:', bgImageElements.length);
+            mockupUrls.forEach((url, index) => {
+              if (bgImageElements[index]) {
+                const el = bgImageElements[index];
+                if (!el.dataset.originalBg) {
+                  el.dataset.originalBg = el.style.backgroundImage || window.getComputedStyle(el).backgroundImage;
+                }
+                el.style.backgroundImage = `url('${url}')`;
+              }
+            });
+            productImages = bgImageElements;
+          }
+        }
+        
+        // STRATEGY 6: Find media container near add-to-cart form
+        if (productImages.length === 0) {
+          const addToCartForm = document.querySelector('form[action*="/cart/add"]') ||
+                                 document.querySelector('[data-product-form]') ||
+                                 document.querySelector('.product-form');
+          
+          if (addToCartForm) {
+            // Look for media/gallery sibling or ancestor
+            const productSection = addToCartForm.closest('section') || addToCartForm.closest('.product');
+            if (productSection) {
+              const sectionImages = productSection.querySelectorAll('img');
+              const largeImages = Array.from(sectionImages).filter(img => {
+                const rect = img.getBoundingClientRect();
+                return rect.width > 100 && rect.height > 100;
+              });
+              
+              if (largeImages.length > 0) {
+                console.log('[AI Art Studio] Found images near add-to-cart:', largeImages.length);
+                mockupUrls.forEach((url, index) => {
+                  if (largeImages[index]) {
+                    updateImageElement(largeImages[index], url);
+                  }
+                });
+                productImages = largeImages;
+              }
             }
           }
-        } else {
-          console.log('[AI Art Studio] No product images found to update');
+        }
+        
+        // Helper to update an image element with all lazy-loading patterns
+        function updateImageElement(img, url) {
+          // Store original values for potential reset
+          if (!img.dataset.originalSrc) {
+            img.dataset.originalSrc = img.src || '';
+            if (img.dataset.src) img.dataset.originalDataSrc = img.dataset.src;
+            if (img.dataset.srcset) img.dataset.originalDataSrcset = img.dataset.srcset;
+            if (img.dataset.master) img.dataset.originalDataMaster = img.dataset.master;
+          }
+          
+          // Update all src variants (handles lazy-loading themes)
+          img.src = url;
+          img.srcset = '';
+          if (img.dataset.src) img.dataset.src = url;
+          if (img.dataset.srcset) img.dataset.srcset = url;
+          if (img.dataset.master) img.dataset.master = url;
+          
+          // Handle Shopify Dawn/OS 2.0 lazy loading
+          img.removeAttribute('loading');
+          img.classList.remove('lazyload', 'lazyloading');
+          img.classList.add('lazyloaded');
+          
+          // Update parent picture element sources
+          const picture = img.closest('picture');
+          if (picture) {
+            picture.querySelectorAll('source').forEach(source => {
+              source.srcset = url;
+              if (source.dataset.srcset) source.dataset.srcset = url;
+            });
+          }
+          
+          // Handle background-image containers
+          const parent = img.parentElement;
+          if (parent && parent.style.backgroundImage) {
+            parent.dataset.originalBg = parent.style.backgroundImage;
+            parent.style.backgroundImage = `url('${url}')`;
+          }
+        }
+        
+        // Update found product images
+        if (productImages.length > 0) {
+          console.log('[AI Art Studio] Updating', Math.min(productImages.length, mockupUrls.length), 'product images');
+          mockupUrls.forEach((url, index) => {
+            if (productImages[index]) {
+              updateImageElement(productImages[index], url);
+            }
+          });
         }
         
         // Also try to update thumbnail images if they exist
         const thumbnailSelectors = [
-          '.product__media-toggle',
+          '.product__media-toggle img',
           '.product-thumbnails img',
           '.product__thumbs img',
-          '[data-thumbnail-id] img'
+          '[data-thumbnail-id] img',
+          '.product-single__thumbnails img',
+          '.product__thumbnail img',
+          '.thumbnail-list img',
+          '[data-thumbnail] img'
         ];
         
         for (const selector of thumbnailSelectors) {
           const thumbnails = document.querySelectorAll(selector);
           if (thumbnails.length > 0) {
+            console.log('[AI Art Studio] Updating thumbnails via:', selector);
             mockupUrls.forEach((url, index) => {
               if (thumbnails[index]) {
-                const thumb = thumbnails[index].tagName === 'IMG' 
-                  ? thumbnails[index] 
-                  : thumbnails[index].querySelector('img');
-                if (thumb) {
-                  if (!thumb.dataset.originalSrc) {
-                    thumb.dataset.originalSrc = thumb.src;
-                  }
-                  thumb.src = url;
-                  thumb.srcset = '';
-                }
+                updateImageElement(thumbnails[index], url);
               }
             });
             break;
           }
         }
+        
+        // GUARANTEED FALLBACK: Always show mockups in our own preview section
+        // This ensures mockups are visible even if theme gallery couldn't be updated
+        let mockupPreview = document.getElementById('ai-art-mockup-preview-{{ block.id }}');
+        const galleryWasUpdated = productImages.length > 0;
+        
+        if (!mockupPreview) {
+          // Create the preview section
+          mockupPreview = document.createElement('div');
+          mockupPreview.id = 'ai-art-mockup-preview-{{ block.id }}';
+          mockupPreview.className = 'ai-art-mockup-preview';
+          const title = galleryWasUpdated 
+            ? 'All Design Previews' 
+            : 'Your Custom Design Preview';
+          mockupPreview.innerHTML = '<h3 class="ai-art-mockup-preview__title">' + title + '</h3><div class="ai-art-mockup-preview__grid"></div>';
+          // Insert before the design studio container
+          container.parentNode.insertBefore(mockupPreview, container);
+        } else {
+          // Update title based on whether gallery was updated
+          const titleEl = mockupPreview.querySelector('.ai-art-mockup-preview__title');
+          if (titleEl) {
+            titleEl.textContent = galleryWasUpdated ? 'All Design Previews' : 'Your Custom Design Preview';
+          }
+        }
+        
+        const previewGrid = mockupPreview.querySelector('.ai-art-mockup-preview__grid');
+        previewGrid.innerHTML = ''; // Clear existing
+        
+        mockupUrls.forEach((url, index) => {
+          const imgWrapper = document.createElement('div');
+          imgWrapper.className = 'ai-art-mockup-preview__item';
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = 'Design Preview ' + (index + 1);
+          img.loading = 'lazy';
+          imgWrapper.appendChild(img);
+          previewGrid.appendChild(imgWrapper);
+        });
+        
+        mockupPreview.style.display = 'block';
+        console.log('[AI Art Studio] Mockup preview section updated with', mockupUrls.length, 'images');
       }
     });
   })();
