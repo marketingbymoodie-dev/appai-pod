@@ -5710,7 +5710,7 @@ ${textEdgeRestrictions}
       if (!installation.merchantId) {
         return res.status(404).json({ error: "Shop not associated with a merchant" });
       }
-      const merchant = await storage.getMerchantByUserId(installation.merchantId);
+      const merchant = await storage.getMerchant(installation.merchantId);
       if (!merchant) {
         return res.status(404).json({ error: "Merchant not found for shop" });
       }
