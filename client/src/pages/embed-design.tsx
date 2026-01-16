@@ -445,7 +445,6 @@ export default function EmbedDesign() {
       generatedDesign?.imageUrl &&
       productTypeConfig?.hasPrintifyMockups &&
       selectedSize &&
-      selectedFrameColor &&
       printifyMockups.length === 0 &&
       !mockupLoading
     ) {
@@ -456,7 +455,7 @@ export default function EmbedDesign() {
         fullImageUrl, 
         productTypeConfig.id, 
         selectedSize, 
-        selectedFrameColor, 
+        selectedFrameColor || 'default', 
         transform.scale, 
         transform.x, 
         transform.y
@@ -471,7 +470,6 @@ export default function EmbedDesign() {
       !productTypeConfig?.hasPrintifyMockups ||
       !generatedDesign?.imageUrl ||
       !selectedSize ||
-      !selectedFrameColor ||
       printifyMockups.length === 0
     ) {
       return;
@@ -491,7 +489,7 @@ export default function EmbedDesign() {
         fullImageUrl, 
         productTypeConfig.id, 
         selectedSize, 
-        selectedFrameColor, 
+        selectedFrameColor || 'default', 
         transform.scale, 
         transform.x, 
         transform.y
@@ -555,9 +553,9 @@ export default function EmbedDesign() {
       // Clear any existing mockups and fetch new Printify composite mockups
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
-      if (productTypeConfig?.hasPrintifyMockups && imageUrl && selectedSize && selectedFrameColor) {
+      if (productTypeConfig?.hasPrintifyMockups && imageUrl && selectedSize) {
         const fullImageUrl = imageUrl.startsWith("http") ? imageUrl : window.location.origin + imageUrl;
-        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor, zoomDefault, 50, 50);
+        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
     },
   });
@@ -701,9 +699,9 @@ export default function EmbedDesign() {
       // Clear any existing mockups and fetch Printify composite mockups for imported design
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
-      if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize && selectedFrameColor) {
+      if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
         const fullImageUrl = importedImageUrl.startsWith("http") ? importedImageUrl : window.location.origin + importedImageUrl;
-        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor, zoomDefault, 50, 50);
+        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
 
       toast({
