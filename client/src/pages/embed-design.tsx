@@ -338,20 +338,19 @@ export default function EmbedDesign() {
     if (!isShopify || !isEmbedded) return;
     
     try {
-      // Determine parent origin from referrer or shop domain for security
+      // Prioritize shop domain since it's explicitly passed from Shopify
+      // document.referrer can be unreliable in Shopify preview environments
       let targetOrigin = "*";
-      if (document.referrer) {
+      if (shopDomain) {
+        // shopDomain could be mystore.myshopify.com or a custom domain
+        targetOrigin = `https://${shopDomain}`;
+      } else if (document.referrer) {
         try {
           const referrerUrl = new URL(document.referrer);
           targetOrigin = referrerUrl.origin;
         } catch {
-          // Fall back to shop domain if referrer parsing fails
-          if (shopDomain) {
-            targetOrigin = `https://${shopDomain}`;
-          }
+          // Keep wildcard as last resort
         }
-      } else if (shopDomain) {
-        targetOrigin = `https://${shopDomain}`;
       }
       
       window.parent.postMessage({
