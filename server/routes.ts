@@ -5653,5 +5653,128 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Shopify Storefront Mockup Generation (for embedded design studio)
+  // Uses Shopify session tokens instead of Replit auth
+  app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
+    try {
+      const { productTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop, sessionToken } = req.body;
+
+      if (!shop) {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Verify session token
+      if (!sessionToken) {
+        return res.status(401).json({ error: "Session token required" });
+      }
+
+      const session = shopifySessionTokens.get(sessionToken);
+      if (!session) {
+        return res.status(401).json({ error: "Invalid session token" });
+      }
+
+      if (Date.now() > session.expiresAt) {
+        shopifySessionTokens.delete(sessionToken);
+        return res.status(401).json({ error: "Session token expired" });
+      }
+
+      if (session.shop !== shop) {
+        return res.status(403).json({ error: "Session token mismatch" });
+      }
+
+      // Verify shop is installed
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      if (!productTypeId || !designImageUrl) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Convert relative URLs to absolute URLs for Printify
+      let absoluteImageUrl = designImageUrl;
+      if (designImageUrl.startsWith("/objects/")) {
+        const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
+        const protocol = req.protocol || "https";
+        absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
+        console.log("[Shopify Mockup] Converting image URL for Printify:", absoluteImageUrl);
+      }
+
+      // Get merchant from shop installation
+      if (!installation.merchantId) {
+        return res.status(404).json({ error: "Shop not associated with a merchant" });
+      }
+      const merchant = await storage.getMerchantByUserId(installation.merchantId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found for shop" });
+      }
+
+      const productType = await storage.getProductType(parseInt(productTypeId));
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Check if we have Printify credentials and blueprint ID
+      if (!merchant.printifyApiToken || !merchant.printifyShopId || !productType.printifyBlueprintId) {
+        return res.json({
+          success: false,
+          mockupUrls: [],
+          source: "fallback",
+          message: "Printify not configured",
+        });
+      }
+
+      // Generate Printify mockup
+      const { generatePrintifyMockup } = await import("./printify-mockups.js");
+      
+      // Look up the correct variant from the variantMap
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
+      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
+      
+      const variantData = variantMapData[variantKey] || 
+                          variantMapData[`${sizeId || 'default'}:default`] ||
+                          variantMapData[`default:${colorId || 'default'}`] ||
+                          variantMapData['default:default'] ||
+                          Object.values(variantMapData)[0];
+      
+      if (!variantData || !variantData.printifyVariantId) {
+        return res.status(400).json({ 
+          error: "Could not resolve product variant",
+          availableKeys: Object.keys(variantMapData)
+        });
+      }
+      
+      const providerId = variantData.providerId || productType.printifyProviderId || 1;
+      const targetVariantId = variantData.printifyVariantId;
+
+      console.log("[Shopify Mockup] Generating mockup for:", { productTypeId, sizeId, colorId, variantId: targetVariantId });
+
+      const result = await generatePrintifyMockup({
+        blueprintId: productType.printifyBlueprintId,
+        providerId,
+        variantId: targetVariantId,
+        imageUrl: absoluteImageUrl,
+        printifyApiToken: merchant.printifyApiToken,
+        printifyShopId: merchant.printifyShopId,
+        scale: scale ? scale / 100 : 1,
+        x: x !== undefined ? (x - 50) / 50 : 0,
+        y: y !== undefined ? (y - 50) / 50 : 0,
+        doubleSided: productType.doubleSidedPrint || false,
+      });
+
+      console.log("[Shopify Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });
+      res.json(result);
+    } catch (error) {
+      console.error("[Shopify Mockup] Error generating mockup:", error);
+      res.status(500).json({ error: "Failed to generate mockup" });
+    }
+  });
+
   return httpServer;
 }

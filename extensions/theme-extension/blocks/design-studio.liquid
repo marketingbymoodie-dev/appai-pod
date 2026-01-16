@@ -303,6 +303,120 @@
       if (data.type === 'ai-art-studio:resize') {
         container.style.height = data.height + 'px';
       }
+
+      // Handle mockup updates from the AI generator
+      if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
+        const mockupUrls = data.mockupUrls;
+        if (!mockupUrls || mockupUrls.length === 0) return;
+        
+        console.log('[AI Art Studio] Received mockup URLs:', mockupUrls.length);
+        
+        // Find the product gallery/media container
+        // Common selectors for Shopify themes
+        const gallerySelectors = [
+          '.product__media-list',
+          '.product-gallery',
+          '[data-product-media-container]',
+          '.product-media-container',
+          '.product__images',
+          '.product-images',
+          '.product-single__photos',
+          '.product__photos',
+          '[data-product-images]',
+          '.product-featured-media',
+          '.product__main-photos'
+        ];
+        
+        let gallery = null;
+        for (const selector of gallerySelectors) {
+          gallery = document.querySelector(selector);
+          if (gallery) break;
+        }
+        
+        // Also try to find individual product images
+        const imageSelectors = [
+          '.product__media-item img',
+          '.product-gallery__image',
+          '.product-single__photo img',
+          '.product__photo img',
+          '[data-product-featured-image]',
+          '.product-featured-media img',
+          '.product__main-photos img'
+        ];
+        
+        let productImages = [];
+        for (const selector of imageSelectors) {
+          productImages = document.querySelectorAll(selector);
+          if (productImages.length > 0) break;
+        }
+        
+        // Replace product images with mockups
+        if (productImages.length > 0) {
+          console.log('[AI Art Studio] Found product images:', productImages.length);
+          mockupUrls.forEach((url, index) => {
+            if (productImages[index]) {
+              const img = productImages[index];
+              // Store original src for potential reset
+              if (!img.dataset.originalSrc) {
+                img.dataset.originalSrc = img.src;
+              }
+              img.src = url;
+              img.srcset = ''; // Clear srcset to prevent override
+              
+              // Also update any parent picture element sources
+              const picture = img.closest('picture');
+              if (picture) {
+                picture.querySelectorAll('source').forEach(source => {
+                  source.srcset = url;
+                });
+              }
+            }
+          });
+          
+          // If we have more mockups than current images and a gallery exists
+          if (gallery && mockupUrls.length > productImages.length) {
+            for (let i = productImages.length; i < mockupUrls.length; i++) {
+              const newImg = document.createElement('img');
+              newImg.src = mockupUrls[i];
+              newImg.alt = 'AI Generated Design Preview';
+              newImg.className = productImages[0]?.className || '';
+              newImg.dataset.aiMockup = 'true';
+              gallery.appendChild(newImg);
+            }
+          }
+        } else {
+          console.log('[AI Art Studio] No product images found to update');
+        }
+        
+        // Also try to update thumbnail images if they exist
+        const thumbnailSelectors = [
+          '.product__media-toggle',
+          '.product-thumbnails img',
+          '.product__thumbs img',
+          '[data-thumbnail-id] img'
+        ];
+        
+        for (const selector of thumbnailSelectors) {
+          const thumbnails = document.querySelectorAll(selector);
+          if (thumbnails.length > 0) {
+            mockupUrls.forEach((url, index) => {
+              if (thumbnails[index]) {
+                const thumb = thumbnails[index].tagName === 'IMG' 
+                  ? thumbnails[index] 
+                  : thumbnails[index].querySelector('img');
+                if (thumb) {
+                  if (!thumb.dataset.originalSrc) {
+                    thumb.dataset.originalSrc = thumb.src;
+                  }
+                  thumb.src = url;
+                  thumb.srcset = '';
+                }
+              }
+            });
+            break;
+          }
+        }
+      }
     });
   })();
 </script>

@@ -141,6 +141,7 @@ export default function EmbedDesign() {
   const [printifyMockups, setPrintifyMockups] = useState<string[]>([]);
   const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
+  const [mockupError, setMockupError] = useState<string | null>(null);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const mockupRegenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -332,6 +333,39 @@ export default function EmbedDesign() {
   }, [isShopify, shopDomain, productId, shopifyCustomerId, shopifyCustomerEmail, shopifyCustomerName]);
 
   // Fetch Printify composite mockups (artwork overlaid on product photos)
+  // Send mockup URLs to parent Shopify page via postMessage
+  const sendMockupsToParent = useCallback((mockupUrls: string[]) => {
+    if (!isShopify || !isEmbedded) return;
+    
+    try {
+      // Determine parent origin from referrer or shop domain for security
+      let targetOrigin = "*";
+      if (document.referrer) {
+        try {
+          const referrerUrl = new URL(document.referrer);
+          targetOrigin = referrerUrl.origin;
+        } catch {
+          // Fall back to shop domain if referrer parsing fails
+          if (shopDomain) {
+            targetOrigin = `https://${shopDomain}`;
+          }
+        }
+      } else if (shopDomain) {
+        targetOrigin = `https://${shopDomain}`;
+      }
+      
+      window.parent.postMessage({
+        type: "AI_ART_STUDIO_MOCKUPS",
+        mockupUrls,
+        productId,
+        productHandle,
+      }, targetOrigin);
+      console.log("[EmbedDesign] Sent mockups to parent:", mockupUrls.length, "origin:", targetOrigin);
+    } catch (error) {
+      console.error("[EmbedDesign] Failed to send mockups to parent:", error);
+    }
+  }, [isShopify, isEmbedded, productId, productHandle, shopDomain]);
+
   const fetchPrintifyMockups = useCallback(async (
     designImageUrl: string, 
     ptId: number, 
@@ -348,7 +382,9 @@ export default function EmbedDesign() {
     const clampedScale = Math.max(10, Math.min(200, scale));
     
     try {
-      const response = await apiRequest("POST", "/api/mockup/generate", {
+      // Use Shopify-specific endpoint if in Shopify mode
+      const endpoint = isShopify ? "/api/shopify/mockup" : "/api/mockup/generate";
+      const payload = isShopify ? {
         productTypeId: ptId,
         designImageUrl,
         sizeId,
@@ -356,11 +392,39 @@ export default function EmbedDesign() {
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
+        shop: shopDomain,
+        sessionToken,
+      } : {
+        productTypeId: ptId,
+        designImageUrl,
+        sizeId,
+        colorId,
+        scale: clampedScale,
+        x: clampedX,
+        y: clampedY,
+      };
+
+      setMockupError(null);
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Mockup generation failed (${response.status})`);
+      }
+      
       const result = await response.json();
+      
       if (result.success && result.mockupUrls?.length > 0) {
         setPrintifyMockups(result.mockupUrls);
         setSelectedMockupIndex(0);
+        // Send mockups to parent Shopify page
+        sendMockupsToParent(result.mockupUrls);
+      } else if (!result.success) {
+        throw new Error(result.message || "Mockup generation returned unsuccessful");
       }
       if (result.success && result.mockupImages?.length > 0) {
         setPrintifyMockupImages(result.mockupImages);
@@ -368,10 +432,11 @@ export default function EmbedDesign() {
       }
     } catch (error) {
       console.error("Failed to generate Printify mockups:", error);
+      setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
     } finally {
       setMockupLoading(false);
     }
-  }, []);
+  }, [isShopify, shopDomain, sessionToken, sendMockupsToParent]);
 
   // Fetch Printify mockups for shared designs once product config is loaded
   useEffect(() => {
@@ -918,9 +983,13 @@ export default function EmbedDesign() {
     return (
       <div className={`p-4 ${isEmbedded ? "bg-transparent" : "bg-background min-h-screen"}`}>
         <div className="max-w-2xl mx-auto space-y-4">
+          <div className="flex items-center justify-center gap-2 py-4" data-testid="container-loading">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            <span className="text-sm font-medium">Preparing AI Generator...</span>
+          </div>
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-10 w-full" />
         </div>
       </div>
     );
@@ -1265,58 +1334,23 @@ export default function EmbedDesign() {
               />
             )}
 
-            {/* Printify composite mockup preview - secondary panel showing realistic product render */}
-            {productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
-              <div className="space-y-2 border-t pt-3">
-                <p className="text-xs text-muted-foreground text-center font-medium">Product Preview</p>
-                <div
-                  className="w-full rounded-md overflow-hidden relative bg-muted"
-                  style={{ aspectRatio: "1/1" }}
-                  data-testid="container-printify-mockup"
-                >
-                  {mockupLoading ? (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center">
-                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground mt-2">Updating preview...</span>
-                    </div>
-                  ) : printifyMockups.length > 0 ? (
-                    <img
-                      src={printifyMockups[selectedMockupIndex] || printifyMockups[0]}
-                      alt="Product mockup"
-                      className="absolute inset-0 w-full h-full object-contain"
-                      data-testid="img-printify-mockup"
-                    />
-                  ) : (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
-                      <Loader2 className="h-6 w-6 animate-spin" />
-                      <span className="text-xs mt-2">Loading product preview...</span>
-                    </div>
-                  )}
-                </div>
-                
-                {/* Mockup thumbnails if multiple views available */}
-                {printifyMockupImages.length > 1 && (
-                  <div className="flex gap-2 overflow-x-auto pb-2 justify-center">
-                    {printifyMockupImages.map((mockup, index) => (
-                      <button
-                        key={index}
-                        onClick={() => setSelectedMockupIndex(index)}
-                        className={`flex-shrink-0 w-14 h-14 rounded-md overflow-hidden border-2 transition-colors ${
-                          selectedMockupIndex === index 
-                            ? "border-primary" 
-                            : "border-transparent hover:border-muted-foreground/50"
-                        }`}
-                        data-testid={`button-mockup-thumbnail-${index}`}
-                      >
-                        <img
-                          src={mockup.url}
-                          alt={mockup.label || `View ${index + 1}`}
-                          className="w-full h-full object-cover"
-                        />
-                      </button>
-                    ))}
+            {/* Mockup generation status - shown only in Shopify embed mode */}
+            {isShopify && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
+              <div className="border-t pt-3" data-testid="container-mockup-status">
+                {mockupLoading ? (
+                  <div className="flex items-center justify-center gap-2 py-3 bg-muted/50 rounded-md">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    <span className="text-sm text-muted-foreground">Rendering product mockups...</span>
                   </div>
-                )}
+                ) : mockupError ? (
+                  <div className="flex items-center justify-center gap-2 py-3 bg-destructive/10 rounded-md">
+                    <span className="text-sm text-destructive">Preview unavailable - design ready for cart</span>
+                  </div>
+                ) : printifyMockups.length > 0 ? (
+                  <div className="flex items-center justify-center gap-2 py-3 bg-green-500/10 rounded-md">
+                    <span className="text-sm text-green-600">Product images updated above</span>
+                  </div>
+                ) : null}
               </div>
             )}
 
