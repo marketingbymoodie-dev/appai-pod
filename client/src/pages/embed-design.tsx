@@ -338,32 +338,19 @@ export default function EmbedDesign() {
     if (!isShopify || !isEmbedded) return;
     
     try {
-      // Prioritize shop domain since it's explicitly passed from Shopify
-      // document.referrer can be unreliable in Shopify preview environments
-      let targetOrigin = "*";
-      if (shopDomain) {
-        // shopDomain could be mystore.myshopify.com or a custom domain
-        targetOrigin = `https://${shopDomain}`;
-      } else if (document.referrer) {
-        try {
-          const referrerUrl = new URL(document.referrer);
-          targetOrigin = referrerUrl.origin;
-        } catch {
-          // Keep wildcard as last resort
-        }
-      }
-      
+      // Use "*" for targetOrigin to support Shopify preview environments
+      // Origin validation is done on the receiving end in ai-art-embed.liquid
       window.parent.postMessage({
         type: "AI_ART_STUDIO_MOCKUPS",
         mockupUrls,
         productId,
         productHandle,
-      }, targetOrigin);
-      console.log("[EmbedDesign] Sent mockups to parent:", mockupUrls.length, "origin:", targetOrigin);
+      }, "*");
+      console.log("[EmbedDesign] Sent mockups to parent:", mockupUrls.length);
     } catch (error) {
       console.error("[EmbedDesign] Failed to send mockups to parent:", error);
     }
-  }, [isShopify, isEmbedded, productId, productHandle, shopDomain]);
+  }, [isShopify, isEmbedded, productId, productHandle]);
 
   const fetchPrintifyMockups = useCallback(async (
     designImageUrl: string, 
