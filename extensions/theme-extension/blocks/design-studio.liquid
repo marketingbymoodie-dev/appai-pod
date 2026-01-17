@@ -312,8 +312,13 @@
     
     window.addEventListener('message', function(event) {
       // Debug: Log ALL messages to help troubleshoot
-      if (event.data && event.data.type && event.data.type.includes('art-studio') || event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
-        console.log('[AI Art Studio] Received message:', event.data.type, 'from origin:', event.origin);
+      try {
+        const msgType = event.data && event.data.type;
+        if (msgType && (msgType.includes('art-studio') || msgType === 'AI_ART_STUDIO_MOCKUPS')) {
+          console.log('[AI Art Studio] Received message:', msgType, 'from origin:', event.origin);
+        }
+      } catch (e) {
+        // Ignore errors from checking message type
       }
       
       // Accept messages from either the configured appUrl or the iframe's actual origin
