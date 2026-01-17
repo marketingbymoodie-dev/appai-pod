@@ -1,0 +1,23 @@
+n Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: AI_ART_STUDIO_MOCKUPS from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1746 [AI Art Embed] Processing 6 mockups - creating custom gallery
+custom-tumbler-20oz:1762 [AI Art Embed] Found native gallery with: .product__media-wrapper
+custom-tumbler-20oz:1811 [AI Art Embed] Set main image to first mockup
+custom-tumbler-20oz:1845 [AI Art Embed] Added 6 thumbnails below main image
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/47452442-4e31-458c-84e8-662935283761.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/47452442-4e31-458c-84e8-662935283761.png scale: 100
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 2
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 3
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 4
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 5
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 6
+injected.js:37 [Design Studio] Finding variant. selectedVariantParam:  variants: 1 selectedSize: 20oz selectedFrameColor:  hasColors: false
+injected.js:37 [Design Studio] Matched variant from options: 47843129163931
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev/embed/design?productTypeId=34&embedded=true&shopify=true&shop=appai-2.myshopify.com
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/47452442-4e31-458c-84e8-662935283761.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/47452442-4e31-458c-84e8-662935283761.png scale: 100
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:add-to-cart from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev

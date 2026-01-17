@@ -931,6 +931,15 @@ export default function EmbedDesign() {
     setVariantError(null);
     setIsAddingToCart(true);
 
+    // Set a timeout in case the parent doesn't respond (e.g., preview mode)
+    const timeoutId = setTimeout(() => {
+      setIsAddingToCart(false);
+      setVariantError("Cart update timed out. This may happen in preview mode - try viewing the published product page.");
+    }, 10000); // 10 second timeout
+
+    // Store timeout ID so we can clear it when we get a response
+    (window as any).__addToCartTimeout = timeoutId;
+
     window.parent.postMessage(
       {
         type: "ai-art-studio:add-to-cart",
@@ -1012,10 +1021,18 @@ export default function EmbedDesign() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       if (event.data.type === "ai-art-studio:cart-updated") {
+        // Clear the timeout since we got a response
+        if ((window as any).__addToCartTimeout) {
+          clearTimeout((window as any).__addToCartTimeout);
+          delete (window as any).__addToCartTimeout;
+        }
+        
         setIsAddingToCart(false);
         if (event.data.success) {
           setGeneratedDesign(null);
           setPrompt("");
+        } else if (event.data.error) {
+          setVariantError(`Failed to add to cart: ${event.data.error}`);
         }
       }
     };
