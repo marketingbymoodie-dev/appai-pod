@@ -118,9 +118,19 @@ export default function EmbedDesign() {
   // Get the myshopify.com domain specifically for API calls that require it
   const getMyShopifyDomain = (): string | null => {
     const shopParam = searchParams.get("shop") || "";
+    
+    // If already has .myshopify.com suffix, use it
     if (shopParam && shopParam.endsWith(".myshopify.com")) {
       return shopParam;
     }
+    
+    // If shop param looks like just a store name (alphanumeric with hyphens), append .myshopify.com
+    if (shopParam && /^[a-z0-9][a-z0-9-]*$/i.test(shopParam)) {
+      console.log('[Design Studio] Appending .myshopify.com to shop param:', shopParam);
+      return `${shopParam.toLowerCase()}.myshopify.com`;
+    }
+    
+    // Try to get from referrer
     try {
       const referrer = document.referrer;
       if (referrer) {
@@ -132,7 +142,9 @@ export default function EmbedDesign() {
     } catch (e) {
       // Ignore
     }
-    return null; // Could not determine myshopify.com domain
+    
+    console.log('[Design Studio] Could not determine myshopify.com domain from shop param:', shopParam);
+    return null;
   };
   
   const shopDomain = resolveShopDomain();
