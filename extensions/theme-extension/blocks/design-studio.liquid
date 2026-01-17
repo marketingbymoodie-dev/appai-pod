@@ -120,7 +120,159 @@
     </div>
   </div>
   
-  <script src="{{ 'design-studio.js' | asset_url }}" defer></script>
+<script>
+    console.log('[AI Art Studio] Inline script test - block id: {{ block.id }}');
+    
+    (function() {
+      var containers = document.querySelectorAll('[id^="ai-art-studio-container-"]');
+      console.log('[AI Art Studio] Found containers:', containers.length);
+      
+      containers.forEach(function(container) {
+        var appUrl = container.dataset.appUrl;
+        console.log('[AI Art Studio] Container appUrl:', appUrl);
+        
+        if (!appUrl) {
+          container.innerHTML = '<div style="padding:2rem;text-align:center;color:#dc2626;">This product has not been configured for the design studio.</div>';
+          return;
+        }
+        
+        var productTypeId = container.dataset.productTypeId || '1';
+        var productId = container.dataset.productId;
+        var productHandle = container.dataset.productHandle;
+        var productTitle = container.dataset.productTitle;
+        var displayName = container.dataset.displayName || productTitle;
+        var showPresets = container.dataset.showPresets === 'true';
+        var selectedVariant = container.dataset.selectedVariant;
+        var customerId = container.dataset.customerId || '';
+        var customerEmail = container.dataset.customerEmail || '';
+        var customerName = container.dataset.customerName || '';
+        var shopDomain = container.dataset.shopDomain || (window.Shopify && window.Shopify.shop) || window.location.hostname;
+        
+        var urlParams = new URLSearchParams(window.location.search);
+        var sharedDesignId = urlParams.get('sharedDesignId');
+        
+        var params = new URLSearchParams();
+        params.set('embedded', 'true');
+        params.set('shopify', 'true');
+        params.set('shop', shopDomain);
+        params.set('productTypeId', productTypeId);
+        params.set('productId', productId);
+        params.set('productHandle', productHandle);
+        params.set('productTitle', productTitle);
+        params.set('displayName', displayName);
+        params.set('showPresets', showPresets.toString());
+        params.set('selectedVariant', selectedVariant);
+        if (customerId) {
+          params.set('customerId', customerId);
+          params.set('customerEmail', customerEmail);
+          params.set('customerName', customerName);
+        }
+        if (sharedDesignId) {
+          params.set('sharedDesignId', sharedDesignId);
+        }
+        
+        var iframe = document.createElement('iframe');
+        iframe.src = appUrl + '/embed/design?' + params.toString();
+        iframe.allow = 'clipboard-write';
+        iframe.title = 'AI Art Design Studio';
+        
+        iframe.onload = function() {
+          var loading = container.querySelector('.ai-art-studio__loading');
+          if (loading) loading.remove();
+        };
+        
+        container.appendChild(iframe);
+        
+        var expectedOrigin = null;
+        try {
+          if (appUrl) expectedOrigin = new URL(appUrl).origin;
+        } catch (e) {}
+        
+        var iframeOrigin = null;
+        try {
+          iframeOrigin = new URL(iframe.src).origin;
+        } catch (e) {}
+        
+        console.log('[AI Art Studio] Message listener ready. Origins:', expectedOrigin, iframeOrigin);
+        
+        window.addEventListener('message', function(event) {
+          var isValidOrigin = (expectedOrigin && event.origin === expectedOrigin) || 
+                              (iframeOrigin && event.origin === iframeOrigin) ||
+                              (event.origin && event.origin.indexOf('replit') !== -1);
+          
+          if (!isValidOrigin) return;
+          
+          var data = event.data;
+          if (!data || !data.type) return;
+          
+          if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
+            var mockupUrls = data.mockupUrls;
+            if (!mockupUrls || mockupUrls.length === 0) return;
+            
+            console.log('[AI Art Studio] Received mockup URLs:', mockupUrls.length);
+            
+            var previewSection = document.querySelector('.ai-art-mockup-preview');
+            if (!previewSection) {
+              previewSection = document.createElement('div');
+              previewSection.className = 'ai-art-mockup-preview';
+              previewSection.innerHTML = '<h4 class="ai-art-mockup-preview__title">Your Custom Design Preview</h4><div class="ai-art-mockup-preview__grid"></div>';
+              var designBlock = container.closest('.ai-art-studio-block');
+              if (designBlock) {
+                designBlock.parentNode.insertBefore(previewSection, designBlock);
+              }
+            }
+            
+            if (previewSection) {
+              previewSection.style.display = 'block';
+              var grid = previewSection.querySelector('.ai-art-mockup-preview__grid');
+              if (grid) {
+                grid.innerHTML = '';
+                mockupUrls.forEach(function(url) {
+                  var item = document.createElement('div');
+                  item.className = 'ai-art-mockup-preview__item';
+                  var img = document.createElement('img');
+                  img.src = url;
+                  img.alt = 'Product mockup with custom design';
+                  item.appendChild(img);
+                  grid.appendChild(item);
+                });
+              }
+            }
+          }
+          
+          if (data.type === 'ai-art-studio:add-to-cart') {
+            fetch('/cart/add.js', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                items: [{
+                  id: data.variantId,
+                  quantity: 1,
+                  properties: {
+                    '_artwork_url': data.artworkUrl,
+                    '_design_id': data.designId,
+                    'Artwork': 'Custom AI Design'
+                  }
+                }]
+              })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(result) {
+              iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: true, cart: result }, appUrl);
+              document.dispatchEvent(new CustomEvent('cart:refresh'));
+            })
+            .catch(function(err) {
+              iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: false, error: err.message }, appUrl);
+            });
+          }
+          
+          if (data.type === 'ai-art-studio:resize') {
+            container.style.height = data.height + 'px';
+          }
+        });
+      });
+    })();
+  </script>
 </div>
 
 <style>
