@@ -22,9 +22,12 @@
   
   console.log('[AI Art Embed] Script starting...');
   
-  // Only run on product pages - check URL pattern
-  if (!window.location.pathname.includes('/products/')) {
-    console.log('[AI Art Embed] Not a product page, skipping');
+  // Only run on product pages - check URL pattern (including preview URLs)
+  var isProductPage = window.location.pathname.includes('/products/') || 
+                      window.location.pathname.includes('/products_preview');
+  
+  if (!isProductPage) {
+    console.log('[AI Art Embed] Not a product page, skipping. Path:', window.location.pathname);
     return;
   }
   console.log('[AI Art Embed] On product page, continuing...');
@@ -251,7 +254,9 @@
   }
   
   function init() {
-    if (!window.location.pathname.includes('/products/')) {
+    var isProductPage = window.location.pathname.includes('/products/') || 
+                        window.location.pathname.includes('/products_preview');
+    if (!isProductPage) {
       return;
     }
     
