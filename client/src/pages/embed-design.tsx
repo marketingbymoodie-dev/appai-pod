@@ -806,7 +806,7 @@ export default function EmbedDesign() {
 
   // Fetch variants from server if not provided in URL (works for all themes)
   useEffect(() => {
-    if (variantsFetched || !isShopify || !productHandle) return;
+    if (variantsFetched || !isShopify) return;
     if (selectedVariantParam) {
       // If we have a selected variant, we don't need to fetch all variants
       setVariantsFetched(true);
@@ -821,9 +821,21 @@ export default function EmbedDesign() {
       return;
     }
     
-    console.log('[Design Studio] Fetching variants from server for:', myShopifyDomain, productHandle);
+    // Build the fetch URL - prefer productHandle but fall back to productTypeId
+    let fetchUrl: string;
+    if (productHandle) {
+      console.log('[Design Studio] Fetching variants using productHandle:', productHandle);
+      fetchUrl = `/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`;
+    } else if (productTypeId) {
+      console.log('[Design Studio] Fetching variants using productTypeId:', productTypeId);
+      fetchUrl = `/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&productTypeId=${encodeURIComponent(productTypeId)}`;
+    } else {
+      console.log('[Design Studio] No productHandle or productTypeId available, skipping variant fetch');
+      setVariantsFetched(true);
+      return;
+    }
     
-    fetch(`/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`)
+    fetch(fetchUrl)
       .then(res => {
         if (!res.ok) {
           console.log('[Design Studio] Variant fetch failed with status:', res.status);
@@ -842,7 +854,7 @@ export default function EmbedDesign() {
         console.error('[Design Studio] Failed to fetch variants:', err);
         setVariantsFetched(true);
       });
-  }, [isShopify, productHandle, selectedVariantParam, variantsFetched]);
+  }, [isShopify, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
 
   const findVariantId = (): string | null => {
     if (!isShopify) return null;

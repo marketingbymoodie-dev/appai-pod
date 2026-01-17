@@ -2225,10 +2225,15 @@ ${textEdgeRestrictions}
   // Proxy endpoint to fetch Shopify product variants (validated against known installations)
   app.get("/api/shopify/product-variants", async (req: Request, res: Response) => {
     try {
-      const { shop, handle } = req.query;
+      const { shop, handle, productTypeId } = req.query;
       
-      if (!shop || !handle || typeof shop !== 'string' || typeof handle !== 'string') {
-        return res.status(400).json({ error: "Missing shop or handle parameter" });
+      // Need shop and either handle or productTypeId
+      if (!shop || typeof shop !== 'string') {
+        return res.status(400).json({ error: "Missing shop parameter" });
+      }
+      
+      if ((!handle || typeof handle !== 'string') && (!productTypeId || typeof productTypeId !== 'string')) {
+        return res.status(400).json({ error: "Missing handle or productTypeId parameter" });
       }
       
       // Normalize shop domain - extract the myshopify.com domain
@@ -2277,24 +2282,87 @@ ${textEdgeRestrictions}
         variantFetchRateLimit.set(rateKey, { count: 1, resetTime: now + VARIANT_RATE_WINDOW });
       }
       
-      // Sanitize handle to prevent path traversal
-      const safeHandle = handle.replace(/[^a-z0-9-]/gi, '');
-      if (safeHandle !== handle) {
-        return res.status(400).json({ error: "Invalid product handle" });
+      let fetchUrl: string;
+      
+      // If productTypeId is provided, look up the Shopify product ID from our database
+      if (productTypeId && typeof productTypeId === 'string') {
+        const parsedId = parseInt(productTypeId, 10);
+        if (isNaN(parsedId)) {
+          console.log(`[Product Variants] Invalid productTypeId format: ${productTypeId}`);
+          return res.status(400).json({ error: "Invalid productTypeId format" });
+        }
+        
+        const productType = await storage.getProductType(parsedId);
+        
+        if (!productType) {
+          console.log(`[Product Variants] Product type not found: ${productTypeId}`);
+          return res.status(404).json({ error: "Product type not found" });
+        }
+        
+        // Verify the product type belongs to the shop's merchant
+        if (productType.merchantId !== installation.merchantId) {
+          console.log(`[Product Variants] Product type ${productTypeId} does not belong to shop ${shopDomain}`);
+          return res.status(403).json({ error: "Product not authorized for this shop" });
+        }
+        
+        if (!productType.shopifyProductId) {
+          console.log(`[Product Variants] Product type ${productTypeId} has no Shopify product ID`);
+          return res.status(404).json({ error: "Product not published to Shopify yet" });
+        }
+        
+        // Use Shopify Admin API to get product variants
+        const adminApiUrl = `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`;
+        console.log(`[Product Variants] Fetching from Admin API: ${adminApiUrl}`);
+        
+        const adminResponse = await fetch(adminApiUrl, {
+          headers: {
+            'X-Shopify-Access-Token': installation.accessToken
+          }
+        });
+        
+        if (!adminResponse.ok) {
+          const errorText = await adminResponse.text().catch(() => '');
+          console.log(`[Product Variants] Admin API failed with status ${adminResponse.status}: ${errorText}`);
+          return res.status(404).json({ error: "Could not fetch product variants from Shopify" });
+        } else {
+          const data = await adminResponse.json();
+          const variants = data.product?.variants || [];
+          
+          console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
+          
+          return res.json({
+            variants: variants.map((v: any) => ({
+              id: v.id,
+              title: v.title,
+              option1: v.option1,
+              option2: v.option2,
+              option3: v.option3,
+              price: v.price,
+              available: true // Admin API doesn't include available field
+            }))
+          });
+        }
+      } else {
+        // Use handle to fetch from public endpoint
+        const safeHandle = (handle as string).replace(/[^a-z0-9-]/gi, '');
+        if (safeHandle !== handle) {
+          return res.status(400).json({ error: "Invalid product handle" });
+        }
+        fetchUrl = `https://${shopDomain}/products/${safeHandle}.json`;
       }
       
       // Fetch public product JSON from Shopify
-      const response = await fetch(`https://${shopDomain}/products/${safeHandle}.json`);
+      const response = await fetch(fetchUrl);
       
       if (!response.ok) {
-        console.log(`[Product Variants] Failed to fetch from ${shopDomain}/products/${safeHandle}.json: ${response.status}`);
+        console.log(`[Product Variants] Failed to fetch from ${fetchUrl}: ${response.status}`);
         return res.status(404).json({ error: "Product not found" });
       }
       
       const data = await response.json();
       const variants = data.product?.variants || [];
       
-      console.log(`[Product Variants] Fetched ${variants.length} variants for ${safeHandle} from ${shopDomain}`);
+      console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
       
       // Return just the essential variant data
       res.json({
