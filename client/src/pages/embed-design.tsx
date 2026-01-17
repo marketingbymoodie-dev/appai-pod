@@ -1076,7 +1076,7 @@ export default function EmbedDesign() {
                 {showPresetsParam && filteredStylePresets.length > 0 && (
                   <div className="space-y-2">
                     <StyleSelector
-                      stylePresets={[{ id: "", name: "Select a style...", promptSuffix: "" }, ...filteredStylePresets]}
+                      stylePresets={filteredStylePresets}
                       selectedStyle={selectedPreset}
                       onStyleChange={setSelectedPreset}
                     />
@@ -1150,7 +1150,7 @@ export default function EmbedDesign() {
                 {printSizes.length > 0 && (
                   <div className="space-y-2">
                     <SizeSelector
-                      sizes={[{ id: "", name: "Select size...", width: 0, height: 0, aspectRatio: "1:1" }, ...printSizes]}
+                      sizes={printSizes}
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
                         setSelectedSize(sizeId);
