@@ -235,10 +235,18 @@
 
 <script>
   (function() {
+    // IMMEDIATE DEBUG - This should always log if script runs
+    console.log('[AI Art Studio] Script executing, block id: {{ block.id }}');
+    
     const container = document.getElementById('ai-art-studio-container-{{ block.id }}');
-    if (!container) return;
+    if (!container) {
+      console.log('[AI Art Studio] Container not found!');
+      return;
+    }
+    console.log('[AI Art Studio] Container found');
 
     const appUrl = container.dataset.appUrl;
+    console.log('[AI Art Studio] appUrl:', appUrl);
     if (!appUrl) {
       container.innerHTML = '<div class="ai-art-studio__error">This product has not been configured for the design studio. Please publish it from the AI Art Studio admin.</div>';
       return;
