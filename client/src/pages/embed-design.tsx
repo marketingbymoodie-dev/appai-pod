@@ -91,36 +91,48 @@ export default function EmbedDesign() {
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
   const resolveShopDomain = (): string => {
-    // First try the URL param (set by theme extension)
+    // First try the URL param (set by theme extension via window.Shopify.shop)
     const shopParam = searchParams.get("shop") || "";
     if (shopParam && shopParam.endsWith(".myshopify.com")) {
       return shopParam;
     }
     
-    // If shop param is a custom domain or empty, try to get from referrer
-    // The referrer in Shopify embeds is the product page URL
+    // Try to get myshopify.com domain from referrer
     try {
       const referrer = document.referrer;
       if (referrer) {
         const referrerUrl = new URL(referrer);
-        // Check if referrer hostname is a myshopify.com domain
         if (referrerUrl.hostname.endsWith(".myshopify.com")) {
           return referrerUrl.hostname;
         }
-        // Otherwise, return whatever shop param we have (could be custom domain)
-        // Backend will try to resolve it
-        if (shopParam) {
-          return shopParam;
-        }
-        // Last resort: use referrer hostname
-        return referrerUrl.hostname;
       }
     } catch (e) {
       console.warn("Failed to parse referrer for shop domain:", e);
     }
     
-    // Return whatever we have
+    // Return shopParam even if it's a custom domain - server will validate
+    // Custom domains are supported for session/auth but not for variant fetching
     return shopParam;
+  };
+  
+  // Get the myshopify.com domain specifically for API calls that require it
+  const getMyShopifyDomain = (): string | null => {
+    const shopParam = searchParams.get("shop") || "";
+    if (shopParam && shopParam.endsWith(".myshopify.com")) {
+      return shopParam;
+    }
+    try {
+      const referrer = document.referrer;
+      if (referrer) {
+        const referrerUrl = new URL(referrer);
+        if (referrerUrl.hostname.endsWith(".myshopify.com")) {
+          return referrerUrl.hostname;
+        }
+      }
+    } catch (e) {
+      // Ignore
+    }
+    return null; // Could not determine myshopify.com domain
   };
   
   const shopDomain = resolveShopDomain();
@@ -730,7 +742,9 @@ export default function EmbedDesign() {
 
   const [variants, setVariants] = useState<any[]>([]);
   const [variantError, setVariantError] = useState<string | null>(null);
+  const [variantsFetched, setVariantsFetched] = useState(false);
 
+  // Parse variants from URL params first
   useEffect(() => {
     try {
       const variantsData = searchParams.get("variants");
@@ -738,12 +752,54 @@ export default function EmbedDesign() {
         const parsed = JSON.parse(variantsData);
         if (Array.isArray(parsed)) {
           setVariants(parsed);
+          setVariantsFetched(true);
+          console.log('[Design Studio] Parsed variants from URL:', parsed.length);
         }
       }
     } catch (e) {
       console.error("Failed to parse variants:", e);
     }
   }, []);
+
+  // Fetch variants from server if not provided in URL (works for all themes)
+  useEffect(() => {
+    if (variantsFetched || !isShopify || !productHandle) return;
+    if (selectedVariantParam) {
+      // If we have a selected variant, we don't need to fetch all variants
+      setVariantsFetched(true);
+      return;
+    }
+    
+    // Use the myshopify.com domain specifically for variant API calls
+    const myShopifyDomain = getMyShopifyDomain();
+    if (!myShopifyDomain) {
+      console.log('[Design Studio] Could not determine myshopify.com domain, skipping variant fetch');
+      setVariantsFetched(true);
+      return;
+    }
+    
+    console.log('[Design Studio] Fetching variants from server for:', myShopifyDomain, productHandle);
+    
+    fetch(`/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`)
+      .then(res => {
+        if (!res.ok) {
+          console.log('[Design Studio] Variant fetch failed with status:', res.status);
+          return { variants: [] };
+        }
+        return res.json();
+      })
+      .then(data => {
+        if (data.variants && Array.isArray(data.variants)) {
+          console.log('[Design Studio] Fetched variants from server:', data.variants.length);
+          setVariants(data.variants);
+        }
+        setVariantsFetched(true);
+      })
+      .catch(err => {
+        console.error('[Design Studio] Failed to fetch variants:', err);
+        setVariantsFetched(true);
+      });
+  }, [isShopify, productHandle, selectedVariantParam, variantsFetched]);
 
   const findVariantId = (): string | null => {
     if (!isShopify) return null;

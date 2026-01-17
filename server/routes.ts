@@ -2217,6 +2217,103 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Rate limiting for product variants endpoint
+  const variantFetchRateLimit = new Map<string, { count: number; resetTime: number }>();
+  const VARIANT_RATE_LIMIT = 100; // Max requests per shop per hour
+  const VARIANT_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in ms
+
+  // Proxy endpoint to fetch Shopify product variants (validated against known installations)
+  app.get("/api/shopify/product-variants", async (req: Request, res: Response) => {
+    try {
+      const { shop, handle } = req.query;
+      
+      if (!shop || !handle || typeof shop !== 'string' || typeof handle !== 'string') {
+        return res.status(400).json({ error: "Missing shop or handle parameter" });
+      }
+      
+      // Normalize shop domain - extract the myshopify.com domain
+      let shopDomain = shop.toLowerCase().trim();
+      
+      // Remove protocol if present
+      shopDomain = shopDomain.replace(/^https?:\/\//, '');
+      
+      // Validate shop domain format - must be a valid Shopify domain pattern
+      // Accept: store.myshopify.com, store-name.myshopify.com
+      // The theme extension always passes window.Shopify.shop which is the myshopify.com domain
+      if (!shopDomain.match(/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/)) {
+        // Try adding .myshopify.com if it looks like just a store name
+        if (shopDomain.match(/^[a-z0-9][a-z0-9-]*$/)) {
+          shopDomain = `${shopDomain}.myshopify.com`;
+        } else {
+          console.log(`[Product Variants] Rejected invalid shop domain: ${shop}`);
+          return res.status(400).json({ error: "Invalid shop domain. Please use the myshopify.com domain." });
+        }
+      }
+      
+      // Validate against known Shopify installations for security
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (!installation) {
+        console.log(`[Product Variants] Shop not found in installations: ${shopDomain}`);
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      
+      // Rate limiting per shop
+      const now = Date.now();
+      const rateKey = shopDomain;
+      const rateData = variantFetchRateLimit.get(rateKey);
+      
+      if (rateData) {
+        if (now < rateData.resetTime) {
+          if (rateData.count >= VARIANT_RATE_LIMIT) {
+            console.log(`[Product Variants] Rate limit exceeded for: ${shopDomain}`);
+            return res.status(429).json({ error: "Rate limit exceeded" });
+          }
+          rateData.count++;
+        } else {
+          // Reset window
+          variantFetchRateLimit.set(rateKey, { count: 1, resetTime: now + VARIANT_RATE_WINDOW });
+        }
+      } else {
+        variantFetchRateLimit.set(rateKey, { count: 1, resetTime: now + VARIANT_RATE_WINDOW });
+      }
+      
+      // Sanitize handle to prevent path traversal
+      const safeHandle = handle.replace(/[^a-z0-9-]/gi, '');
+      if (safeHandle !== handle) {
+        return res.status(400).json({ error: "Invalid product handle" });
+      }
+      
+      // Fetch public product JSON from Shopify
+      const response = await fetch(`https://${shopDomain}/products/${safeHandle}.json`);
+      
+      if (!response.ok) {
+        console.log(`[Product Variants] Failed to fetch from ${shopDomain}/products/${safeHandle}.json: ${response.status}`);
+        return res.status(404).json({ error: "Product not found" });
+      }
+      
+      const data = await response.json();
+      const variants = data.product?.variants || [];
+      
+      console.log(`[Product Variants] Fetched ${variants.length} variants for ${safeHandle} from ${shopDomain}`);
+      
+      // Return just the essential variant data
+      res.json({
+        variants: variants.map((v: any) => ({
+          id: v.id,
+          title: v.title,
+          option1: v.option1,
+          option2: v.option2,
+          option3: v.option3,
+          price: v.price,
+          available: v.available
+        }))
+      });
+    } catch (error) {
+      console.error("Error fetching Shopify product variants:", error);
+      res.status(500).json({ error: "Failed to fetch product variants" });
+    }
+  });
+
   // Get merchant's connected Shopify shops
   app.get("/api/shopify/shops", isAuthenticated, async (req: any, res: Response) => {
     try {
