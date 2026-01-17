@@ -1,0 +1,73 @@
+
+/favicon.ico:1  Failed to load resource: the server responded with a status of 404 ()Understand this error
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+28injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: true
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 100
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [ProductMockup] Image loaded successfully
+injected.js:37 [EmbedDesign] Sent mockups to parent: 6
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: AI_ART_STUDIO_MOCKUPS from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1746 [AI Art Embed] Processing 6 mockups - creating custom gallery
+custom-tumbler-20oz:1762 [AI Art Embed] Found native gallery with: .product__media-wrapper
+custom-tumbler-20oz:1804 [AI Art Embed] Created custom gallery
+custom-tumbler-20oz:1811 [AI Art Embed] Set main image to first mockup
+custom-tumbler-20oz:1845 [AI Art Embed] Added 6 thumbnails below main image
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 100
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 100
+injected.js:37 [EmbedDesign] Sent mockups to parent: 6
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: AI_ART_STUDIO_MOCKUPS from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1746 [AI Art Embed] Processing 6 mockups - creating custom gallery
+custom-tumbler-20oz:1762 [AI Art Embed] Found native gallery with: .product__media-wrapper
+custom-tumbler-20oz:1811 [AI Art Embed] Set main image to first mockup
+custom-tumbler-20oz:1845 [AI Art Embed] Added 6 thumbnails below main image
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 100
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 2
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 3
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 4
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 5
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 6
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 105
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 110
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 115
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 125
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 130
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 135
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 140
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 145
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 150
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 155
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 155
+injected.js:37 [EmbedDesign] Sent mockups to parent: 6
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: AI_ART_STUDIO_MOCKUPS from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1746 [AI Art Embed] Processing 6 mockups - creating custom gallery
+custom-tumbler-20oz:1762 [AI Art Embed] Found native gallery with: .product__media-wrapper
+custom-tumbler-20oz:1811 [AI Art Embed] Set main image to first mockup
+custom-tumbler-20oz:1845 [AI Art Embed] Added 6 thumbnails below main image
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 155
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 3
+custom-tumbler-20oz:1839 [AI Art Embed] Selected mockup 2
+injected.js:37 [Design Studio] Finding variant. selectedVariantParam:  variants: 0 selectedSize: 20oz selectedFrameColor:  hasColors: false
+injected.js:37 [Design Studio] No variant found
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/f2441db2-05b4-4b4b-ada6-e1696d1f8189.png scale: 155
+2custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
