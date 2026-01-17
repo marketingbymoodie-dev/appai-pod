@@ -1,0 +1,184 @@
+AI Art Embed] Script starting...
+custom-tumbler-20oz:1716 [AI Art Embed] On product page, continuing...
+custom-tumbler-20oz:1719 [AI Art Embed] Setting up global message listener...
+theme-hot-reload.js:317 [HotReload] CLI hot reload disabled - No hot reload port specified.
+custom-tumbler-20oz:1  Failed to load resource: the server responded with a status of 404 ()Understand this error
+feature_collector.js:23 using deprecated parameters for the initialization function; pass a single object instead
+U @ feature_collector.js:23
+main @ feature_collector.js:23
+mainFunction @ feature_collector.js:23
+(anonymous) @ feature_collector.js:23Understand this warning
+Framing 'https://shop.app/' violates the following Content Security Policy directive: "frame-ancestors https://appai-2.myshopify.com https://appai-2.account.myshopify.com https://shopify.com". The request has been blocked.
+Understand this error
+/favicon.ico:1  Failed to load resource: the server responded with a status of 404 ()Understand this error
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+web-client-content-script.js:2 Uncaught TypeError: Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.
+    at HTMLIFrameElement.<anonymous> (web-client-content-script.js:2:2350937)
+(anonymous) @ web-client-content-script.js:2Understand this error
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+/favicon.ico:1  Failed to load resource: the server responded with a status of 404 ()Understand this error
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: false
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: undefined isLoading: true
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png scale: 100
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+injected.js:37 [EmbedDesign] Sent mockups to parent: 6
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: AI_ART_STUDIO_MOCKUPS from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1746 [AI Art Embed] Processing 6 mockups - creating custom gallery
+custom-tumbler-20oz:1762 [AI Art Embed] Found native gallery with: .product__media-wrapper
+custom-tumbler-20oz:1804 [AI Art Embed] Created custom gallery
+custom-tumbler-20oz:1811 [AI Art Embed] Set main image to first mockup
+custom-tumbler-20oz:1845 [AI Art Embed] Added 6 thumbnails below main image
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png scale: 100
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png scale: 100
+injected.js:37 [EmbedDesign] Sent mockups to parent: 6
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: AI_ART_STUDIO_MOCKUPS from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
+custom-tumbler-20oz:1746 [AI Art Embed] Processing 6 mockups - creating custom gallery
+custom-tumbler-20oz:1762 [AI Art Embed] Found native gallery with: .product__media-wrapper
+custom-tumbler-20oz:1811 [AI Art Embed] Set main image to first mockup
+custom-tumbler-20oz:1845 [AI Art Embed] Added 6 thumbnails below main image
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png scale: 100
+injected.js:37 [ProductMockup] Image loaded successfully
+injected.js:37 [Design Studio] Finding variant. selectedVariantParam:  variants: 0 selectedSize: 20oz selectedFrameColor:  hasColors: false
+injected.js:37 [Design Studio] No variant found
+injected.js:37 [Design Studio] Attempting to extract productHandle from referrer: https://vt0o5p8q39ym1yvc-73756868763.shopifypreview.com/
+injected.js:37 [Design Studio] No /products/ path found in referrer
+injected.js:37 [Design Studio] Could not determine productHandle
+injected.js:37 [ProductMockup] RENDER designerType: mug imageUrl: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png isLoading: false
+injected.js:37 [ProductMockup] Rendering image with URL: /objects/designs/c1cb3716-0c31-4918-9ce0-228ab935ba73.png scale: 100
+2custom-tumbler-20oz:1727 [AI Art Embed] Global listener received: ai-art-studio:resize from: https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev
