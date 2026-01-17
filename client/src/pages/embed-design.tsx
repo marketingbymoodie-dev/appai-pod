@@ -72,7 +72,7 @@ export default function EmbedDesign() {
   const [isSharedDesign, setIsSharedDesign] = useState(false);
   const [selectedSize, setSelectedSize] = useState("");
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
-  const [selectedPreset, setSelectedPreset] = useState<string>("none");
+  const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
@@ -179,10 +179,10 @@ export default function EmbedDesign() {
 
   // Reset selectedPreset if it's not in the filtered list (e.g., after product type loads)
   useEffect(() => {
-    if (selectedPreset && selectedPreset !== "none" && filteredStylePresets.length > 0) {
+    if (selectedPreset && selectedPreset !== "" && filteredStylePresets.length > 0) {
       const isValidPreset = filteredStylePresets.some(p => p.id === selectedPreset);
       if (!isValidPreset) {
-        setSelectedPreset("none");
+        setSelectedPreset("");
       }
     }
   }, [filteredStylePresets, selectedPreset]);
@@ -229,20 +229,21 @@ export default function EmbedDesign() {
             frameColors: designerConfig.frameColors || [],
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
           });
-          if (designerConfig.sizes?.length > 0) setSelectedSize(designerConfig.sizes[0].id);
+          // Don't auto-select size - require user selection
+          // Auto-select first frame color if available (optional field)
           if (designerConfig.frameColors?.length > 0) setSelectedFrameColor(designerConfig.frameColors[0].id);
         } else {
           setProductTypeConfig(defaultProductTypeConfig);
-          setSelectedSize(defaultProductTypeConfig.sizes[0].id);
-          setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
+          // Don't auto-select size - require user selection
+          if (defaultProductTypeConfig.frameColors.length > 0) setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
           setProductTypeError(`Product type "${productTypeId}" not found. Using default configuration.`);
         }
         setConfigLoading(false);
       })
       .catch(() => {
         setProductTypeConfig(defaultProductTypeConfig);
-        setSelectedSize(defaultProductTypeConfig.sizes[0].id);
-        setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
+        // Don't auto-select size - require user selection
+        if (defaultProductTypeConfig.frameColors.length > 0) setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
         setProductTypeError("Failed to load product configuration. Using default settings.");
         setConfigLoading(false);
       });
@@ -273,7 +274,7 @@ export default function EmbedDesign() {
           prompt: sharedDesign.prompt,
         });
         setPrompt(sharedDesign.prompt);
-        setSelectedPreset(sharedDesign.stylePreset || "none");
+        setSelectedPreset(sharedDesign.stylePreset || "");
         setSelectedSize(sharedDesign.size);
         setSelectedFrameColor(sharedDesign.frameColor);
         setTransform({
@@ -568,9 +569,19 @@ export default function EmbedDesign() {
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
+    
+    // Validate required fields
+    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+      alert("Please select a style before generating");
+      return;
+    }
+    if (printSizes.length > 0 && selectedSize === "") {
+      alert("Please select a size before generating");
+      return;
+    }
 
     let fullPrompt = prompt;
-    if (selectedPreset && selectedPreset !== "none") {
+    if (selectedPreset && selectedPreset !== "") {
       const preset = filteredStylePresets.find((p) => p.id === selectedPreset);
       if (preset?.promptSuffix) {
         fullPrompt = `${prompt}. ${preset.promptSuffix}`;
@@ -591,9 +602,9 @@ export default function EmbedDesign() {
 
     generateMutation.mutate({
       prompt: fullPrompt,
-      size: selectedSize || "medium",
+      size: selectedSize,
       frameColor: selectedFrameColor || "black",
-      stylePreset: selectedPreset && selectedPreset !== "none" ? selectedPreset : undefined,
+      stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
       referenceImage: referenceImageBase64,
       shop: isShopify ? shopDomain : undefined,
       sessionToken: isShopify ? sessionToken || undefined : undefined,
@@ -810,7 +821,7 @@ export default function EmbedDesign() {
         body: JSON.stringify({
           imageUrl: generatedDesign.imageUrl,
           prompt: generatedDesign.prompt,
-          stylePreset: selectedPreset !== "none" ? selectedPreset : null,
+          stylePreset: selectedPreset !== "" ? selectedPreset : null,
           size: selectedSize,
           frameColor: selectedFrameColor,
           transformScale: transform.scale,
@@ -1046,7 +1057,8 @@ export default function EmbedDesign() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-4">
+          {/* Form panel - shows second on mobile when design exists */}
+          <div className={`space-y-4 ${generatedDesign ? "order-2 md:order-1" : ""}`}>
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "generate" | "import")}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="generate" data-testid="tab-generate">
@@ -1060,20 +1072,21 @@ export default function EmbedDesign() {
               </TabsList>
 
               <TabsContent value="generate" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label htmlFor="prompt" data-testid="label-prompt">
-                    Describe your artwork
-                  </Label>
-                  <Textarea
-                    id="prompt"
-                    data-testid="input-prompt"
-                    placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    className="min-h-[80px]"
-                  />
-                </div>
+                {/* Style Selection - Required, at top */}
+                {showPresetsParam && filteredStylePresets.length > 0 && (
+                  <div className="space-y-2">
+                    <StyleSelector
+                      stylePresets={[{ id: "", name: "Select a style...", promptSuffix: "" }, ...filteredStylePresets]}
+                      selectedStyle={selectedPreset}
+                      onStyleChange={setSelectedPreset}
+                    />
+                    {selectedPreset === "" && (
+                      <p className="text-xs text-muted-foreground">Please select a style before generating</p>
+                    )}
+                  </div>
+                )}
 
+                {/* Reference Image Upload */}
                 <div className="space-y-2">
                   <Label data-testid="label-reference">Reference Image (optional)</Label>
                   <div className="flex items-center gap-4 flex-wrap">
@@ -1118,23 +1131,36 @@ export default function EmbedDesign() {
                   </div>
                 </div>
 
-                {showPresetsParam && filteredStylePresets.length > 0 && (
-                  <StyleSelector
-                    stylePresets={[{ id: "none", name: "None", promptSuffix: "" }, ...filteredStylePresets]}
-                    selectedStyle={selectedPreset}
-                    onStyleChange={setSelectedPreset}
+                {/* Prompt Description */}
+                <div className="space-y-2">
+                  <Label htmlFor="prompt" data-testid="label-prompt">
+                    Describe your artwork
+                  </Label>
+                  <Textarea
+                    id="prompt"
+                    data-testid="input-prompt"
+                    placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    className="min-h-[80px]"
                   />
-                )}
+                </div>
 
+                {/* Size Selection - Required */}
                 {printSizes.length > 0 && (
-                  <SizeSelector
-                    sizes={printSizes}
-                    selectedSize={selectedSize}
-                    onSizeChange={(sizeId) => {
-                      setSelectedSize(sizeId);
-                      setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                    }}
-                  />
+                  <div className="space-y-2">
+                    <SizeSelector
+                      sizes={[{ id: "", name: "Select size...", width: 0, height: 0, aspectRatio: "1:1" }, ...printSizes]}
+                      selectedSize={selectedSize}
+                      onSizeChange={(sizeId) => {
+                        setSelectedSize(sizeId);
+                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                      }}
+                    />
+                    {selectedSize === "" && (
+                      <p className="text-xs text-muted-foreground">Please select a size before generating</p>
+                    )}
+                  </div>
                 )}
 
                 {frameColorObjects.length > 0 && (
@@ -1146,7 +1172,18 @@ export default function EmbedDesign() {
                 )}
 
                 <Button
-                  onClick={handleGenerate}
+                  onClick={() => {
+                    // Validation for required fields
+                    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+                      alert("Please select a style before generating");
+                      return;
+                    }
+                    if (printSizes.length > 0 && selectedSize === "") {
+                      alert("Please select a size before generating");
+                      return;
+                    }
+                    handleGenerate();
+                  }}
                   disabled={!prompt.trim() || generateMutation.isPending || (!isShopify && (!isLoggedIn || credits <= 0))}
                   className="w-full"
                   data-testid="button-generate"
@@ -1277,7 +1314,8 @@ export default function EmbedDesign() {
             </Tabs>
           </div>
 
-          <div className="space-y-3">
+          {/* Design preview panel - shows first on mobile when design exists */}
+          <div className={`space-y-3 ${generatedDesign ? "order-1 md:order-2" : ""}`}>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               className="w-full rounded-md overflow-hidden relative"
@@ -1351,16 +1389,51 @@ export default function EmbedDesign() {
             )}
 
             {generatedDesign && (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-3">
                 {isSharedDesign && (
                   <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-2 text-center">
                     Viewing a shared design. Generate your own or add to cart!
                   </div>
                 )}
+                
+                {/* Shopify Add to Cart - Prominent, styled like native button */}
+                {isShopify && (
+                  <Button
+                    onClick={handleAddToCart}
+                    disabled={isAddingToCart}
+                    className="w-full h-12 text-base font-medium"
+                    data-testid="button-add-to-cart"
+                  >
+                    {isAddingToCart ? (
+                      <>
+                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                        Adding to Cart...
+                      </>
+                    ) : (
+                      <>
+                        <ShoppingCart className="w-5 h-5 mr-2" />
+                        Add to Cart
+                      </>
+                    )}
+                  </Button>
+                )}
+                
+                {/* Secondary actions */}
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
-                    onClick={handleGenerate}
+                    onClick={() => {
+                      // Validation for required fields
+                      if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+                        alert("Please select a style before generating");
+                        return;
+                      }
+                      if (printSizes.length > 0 && selectedSize === "") {
+                        alert("Please select a size before generating");
+                        return;
+                      }
+                      handleGenerate();
+                    }}
                     disabled={generateMutation.isPending || (!isShopify && credits <= 0)}
                     className="flex-1"
                     data-testid="button-regenerate"
@@ -1381,27 +1454,6 @@ export default function EmbedDesign() {
                       <Share2 className="w-4 h-4" />
                     )}
                   </Button>
-
-                  {isShopify && (
-                    <Button
-                      onClick={handleAddToCart}
-                      disabled={isAddingToCart}
-                      className="flex-1"
-                      data-testid="button-add-to-cart"
-                    >
-                      {isAddingToCart ? (
-                        <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          Adding...
-                        </>
-                      ) : (
-                        <>
-                          <ShoppingCart className="w-4 h-4 mr-2" />
-                          Add to Cart
-                        </>
-                      )}
-                    </Button>
-                  )}
                 </div>
               </div>
             )}
