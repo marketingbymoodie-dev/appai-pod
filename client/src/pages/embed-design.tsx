@@ -748,6 +748,17 @@ export default function EmbedDesign() {
   const findVariantId = (): string | null => {
     if (!isShopify) return null;
 
+    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
+                'variants:', variants.length, 'selectedSize:', selectedSize, 
+                'selectedFrameColor:', selectedFrameColor, 'hasColors:', frameColorObjects.length > 0);
+
+    // First priority: use selectedVariantParam if provided (most reliable from theme)
+    if (selectedVariantParam) {
+      console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
+      return selectedVariantParam;
+    }
+
+    // Second: try to match using variant options from Shopify
     if (variants.length > 0 && (selectedSize || selectedFrameColor)) {
       const matchedVariant = variants.find((v: any) => {
         const options = [v.option1, v.option2, v.option3].filter(Boolean);
@@ -763,7 +774,8 @@ export default function EmbedDesign() {
           );
         }
 
-        if (selectedFrameColor) {
+        // Only check color if the product has frame colors
+        if (selectedFrameColor && frameColorObjects.length > 0) {
           colorMatch = options.some(
             (opt) =>
               opt?.toLowerCase().includes(selectedFrameColor.toLowerCase()) ||
@@ -775,11 +787,19 @@ export default function EmbedDesign() {
       });
 
       if (matchedVariant) {
+        console.log('[Design Studio] Matched variant from options:', matchedVariant.id);
         return matchedVariant.id?.toString() || null;
       }
     }
 
-    return selectedVariantParam || null;
+    // Third: for single-variant products, use the first variant
+    if (variants.length === 1) {
+      console.log('[Design Studio] Using single variant:', variants[0].id);
+      return variants[0].id?.toString() || null;
+    }
+
+    console.log('[Design Studio] No variant found');
+    return null;
   };
 
   const handleAddToCart = () => {
@@ -788,9 +808,12 @@ export default function EmbedDesign() {
     const variantId = findVariantId();
 
     if (!variantId) {
-      setVariantError(
-        "Unable to find matching product variant. Please select a valid size and frame color combination."
-      );
+      // Show context-aware error message
+      const hasColors = frameColorObjects.length > 0;
+      const errorMsg = hasColors
+        ? "Unable to find matching product variant. Please select a valid size and color combination."
+        : "Unable to find matching product variant. Please select a valid size.";
+      setVariantError(errorMsg);
       return;
     }
 

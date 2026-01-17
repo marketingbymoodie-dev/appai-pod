@@ -230,6 +230,9 @@
     params.set('productTitle', config.productTitle);
     params.set('displayName', config.displayName);
     params.set('showPresets', 'true');
+    if (config.selectedVariant) {
+      params.set('selectedVariant', config.selectedVariant);
+    }
     
     const urlParams = new URLSearchParams(window.location.search);
     const sharedDesignId = urlParams.get('sharedDesignId');
@@ -474,25 +477,72 @@
     const productTitle = document.querySelector('h1')?.textContent?.trim() || 'Product';
     const productId = window.ShopifyAnalytics?.meta?.product?.id || '';
     
-    const config = {
-      appUrl: appUrl,
-      productTypeId: productTypeId,
-      productId: productId,
-      productHandle: productHandle,
-      productTitle: productTitle,
-      displayName: displayName || productTitle.replace('Custom ', ''),
-      description: description,
-      shopDomain: window.Shopify?.shop || window.location.hostname
+    // Get the currently selected variant from Shopify using multiple detection methods
+    let selectedVariant = window.ShopifyAnalytics?.meta?.selectedVariantId || 
+                          document.querySelector('[name="id"]')?.value ||
+                          document.querySelector('select[name="id"] option:checked')?.value ||
+                          document.querySelector('input[name="id"]')?.value ||
+                          '';
+    
+    // Try to get from product JSON in script tag
+    if (!selectedVariant) {
+      const productJson = document.querySelector('[data-product-json]');
+      if (productJson) {
+        try {
+          const product = JSON.parse(productJson.textContent);
+          if (product.variants && product.variants.length > 0) {
+            selectedVariant = product.variants[0].id?.toString() || '';
+            console.log('[AI Art Embed] Got variant from product JSON:', selectedVariant);
+          }
+        } catch (e) {
+          console.log('[AI Art Embed] Failed to parse product JSON:', e);
+        }
+      }
+    }
+    
+    // Last resort: fetch product JSON from API
+    const initWithVariant = (variantId) => {
+      const config = {
+        appUrl: appUrl,
+        productTypeId: productTypeId,
+        productId: productId,
+        productHandle: productHandle,
+        productTitle: productTitle,
+        displayName: displayName || productTitle.replace('Custom ', ''),
+        description: description,
+        shopDomain: window.Shopify?.shop || window.location.hostname,
+        selectedVariant: variantId
+      };
+      
+      console.log('[AI Art Embed] Creating studio with variant:', variantId);
+      const studioElement = createDesignStudio(config);
+      
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+          insertStudioAfterProductInfo(studioElement);
+        });
+      } else {
+        insertStudioAfterProductInfo(studioElement);
+      }
     };
     
-    const studioElement = createDesignStudio(config);
-    
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        insertStudioAfterProductInfo(studioElement);
-      });
+    if (selectedVariant) {
+      initWithVariant(selectedVariant);
+    } else if (productHandle) {
+      // Fetch product JSON as last resort
+      fetch('/products/' + productHandle + '.json')
+        .then(r => r.json())
+        .then(data => {
+          const variantId = data.product?.variants?.[0]?.id?.toString() || '';
+          console.log('[AI Art Embed] Got variant from API:', variantId);
+          initWithVariant(variantId);
+        })
+        .catch(e => {
+          console.log('[AI Art Embed] Failed to fetch product JSON:', e);
+          initWithVariant('');
+        });
     } else {
-      insertStudioAfterProductInfo(studioElement);
+      initWithVariant('');
     }
   }
   
