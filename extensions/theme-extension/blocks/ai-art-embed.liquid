@@ -60,52 +60,156 @@
         return;
       }
       
-      console.log('[AI Art Embed] Processing', mockupUrls.length, 'mockups');
+      console.log('[AI Art Embed] Processing', mockupUrls.length, 'mockups - injecting into gallery');
       
-      // Find or create preview section
-      var previewSection = document.getElementById('ai-art-mockup-preview');
-      if (!previewSection) {
-        previewSection = document.createElement('div');
-        previewSection.id = 'ai-art-mockup-preview';
-        previewSection.style.cssText = 'display:block;margin:2rem 0;padding:1.5rem;background:#fff;border:1px solid #e5e5e5;border-radius:8px;';
-        previewSection.innerHTML = '<h4 style="font-size:1.25rem;font-weight:600;margin-bottom:1rem;text-align:center;color:#333;">Your Custom Design Preview</h4><div id="ai-art-mockup-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;max-width:800px;margin:0 auto;"></div>';
-        
-        // Insert before the product media or at top of main content
-        var insertTarget = document.querySelector('.product__media-wrapper') ||
-                          document.querySelector('.product-single__photos') ||
-                          document.querySelector('.product__images') ||
-                          document.querySelector('.product__gallery') ||
-                          document.querySelector('[data-product-media-container]') ||
-                          document.querySelector('main') ||
-                          document.body;
-        
-        if (insertTarget) {
-          if (insertTarget === document.body || insertTarget.tagName === 'MAIN') {
-            insertTarget.insertBefore(previewSection, insertTarget.firstChild);
-          } else {
-            insertTarget.parentNode.insertBefore(previewSection, insertTarget);
-          }
-          console.log('[AI Art Embed] Created preview section before:', insertTarget.className || insertTarget.tagName);
+      // Find Shopify's native gallery elements
+      var mainImageSelectors = [
+        '.product__media-item--variant img',
+        '.product__media img.motion-reduce',
+        '.product__media img',
+        '.product-single__photo img',
+        '.product__image-wrapper img',
+        '.product-featured-media img',
+        '[data-product-featured-image]',
+        '.product-gallery__main img',
+        '.product__main-photos img'
+      ];
+      
+      var thumbnailContainerSelectors = [
+        '.product__media-list',
+        '.product-single__thumbnails',
+        '.product__thumbs',
+        '.product-gallery__thumbs',
+        '.thumbnail-list',
+        '[data-product-thumbnails]',
+        '.product__media-gallery'
+      ];
+      
+      // Find main image
+      var mainImage = null;
+      for (var i = 0; i < mainImageSelectors.length; i++) {
+        mainImage = document.querySelector(mainImageSelectors[i]);
+        if (mainImage) {
+          console.log('[AI Art Embed] Found main image with:', mainImageSelectors[i]);
+          break;
         }
       }
       
-      // Update the grid with mockups
-      var grid = document.getElementById('ai-art-mockup-grid');
-      if (grid) {
-        grid.innerHTML = '';
-        mockupUrls.forEach(function(url, index) {
-          var item = document.createElement('div');
-          item.style.cssText = 'aspect-ratio:1;overflow:hidden;border-radius:6px;border:1px solid #e5e5e5;background:#fafafa;';
-          var img = document.createElement('img');
-          img.src = url;
-          img.alt = 'Product mockup ' + (index + 1);
-          img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
-          img.onload = function() { console.log('[AI Art Embed] Mockup image loaded:', index + 1); };
-          img.onerror = function() { console.log('[AI Art Embed] Mockup image failed:', url); };
-          item.appendChild(img);
-          grid.appendChild(item);
+      // Find thumbnail container
+      var thumbContainer = null;
+      for (var j = 0; j < thumbnailContainerSelectors.length; j++) {
+        thumbContainer = document.querySelector(thumbnailContainerSelectors[j]);
+        if (thumbContainer) {
+          console.log('[AI Art Embed] Found thumbnail container with:', thumbnailContainerSelectors[j]);
+          break;
+        }
+      }
+      
+      // Hide original product images and show mockups
+      if (mainImage) {
+        // Store original src for potential reset
+        if (!mainImage.dataset.originalSrc) {
+          mainImage.dataset.originalSrc = mainImage.src;
+        }
+        // Set first mockup as main image
+        mainImage.src = mockupUrls[0];
+        mainImage.srcset = '';
+        console.log('[AI Art Embed] Updated main image to first mockup');
+      }
+      
+      // Replace or hide original thumbnails and add our mockups
+      if (thumbContainer) {
+        // Hide all original thumbnails
+        var originalThumbs = thumbContainer.querySelectorAll('li, .product__media-item, .thumbnail');
+        originalThumbs.forEach(function(thumb) {
+          thumb.style.display = 'none';
         });
-        console.log('[AI Art Embed] Mockup grid updated with', mockupUrls.length, 'images');
+        console.log('[AI Art Embed] Hidden', originalThumbs.length, 'original thumbnails');
+        
+        // Remove any previously added AI mockup thumbnails
+        var oldMockupThumbs = thumbContainer.querySelectorAll('.ai-art-mockup-thumb');
+        oldMockupThumbs.forEach(function(t) { t.remove(); });
+        
+        // Add mockup thumbnails
+        mockupUrls.forEach(function(url, index) {
+          var thumbItem = document.createElement('li');
+          thumbItem.className = 'ai-art-mockup-thumb';
+          thumbItem.style.cssText = 'display:inline-block;width:80px;height:80px;margin:4px;cursor:pointer;border:2px solid ' + (index === 0 ? '#000' : '#e5e5e5') + ';border-radius:4px;overflow:hidden;';
+          
+          var thumbImg = document.createElement('img');
+          thumbImg.src = url;
+          thumbImg.alt = 'Custom design view ' + (index + 1);
+          thumbImg.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+          
+          thumbItem.appendChild(thumbImg);
+          
+          // Click handler to change main image
+          thumbItem.onclick = function() {
+            if (mainImage) {
+              mainImage.src = url;
+              mainImage.srcset = '';
+            }
+            // Update thumbnail borders
+            var allThumbs = thumbContainer.querySelectorAll('.ai-art-mockup-thumb');
+            allThumbs.forEach(function(t) { t.style.borderColor = '#e5e5e5'; });
+            thumbItem.style.borderColor = '#000';
+            console.log('[AI Art Embed] Switched to mockup', index + 1);
+          };
+          
+          thumbContainer.appendChild(thumbItem);
+        });
+        console.log('[AI Art Embed] Added', mockupUrls.length, 'mockup thumbnails to gallery');
+      } else {
+        // Fallback: create our own gallery if no native thumbnails found
+        console.log('[AI Art Embed] No thumbnail container found, creating custom gallery');
+        
+        var fallbackGallery = document.getElementById('ai-art-fallback-gallery');
+        if (!fallbackGallery) {
+          fallbackGallery = document.createElement('div');
+          fallbackGallery.id = 'ai-art-fallback-gallery';
+          fallbackGallery.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;padding:12px;background:#f9f9f9;border-radius:8px;';
+          
+          // Insert before main product media
+          var mediaWrapper = document.querySelector('.product__media-wrapper') ||
+                            document.querySelector('.product__images') ||
+                            document.querySelector('.product-single__photos');
+          if (mediaWrapper) {
+            mediaWrapper.parentNode.insertBefore(fallbackGallery, mediaWrapper);
+          }
+        }
+        
+        fallbackGallery.innerHTML = '<p style="width:100%;margin:0 0 8px 0;font-weight:600;font-size:14px;">Your Custom Design:</p>';
+        
+        mockupUrls.forEach(function(url, index) {
+          var thumbItem = document.createElement('div');
+          thumbItem.style.cssText = 'width:80px;height:80px;cursor:pointer;border:2px solid ' + (index === 0 ? '#000' : '#e5e5e5') + ';border-radius:4px;overflow:hidden;';
+          
+          var thumbImg = document.createElement('img');
+          thumbImg.src = url;
+          thumbImg.alt = 'Custom design view ' + (index + 1);
+          thumbImg.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+          
+          thumbItem.appendChild(thumbImg);
+          
+          thumbItem.onclick = function() {
+            if (mainImage) {
+              mainImage.src = url;
+              mainImage.srcset = '';
+            }
+            var allThumbs = fallbackGallery.querySelectorAll('div[style*="cursor:pointer"]');
+            allThumbs.forEach(function(t) { t.style.borderColor = '#e5e5e5'; });
+            thumbItem.style.borderColor = '#000';
+          };
+          
+          fallbackGallery.appendChild(thumbItem);
+        });
+      }
+      
+      // Remove the old separate preview section if it exists
+      var oldPreview = document.getElementById('ai-art-mockup-preview');
+      if (oldPreview) {
+        oldPreview.remove();
+        console.log('[AI Art Embed] Removed old separate preview section');
       }
     }
   });
