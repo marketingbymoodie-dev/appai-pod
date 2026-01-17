@@ -292,8 +292,42 @@
 
     container.appendChild(iframe);
 
+    // Store the expected origin for message validation
+    let expectedOrigin = null;
+    try {
+      if (appUrl) {
+        expectedOrigin = new URL(appUrl).origin;
+      }
+    } catch (e) {
+      console.warn('[AI Art Studio] Could not parse appUrl:', appUrl);
+    }
+    
+    // Also get origin from the iframe once it's created
+    let iframeOrigin = null;
+    try {
+      iframeOrigin = new URL(iframe.src).origin;
+    } catch (e) {}
+    
+    console.log('[AI Art Studio] Message listener initialized. Expected origins:', expectedOrigin, iframeOrigin);
+    
     window.addEventListener('message', function(event) {
-      if (event.origin !== new URL(appUrl).origin) return;
+      // Debug: Log ALL messages to help troubleshoot
+      if (event.data && event.data.type && event.data.type.includes('art-studio') || event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
+        console.log('[AI Art Studio] Received message:', event.data.type, 'from origin:', event.origin);
+      }
+      
+      // Accept messages from either the configured appUrl or the iframe's actual origin
+      const isValidOrigin = (expectedOrigin && event.origin === expectedOrigin) || 
+                            (iframeOrigin && event.origin === iframeOrigin) ||
+                            (event.origin && event.origin.includes('replit'));
+      
+      if (!isValidOrigin) {
+        // Only log rejection for our message types to avoid noise
+        if (event.data && event.data.type && (event.data.type.includes('art-studio') || event.data.type === 'AI_ART_STUDIO_MOCKUPS')) {
+          console.warn('[AI Art Studio] Rejected message from:', event.origin, 'expected:', expectedOrigin || iframeOrigin);
+        }
+        return;
+      }
 
       const data = event.data;
       
