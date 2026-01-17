@@ -946,6 +946,23 @@ export default function EmbedDesign() {
       artworkFullUrl = `${appOrigin}${generatedDesign.imageUrl}`;
     }
 
+    // Get the rendered mockup URL if available (for cart display)
+    // Try printifyMockups first, then fall back to printifyMockupImages
+    let mockupFullUrl = '';
+    if (printifyMockups.length > 0) {
+      const mockupUrl = printifyMockups[selectedMockupIndex] || printifyMockups[0];
+      mockupFullUrl = mockupUrl.startsWith('http') 
+        ? mockupUrl 
+        : `${window.location.origin}${mockupUrl}`;
+    } else if (printifyMockupImages.length > 0) {
+      const mockupUrl = printifyMockupImages[selectedMockupIndex]?.url || printifyMockupImages[0]?.url;
+      if (mockupUrl) {
+        mockupFullUrl = mockupUrl.startsWith('http') 
+          ? mockupUrl 
+          : `${window.location.origin}${mockupUrl}`;
+      }
+    }
+
     // Build Shopify cart URL with line item properties
     // Properties will be attached to the order for Printify fulfillment
     const cartParams = new URLSearchParams();
@@ -954,6 +971,9 @@ export default function EmbedDesign() {
     cartParams.set('properties[_artwork_url]', artworkFullUrl);
     cartParams.set('properties[_design_id]', generatedDesign.id);
     cartParams.set('properties[Artwork]', 'Custom AI Design');
+    if (mockupFullUrl) {
+      cartParams.set('properties[_mockup_url]', mockupFullUrl);
+    }
     if (selectedSize) {
       cartParams.set('properties[Size]', selectedSize);
     }

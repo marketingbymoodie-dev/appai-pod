@@ -1,5 +1,6 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
+import path from "path";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -14,6 +15,8 @@ declare module "http" {
 }
 
 app.use(cookieParser());
+
+app.use("/scripts", express.static(path.resolve(process.cwd(), "public/scripts")));
 
 app.use(
   express.json({

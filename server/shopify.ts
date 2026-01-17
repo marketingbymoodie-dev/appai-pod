@@ -4,7 +4,60 @@ import { storage } from "./storage";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const SHOPIFY_SCOPES = "read_products,write_products,read_themes,write_themes";
+const SHOPIFY_SCOPES = "read_products,write_products,read_themes,write_themes,read_script_tags,write_script_tags";
+
+async function registerCartScript(shop: string, accessToken: string): Promise<void> {
+  const appUrl = getAppUrl();
+  const scriptUrl = `${appUrl}/scripts/ai-art-cart.js`;
+
+  try {
+    const existingResponse = await fetch(
+      `https://${shop}/admin/api/2024-01/script_tags.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (existingResponse.ok) {
+      const data = await existingResponse.json();
+      const existing = data.script_tags?.find((s: any) => s.src.includes('ai-art-cart.js'));
+      if (existing) {
+        console.log(`ScriptTag already exists for ${shop}`);
+        return;
+      }
+    }
+
+    const response = await fetch(
+      `https://${shop}/admin/api/2024-01/script_tags.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          script_tag: {
+            event: "onload",
+            src: scriptUrl,
+            display_scope: "online_store",
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      console.log(`Registered cart script for ${shop}`);
+    } else {
+      const error = await response.text();
+      console.error(`Failed to register cart script for ${shop}:`, error);
+    }
+  } catch (error) {
+    console.error(`Error registering cart script for ${shop}:`, error);
+  }
+}
 
 function getAppUrl(): string {
   if (process.env.REPLIT_DEV_DOMAIN) {
@@ -161,6 +214,8 @@ export function registerShopifyRoutes(app: Express): void {
         });
         console.log(`Created new installation for ${shop}`);
       }
+
+      await registerCartScript(shop, access_token);
 
       res.clearCookie("shopify_state");
 
