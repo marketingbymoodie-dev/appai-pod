@@ -56,7 +56,38 @@ export default function EmbedDesign() {
   const isShopify = searchParams.get("shopify") === "true";
   const productTypeId = searchParams.get("productTypeId") || "1";
   const productId = searchParams.get("productId") || "";
-  const productHandle = searchParams.get("productHandle") || "";
+  
+  // Get productHandle from URL params, or extract from referrer if not provided
+  const getProductHandle = (): string => {
+    const handleFromParams = searchParams.get("productHandle") || "";
+    if (handleFromParams) {
+      console.log('[Design Studio] Using productHandle from params:', handleFromParams);
+      return handleFromParams;
+    }
+    
+    // Try to extract from referrer (e.g., https://store.myshopify.com/products/custom-tumbler-20oz)
+    try {
+      const referrer = document.referrer;
+      console.log('[Design Studio] Attempting to extract productHandle from referrer:', referrer);
+      if (referrer) {
+        const match = referrer.match(/\/products\/([^/?#]+)/);
+        if (match && match[1]) {
+          console.log('[Design Studio] Extracted productHandle from referrer:', match[1]);
+          return match[1];
+        } else {
+          console.log('[Design Studio] No /products/ path found in referrer');
+        }
+      } else {
+        console.log('[Design Studio] Referrer is empty');
+      }
+    } catch (e) {
+      console.log('[Design Studio] Error extracting productHandle from referrer:', e);
+    }
+    console.log('[Design Studio] Could not determine productHandle');
+    return "";
+  };
+  const productHandle = getProductHandle();
+  
   const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Product");
   const displayName = decodeURIComponent(searchParams.get("displayName") || productTitle.replace("Custom ", ""));
   const showPresetsParam = searchParams.get("showPresets") !== "false";
