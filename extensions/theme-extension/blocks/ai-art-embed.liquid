@@ -32,6 +32,84 @@
   }
   console.log('[AI Art Embed] On product page, continuing...');
   
+  // Set up GLOBAL message listener for mockups - runs regardless of how embed was added
+  console.log('[AI Art Embed] Setting up global message listener...');
+  window.addEventListener('message', function(event) {
+    // Only process our message types
+    if (!event.data || !event.data.type) return;
+    
+    // Log messages from our app
+    if (event.data.type === 'AI_ART_STUDIO_MOCKUPS' || 
+        (event.data.type && event.data.type.indexOf('ai-art-studio') !== -1)) {
+      console.log('[AI Art Embed] Global listener received:', event.data.type, 'from:', event.origin);
+    }
+    
+    // Handle mockup updates from any Replit origin
+    if (event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
+      // Security: only accept from Replit origins
+      if (event.origin.indexOf('replit.dev') === -1 && 
+          event.origin.indexOf('replit.app') === -1 && 
+          event.origin.indexOf('repl.co') === -1) {
+        console.log('[AI Art Embed] Ignoring mockups from non-Replit origin:', event.origin);
+        return;
+      }
+      
+      var mockupUrls = event.data.mockupUrls;
+      if (!mockupUrls || mockupUrls.length === 0) {
+        console.log('[AI Art Embed] No mockup URLs in message');
+        return;
+      }
+      
+      console.log('[AI Art Embed] Processing', mockupUrls.length, 'mockups');
+      
+      // Find or create preview section
+      var previewSection = document.getElementById('ai-art-mockup-preview');
+      if (!previewSection) {
+        previewSection = document.createElement('div');
+        previewSection.id = 'ai-art-mockup-preview';
+        previewSection.style.cssText = 'display:block;margin:2rem 0;padding:1.5rem;background:#fff;border:1px solid #e5e5e5;border-radius:8px;';
+        previewSection.innerHTML = '<h4 style="font-size:1.25rem;font-weight:600;margin-bottom:1rem;text-align:center;color:#333;">Your Custom Design Preview</h4><div id="ai-art-mockup-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;max-width:800px;margin:0 auto;"></div>';
+        
+        // Insert before the product media or at top of main content
+        var insertTarget = document.querySelector('.product__media-wrapper') ||
+                          document.querySelector('.product-single__photos') ||
+                          document.querySelector('.product__images') ||
+                          document.querySelector('.product__gallery') ||
+                          document.querySelector('[data-product-media-container]') ||
+                          document.querySelector('main') ||
+                          document.body;
+        
+        if (insertTarget) {
+          if (insertTarget === document.body || insertTarget.tagName === 'MAIN') {
+            insertTarget.insertBefore(previewSection, insertTarget.firstChild);
+          } else {
+            insertTarget.parentNode.insertBefore(previewSection, insertTarget);
+          }
+          console.log('[AI Art Embed] Created preview section before:', insertTarget.className || insertTarget.tagName);
+        }
+      }
+      
+      // Update the grid with mockups
+      var grid = document.getElementById('ai-art-mockup-grid');
+      if (grid) {
+        grid.innerHTML = '';
+        mockupUrls.forEach(function(url, index) {
+          var item = document.createElement('div');
+          item.style.cssText = 'aspect-ratio:1;overflow:hidden;border-radius:6px;border:1px solid #e5e5e5;background:#fafafa;';
+          var img = document.createElement('img');
+          img.src = url;
+          img.alt = 'Product mockup ' + (index + 1);
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+          img.onload = function() { console.log('[AI Art Embed] Mockup image loaded:', index + 1); };
+          img.onerror = function() { console.log('[AI Art Embed] Mockup image failed:', url); };
+          item.appendChild(img);
+          grid.appendChild(item);
+        });
+        console.log('[AI Art Embed] Mockup grid updated with', mockupUrls.length, 'images');
+      }
+    }
+  });
+  
   // Skip if already initialized
   if (document.getElementById('ai-art-studio-auto-embed')) {
     return;
