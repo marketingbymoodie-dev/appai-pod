@@ -928,29 +928,66 @@ export default function EmbedDesign() {
       return;
     }
 
+    // Validate shop domain is available
+    if (!shopDomain) {
+      setVariantError("Unable to add to cart: Shop information is missing. Please refresh the page.");
+      return;
+    }
+
     setVariantError(null);
     setIsAddingToCart(true);
 
-    // Set a timeout in case the parent doesn't respond (e.g., preview mode)
-    const timeoutId = setTimeout(() => {
-      setIsAddingToCart(false);
-      setVariantError("Cart update timed out. This may happen in preview mode - try viewing the published product page.");
-    }, 10000); // 10 second timeout
+    // Build the full artwork URL (needs to be absolute and publicly accessible for Printify)
+    // The /objects/ URLs are served publicly from object storage
+    let artworkFullUrl = generatedDesign.imageUrl;
+    if (!artworkFullUrl.startsWith('http')) {
+      // Use the Replit app URL for public access to object storage
+      const appOrigin = window.location.origin;
+      artworkFullUrl = `${appOrigin}${generatedDesign.imageUrl}`;
+    }
 
-    // Store timeout ID so we can clear it when we get a response
-    (window as any).__addToCartTimeout = timeoutId;
+    // Build Shopify cart URL with line item properties
+    // Properties will be attached to the order for Printify fulfillment
+    const cartParams = new URLSearchParams();
+    cartParams.set('id', String(variantId));
+    cartParams.set('quantity', '1');
+    cartParams.set('properties[_artwork_url]', artworkFullUrl);
+    cartParams.set('properties[_design_id]', generatedDesign.id);
+    cartParams.set('properties[Artwork]', 'Custom AI Design');
+    if (selectedSize) {
+      cartParams.set('properties[Size]', selectedSize);
+    }
+    if (selectedFrameColor) {
+      cartParams.set('properties[Color]', selectedFrameColor);
+    }
 
-    window.parent.postMessage(
-      {
-        type: "ai-art-studio:add-to-cart",
-        variantId: variantId,
-        artworkUrl: generatedDesign.imageUrl,
-        designId: generatedDesign.id,
-        size: selectedSize,
-        frameColor: selectedFrameColor,
-      },
-      "*"
-    );
+    const cartUrl = `https://${shopDomain}/cart/add?${cartParams.toString()}`;
+
+    console.log('[Design Studio] Redirecting to cart:', cartUrl);
+
+    // Navigate to cart - try multiple approaches for iframe compatibility
+    try {
+      if (window.top && window.top !== window) {
+        // In iframe - try to navigate the top window
+        window.top.location.href = cartUrl;
+      } else if (window.parent && window.parent !== window) {
+        window.parent.location.href = cartUrl;
+      } else {
+        window.location.href = cartUrl;
+      }
+    } catch (e) {
+      // If navigation is blocked (sandbox restrictions), try opening in new tab
+      console.log('[Design Studio] Navigation blocked, opening in new tab:', e);
+      const newWindow = window.open(cartUrl, '_blank');
+      if (!newWindow) {
+        // Popup blocked - show error
+        setIsAddingToCart(false);
+        setVariantError("Unable to open cart. Please disable popup blocker and try again.");
+      } else {
+        setIsAddingToCart(false);
+        setGeneratedDesign(null);
+      }
+    }
   };
 
   const handleShare = async () => {
