@@ -20,10 +20,14 @@
 (function() {
   'use strict';
   
+  console.log('[AI Art Embed] Script starting...');
+  
   // Only run on product pages - check URL pattern
   if (!window.location.pathname.includes('/products/')) {
+    console.log('[AI Art Embed] Not a product page, skipping');
     return;
   }
+  console.log('[AI Art Embed] On product page, continuing...');
   
   // Skip if already initialized
   if (document.getElementById('ai-art-studio-auto-embed')) {
@@ -110,11 +114,23 @@
     
     studioContainer.appendChild(iframe);
     
+    console.log('[AI Art Embed] Setting up message listener for origin:', config.appUrl);
+    
     window.addEventListener('message', function(event) {
+      // Log all messages from our app
+      if (event.data && event.data.type && (event.data.type.indexOf('art-studio') !== -1 || event.data.type === 'AI_ART_STUDIO_MOCKUPS')) {
+        console.log('[AI Art Embed] Received message:', event.data.type, 'from:', event.origin);
+      }
+      
       try {
         const appOrigin = new URL(config.appUrl).origin;
-        if (event.origin !== appOrigin) return;
+        // Also accept replit origins
+        if (event.origin !== appOrigin && event.origin.indexOf('replit') === -1) {
+          console.log('[AI Art Embed] Origin mismatch:', event.origin, 'vs', appOrigin);
+          return;
+        }
       } catch (e) {
+        console.log('[AI Art Embed] Error parsing origin:', e);
         return;
       }
       
@@ -160,6 +176,46 @@
       
       if (data.type === 'ai-art-studio:resize') {
         studioContainer.style.height = data.height + 'px';
+      }
+      
+      // Handle mockup updates - create preview section
+      if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
+        var mockupUrls = data.mockupUrls;
+        if (!mockupUrls || mockupUrls.length === 0) return;
+        
+        console.log('[AI Art Embed] Received mockups:', mockupUrls.length);
+        
+        var previewSection = document.getElementById('ai-art-mockup-preview');
+        if (!previewSection) {
+          previewSection = document.createElement('div');
+          previewSection.id = 'ai-art-mockup-preview';
+          previewSection.style.cssText = 'display:block;margin-bottom:2rem;padding:1.5rem;background:#fff;border:1px solid #e5e5e5;border-radius:8px;';
+          previewSection.innerHTML = '<h4 style="font-size:1.25rem;font-weight:600;margin-bottom:1rem;text-align:center;color:#333;">Your Custom Design Preview</h4><div id="ai-art-mockup-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;max-width:800px;margin:0 auto;"></div>';
+          
+          var studioWrapper = container.closest('.ai-art-studio-embed');
+          if (studioWrapper && studioWrapper.parentNode) {
+            studioWrapper.parentNode.insertBefore(previewSection, studioWrapper);
+          } else {
+            container.parentNode.insertBefore(previewSection, container);
+          }
+        }
+        
+        var grid = document.getElementById('ai-art-mockup-grid');
+        if (grid) {
+          grid.innerHTML = '';
+          mockupUrls.forEach(function(url) {
+            var item = document.createElement('div');
+            item.style.cssText = 'aspect-ratio:1;overflow:hidden;border-radius:6px;border:1px solid #e5e5e5;background:#fafafa;';
+            var img = document.createElement('img');
+            img.src = url;
+            img.alt = 'Product mockup with custom design';
+            img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+            item.appendChild(img);
+            grid.appendChild(item);
+          });
+        }
+        
+        console.log('[AI Art Embed] Mockup preview updated');
       }
     });
     
