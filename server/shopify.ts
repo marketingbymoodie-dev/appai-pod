@@ -118,7 +118,7 @@ export function registerShopifyRoutes(app: Express): void {
     return;
   }
 
-  app.get("/shopify/install", (req: Request, res: Response) => {
+  app.get("/shopify/install", async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
 
     if (!shop || !isValidShopDomain(shop)) {
@@ -143,6 +143,20 @@ export function registerShopifyRoutes(app: Express): void {
       sameSite: "lax",
       maxAge: 600000
     });
+
+    // Try to capture merchant ID from logged-in user session
+    const user = req.user as { id?: string } | undefined;
+    if (user?.id) {
+      const merchant = await storage.getMerchantByUserId(user.id);
+      if (merchant) {
+        res.cookie("shopify_merchant", merchant.id, {
+          httpOnly: true,
+          secure: true,
+          sameSite: "lax",
+          maxAge: 600000
+        });
+      }
+    }
 
     res.redirect(authUrl);
   });
@@ -193,16 +207,27 @@ export function registerShopifyRoutes(app: Express): void {
       console.log(`Scopes granted: ${scope || 'NONE'}`);
       console.log(`Requested scopes were: ${SHOPIFY_SCOPES}`);
 
+      // Get merchant ID from cookie if available
+      const merchantId = req.cookies?.shopify_merchant || null;
+      if (merchantId) {
+        console.log(`Associating installation with merchant: ${merchantId}`);
+      }
+
       let installation = await storage.getShopifyInstallationByShop(shop);
       
       if (installation) {
-        await storage.updateShopifyInstallation(installation.id, {
+        const updates: any = {
           accessToken: access_token,
           scope: scope || "",
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
-        });
+        };
+        // Update merchant ID if we have one and it's not already set
+        if (merchantId && !installation.merchantId) {
+          updates.merchantId = merchantId;
+        }
+        await storage.updateShopifyInstallation(installation.id, updates);
         console.log(`Updated existing installation for ${shop}`);
       } else {
         installation = await storage.createShopifyInstallation({
@@ -211,13 +236,15 @@ export function registerShopifyRoutes(app: Express): void {
           scope: scope || "",
           status: "active",
           installedAt: new Date(),
+          merchantId: merchantId,
         });
-        console.log(`Created new installation for ${shop}`);
+        console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ''}`);
       }
 
       await registerCartScript(shop, access_token);
 
       res.clearCookie("shopify_state");
+      res.clearCookie("shopify_merchant");
 
       res.redirect(`https://${shop}/admin/apps`);
     } catch (error) {
