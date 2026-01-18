@@ -22,12 +22,127 @@
   
   console.log('[AI Art Embed] Script starting...');
   
-  // Only run on product pages - check URL pattern (including preview URLs)
+  // Cart page handling - load cart script to replace images with mockups
+  var isCartPage = window.location.pathname.includes('/cart');
+  if (isCartPage) {
+    console.log('[AI Art Studio Cart] Loading cart image replacement script...');
+    loadCartScript();
+  }
+  
+  // Cart script loader function
+  function loadCartScript() {
+    // Inline cart image replacement logic
+    var cartData = null;
+    var isUpdating = false;
+
+    function fetchCartData() {
+      return fetch('/cart.js', { headers: { 'Accept': 'application/json' } })
+        .then(function(response) {
+          if (!response.ok) throw new Error('Failed to fetch cart');
+          return response.json();
+        })
+        .then(function(data) {
+          cartData = data;
+          console.log('[AI Art Studio Cart] Cart data fetched:', (cartData.items && cartData.items.length) || 0, 'items');
+          return cartData;
+        })
+        .catch(function(error) {
+          console.error('[AI Art Studio Cart] Error fetching cart:', error);
+          return null;
+        });
+    }
+
+    function getMockupUrl(item) {
+      if (!item || !item.properties) return null;
+      return item.properties['_mockup_url'] || item.properties['mockup_url'] || null;
+    }
+
+    function findCartElements() {
+      var selectors = [
+        '[data-cart-item]', '.cart-item', '.cart__item', '[class*="cart-item"]',
+        'tr[data-variant-id]', 'tr.cart__row', '.line-item', '[data-line-item]'
+      ];
+      var items = [];
+      selectors.forEach(function(sel) {
+        try {
+          document.querySelectorAll(sel).forEach(function(el) {
+            if (items.indexOf(el) === -1) items.push(el);
+          });
+        } catch(e) {}
+      });
+      return items;
+    }
+
+    function replaceImage(element, mockupUrl) {
+      var imgs = element.querySelectorAll('img');
+      var replaced = false;
+      imgs.forEach(function(img) {
+        if (img.dataset.aiMockupApplied === 'true' && img.src === mockupUrl) return;
+        if (!img.dataset.originalSrc) img.dataset.originalSrc = img.src;
+        img.src = mockupUrl;
+        img.srcset = '';
+        img.dataset.aiMockupApplied = 'true';
+        replaced = true;
+        console.log('[AI Art Studio Cart] Replaced image with mockup');
+      });
+      return replaced;
+    }
+
+    function replaceCartImages() {
+      if (isUpdating) return;
+      isUpdating = true;
+      
+      fetchCartData().then(function() {
+        if (!cartData || !cartData.items || !cartData.items.length) {
+          console.log('[AI Art Studio Cart] No cart items');
+          isUpdating = false;
+          return;
+        }
+        
+        var hasAnyMockups = cartData.items.some(function(item) { return getMockupUrl(item); });
+        if (!hasAnyMockups) {
+          console.log('[AI Art Studio Cart] No mockup URLs in cart');
+          isUpdating = false;
+          return;
+        }
+        
+        var elements = findCartElements();
+        console.log('[AI Art Studio Cart] Found', elements.length, 'cart elements');
+        
+        // Direct position matching since we can't reliably match by variant ID
+        cartData.items.forEach(function(item, index) {
+          var mockupUrl = getMockupUrl(item);
+          if (mockupUrl && elements[index]) {
+            replaceImage(elements[index], mockupUrl);
+          }
+        });
+        
+        isUpdating = false;
+      });
+    }
+
+    // Run on page load
+    setTimeout(replaceCartImages, 500);
+    
+    // Watch for DOM changes
+    var observer = new MutationObserver(function(mutations) {
+      var shouldUpdate = mutations.some(function(m) { return m.addedNodes.length > 0; });
+      if (shouldUpdate) setTimeout(replaceCartImages, 300);
+    });
+    
+    var container = document.querySelector('[data-cart], .cart, #cart, main');
+    if (container) observer.observe(container, { childList: true, subtree: true });
+    
+    // Listen for cart events
+    document.addEventListener('cart:updated', function() { setTimeout(replaceCartImages, 300); });
+  }
+  
+  // Only run product page logic on product pages
   var isProductPage = window.location.pathname.includes('/products/') || 
                       window.location.pathname.includes('/products_preview');
   
   if (!isProductPage) {
-    console.log('[AI Art Embed] Not a product page, skipping. Path:', window.location.pathname);
+    console.log('[AI Art Embed] Not a product page, skipping product logic. Path:', window.location.pathname);
     return;
   }
   console.log('[AI Art Embed] On product page, continuing...');
