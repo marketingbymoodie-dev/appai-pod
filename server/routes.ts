@@ -1914,17 +1914,30 @@ ${textEdgeRestrictions}
 
       const createdProduct = await shopifyResponse.json();
       const shopifyProductId = createdProduct.product.id;
+      const shopifyHandle = createdProduct.product.handle;
+      const createdVariants = createdProduct.product.variants || [];
       
-      console.log(`Created Shopify product ${shopifyProductId} for product type ${productType.id}`);
+      console.log(`Created Shopify product ${shopifyProductId} (handle: ${shopifyHandle}) for product type ${productType.id}`);
+
+      // Build a map of size:color to Shopify variant ID for future lookups
+      const shopifyVariantIds: Record<string, number> = {};
+      for (const v of createdVariants) {
+        const sizeOption = v.option1 || 'default';
+        const colorOption = v.option2 || 'default';
+        const key = `${sizeOption}:${colorOption}`;
+        shopifyVariantIds[key] = v.id;
+      }
 
       // Product is pre-configured for Online Store only via published_scope: "web"
       // When merchant activates the product, it will only appear on Online Store (not POS)
       console.log(`Product ${shopifyProductId} configured for Online Store only (published_scope: web)`);
 
-      // Save Shopify product ID to the product type for future updates
+      // Save Shopify product ID, handle, and variant IDs to the product type for future updates
       await storage.updateProductType(productType.id, {
         shopifyProductId: String(shopifyProductId),
+        shopifyProductHandle: shopifyHandle,
         shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
+        shopifyVariantIds: shopifyVariantIds,
         lastPushedToShopify: new Date(),
       });
 
@@ -2323,6 +2336,67 @@ ${textEdgeRestrictions}
         if (!adminResponse.ok) {
           const errorText = await adminResponse.text().catch(() => '');
           console.log(`[Product Variants] Admin API failed with status ${adminResponse.status}: ${errorText}`);
+          
+          // Fallback 1: Try the public product JSON endpoint (no auth required)
+          if (productType.shopifyProductHandle) {
+            try {
+              const publicUrl = `https://${shopDomain}/products/${productType.shopifyProductHandle}.json`;
+              console.log(`[Product Variants] Trying public endpoint: ${publicUrl}`);
+              const publicResponse = await fetch(publicUrl);
+              if (publicResponse.ok) {
+                const publicData = await publicResponse.json();
+                const publicVariants = publicData.product?.variants || [];
+                if (publicVariants.length > 0) {
+                  console.log(`[Product Variants] Fetched ${publicVariants.length} variants via public endpoint`);
+                  return res.json({
+                    variants: publicVariants.map((v: any) => ({
+                      id: v.id,
+                      title: v.title,
+                      option1: v.option1,
+                      option2: v.option2,
+                      option3: v.option3,
+                      price: v.price,
+                      available: v.available
+                    })),
+                    source: "public"
+                  });
+                }
+              }
+            } catch (publicError) {
+              console.log(`[Product Variants] Public endpoint failed:`, publicError);
+            }
+          }
+          
+          // Fallback 2: Use product type's own variant data from our database
+          // This allows add-to-cart to work even when Shopify API has auth issues
+          const sizes = (typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes) as Array<{id: string, name: string}> || [];
+          const shopifyVariantIds = (typeof productType.shopifyVariantIds === 'string' 
+            ? JSON.parse(productType.shopifyVariantIds) 
+            : productType.shopifyVariantIds) as Record<string, number> || {};
+          
+          if (sizes.length > 0) {
+            console.log(`[Product Variants] Using fallback variant data from product type (${sizes.length} sizes)`);
+            
+            // Build variants from our product type data
+            const fallbackVariants = sizes.map((size, index) => {
+              // Look up Shopify variant ID from shopifyVariantIds (key is sizeName:colorName)
+              const variantKey = `${size.name}:default`;
+              const shopifyVariantId = shopifyVariantIds[variantKey];
+              
+              return {
+                id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
+                title: size.name,
+                option1: size.name,
+                option2: null,
+                option3: null,
+                price: "0.00", // Price will be set by Shopify when adding to cart
+                available: true
+              };
+            });
+            
+            return res.json({ variants: fallbackVariants, source: "fallback" });
+          }
+          
           return res.status(404).json({ error: "Could not fetch product variants from Shopify" });
         } else {
           const data = await adminResponse.json();

@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, timestamp, boolean, decimal } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, timestamp, boolean, decimal, json } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -240,7 +240,9 @@ export const productTypes = pgTable("product_types", {
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   shopifyProductId: text("shopify_product_id"),
+  shopifyProductHandle: text("shopify_product_handle"),
   shopifyProductUrl: text("shopify_product_url"),
+  shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
