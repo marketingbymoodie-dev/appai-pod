@@ -100,6 +100,85 @@ function isValidShopDomain(shop: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop);
 }
 
+// Validate that an access token is still valid by making a simple API call
+export async function validateShopifyToken(shop: string, accessToken: string): Promise<{ valid: boolean; error?: string }> {
+  try {
+    const response = await fetch(
+      `https://${shop}/admin/api/2024-01/shop.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    
+    if (response.ok) {
+      return { valid: true };
+    }
+    
+    if (response.status === 401) {
+      return { valid: false, error: "Token expired or revoked - reinstall required" };
+    }
+    
+    if (response.status === 403) {
+      return { valid: false, error: "Insufficient permissions - reinstall with updated scopes required" };
+    }
+    
+    return { valid: false, error: `Unexpected status: ${response.status}` };
+  } catch (error: any) {
+    return { valid: false, error: error.message || "Network error" };
+  }
+}
+
+// Helper to make Shopify API calls with automatic token validation
+export async function shopifyApiCall(
+  shop: string, 
+  accessToken: string, 
+  endpoint: string, 
+  options: RequestInit = {}
+): Promise<{ ok: boolean; data?: any; error?: string; needsReinstall?: boolean }> {
+  try {
+    const response = await fetch(
+      `https://${shop}/admin/api/2024-01/${endpoint}`,
+      {
+        ...options,
+        headers: {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json",
+          ...options.headers,
+        },
+      }
+    );
+    
+    if (response.ok) {
+      const data = await response.json();
+      return { ok: true, data };
+    }
+    
+    if (response.status === 401) {
+      console.error(`[Shopify API] 401 Unauthorized for ${shop} - token needs refresh`);
+      // Mark installation as needing reinstall
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (installation) {
+        await storage.updateShopifyInstallation(installation.id, {
+          status: "token_invalid",
+        });
+      }
+      return { ok: false, error: "Access token is invalid - shop needs to reinstall the app", needsReinstall: true };
+    }
+    
+    if (response.status === 403) {
+      return { ok: false, error: "Insufficient permissions for this operation", needsReinstall: true };
+    }
+    
+    const errorText = await response.text();
+    return { ok: false, error: `API error ${response.status}: ${errorText}` };
+  } catch (error: any) {
+    return { ok: false, error: error.message || "Network error" };
+  }
+}
+
 export function registerShopifyRoutes(app: Express): void {
   if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
     console.log("Shopify OAuth disabled - SHOPIFY_API_KEY/SECRET not configured");
@@ -223,12 +302,13 @@ export function registerShopifyRoutes(app: Express): void {
           installedAt: new Date(),
           uninstalledAt: null,
         };
-        // Update merchant ID if we have one and it's not already set
-        if (merchantId && !installation.merchantId) {
+        // Always update merchant ID on reinstall if we have one (handles reinstall with different logged-in user)
+        if (merchantId) {
           updates.merchantId = merchantId;
+          console.log(`Reinstall: Updating merchant ID from ${installation.merchantId || 'none'} to ${merchantId}`);
         }
         await storage.updateShopifyInstallation(installation.id, updates);
-        console.log(`Updated existing installation for ${shop}`);
+        console.log(`Updated existing installation for ${shop} (reinstall detected)`);
       } else {
         installation = await storage.createShopifyInstallation({
           shopDomain: shop,
@@ -255,6 +335,7 @@ export function registerShopifyRoutes(app: Express): void {
 
   app.get("/shopify/status", async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
+    const validate = req.query.validate === "true";
 
     if (!shop) {
       return res.json({ installed: false, error: "No shop provided" });
@@ -262,10 +343,42 @@ export function registerShopifyRoutes(app: Express): void {
 
     const installation = await storage.getShopifyInstallationByShop(shop);
 
+    if (!installation) {
+      return res.json({ 
+        installed: false, 
+        status: "not_installed",
+        reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`
+      });
+    }
+
+    // If validation requested or status is questionable, validate the token
+    let tokenValid = installation.status === "active";
+    let tokenError: string | undefined;
+    
+    if (validate && installation.accessToken) {
+      const validation = await validateShopifyToken(shop, installation.accessToken);
+      tokenValid = validation.valid;
+      tokenError = validation.error;
+      
+      // Update status and clear token if invalid
+      if (!validation.valid && installation.status === "active") {
+        await storage.updateShopifyInstallation(installation.id, {
+          status: "token_invalid",
+          accessToken: "", // Clear invalid token to prevent reuse
+        });
+      }
+    }
+
     res.json({
-      installed: installation?.status === "active",
-      shop: installation?.shopDomain,
-      installedAt: installation?.installedAt,
+      installed: installation.status === "active" && tokenValid,
+      status: installation.status,
+      tokenValid: tokenValid,
+      tokenError: tokenError,
+      shop: installation.shopDomain,
+      scope: installation.scope,
+      installedAt: installation.installedAt,
+      needsReinstall: !tokenValid || installation.status === "token_invalid",
+      reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`
     });
   });
 

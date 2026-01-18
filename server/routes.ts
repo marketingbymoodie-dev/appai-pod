@@ -1673,6 +1673,89 @@ ${textEdgeRestrictions}
         });
       }
 
+      // Handle republishing: If product already exists in Shopify, delete it first
+      // This ensures variant IDs are always up-to-date with the current access token
+      if (productType.shopifyProductId) {
+        // Verify this product was published to the same shop - prevent cross-shop deletion
+        const existingShopDomain = productType.shopifyShopDomain;
+        
+        // Safety guard: If we have a product ID but no shop domain (legacy record), 
+        // cannot safely delete - just clear local data and create new
+        if (!existingShopDomain) {
+          console.log(`[Shopify Publish] Legacy product record without shop domain - clearing and creating new`);
+          await storage.updateProductType(productType.id, {
+            shopifyProductId: null,
+            shopifyProductHandle: null,
+            shopifyProductUrl: null,
+            shopifyShopDomain: null,
+            shopifyVariantIds: null,
+          });
+        } else if (existingShopDomain !== shopDomain) {
+          console.log(`[Shopify Publish] Product was published to ${existingShopDomain}, but publishing to ${shopDomain} - creating new product`);
+          // Different shop - don't delete, just clear local data and create new
+          await storage.updateProductType(productType.id, {
+            shopifyProductId: null,
+            shopifyProductHandle: null,
+            shopifyProductUrl: null,
+            shopifyShopDomain: null,
+            shopifyVariantIds: null,
+          });
+        } else {
+          console.log(`[Shopify Publish] Product already exists (${productType.shopifyProductId}), deleting for republish...`);
+          
+          try {
+            const deleteResponse = await fetch(
+              `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`,
+              {
+                method: "DELETE",
+                headers: {
+                  "X-Shopify-Access-Token": installation.accessToken,
+                  "Content-Type": "application/json",
+                },
+              }
+            );
+            
+            if (deleteResponse.ok || deleteResponse.status === 404) {
+              console.log(`[Shopify Publish] Previous product deleted (or already gone)`);
+              // Clear old data before creating new product
+              await storage.updateProductType(productType.id, {
+                shopifyProductId: null,
+                shopifyProductHandle: null,
+                shopifyProductUrl: null,
+                shopifyShopDomain: null,
+                shopifyVariantIds: null,
+              });
+            } else if (deleteResponse.status === 401 || deleteResponse.status === 403) {
+              // Token is invalid - abort publish and require reinstall
+              console.error(`[Shopify Publish] Token invalid (${deleteResponse.status}), aborting publish`);
+              await storage.updateShopifyInstallation(installation.id, {
+                status: "token_invalid",
+                accessToken: "", // Clear invalid token
+              });
+              return res.status(401).json({
+                error: "Shopify connection expired",
+                details: "Please reinstall the app on your Shopify store to restore the connection",
+                needsReinstall: true,
+                reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`
+              });
+            } else {
+              // Other errors (500, 429, etc.) - abort to prevent orphaned products
+              console.error(`[Shopify Publish] Failed to delete old product: ${deleteResponse.status}`);
+              return res.status(500).json({
+                error: "Failed to update existing product",
+                details: `Could not remove the existing Shopify product (error ${deleteResponse.status}). Please try again or delete the product manually in Shopify admin.`
+              });
+            }
+          } catch (deleteError) {
+            console.error(`[Shopify Publish] Error deleting old product:`, deleteError);
+            return res.status(500).json({
+              error: "Failed to update existing product",
+              details: "Network error while removing the existing product. Please try again."
+            });
+          }
+        }
+      }
+
       // Parse product type data
       const allSizes = typeof productType.sizes === 'string' 
         ? JSON.parse(productType.sizes) 
@@ -1905,7 +1988,22 @@ ${textEdgeRestrictions}
 
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
-        console.error("Shopify API error:", errorText);
+        console.error("Shopify API error:", shopifyResponse.status, errorText);
+        
+        // Handle token expiration
+        if (shopifyResponse.status === 401 || shopifyResponse.status === 403) {
+          await storage.updateShopifyInstallation(installation.id, {
+            status: "token_invalid",
+            accessToken: "", // Clear invalid token
+          });
+          return res.status(401).json({
+            error: "Shopify connection expired",
+            details: "Please reinstall the app on your Shopify store to restore the connection",
+            needsReinstall: true,
+            reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`
+          });
+        }
+        
         return res.status(shopifyResponse.status).json({ 
           error: "Failed to create Shopify product",
           details: errorText
@@ -1932,11 +2030,12 @@ ${textEdgeRestrictions}
       // When merchant activates the product, it will only appear on Online Store (not POS)
       console.log(`Product ${shopifyProductId} configured for Online Store only (published_scope: web)`);
 
-      // Save Shopify product ID, handle, and variant IDs to the product type for future updates
+      // Save Shopify product ID, handle, shop domain, and variant IDs to the product type for future updates
       await storage.updateProductType(productType.id, {
         shopifyProductId: String(shopifyProductId),
         shopifyProductHandle: shopifyHandle,
         shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
+        shopifyShopDomain: shopDomain, // Track which shop this was published to
         shopifyVariantIds: shopifyVariantIds,
         lastPushedToShopify: new Date(),
       });

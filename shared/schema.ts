@@ -242,6 +242,7 @@ export const productTypes = pgTable("product_types", {
   shopifyProductId: text("shopify_product_id"),
   shopifyProductHandle: text("shopify_product_handle"),
   shopifyProductUrl: text("shopify_product_url"),
+  shopifyShopDomain: text("shopify_shop_domain"), // Which shop this product was published to
   shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
