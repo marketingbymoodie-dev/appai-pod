@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { Merchant } from "@shared/schema";
 
@@ -68,6 +68,19 @@ export default function AdminSettings() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to save settings", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const registerScriptMutation = useMutation({
+    mutationFn: async (shopDomain: string) => {
+      const response = await apiRequest("POST", "/api/shopify/register-script", { shopDomain });
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Cart script registered", description: "The cart image replacement script has been registered with Shopify." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to register script", description: error.message, variant: "destructive" });
     },
   });
 
@@ -296,6 +309,20 @@ export default function AdminSettings() {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() => registerScriptMutation.mutate(installation.shopDomain)}
+                            disabled={registerScriptMutation.isPending}
+                            data-testid={`button-register-script-${installation.shopDomain}`}
+                          >
+                            {registerScriptMutation.isPending ? (
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                            ) : (
+                              <FileCode className="h-4 w-4 mr-1" />
+                            )}
+                            Register Script
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => handleReconnectStore(installation.shopDomain)}
                             data-testid={`button-reconnect-${installation.shopDomain}`}
                           >
@@ -320,7 +347,7 @@ export default function AdminSettings() {
                           <ol className="list-decimal list-inside space-y-1 text-orange-700 dark:text-orange-300 text-xs">
                             <li>
                               <Button
-                                variant="link"
+                                variant="ghost"
                                 size="sm"
                                 className="h-auto p-0 text-xs text-orange-700 dark:text-orange-300 underline"
                                 onClick={() => handleUninstallInstructions(installation.shopDomain)}

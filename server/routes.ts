@@ -8,7 +8,7 @@ import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integra
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { Modality } from "@google/genai";
 import { ai } from "./replit_integrations/image/client";
-import { registerShopifyRoutes } from "./shopify";
+import { registerShopifyRoutes, registerCartScript } from "./shopify";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient } from "./replit_integrations/object_storage";
 
 const objectStorage = new ObjectStorageService();
@@ -2611,6 +2611,42 @@ ${textEdgeRestrictions}
     } catch (error) {
       console.error("Error fetching Shopify installations:", error);
       res.status(500).json({ error: "Failed to fetch installations" });
+    }
+  });
+
+  // Register cart script for a Shopify shop
+  app.post("/api/shopify/register-script", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { shopDomain } = req.body;
+
+      if (!shopDomain) {
+        return res.status(400).json({ error: "Shop domain is required" });
+      }
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(403).json({ error: "Merchant not found" });
+      }
+
+      // Get the installation for this shop
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (!installation || installation.status !== "active") {
+        return res.status(400).json({ error: "Shopify store not connected" });
+      }
+
+      // Verify merchant owns this installation
+      if (installation.merchantId !== merchant.id) {
+        return res.status(403).json({ error: "Not authorized for this shop" });
+      }
+
+      // Register the cart script
+      await registerCartScript(shopDomain, installation.accessToken!);
+
+      res.json({ success: true, message: "Cart script registered successfully" });
+    } catch (error) {
+      console.error("Error registering cart script:", error);
+      res.status(500).json({ error: "Failed to register cart script" });
     }
   });
 

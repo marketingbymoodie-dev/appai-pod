@@ -6,7 +6,7 @@ const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
 const SHOPIFY_SCOPES = "read_products,write_products,read_themes,write_themes,read_script_tags,write_script_tags";
 
-async function registerCartScript(shop: string, accessToken: string): Promise<void> {
+export async function registerCartScript(shop: string, accessToken: string): Promise<void> {
   const appUrl = getAppUrl();
   const scriptUrl = `${appUrl}/scripts/ai-art-cart.js`;
 
