@@ -33,8 +33,13 @@ export default function AdminSettings() {
     queryKey: ["/api/merchant"],
   });
 
-  const { data: shopifyInstallations, isLoading: installationsLoading } = useQuery<ShopifyInstallation[]>({
+  const { data: shopifyInstallations, isLoading: installationsLoading } = useQuery<
+    { installations: ShopifyInstallation[] },
+    Error,
+    ShopifyInstallation[]
+  >({
     queryKey: ["/api/shopify/installations"],
+    select: (data) => data.installations,
   });
 
   const handleReconnectStore = (shopDomain: string) => {
