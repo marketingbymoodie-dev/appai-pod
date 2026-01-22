@@ -6,6 +6,18 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 
 const app = express();
+
+/**
+ * ✅ Required for Shopify iframe embedding
+ */
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "frame-ancestors https://*.myshopify.com https://admin.shopify.com"
+  );
+  next();
+});
+
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -15,6 +27,7 @@ declare module "http" {
 }
 
 app.use(cookieParser());
+
 
 app.use("/scripts", express.static(path.resolve(process.cwd(), "public/scripts")));
 

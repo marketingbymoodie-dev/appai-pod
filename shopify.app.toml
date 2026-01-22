@@ -1,21 +1,20 @@
-# AI Art Studio Shopify App Configuration
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration
-
-name = "AI Art Studio"
 client_id = "6f6c83692d275fd284accad7d5a6fefd"
-application_url = "https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev"
-embedded = false
+name = "AI Art Studio"
+application_url = "https://appai-pod-production.up.railway.app"
+embedded = true
 
-[access_scopes]
-scopes = "read_products,write_products,read_themes,write_themes"
-
-[auth]
-redirect_urls = [
-  "https://a700bdc7-f87a-4245-b00d-fba581899711-00-2sewy5kze7hc5.worf.replit.dev/shopify/callback"
-]
+[build]
+automatically_update_urls_on_dev = true
 
 [webhooks]
 api_version = "2024-10"
 
-[build]
-automatically_update_urls_on_dev = true
+[access_scopes]
+scopes = "read_products,read_themes,write_products,write_themes"
+
+[auth]
+redirect_urls = [
+  "https://appai-pod-production.up.railway.app/auth/callback",
+  "https://appai-pod-production.up.railway.app/shopify/callback",
+  "https://appai-pod-production.up.railway.app/api/auth/callback"
+]

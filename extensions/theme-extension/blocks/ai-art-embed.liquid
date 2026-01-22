@@ -15,13 +15,90 @@
   "settings": []
 }
 {% endschema %}
+<div
+  id="appai-root"
+  data-shop="{{ shop.permanent_domain }}"
+  data-customer-id="{% if customer %}{{ customer.id }}{% endif %}"
+  style="display:none;"
+></div>
 
 <script>
-(function() {
+function showLoginRequiredPopup() {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = `
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 999999;
+  `;
+
+  const card = document.createElement("div");
+  card.style.cssText = `
+    width: min(520px, 92vw);
+    background: #fff;
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.25);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  `;
+
+  card.innerHTML = `
+    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">
+      Log in to generate artwork
+    </div>
+    <div style="font-size:14px;line-height:1.45;color:#333;margin-bottom:12px;">
+      We require login so your artwork is automatically saved to your gallery,
+      generation limits are applied fairly, and purchase credits can be refunded.
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button id="appai-close" style="
+        border:1px solid #ddd;
+        background:#fff;
+        padding:10px 14px;
+        border-radius:10px;
+        cursor:pointer;
+      ">Not now</button>
+      <a href="/account/login" style="
+        background:#111;
+        color:#fff;
+        text-decoration:none;
+        padding:10px 14px;
+        border-radius:10px;
+      ">Log in</a>
+    </div>
+  `;
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  overlay.querySelector("#appai-close")?.addEventListener("click", () => {
+    overlay.remove();
+  });
+}
+
+(function () {
   'use strict';
-  
+
   console.log('[AI Art Embed] Script starting...');
-  
+
+  // --- LOGIN GATE (required to generate art) ---
+ const customerId = {% if customer %}{{ customer.id | json }}{% else %}null{% endif %}; // always valid JS
+
+
+  const isProductPageGate =
+    window.location.pathname.includes('/products/') ||
+    window.location.pathname.includes('/products_preview');
+
+  if (isProductPageGate && !customerId) {
+    console.log('[AI Art Embed] No customer logged in -> showing login popup and stopping.');
+    showLoginRequiredPopup();
+    return; // ⛔ stop everything below
+  }
+  // --- END LOGIN GATE ---
+
+
+
+
   // Cart page handling - load cart script to replace images with mockups
   var isCartPage = window.location.pathname.includes('/cart');
   if (isCartPage) {
