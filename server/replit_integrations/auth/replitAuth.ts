@@ -32,11 +32,13 @@ export function getSession() {
     store: sessionStore,
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      secure: true,
-      maxAge: sessionTtl,
-    },
+   cookie: {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none", // ✅ required for Shopify iframe cookies
+  maxAge: sessionTtl,
+},
+
   });
 }
 

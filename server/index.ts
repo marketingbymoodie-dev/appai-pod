@@ -10,6 +10,7 @@ const app = express();
 /**
  * ✅ Required for Shopify iframe embedding
  */
+app.set("trust proxy", 1);
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
