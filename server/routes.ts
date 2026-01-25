@@ -1,3 +1,4 @@
+import { generateImageBase64 } from "./replit_integrations/image/client";
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -6,10 +7,17 @@ import { removeBackground } from "@imgly/background-removal-node";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
-import { Modality } from "@google/genai";
-import { ai } from "./replit_integrations/image/client";
 import { registerShopifyRoutes, registerCartScript } from "./shopify";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient } from "./replit_integrations/object_storage";
+function toUint8Array(buf: Buffer) {
+  // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
+  return Uint8Array.from(buf);
+}
+
+function toCleanBuffer(buf: Buffer) {
+  // Re-wrap via Uint8Array so TypeScript stops treating it as Buffer<ArrayBufferLike>
+  return Buffer.from(toUint8Array(buf));
+}
 
 const objectStorage = new ObjectStorageService();
 
@@ -118,7 +126,8 @@ async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
   
   try {
     // Convert buffer to Blob for the library
-    const blob = new Blob([buffer], { type: 'image/png' });
+    const blob = new Blob([Uint8Array.from(buffer)], { type: "image/png" });
+
     
     // Run ML background removal with small model for faster processing
     const resultBlob = await removeBackground(blob, {
@@ -215,12 +224,12 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
   const privateDir = objectStorage.getPrivateObjectDir();
   
-  let buffer = Buffer.from(base64Data, "base64");
+ let buffer: Buffer = Buffer.from(base64Data, "base64");
   
   // For apparel, remove background using ML-based segmentation
   if (isApparel) {
     console.log("Removing background for apparel image using ML...");
-    buffer = await removeImageBackground(buffer);
+    buffer = (await removeImageBackground(buffer)) as Buffer;
     // Force PNG for transparency support
     extension = "png";
     actualMimeType = "image/png";
@@ -228,7 +237,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
   } else if (targetDims && (targetDims.width !== targetDims.height)) {
     // Only resize for non-apparel (apparel stays square)
     const outputFormat = actualMimeType.includes("jpeg") || actualMimeType.includes("jpg") ? 'jpeg' : 'png';
-    buffer = await resizeToAspectRatio(buffer, targetDims, outputFormat);
+   buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
     extension = outputFormat === 'jpeg' ? 'jpg' : 'png';
     actualMimeType = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
   }
@@ -324,34 +333,32 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  await setupAuth(app);
-  registerAuthRoutes(app);
-  registerShopifyRoutes(app);
-  registerObjectStorageRoutes(app);
-
-  // Get product configuration
+   // ✅ Public: Get product configuration (MUST be before setupAuth)
   app.get("/api/config", async (_req: Request, res: Response) => {
+    console.log("🔥 HIT /api/config route");
+
     try {
       // Get all active style presets from database
       const dbStyles = await storage.getAllActiveStylePresets();
-      
+
       // Convert database styles to the format expected by the frontend
       // If no database styles exist, fall back to hardcoded presets with consistent shape
-      const stylePresets = dbStyles.length > 0 
-        ? dbStyles.map(s => ({
-            id: s.id.toString(),
-            name: s.name,
-            promptSuffix: s.promptPrefix,
-            category: s.category || "all",
-          }))
-        : STYLE_PRESETS.map(s => ({
-            id: s.id,
-            name: s.name,
-            promptSuffix: s.promptPrefix,
-            category: s.category,
-          }));
-      
-      res.json({
+      const stylePresets =
+        dbStyles.length > 0
+          ? dbStyles.map((s) => ({
+              id: s.id.toString(),
+              name: s.name,
+              promptSuffix: s.promptPrefix,
+              category: s.category || "all",
+            }))
+          : STYLE_PRESETS.map((s) => ({
+              id: s.id,
+              name: s.name,
+              promptSuffix: s.promptPrefix,
+              category: s.category,
+            }));
+
+      return res.json({
         sizes: PRINT_SIZES,
         frameColors: FRAME_COLORS,
         stylePresets,
@@ -359,11 +366,12 @@ export async function registerRoutes(
       });
     } catch (error) {
       console.error("Error fetching config:", error);
+
       // Fallback to hardcoded presets on error with consistent shape
-      res.json({
+      return res.json({
         sizes: PRINT_SIZES,
         frameColors: FRAME_COLORS,
-        stylePresets: STYLE_PRESETS.map(s => ({
+        stylePresets: STYLE_PRESETS.map((s) => ({
           id: s.id,
           name: s.name,
           promptSuffix: s.promptPrefix,
@@ -373,6 +381,12 @@ export async function registerRoutes(
       });
     }
   });
+
+  // 🔒 Everything below may register /api auth middleware
+  await setupAuth(app);
+  registerAuthRoutes(app);
+  registerShopifyRoutes(app);
+  registerObjectStorageRoutes(app);
 
   // Get or create customer profile
   app.get("/api/customer", isAuthenticated, async (req: any, res: Response) => {
@@ -773,55 +787,15 @@ ${textEdgeRestrictions}
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
       // Generate image using Nano Banana
-      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
-      
-      // Add reference image if provided
-      if (referenceImage) {
-        let base64Data: string;
-        let refMimeType = "image/png";
-        
-        // Check if referenceImage is an object storage path (starts with /objects/)
-        if (referenceImage.startsWith("/objects/")) {
-          // Fetch from object storage and convert to base64
-          try {
-            const imageData = await fetchImageFromStorageAsBase64(referenceImage);
-            base64Data = imageData.base64;
-            refMimeType = imageData.mimeType;
-          } catch (fetchError) {
-            console.error("Failed to fetch reference image from storage:", fetchError);
-            return res.status(400).json({ error: "Failed to load reference image" });
-          }
-        } else {
-          // Assume it's a base64 data URL
-          base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
-        }
-        
-        contents[0].parts.unshift({
-          inlineData: {
-            mimeType: refMimeType,
-            data: base64Data,
-          },
-        });
-      }
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image",
-        contents,
-        config: {
-          responseModalities: [Modality.TEXT, Modality.IMAGE],
-          // Force Gemini to generate at the correct aspect ratio
-          imageConfig: {
-            aspectRatio: geminiAspectRatio,
-          },
-        },
+           // Generate image using Replicate (NO Gemini)
+      // NOTE: This implementation is text-to-image only. If you need reference-image
+      // (image-to-image) later, we can extend generateImageBase64 to support it.
+      const { mimeType, data } = await generateImageBase64({
+        prompt: fullPrompt,
+        aspectRatio: geminiAspectRatio,
       });
 
-      const candidate = response.candidates?.[0];
-      const imagePart = candidate?.content?.parts?.find(
-        (part: any) => part.inlineData
-      );
-
-      if (!imagePart?.inlineData?.data) {
+      if (!data) {
         await storage.createGenerationLog({
           customerId: customer.id,
           promptLength: prompt.length,
@@ -834,8 +808,6 @@ ${textEdgeRestrictions}
         return res.status(500).json({ error: "Failed to generate image" });
       }
 
-      const mimeType = imagePart.inlineData.mimeType || "image/png";
-      
       // Get target dimensions for resizing - skip for apparel (keep square)
       let targetDims: TargetDimensions | undefined;
       if (!isApparel) {
@@ -843,21 +815,21 @@ ${textEdgeRestrictions}
         const genHeight = (finalSizeConfig as any).genHeight || 1024;
         targetDims = { width: genWidth, height: genHeight };
       }
-      
+
       // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { 
-          isApparel, 
+        const result = await saveImageToStorage(data, mimeType, {
+          isApparel,
           targetDims,
-          colorTier: isApparel ? colorTier : undefined
+          colorTier: isApparel ? colorTier : undefined,
         });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
         console.error("Failed to save to object storage, falling back to base64:", storageError);
-        generatedImageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
+        generatedImageUrl = `data:${mimeType};base64,${data}`;
       }
 
       // Create design record

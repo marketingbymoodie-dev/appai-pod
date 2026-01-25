@@ -1,162 +1,134 @@
-import * as client from "openid-client";
-import { Strategy, type VerifyFunction } from "openid-client/passport";
-
-import passport from "passport";
-import session from "express-session";
 import type { Express, RequestHandler } from "express";
-import memoize from "memoizee";
-import connectPg from "connect-pg-simple";
-import { authStorage } from "./storage";
+import * as jwt from "jsonwebtoken";
 
-const getOidcConfig = memoize(
-  async () => {
-    return await client.discovery(
-      new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
-      process.env.REPL_ID!
-    );
-  },
-  { maxAge: 3600 * 1000 }
-);
+/**
+ * Shopify-native auth (NO Replit OIDC)
+ *
+ * This replaces the old Replit OIDC + Passport session approach.
+ * In Shopify Admin, your frontend must send a Shopify session token (JWT) on API calls:
+ *
+ *   Authorization: Bearer <sessionToken>
+ *
+ * Shopify signs session tokens with your app's API secret (HS256).
+ */
 
-export function getSession() {
-  const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
-  const pgStore = connectPg(session);
-  const sessionStore = new pgStore({
-    conString: process.env.DATABASE_URL,
-    createTableIfMissing: false,
-    ttl: sessionTtl,
-    tableName: "sessions",
-  });
-  return session({
-    secret: process.env.SESSION_SECRET!,
-    store: sessionStore,
-    resave: false,
-    saveUninitialized: false,
-   cookie: {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none", // ✅ required for Shopify iframe cookies
-  maxAge: sessionTtl,
-},
+type ShopifySessionTokenPayload = {
+  iss?: string;
+  dest?: string; // e.g. https://{shop}.myshopify.com
+  aud?: string; // your SHOPIFY_API_KEY
+  sub?: string;
+  exp?: number;
+  nbf?: number;
+  iat?: number;
+  jti?: string;
+  sid?: string;
+};
 
-  });
-}
-
-function updateUserSession(
-  user: any,
-  tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers
-) {
-  user.claims = tokens.claims();
-  user.access_token = tokens.access_token;
-  user.refresh_token = tokens.refresh_token;
-  user.expires_at = user.claims?.exp;
-}
-
-async function upsertUser(claims: any) {
-  await authStorage.upsertUser({
-    id: claims["sub"],
-    email: claims["email"],
-    firstName: claims["first_name"],
-    lastName: claims["last_name"],
-    profileImageUrl: claims["profile_image_url"],
-  });
-}
-
-export async function setupAuth(app: Express) {
-  app.set("trust proxy", 1);
-  app.use(getSession());
-  app.use(passport.initialize());
-  app.use(passport.session());
-
-  const config = await getOidcConfig();
-
-  const verify: VerifyFunction = async (
-    tokens: client.TokenEndpointResponse & client.TokenEndpointResponseHelpers,
-    verified: passport.AuthenticateCallback
-  ) => {
-    const user = {};
-    updateUserSession(user, tokens);
-    await upsertUser(tokens.claims());
-    verified(null, user);
-  };
-
-  // Keep track of registered strategies
-  const registeredStrategies = new Set<string>();
-
-  // Helper function to ensure strategy exists for a domain
-  const ensureStrategy = (domain: string) => {
-    const strategyName = `replitauth:${domain}`;
-    if (!registeredStrategies.has(strategyName)) {
-      const strategy = new Strategy(
-        {
-          name: strategyName,
-          config,
-          scope: "openid email profile offline_access",
-          callbackURL: `https://${domain}/api/callback`,
-        },
-        verify
-      );
-      passport.use(strategy);
-      registeredStrategies.add(strategyName);
+declare global {
+  // Lightweight place to stash shop info for downstream handlers if needed.
+  // (Avoids forcing you to refactor other files right now.)
+  // eslint-disable-next-line no-var
+  namespace Express {
+    interface Request {
+      shopDomain?: string;
+      shopOrigin?: string;
+      shopifySession?: ShopifySessionTokenPayload;
     }
-  };
-
-  passport.serializeUser((user: Express.User, cb) => cb(null, user));
-  passport.deserializeUser((user: Express.User, cb) => cb(null, user));
-
-  app.get("/api/login", (req, res, next) => {
-    ensureStrategy(req.hostname);
-    passport.authenticate(`replitauth:${req.hostname}`, {
-      prompt: "login consent",
-      scope: ["openid", "email", "profile", "offline_access"],
-    })(req, res, next);
-  });
-
-  app.get("/api/callback", (req, res, next) => {
-    ensureStrategy(req.hostname);
-    passport.authenticate(`replitauth:${req.hostname}`, {
-      successReturnToOrRedirect: "/",
-      failureRedirect: "/api/login",
-    })(req, res, next);
-  });
-
-  app.get("/api/logout", (req, res) => {
-    req.logout(() => {
-      res.redirect(
-        client.buildEndSessionUrl(config, {
-          client_id: process.env.REPL_ID!,
-          post_logout_redirect_uri: `${req.protocol}://${req.hostname}`,
-        }).href
-      );
-    });
-  });
+  }
 }
 
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
-  const user = req.user as any;
+function getShopifyApiKey() {
+  const key = process.env.SHOPIFY_API_KEY;
+  if (!key) throw new Error("Missing env SHOPIFY_API_KEY");
+  return key;
+}
 
-  if (!req.isAuthenticated() || !user.expires_at) {
-    return res.status(401).json({ message: "Unauthorized" });
+function getShopifyApiSecret() {
+  const secret =
+    process.env.SHOPIFY_API_SECRET ||
+    process.env.SHOPIFY_API_SECRET_KEY ||
+    process.env.SHOPIFY_API_SECRET_SECRET;
+
+  if (!secret) {
+    throw new Error("Missing env SHOPIFY_API_SECRET (or SHOPIFY_API_SECRET_KEY)");
+  }
+  return secret;
+}
+
+function getBearerToken(req: any): string | null {
+  const header = req.headers?.authorization || req.headers?.Authorization;
+  if (!header || typeof header !== "string") return null;
+
+  const parts = header.split(" ");
+  if (parts.length !== 2) return null;
+  if (parts[0].toLowerCase() !== "bearer") return null;
+
+  return parts[1] || null;
+}
+
+function parseShopFromDest(dest?: string): { shopDomain?: string; shopOrigin?: string } {
+  if (!dest) return {};
+  try {
+    const u = new URL(dest);
+    return { shopDomain: u.hostname, shopOrigin: u.origin };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Core verifier used by middleware
+ */
+const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
+  const token = getBearerToken(req);
+
+  if (!token) {
+    return res.status(401).json({ message: "Unauthorized: missing session token" });
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  if (now <= user.expires_at) {
-    return next();
-  }
-
-  const refreshToken = user.refresh_token;
-  if (!refreshToken) {
-    res.status(401).json({ message: "Unauthorized" });
-    return;
-  }
+  let payload: ShopifySessionTokenPayload;
 
   try {
-    const config = await getOidcConfig();
-    const tokenResponse = await client.refreshTokenGrant(config, refreshToken);
-    updateUserSession(user, tokenResponse);
-    return next();
-  } catch (error) {
-    res.status(401).json({ message: "Unauthorized" });
-    return;
+    // Verify signature + exp/nbf
+    const decoded = jwt.verify(token, getShopifyApiSecret(), {
+      algorithms: ["HS256"],
+    });
+
+    // jsonwebtoken can return string | object
+    if (!decoded || typeof decoded !== "object") {
+      return res.status(401).json({ message: "Unauthorized: invalid token" });
+    }
+
+    payload = decoded as ShopifySessionTokenPayload;
+  } catch (_err) {
+    return res.status(401).json({ message: "Unauthorized: invalid token" });
   }
+
+  // Validate audience matches our API key (Shopify sets aud = API key)
+  const expectedAud = getShopifyApiKey();
+  if (payload.aud !== expectedAud) {
+    return res.status(401).json({ message: "Unauthorized: invalid audience" });
+  }
+
+  // Attach shop info for later handlers
+  const { shopDomain, shopOrigin } = parseShopFromDest(payload.dest);
+  req.shopDomain = shopDomain;
+  req.shopOrigin = shopOrigin;
+  req.shopifySession = payload;
+
+  return next();
 };
+
+/**
+ * Export name used by your app.
+ * This makes the middleware plug-in simple: app.use("/api", isAuthenticated)
+ */
+export const isAuthenticated: RequestHandler = verifyShopifySessionToken;
+
+/**
+ * Legacy hook: some codebases call setupAuth(app).
+ * With Shopify session tokens, we do not need to register any auth routes here.
+ */
+export async function setupAuth(_app: Express) {
+  // no-op
+}

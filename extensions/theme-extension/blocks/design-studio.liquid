@@ -1,13 +1,15 @@
 {% comment %}
   AI Art Studio - Product Page Design Block
   Embeds the AI artwork customization studio directly on product pages.
-  
+
+  FIX: Railway-only iframe + strict postMessage origins.
+  - No Replit allowances
+  - postMessage uses origin (not full URL, not "*")
+  - incoming message origin must match iframe origin
+
   Configuration priority:
   1. Product metafields (set automatically when publishing from admin)
   2. Block settings (manual fallback)
-  
-  When products are published via "Send to Store", metafields are automatically
-  configured - no manual theme editor setup required.
 {% endcomment %}
 
 {% comment %} Read metafields - these are set automatically when publishing from admin {% endcomment %}
@@ -92,12 +94,12 @@
   {% if heading != blank %}
     <h2 class="ai-art-studio__heading">{{ heading }}</h2>
   {% endif %}
-  
+
   {% if description != blank %}
     <p class="ai-art-studio__description">{{ description }}</p>
   {% endif %}
 
-  <div 
+  <div
     id="ai-art-studio-container-{{ block.id }}"
     class="ai-art-studio__container"
     data-app-url="{{ app_url }}"
@@ -119,23 +121,53 @@
       <p>Loading design studio...</p>
     </div>
   </div>
-  
-<script>
-    console.log('[AI Art Studio] Inline script test - block id: {{ block.id }}');
-    
+
+  <script>
+    console.log('[AI Art Studio] Inline script loaded - block id: {{ block.id }}');
+
     (function() {
       var containers = document.querySelectorAll('[id^="ai-art-studio-container-"]');
       console.log('[AI Art Studio] Found containers:', containers.length);
-      
+
+      function normalizeBaseUrl(url) {
+        if (!url) return null;
+        try {
+          var u = new URL(url);
+          return u.origin; // keep only scheme+host(+port)
+        } catch (e) {
+          // If someone stored a bare domain without protocol, try https
+          try {
+            var u2 = new URL('https://' + String(url).replace(/^\/+/, ''));
+            return u2.origin;
+          } catch (e2) {
+            return null;
+          }
+        }
+      }
+
       containers.forEach(function(container) {
-        var appUrl = container.dataset.appUrl;
-        console.log('[AI Art Studio] Container appUrl:', appUrl);
-        
-        if (!appUrl) {
+        var rawAppUrl = container.dataset.appUrl;
+        var appOrigin = normalizeBaseUrl(rawAppUrl);
+
+        console.log('[AI Art Studio] Container raw appUrl:', rawAppUrl, '-> origin:', appOrigin);
+
+        if (!appOrigin) {
           container.innerHTML = '<div style="padding:2rem;text-align:center;color:#dc2626;">This product has not been configured for the design studio.</div>';
           return;
         }
-        
+
+        // HARD BLOCK any accidental Replit usage
+        if (appOrigin.indexOf('replit') !== -1) {
+          console.warn('[AI Art Studio] Blocked Replit origin:', appOrigin);
+          container.innerHTML = '<div style="padding:2rem;text-align:center;color:#dc2626;">Invalid app URL configured (Replit is not allowed). Please republish this product or update the App URL metafield to your Railway domain.</div>';
+          return;
+        }
+
+        // Optional: hard-enforce Railway domain pattern (edit if your Railway URL differs)
+        // e.g. https://your-app.up.railway.app
+        // Comment this out if you use a custom domain.
+        // if (!/\.up\.railway\.app$/i.test(new URL(appOrigin).hostname)) { ... }
+
         var productTypeId = container.dataset.productTypeId || '1';
         var productId = container.dataset.productId;
         var productHandle = container.dataset.productHandle;
@@ -147,10 +179,10 @@
         var customerEmail = container.dataset.customerEmail || '';
         var customerName = container.dataset.customerName || '';
         var shopDomain = container.dataset.shopDomain || (window.Shopify && window.Shopify.shop) || window.location.hostname;
-        
+
         var urlParams = new URLSearchParams(window.location.search);
         var sharedDesignId = urlParams.get('sharedDesignId');
-        
+
         var params = new URLSearchParams();
         params.set('embedded', 'true');
         params.set('shopify', 'true');
@@ -170,47 +202,53 @@
         if (sharedDesignId) {
           params.set('sharedDesignId', sharedDesignId);
         }
-        
+
+        // Build iframe URL strictly from origin
+        var iframeUrl = appOrigin + '/embed/design?' + params.toString();
+
         var iframe = document.createElement('iframe');
-        iframe.src = appUrl + '/embed/design?' + params.toString();
+        iframe.src = iframeUrl;
         iframe.allow = 'clipboard-write';
         iframe.title = 'AI Art Design Studio';
-        
+
         iframe.onload = function() {
           var loading = container.querySelector('.ai-art-studio__loading');
           if (loading) loading.remove();
+
+          // Optionally send an init ping to the iframe (strict origin)
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_INIT',
+              shop: shopDomain,
+              productId: productId,
+              productHandle: productHandle,
+              selectedVariant: selectedVariant
+            }, appOrigin);
+          } catch (e) {}
         };
-        
+
         container.appendChild(iframe);
-        
-        var expectedOrigin = null;
-        try {
-          if (appUrl) expectedOrigin = new URL(appUrl).origin;
-        } catch (e) {}
-        
+
         var iframeOrigin = null;
         try {
           iframeOrigin = new URL(iframe.src).origin;
         } catch (e) {}
-        
-        console.log('[AI Art Studio] Message listener ready. Origins:', expectedOrigin, iframeOrigin);
-        
+
+        console.log('[AI Art Studio] Message listener ready. Allowed iframe origin:', iframeOrigin);
+
         window.addEventListener('message', function(event) {
-          var isValidOrigin = (expectedOrigin && event.origin === expectedOrigin) || 
-                              (iframeOrigin && event.origin === iframeOrigin) ||
-                              (event.origin && event.origin.indexOf('replit') !== -1);
-          
-          if (!isValidOrigin) return;
-          
+          // STRICT: accept only messages from the iframe origin (Railway)
+          if (!iframeOrigin || event.origin !== iframeOrigin) return;
+
           var data = event.data;
-          if (!data || !data.type) return;
-          
+          if (!data || typeof data !== 'object' || !data.type) return;
+
           if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
             var mockupUrls = data.mockupUrls;
             if (!mockupUrls || mockupUrls.length === 0) return;
-            
+
             console.log('[AI Art Studio] Received mockup URLs:', mockupUrls.length);
-            
+
             var previewSection = document.querySelector('.ai-art-mockup-preview');
             if (!previewSection) {
               previewSection = document.createElement('div');
@@ -221,7 +259,7 @@
                 designBlock.parentNode.insertBefore(previewSection, designBlock);
               }
             }
-            
+
             if (previewSection) {
               previewSection.style.display = 'block';
               var grid = previewSection.querySelector('.ai-art-mockup-preview__grid');
@@ -239,7 +277,7 @@
               }
             }
           }
-          
+
           if (data.type === 'ai-art-studio:add-to-cart') {
             fetch('/cart/add.js', {
               method: 'POST',
@@ -258,16 +296,25 @@
             })
             .then(function(r) { return r.json(); })
             .then(function(result) {
-              iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: true, cart: result }, appUrl);
+              // IMPORTANT: post back with strict origin (Railway)
+              iframe.contentWindow.postMessage(
+                { type: 'ai-art-studio:cart-updated', success: true, cart: result },
+                iframeOrigin
+              );
               document.dispatchEvent(new CustomEvent('cart:refresh'));
             })
             .catch(function(err) {
-              iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: false, error: err.message }, appUrl);
+              iframe.contentWindow.postMessage(
+                { type: 'ai-art-studio:cart-updated', success: false, error: err.message },
+                iframeOrigin
+              );
             });
           }
-          
+
           if (data.type === 'ai-art-studio:resize') {
-            container.style.height = data.height + 'px';
+            if (typeof data.height === 'number' && data.height > 0) {
+              container.style.height = data.height + 'px';
+            }
           }
         });
       });

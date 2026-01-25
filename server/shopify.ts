@@ -60,8 +60,14 @@ export async function registerCartScript(shop: string, accessToken: string): Pro
 }
 
 function getAppUrl(): string {
-  if (process.env.REPLIT_DEV_DOMAIN) {
-    return `https://${process.env.REPLIT_DEV_DOMAIN}`;
+  function getAppUrl(): string {
+  const appUrl = process.env.APP_URL?.trim();
+  if (!appUrl) {
+    throw new Error("APP_URL is not set. This must be set to your Railway HTTPS URL.");
+  }
+  return appUrl.replace(/\/$/, "");
+}
+
   }
   return process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
 }
