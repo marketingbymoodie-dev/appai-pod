@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2 } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { Merchant } from "@shared/schema";
 
@@ -86,6 +86,22 @@ export default function AdminSettings() {
     },
     onError: (error: Error) => {
       toast({ title: "Failed to register script", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const syncMetafieldsMutation = useMutation({
+    mutationFn: async (shopDomain: string) => {
+      const response = await apiRequest("POST", "/api/shopify/sync-metafields", { shopDomain });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "App URLs synced",
+        description: `Updated ${data.updated} products to use the current app URL.${data.failed > 0 ? ` ${data.failed} failed.` : ''}`
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to sync app URLs", description: error.message, variant: "destructive" });
     },
   });
 
@@ -311,6 +327,21 @@ export default function AdminSettings() {
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => syncMetafieldsMutation.mutate(installation.shopDomain)}
+                            disabled={syncMetafieldsMutation.isPending}
+                            title="Update all AI Art Studio products to use the current app URL"
+                            data-testid={`button-sync-urls-${installation.shopDomain}`}
+                          >
+                            {syncMetafieldsMutation.isPending ? (
+                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                            ) : (
+                              <Link2 className="h-4 w-4 mr-1" />
+                            )}
+                            Sync URLs
+                          </Button>
                           <Button
                             variant="outline"
                             size="sm"
