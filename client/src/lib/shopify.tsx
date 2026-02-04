@@ -1,5 +1,4 @@
-import { createContext, useContext, useMemo, useEffect, ReactNode } from "react";
-import { useAppBridge } from "@shopify/app-bridge-react";
+import { createContext, useContext, useMemo, useState, useEffect, ReactNode } from "react";
 import { setSessionTokenGetter } from "./queryClient";
 
 // Check if we're running inside Shopify Admin (shopify global exists)
@@ -9,11 +8,13 @@ export function isShopifyEmbedded(): boolean {
 
 interface ShopifyContextValue {
   isEmbedded: boolean;
+  isReady: boolean;
   getSessionToken: () => Promise<string | null>;
 }
 
 const ShopifyContext = createContext<ShopifyContextValue>({
   isEmbedded: false,
+  isReady: true,
   getSessionToken: async () => null,
 });
 
@@ -21,11 +22,18 @@ export function useShopify() {
   return useContext(ShopifyContext);
 }
 
-// Provider that uses Shopify App Bridge
+// Provider that uses Shopify App Bridge (global shopify object)
 function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
-  const shopify = useAppBridge();
+  const [isReady, setIsReady] = useState(false);
+
+  // Get the shopify global directly (injected by Shopify when embedded)
+  const shopify = typeof window !== "undefined" ? (window as any).shopify : null;
 
   const getSessionToken = useMemo(() => async () => {
+    if (!shopify) {
+      console.error("Shopify global not available");
+      return null;
+    }
     try {
       const token = await shopify.idToken();
       return token || null;
@@ -35,15 +43,28 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
     }
   }, [shopify]);
 
-  // Register the token getter globally so queryClient can use it
+  // Set up the token getter immediately on mount
   useEffect(() => {
-    setSessionTokenGetter(getSessionToken);
-  }, [getSessionToken]);
+    if (shopify) {
+      setSessionTokenGetter(getSessionToken);
+      setIsReady(true);
+    }
+  }, [shopify, getSessionToken]);
 
   const value = useMemo<ShopifyContextValue>(() => ({
     isEmbedded: true,
+    isReady,
     getSessionToken,
-  }), [getSessionToken]);
+  }), [isReady, getSessionToken]);
+
+  // Don't render children until we're ready
+  if (!isReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <ShopifyContext.Provider value={value}>
@@ -56,6 +77,7 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
 function NonEmbeddedProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ShopifyContextValue>(() => ({
     isEmbedded: false,
+    isReady: true,
     getSessionToken: async () => null,
   }), []);
 
