@@ -31,7 +31,7 @@ declare module "http" {
 
 app.use(cookieParser());
 
-// Static assets
+// Static assets (non-build scripts)
 app.use("/scripts", express.static(path.resolve(process.cwd(), "public/scripts")));
 
 // Body parsing
@@ -89,18 +89,36 @@ app.use((req, res, next) => {
    * Auth must be applied per-route inside routes.ts only.
    */
 
-  // Register all routes
+  // ✅ 1) Register API + server routes FIRST
   await registerRoutes(httpServer, app);
 
-  // Error handler
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
-    res.status(status).json({ message });
-    throw err;
+  /**
+   * ✅ 2) CRITICAL FIX:
+   * If an /api route wasn't matched above, return JSON 404 here.
+   * This prevents the SPA fallback from returning index.html for /api/* routes.
+   */
+  app.use("/api", (req, res) => {
+    res.status(404).json({
+      error: "API route not found",
+      path: req.originalUrl,
+    });
   });
 
-  // Vite in dev, static in prod
+  // Error handler
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("[SERVER ERROR]", err);
+
+  if (res.headersSent) {
+    return;
+  }
+
+  res.status(err.status || err.statusCode || 500).json({
+    message: err.message || "Internal Server Error",
+  });
+});
+
+
+  // ✅ 3) Vite in dev, static in prod (LAST)
   if (process.env.NODE_ENV === "production") {
     serveStatic(app);
   } else {

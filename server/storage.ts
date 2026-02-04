@@ -162,7 +162,7 @@ export class DatabaseStorage implements IStorage {
     return updated || null;
   }
 
-  // Merchants
+   // Merchants
   async getMerchant(id: string): Promise<Merchant | undefined> {
     const [merchant] = await db.select().from(merchants).where(eq(merchants.id, id));
     return merchant;
@@ -184,10 +184,31 @@ export class DatabaseStorage implements IStorage {
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(merchants.id, id))
       .returning();
+
     return updated;
   }
 
+  // Shopify helpers
+  async getMerchantByShop(shop: string): Promise<Merchant | undefined> {
+    const userId = `shopify:merchant:${shop}`;
+    return this.getMerchantByUserId(userId);
+  }
+
+  async getOrCreateShopifyMerchant(shop: string): Promise<Merchant> {
+    const userId = `shopify:merchant:${shop}`;
+
+    let merchant = await this.getMerchantByUserId(userId);
+
+    if (!merchant) {
+      merchant = await this.createMerchant({ userId } as InsertMerchant);
+    }
+
+    return merchant;
+  }
+
+
   // Designs
+
   async getDesign(id: number): Promise<Design | undefined> {
     const [design] = await db.select().from(designs).where(eq(designs.id, id));
     return design;
@@ -230,7 +251,12 @@ export class DatabaseStorage implements IStorage {
       db.select({ count: sql<number>`count(*)::int` }).from(designs)
         .where(eq(designs.customerId, customerId))
     ]);
-    return { designs: designsWithTypes, total: countResult[0]?.count || 0 };
+    const designsWithTypesWithSource = designsWithTypes.map((d) => ({
+  ...d,
+  designSource: (d as any).designSource ?? "app",
+}));
+return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 };
+
   }
 
   async getDesignCountByCustomer(customerId: string): Promise<number> {

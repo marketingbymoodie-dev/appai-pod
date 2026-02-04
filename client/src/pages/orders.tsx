@@ -31,7 +31,7 @@ export default function OrdersPage() {
   }
 
   if (!isAuthenticated) {
-    window.location.href = "/api/login";
+    window.location.href = "/";
     return null;
   }
 

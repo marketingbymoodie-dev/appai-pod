@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" show HEAD:server/user.ts)",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" show HEAD:server/supabase.ts)",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" log --all --full-history -- server/replit_integrations/auth/routes.ts)",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" show ea45195d63e39683901d1aea2c2eae791482c194:server/replit_integrations/auth/routes.ts)",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" log -p --all -- \"server/replit_integrations/auth/routes.ts\")",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" log --all --grep=\"logout\\\\|login\" --oneline)",
+      "Bash(git -C \"C:\\\\dev\\\\appai-pod\" log -p --all -S \"/api/logout\")",
+      "Bash(xargs:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

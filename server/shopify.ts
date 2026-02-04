@@ -225,19 +225,20 @@ export function registerShopifyRoutes(app: Express): void {
       maxAge: 600000
     });
 
-    // Try to capture merchant ID from logged-in user session
-    const user = req.user as { id?: string } | undefined;
-    if (user?.id) {
-      const merchant = await storage.getMerchantByUserId(user.id);
-      if (merchant) {
-        res.cookie("shopify_merchant", merchant.id, {
-          httpOnly: true,
-          secure: true,
-          sameSite: "lax",
-          maxAge: 600000
-        });
-      }
-    }
+   // Try to capture merchant ID from Shopify session
+if (res.locals.shopify?.session?.shop) {
+  const shop = res.locals.shopify.session.shop;
+  const merchant = await storage.getMerchantByShop(shop);
+
+  if (merchant) {
+    res.cookie("shopify_merchant", merchant.id, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 600000,
+    });
+  }
+}
 
     res.redirect(authUrl);
   });

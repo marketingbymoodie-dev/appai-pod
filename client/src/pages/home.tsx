@@ -115,7 +115,7 @@ function LandingPage() {
             <Palette className="h-6 w-6 text-primary" />
             <h1 className="text-xl font-semibold">AI Art Studio</h1>
           </div>
-          <Button onClick={() => window.location.href = "/api/login"} data-testid="button-login">
+          <Button onClick={() => window.location.href = "/"} data-testid="button-login">
             Sign In
           </Button>
         </div>
@@ -130,7 +130,7 @@ function LandingPage() {
             Transform your ideas into stunning artwork. Simply describe what you want, 
             choose a style, and our AI will generate beautiful designs ready for printing on premium products.
           </p>
-          <Button size="lg" onClick={() => window.location.href = "/api/login"} data-testid="button-get-started">
+          <Button size="lg" onClick={() => window.location.href = "/"} data-testid="button-get-started">
             Get Started Free
           </Button>
           <p className="text-sm text-muted-foreground mt-4">

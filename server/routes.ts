@@ -794,6 +794,12 @@ ${textEdgeRestrictions}
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
       });
+console.log("[api/generate] replicate returned", {
+  mimeType,
+  dataType: typeof data,
+  dataLen: data?.length,
+  dataHead: data?.slice?.(0, 32),
+});
 
       if (!data) {
         await storage.createGenerationLog({
@@ -820,11 +826,22 @@ ${textEdgeRestrictions}
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(data, mimeType, {
-          isApparel,
-          targetDims,
-          colorTier: isApparel ? colorTier : undefined,
-        });
+        console.log("[api/generate] saving image", {
+  mimeType,
+  base64Len: data?.length,
+  isApparel,
+  targetDims,
+  colorTier: isApparel ? colorTier : undefined,
+});
+
+       const result = await saveImageToStorage(data, mimeType, {
+
+  isApparel,
+  targetDims,
+});
+
+console.log("[api/shopify/generate] saved image", result);
+
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
       } catch (storageError) {
@@ -968,33 +985,39 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
-      // Generate the new image
-      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image",
-        contents,
-        config: {
-          responseModalities: [Modality.TEXT, Modality.IMAGE],
-        },
-      });
+      // Generate the new image (Replicate)
+const { data: base64Data, mimeType } = await generateImageBase64({
+  prompt: fullPrompt,
+});
 
-      const candidate = response.candidates?.[0];
-      const imagePart = candidate?.content?.parts?.find(
-        (part: any) => part.inlineData
-      );
+// Match the old Gemini shape so the rest of the code still works
+const imagePart = {
+  inlineData: {
+    data: base64Data,
+    mimeType: mimeType || "image/png",
+  },
+};
 
-      if (!imagePart?.inlineData?.data) {
-        return res.status(500).json({ error: "Failed to regenerate image" });
-      }
+if (!imagePart.inlineData.data) {
+  return res.status(500).json({ error: "Failed to regenerate image" });const { data: base64Data, mimeType } = await generateImageBase64({
+  prompt: fullPrompt,
+});
 
-      const mimeType = imagePart.inlineData.mimeType || "image/png";
+if (!base64Data) {
+  console.error("[Regenerate-Tier] Replicate returned no image data");
+  return res.status(500).json({ error: "Failed to regenerate image" });
+}
+
+const finalMimeType = mimeType || "image/png";
+
+}
 
       // Save image with background removal
       let generatedImageUrl: string;
       let thumbnailImageUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { 
+        const finalMimeType = mimeType || "image/png";
+const result = await saveImageToStorage(base64Data, finalMimeType, { 
           isApparel: true, 
           colorTier: newColorTier as ColorTier
         });
@@ -1151,7 +1174,11 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
         console.log(`Shopify session: Installation not found or inactive for: ${shop}`);
         return res.status(403).json({ error: "Shop not authorized" });
       }
-
+console.log("[shopify/session] installation ok", {
+  shop,
+  merchantId: installation.merchantId,
+  status: installation.status,
+});
       // Verify timestamp is recent (within 5 minutes)
       const requestTimestamp = parseInt(timestamp) || 0;
       if (Math.abs(now - requestTimestamp) > 5 * 60 * 1000) {
@@ -1488,40 +1515,26 @@ ${textEdgeRestrictions}
         });
       }
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image",
-        contents,
-        config: {
-          responseModalities: [Modality.TEXT, Modality.IMAGE],
-          // Force Gemini to generate at the correct aspect ratio
-          imageConfig: {
-            aspectRatio: geminiAspectRatio,
-          },
-        },
-      });
+    // Generate image via Replicate
+const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
+  prompt: fullPrompt,
+  aspectRatio: geminiAspectRatio ?? "1:1",
+});
 
-      const candidate = response.candidates?.[0];
-      const imagePart = candidate?.content?.parts?.find(
-        (part: any) => part.inlineData
-      );
 
-      if (!imagePart?.inlineData?.data) {
-        // Log detailed Gemini response for debugging
-        console.error("[Shopify Generate] No image in response:", {
-          hasResponse: !!response,
-          candidatesCount: response.candidates?.length || 0,
-          finishReason: candidate?.finishReason,
-          safetyRatings: candidate?.safetyRatings,
-          parts: candidate?.content?.parts?.map((p: any) => ({
-            hasText: !!p.text,
-            hasInlineData: !!p.inlineData,
-            textPreview: p.text?.substring(0, 100)
-          }))
-        });
-        return res.status(500).json({ error: "Failed to generate image" });
-      }
+// Image already generated via Replicate
+if (!base64Data) {
+  return res.status(500).json({ error: "Failed to generate image" });
+}
 
-      const mimeType = imagePart.inlineData.mimeType || "image/png";
+// Replicate already returned base64 + mime type
+const mimeType = generatedMimeType || "image/png";
+
+if (!base64Data) {
+  console.error("[Shopify Generate] Replicate returned no image data");
+  return res.status(500).json({ error: "Failed to generate image" });
+}
+
       
       // Check if this is an apparel product
       let isApparel = productType?.designerType === "apparel";
@@ -1546,13 +1559,20 @@ ${textEdgeRestrictions}
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
-        const result = await saveImageToStorage(imagePart.inlineData.data, mimeType, { isApparel, targetDims });
-        imageUrl = result.imageUrl;
-        thumbnailUrl = result.thumbnailUrl;
-      } catch (storageError) {
-        console.error("Failed to save to object storage, falling back to base64:", storageError);
-        imageUrl = `data:${mimeType};base64,${imagePart.inlineData.data}`;
-      }
+      const result = await saveImageToStorage(base64Data, mimeType, {
+  isApparel,
+  targetDims,
+});
+imageUrl = result.imageUrl;
+thumbnailUrl = result.thumbnailUrl;
+} catch (storageError) {
+  console.error(
+    "Failed to save to object storage, falling back to base64:",
+    storageError
+  );
+  imageUrl = `data:${mimeType};base64,${base64Data}`;
+}
+
       
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -1859,9 +1879,9 @@ ${textEdgeRestrictions}
         .trim();
 
       // Get the app URL for the design studio embed
-      const appUrl = process.env.REPLIT_DEV_DOMAIN 
-        ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-        : process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
+     const appUrl =
+  (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
+  `http://localhost:${process.env.PORT || 5000}`;
 
       // Create display name for dynamic text (strip "Custom" prefix if product title would have it)
       const displayName = productType.name;
@@ -2229,10 +2249,10 @@ ${textEdgeRestrictions}
         .trim();
 
       // Get the app URL for the design studio embed
-      const appUrl = process.env.REPLIT_DEV_DOMAIN 
-        ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-        : process.env.APP_URL || `http://localhost:${process.env.PORT || 5000}`;
-      
+      const appUrl =
+  (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
+  `http://localhost:${process.env.PORT || 5000}`;
+
       // Build the embed URL with shop parameter for authorization
       const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true&shop=${encodeURIComponent(shopDomain)}`;
       const displayName = productType.name;
@@ -3093,9 +3113,10 @@ ${textEdgeRestrictions}
       
       try {
         // Resolve internal path to full URL for fetching
-        const baseUrl = process.env.REPLIT_DEV_DOMAIN 
-          ? `https://${process.env.REPLIT_DEV_DOMAIN}` 
-          : `http://localhost:${process.env.PORT || 5000}`;
+        const baseUrl =
+  (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
+  `http://localhost:${process.env.PORT || 5000}`;
+
         const fetchUrl = `${baseUrl}${imageUrl}`;
 
         const response = await fetch(fetchUrl);

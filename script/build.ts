@@ -33,10 +33,18 @@ const allowlist = [
 ];
 
 async function buildAll() {
+  // Clean dist (client + server output)
   await rm("dist", { recursive: true, force: true });
 
   console.log("building client...");
-  await viteBuild();
+  await viteBuild({
+    // IMPORTANT: server serves from dist/public
+    build: {
+      outDir: "dist/public",
+      assetsDir: "assets",
+      emptyOutDir: true, // empties dist/public only
+    },
+  });
 
   console.log("building server...");
   const pkg = JSON.parse(await readFile("package.json", "utf-8"));

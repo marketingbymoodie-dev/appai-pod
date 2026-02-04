@@ -1,19 +1,21 @@
-import express, { type Express } from "express";
-import fs from "fs";
+import type { Express, Request, Response, NextFunction } from "express";
+import express from "express";
 import path from "path";
 
 export function serveStatic(app: Express) {
-  const distPath = path.resolve(__dirname, "public");
-  if (!fs.existsSync(distPath)) {
-    throw new Error(
-      `Could not find the build directory: ${distPath}, make sure to build the client first`,
-    );
-  }
+  // Vite build output should end up here (dist/public)
+  const publicDir = path.resolve(process.cwd(), "dist/public");
 
-  app.use(express.static(distPath));
+  // Serve static assets
+  app.use(
+    express.static(publicDir, {
+      index: false, // important: we'll handle index.html ourselves
+    })
+  );
 
-  // fall through to index.html if the file doesn't exist
-  app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(distPath, "index.html"));
+  // ✅ SPA fallback: ONLY for GET, and NEVER for /api/*
+  app.get("*", (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith("/api")) return next();
+    res.sendFile(path.join(publicDir, "index.html"));
   });
 }

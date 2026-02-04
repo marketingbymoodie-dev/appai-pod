@@ -24,6 +24,13 @@ type ShopifySessionTokenPayload = {
   sid?: string;
 };
 
+// Type for our Shopify-based user object
+export interface ShopifyUser {
+  claims: {
+    sub: string;
+  };
+}
+
 declare global {
   // Lightweight place to stash shop info for downstream handlers if needed.
   // (Avoids forcing you to refactor other files right now.)
@@ -34,6 +41,14 @@ declare global {
       shopOrigin?: string;
       shopifySession?: ShopifySessionTokenPayload;
     }
+  }
+}
+
+// Extend the Request type with our user property
+// Using module augmentation that doesn't conflict with Passport
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: ShopifyUser | any;
   }
 }
 
@@ -115,6 +130,16 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
   req.shopDomain = shopDomain;
   req.shopOrigin = shopOrigin;
   req.shopifySession = payload;
+
+  // Bridge to req.user.claims.sub for compatibility with existing routes
+  // Use shopDomain as the user identifier since Shopify session tokens
+  // represent the authenticated shop context
+  const userId = shopDomain ? `shopify:merchant:${shopDomain}` : payload.sub || "unknown";
+  req.user = {
+    claims: {
+      sub: userId,
+    },
+  };
 
   return next();
 };
