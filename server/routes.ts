@@ -2321,6 +2321,219 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // ==================== SYNC PRODUCT METAFIELDS ====================
+  // Bulk update metafields for all AI Art Studio products in a shop
+  // This is useful when the app URL changes (e.g., migrating from Replit to Railway)
+  app.post("/api/shopify/sync-metafields", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+
+      if (!merchant) {
+        return res.status(403).json({ error: "Merchant not found" });
+      }
+
+      const { shopDomain } = req.body;
+
+      if (!shopDomain) {
+        return res.status(400).json({ error: "Shop domain is required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shopDomain)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Get installation
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (!installation || installation.status !== "active") {
+        return res.status(400).json({ error: "Shopify store not connected" });
+      }
+
+      // Security: Verify the installation belongs to this merchant
+      if (installation.merchantId && installation.merchantId !== merchant.id) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      // Get the current app URL
+      const appUrl =
+        (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
+        `http://localhost:${process.env.PORT || 5000}`;
+
+      console.log(`[Sync Metafields] Starting sync for ${shopDomain} with app URL: ${appUrl}`);
+
+      // Find all products with the ai-art-studio-enabled tag
+      const searchResponse = await fetch(
+        `https://${shopDomain}/admin/api/2024-01/products.json?tag=ai-art-studio-enabled&limit=250`,
+        {
+          headers: {
+            "X-Shopify-Access-Token": installation.accessToken,
+          },
+        }
+      );
+
+      if (!searchResponse.ok) {
+        const errorText = await searchResponse.text();
+        console.error("Failed to fetch products:", errorText);
+        return res.status(searchResponse.status).json({
+          error: "Failed to fetch products from Shopify",
+          details: errorText
+        });
+      }
+
+      const { products } = await searchResponse.json();
+      console.log(`[Sync Metafields] Found ${products.length} AI Art Studio products`);
+
+      if (products.length === 0) {
+        return res.json({
+          success: true,
+          message: "No AI Art Studio products found to update",
+          updated: 0,
+        });
+      }
+
+      let updated = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      // Update metafields for each product
+      for (const product of products) {
+        try {
+          // Get product metafields to find our namespace
+          const metafieldsResponse = await fetch(
+            `https://${shopDomain}/admin/api/2024-01/products/${product.id}/metafields.json`,
+            {
+              headers: {
+                "X-Shopify-Access-Token": installation.accessToken,
+              },
+            }
+          );
+
+          if (!metafieldsResponse.ok) {
+            console.error(`Failed to fetch metafields for product ${product.id}`);
+            failed++;
+            continue;
+          }
+
+          const { metafields } = await metafieldsResponse.json();
+
+          // Find and update our metafields
+          const productTypeIdMeta = metafields.find(
+            (m: any) => m.namespace === "ai_art_studio" && m.key === "product_type_id"
+          );
+          const productTypeId = productTypeIdMeta?.value;
+
+          // Update app_url metafield
+          const appUrlMeta = metafields.find(
+            (m: any) => m.namespace === "ai_art_studio" && m.key === "app_url"
+          );
+
+          if (appUrlMeta) {
+            // Update existing metafield
+            const updateResponse = await fetch(
+              `https://${shopDomain}/admin/api/2024-01/metafields/${appUrlMeta.id}.json`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({
+                  metafield: {
+                    id: appUrlMeta.id,
+                    value: appUrl,
+                  },
+                }),
+              }
+            );
+
+            if (!updateResponse.ok) {
+              console.error(`Failed to update app_url metafield for product ${product.id}`);
+              failed++;
+              continue;
+            }
+          } else {
+            // Create new metafield
+            const createResponse = await fetch(
+              `https://${shopDomain}/admin/api/2024-01/products/${product.id}/metafields.json`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({
+                  metafield: {
+                    namespace: "ai_art_studio",
+                    key: "app_url",
+                    value: appUrl,
+                    type: "single_line_text_field",
+                  },
+                }),
+              }
+            );
+
+            if (!createResponse.ok) {
+              console.error(`Failed to create app_url metafield for product ${product.id}`);
+              failed++;
+              continue;
+            }
+          }
+
+          // Update design_studio_url metafield
+          const designUrlMeta = metafields.find(
+            (m: any) => m.namespace === "ai_art_studio" && m.key === "design_studio_url"
+          );
+
+          const designStudioUrl = productTypeId
+            ? `${appUrl}/embed/design?productTypeId=${productTypeId}`
+            : `${appUrl}/embed/design`;
+
+          if (designUrlMeta) {
+            await fetch(
+              `https://${shopDomain}/admin/api/2024-01/metafields/${designUrlMeta.id}.json`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({
+                  metafield: {
+                    id: designUrlMeta.id,
+                    value: designStudioUrl,
+                  },
+                }),
+              }
+            );
+          }
+
+          updated++;
+          console.log(`[Sync Metafields] Updated product ${product.id}: ${product.title}`);
+        } catch (err) {
+          console.error(`Error updating product ${product.id}:`, err);
+          failed++;
+          errors.push(`Product ${product.id}: ${(err as Error).message}`);
+        }
+      }
+
+      console.log(`[Sync Metafields] Completed: ${updated} updated, ${failed} failed`);
+
+      res.json({
+        success: true,
+        message: `Updated ${updated} products${failed > 0 ? `, ${failed} failed` : ""}`,
+        updated,
+        failed,
+        errors: errors.length > 0 ? errors : undefined,
+        appUrl,
+      });
+
+    } catch (error) {
+      console.error("Error syncing metafields:", error);
+      res.status(500).json({ error: "Failed to sync metafields" });
+    }
+  });
+
   // Rate limiting for product variants endpoint
   const variantFetchRateLimit = new Map<string, { count: number; resetTime: number }>();
   const VARIANT_RATE_LIMIT = 100; // Max requests per shop per hour
