@@ -6,26 +6,41 @@ import { setSessionTokenGetter } from "./queryClient";
 export function isShopifyEmbedded(): boolean {
   if (typeof window === "undefined") return false;
 
-  // Check if shopify global exists
-  if ("shopify" in window) return true;
+  const checks = {
+    hasShopifyGlobal: "shopify" in window,
+    hasShopParam: false,
+    hasEmbeddedParam: false,
+    isInIframe: false,
+    isCrossOriginIframe: false,
+    referrerHasShopify: false,
+  };
 
-  // Check if we're in an iframe with Shopify-related URL params
+  // Check URL params
   const params = new URLSearchParams(window.location.search);
-  if (params.has("shop") || params.has("embedded")) return true;
+  checks.hasShopParam = params.has("shop");
+  checks.hasEmbeddedParam = params.has("embedded");
 
-  // Check if parent is Shopify admin
+  // Check iframe context
   try {
-    if (window.top !== window.self) {
-      // We're in an iframe - assume Shopify context if no other indicators
-      return document.referrer.includes("shopify.com") ||
-             document.referrer.includes("myshopify.com");
+    checks.isInIframe = window.top !== window.self;
+    if (checks.isInIframe) {
+      checks.referrerHasShopify = document.referrer.includes("shopify.com") ||
+                                   document.referrer.includes("myshopify.com");
     }
   } catch {
-    // Cross-origin iframe - likely Shopify
-    return true;
+    // Cross-origin iframe access error - we're definitely in an iframe
+    checks.isCrossOriginIframe = true;
   }
 
-  return false;
+  const isEmbedded = checks.hasShopifyGlobal ||
+                      checks.hasShopParam ||
+                      checks.hasEmbeddedParam ||
+                      checks.isCrossOriginIframe ||
+                      (checks.isInIframe && checks.referrerHasShopify);
+
+  console.log("[ShopifyProvider] isShopifyEmbedded checks:", checks, "result:", isEmbedded);
+
+  return isEmbedded;
 }
 
 interface ShopifyContextValue {
@@ -54,11 +69,21 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
     let attempts = 0;
     const maxAttempts = 50; // 5 seconds max wait
 
+    console.log("[ShopifyProvider] Starting to poll for window.shopify...");
+    console.log("[ShopifyProvider] Current window.shopify:", (window as any).shopify);
+    console.log("[ShopifyProvider] window keys with 'shopify':", Object.keys(window).filter(k => k.toLowerCase().includes('shopify')));
+
     const checkShopify = () => {
       const shopify = (window as any).shopify;
 
+      if (attempts % 10 === 0) {
+        console.log("[ShopifyProvider] Poll attempt", attempts, "- shopify:", shopify ? "exists" : "undefined",
+                    "- idToken:", shopify?.idToken ? "exists" : "undefined");
+      }
+
       if (shopify && typeof shopify.idToken === "function") {
         console.log("[ShopifyProvider] Shopify global found after", attempts, "attempts");
+        console.log("[ShopifyProvider] shopify object:", shopify);
         setShopifyGlobal(shopify);
         return true;
       }
@@ -66,6 +91,7 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
       attempts++;
       if (attempts >= maxAttempts) {
         console.error("[ShopifyProvider] Shopify global not found after", maxAttempts, "attempts");
+        console.error("[ShopifyProvider] Final window.shopify value:", (window as any).shopify);
         // Still mark as ready but with null shopify - will show landing page
         setIsReady(true);
         return true;
