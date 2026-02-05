@@ -16,7 +16,15 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   }
   try {
     console.log("[QueryClient] Calling sessionTokenGetter...");
-    const token = await sessionTokenGetter();
+    // Add overall timeout for the token getter
+    const tokenPromise = sessionTokenGetter();
+    const timeoutPromise = new Promise<null>((resolve) =>
+      setTimeout(() => {
+        console.warn("[QueryClient] Token getter timed out after 8s");
+        resolve(null);
+      }, 8000)
+    );
+    const token = await Promise.race([tokenPromise, timeoutPromise]);
     console.log("[QueryClient] getAuthHeaders got token:", token ? "yes" : "no");
     if (!token) return {};
     return { Authorization: `Bearer ${token}` };
