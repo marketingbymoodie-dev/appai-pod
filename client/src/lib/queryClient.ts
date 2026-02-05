@@ -10,11 +10,20 @@ export function setSessionTokenGetter(getter: () => Promise<string | null>) {
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   console.log("[QueryClient] getAuthHeaders called, hasTokenGetter:", !!sessionTokenGetter);
-  if (!sessionTokenGetter) return {};
-  const token = await sessionTokenGetter();
-  console.log("[QueryClient] getAuthHeaders got token:", token ? "yes" : "no");
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
+  if (!sessionTokenGetter) {
+    console.log("[QueryClient] No token getter, returning empty headers");
+    return {};
+  }
+  try {
+    console.log("[QueryClient] Calling sessionTokenGetter...");
+    const token = await sessionTokenGetter();
+    console.log("[QueryClient] getAuthHeaders got token:", token ? "yes" : "no");
+    if (!token) return {};
+    return { Authorization: `Bearer ${token}` };
+  } catch (e) {
+    console.error("[QueryClient] Error getting token:", e);
+    return {};
+  }
 }
 
 async function throwIfResNotOk(res: Response) {

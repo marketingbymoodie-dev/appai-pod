@@ -123,7 +123,14 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const token = await shopify.idToken();
+      console.log("[ShopifyProvider] Calling shopify.idToken()...");
+      // Add timeout to prevent hanging forever
+      const tokenPromise = shopify.idToken();
+      const timeoutPromise = new Promise<null>((_, reject) =>
+        setTimeout(() => reject(new Error("idToken() timed out after 5s")), 5000)
+      );
+
+      const token = await Promise.race([tokenPromise, timeoutPromise]);
       console.log("[ShopifyProvider] Got session token:", token ? "yes" : "no");
       return token || null;
     } catch (e) {
