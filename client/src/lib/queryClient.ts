@@ -4,12 +4,15 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 let sessionTokenGetter: (() => Promise<string | null>) | null = null;
 
 export function setSessionTokenGetter(getter: () => Promise<string | null>) {
+  console.log("[QueryClient] setSessionTokenGetter called");
   sessionTokenGetter = getter;
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
+  console.log("[QueryClient] getAuthHeaders called, hasTokenGetter:", !!sessionTokenGetter);
   if (!sessionTokenGetter) return {};
   const token = await sessionTokenGetter();
+  console.log("[QueryClient] getAuthHeaders got token:", token ? "yes" : "no");
   if (!token) return {};
   return { Authorization: `Bearer ${token}` };
 }
@@ -75,3 +78,11 @@ export const queryClient = new QueryClient({
     },
   },
 });
+
+// Invalidate auth-related queries so they refetch with the new token getter
+export function invalidateAuthQueries() {
+  console.log("[QueryClient] invalidateAuthQueries called");
+  queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/merchant"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
+}

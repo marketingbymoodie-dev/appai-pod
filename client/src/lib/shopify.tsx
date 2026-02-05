@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useState, useEffect, useCallback, ReactNode } from "react";
-import { setSessionTokenGetter } from "./queryClient";
+import { setSessionTokenGetter, invalidateAuthQueries } from "./queryClient";
 
 // Check if we're running inside Shopify Admin iframe
 // The shopify global may not be immediately available, so we also check for iframe context
@@ -138,6 +138,12 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
       console.log("[ShopifyProvider] Setting up token getter");
       setSessionTokenGetter(getSessionToken);
       setIsReady(true);
+      // Invalidate any queries that may have run before the token getter was ready
+      // Use setTimeout to ensure this runs after React Query has initialized
+      setTimeout(() => {
+        console.log("[ShopifyProvider] Invalidating auth queries after token getter setup");
+        invalidateAuthQueries();
+      }, 0);
     }
   }, [shopifyGlobal, getSessionToken]);
 
