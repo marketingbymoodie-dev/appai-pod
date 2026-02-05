@@ -10,7 +10,11 @@
       "Bash(git -C \"C:\\\\dev\\\\appai-pod\" log --all --grep=\"logout\\\\|login\" --oneline)",
       "Bash(git -C \"C:\\\\dev\\\\appai-pod\" log -p --all -S \"/api/logout\")",
       "Bash(xargs:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(npm run build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }
