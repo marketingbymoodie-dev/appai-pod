@@ -67,18 +67,37 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const authHeaders = await getAuthHeaders();
-    const res = await fetch(queryKey.join("/") as string, {
-      credentials: "include",
-      headers: authHeaders,
-    });
+    const url = queryKey[0] as string;
+    console.log("[QueryClient] getQueryFn fetching:", url);
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    try {
+      const authHeaders = await getAuthHeaders();
+      console.log("[QueryClient] Making request to:", url, "with auth:", !!authHeaders.Authorization);
+
+      const res = await fetch(url, {
+        credentials: "include",
+        headers: authHeaders,
+      });
+
+      console.log("[QueryClient] Response for", url, "- status:", res.status);
+
+      if (unauthorizedBehavior === "returnNull" && res.status === 401) {
+        console.log("[QueryClient] Got 401, returning null for:", url);
+        return null;
+      }
+
+      await throwIfResNotOk(res);
+      const data = await res.json();
+      console.log("[QueryClient] Success for:", url);
+      return data;
+    } catch (error) {
+      console.error("[QueryClient] Error fetching:", url, error);
+      if (unauthorizedBehavior === "returnNull") {
+        console.log("[QueryClient] Returning null due to error for:", url);
+        return null;
+      }
+      throw error;
     }
-
-    await throwIfResNotOk(res);
-    return await res.json();
   };
 
 export const queryClient = new QueryClient({
