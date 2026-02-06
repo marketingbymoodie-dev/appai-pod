@@ -2798,21 +2798,29 @@ thumbnailUrl = result.thumbnailUrl;
 
       // Get installations linked to this merchant
       const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
-      
+
       // Also get unlinked installations (for first-time linking)
       const allInstallations = await storage.getAllShopifyInstallations();
       const unlinkedInstallations = allInstallations.filter(
-        (i: { merchantId: string | null }) => !i.merchantId
+        (i: { merchantId: number | null }) => !i.merchantId
       );
-      
+
+      // Auto-link unlinked installations to this merchant
+      for (const installation of unlinkedInstallations) {
+        console.log(`Auto-linking unlinked installation ${installation.shopDomain} to merchant ${merchant.id}`);
+        await storage.updateShopifyInstallation(installation.id, { merchantId: merchant.id });
+      }
+
       const combined = [...installations, ...unlinkedInstallations];
       
-      res.json(combined.map((i: { id: number; shopDomain: string; status: string; scope: string | null }) => ({
-        id: i.id,
-        shopDomain: i.shopDomain,
-        status: i.status,
-        scope: i.scope,
-      })));
+      res.json({
+        installations: combined.map((i: { id: number; shopDomain: string; status: string; scope: string | null }) => ({
+          id: i.id,
+          shopDomain: i.shopDomain,
+          status: i.status,
+          scope: i.scope,
+        }))
+      });
     } catch (error) {
       console.error("Error fetching Shopify installations:", error);
       res.status(500).json({ error: "Failed to fetch installations" });
