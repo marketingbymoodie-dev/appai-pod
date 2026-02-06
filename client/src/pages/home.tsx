@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { Palette, Image, ShoppingCart, Settings, Sparkles } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
-import type { Customer, Merchant } from "@shared/schema";
+import type { Customer } from "@shared/schema";
 
 export default function Home() {
   const { user, isLoading: authLoading, isAuthenticated } = useAuth();
@@ -16,10 +16,6 @@ export default function Home() {
     enabled: isAuthenticated,
   });
 
-  const { data: merchant } = useQuery<Merchant>({
-    queryKey: ["/api/merchant"],
-    enabled: isAuthenticated,
-  });
 
   if (authLoading) {
     return (
@@ -46,13 +42,11 @@ export default function Home() {
             <span className="text-sm text-muted-foreground" data-testid="text-username">
               {user?.firstName || user?.email}
             </span>
-            {merchant && (
-              <Link href="/admin">
-                <Button variant="ghost" size="icon" data-testid="button-admin">
-                  <Settings className="h-5 w-5" />
-                </Button>
-              </Link>
-            )}
+            <Link href="/admin">
+              <Button variant="ghost" size="icon" data-testid="button-admin">
+                <Settings className="h-5 w-5" />
+              </Button>
+            </Link>
             <Button variant="ghost" onClick={() => window.location.href = "/api/logout"} data-testid="button-logout">
               Logout
             </Button>
