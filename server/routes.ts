@@ -2790,14 +2790,22 @@ thumbnailUrl = result.thumbnailUrl;
   app.get("/api/shopify/installations", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const merchant = await storage.getMerchantByUserId(userId);
-      
+      const shopDomain = req.shopDomain; // From session token verification
+
+      let merchant = await storage.getMerchantByUserId(userId);
+
+      // Auto-create merchant if doesn't exist
       if (!merchant) {
-        return res.json([]);
+        console.log(`Auto-creating merchant for user ${userId}`);
+        merchant = await storage.createMerchant({
+          userId,
+          storeName: shopDomain || "My Store",
+          useBuiltInNanoBanana: true,
+        });
       }
 
       // Get installations linked to this merchant
-      const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
+      let installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
 
       // Also get unlinked installations (for first-time linking)
       const allInstallations = await storage.getAllShopifyInstallations();
@@ -2811,8 +2819,32 @@ thumbnailUrl = result.thumbnailUrl;
         await storage.updateShopifyInstallation(installation.id, { merchantId: merchant.id });
       }
 
-      const combined = [...installations, ...unlinkedInstallations];
-      
+      let combined = [...installations, ...unlinkedInstallations];
+
+      // If we have a shop domain from session but no installation, create a placeholder
+      if (shopDomain && combined.length === 0) {
+        console.log(`Creating placeholder installation for ${shopDomain} (from session token)`);
+        const existingInstallation = await storage.getShopifyInstallationByShop(shopDomain);
+
+        if (!existingInstallation) {
+          // Create a new installation - mark as needing reconnection
+          const newInstallation = await storage.createShopifyInstallation({
+            shopDomain,
+            accessToken: "NEEDS_RECONNECT", // Placeholder until OAuth completes
+            scope: "",
+            status: "needs_reconnect", // Needs OAuth to complete
+            installedAt: new Date(),
+            merchantId: merchant.id,
+          });
+          combined = [newInstallation];
+          console.log(`Created placeholder installation for ${shopDomain}`);
+        } else {
+          // Link existing installation to this merchant
+          await storage.updateShopifyInstallation(existingInstallation.id, { merchantId: merchant.id });
+          combined = [existingInstallation];
+        }
+      }
+
       res.json({
         installations: combined.map((i: { id: number; shopDomain: string; status: string; scope: string | null }) => ({
           id: i.id,
