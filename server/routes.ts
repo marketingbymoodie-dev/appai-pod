@@ -6079,6 +6079,67 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // POST /api/admin/printify/detect-shop - Detect Printify shop using provided token (before saving)
+  app.post("/api/admin/printify/detect-shop", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        return res.status(400).json({
+          error: "Token is required",
+          instructions: ["Please enter your Printify API token first"]
+        });
+      }
+
+      // Call Printify API to list shops
+      const response = await fetch("https://api.printify.com/v1/shops.json", {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({
+            error: "Invalid API token",
+            instructions: [
+              "Your Printify API token appears to be invalid",
+              "Make sure you copied the full token",
+              "Try generating a new token in Printify → Settings → API"
+            ]
+          });
+        }
+        throw new Error(`Printify API error: ${response.status}`);
+      }
+
+      const responseData = await response.json();
+      const shops = Array.isArray(responseData) ? responseData : (responseData.data || responseData || []);
+
+      if (!Array.isArray(shops) || shops.length === 0) {
+        return res.json({
+          shops: [],
+          error: "No shops found",
+          instructions: [
+            "You need to create a shop in Printify first",
+            "Go to printify.com → My Stores → Add Store",
+            "Connect a store or create a manual/API store"
+          ]
+        });
+      }
+
+      res.json({
+        shops: shops.map((shop: any) => ({
+          id: String(shop.id),
+          title: shop.title || `Shop ${shop.id}`,
+        })),
+      });
+    } catch (error) {
+      console.error("Error detecting Printify shop:", error);
+      res.status(500).json({ error: "Failed to detect shop" });
+    }
+  });
+
   // GET /api/admin/printify/shops - Fetch available Printify shops using API token
   app.get("/api/admin/printify/shops", isAuthenticated, async (req: any, res: Response) => {
     try {
