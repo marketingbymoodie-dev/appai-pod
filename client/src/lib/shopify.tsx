@@ -124,10 +124,10 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
 
     try {
       console.log("[ShopifyProvider] Calling shopify.idToken()...");
-      // Add timeout to prevent hanging forever
+      // Add timeout to prevent hanging forever (3s for faster loading)
       const tokenPromise = shopify.idToken();
       const timeoutPromise = new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error("idToken() timed out after 5s")), 5000)
+        setTimeout(() => reject(new Error("idToken() timed out after 3s")), 3000)
       );
 
       const token = await Promise.race([tokenPromise, timeoutPromise]);
