@@ -5590,8 +5590,32 @@ thumbnailUrl = result.thumbnailUrl;
       }
 
       // Convert maps to arrays
-      const sizes = Array.from(sizesMap.values());
+      let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
+
+      // Fallback: If no sizes were extracted but colors exist, create a "default" size
+      // This handles products like tumblers where all variants share the same size
+      if (sizes.length === 0 && frameColors.length > 0) {
+        // Try to extract size from product name (e.g., "Tumbler 20oz" -> "20oz")
+        const sizeFromName = name.match(/(\d+\s*oz)/i);
+        const defaultSizeId = sizeFromName ? sizeFromName[1].toLowerCase().replace(/\s+/g, '') : "default";
+        const defaultSizeName = sizeFromName ? sizeFromName[1] : "One Size";
+        sizes = [{ id: defaultSizeId, name: defaultSizeName, width: 0, height: 0 }];
+
+        // Update variantMap to use the extracted size name instead of "default"
+        // Keys are in format "default:colorId" when size wasn't extracted
+        if (defaultSizeId !== "default") {
+          for (const key of Object.keys(variantMap)) {
+            if (key.startsWith("default:")) {
+              const colorId = key.slice(8); // "default:" is 8 chars
+              const newKey = `${defaultSizeId}:${colorId}`;
+              variantMap[newKey] = variantMap[key];
+              delete variantMap[key];
+            }
+          }
+        }
+        console.log(`Added default size "${defaultSizeName}" (id: ${defaultSizeId}) for product with only color variants`);
+      }
 
       // Fetch base mockup images (placeholder images) from the first variant
       // This gives us product preview images before any design is applied
