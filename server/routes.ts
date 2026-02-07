@@ -2791,17 +2791,32 @@ thumbnailUrl = result.thumbnailUrl;
     try {
       const userId = req.user.claims.sub;
       const shopDomain = req.shopDomain; // From session token verification
+      console.log("[/api/shopify/installations] userId:", userId, "shopDomain:", shopDomain);
 
       let merchant = await storage.getMerchantByUserId(userId);
 
       // Auto-create merchant if doesn't exist
       if (!merchant) {
-        console.log(`Auto-creating merchant for user ${userId}`);
-        merchant = await storage.createMerchant({
-          userId,
-          storeName: shopDomain || "My Store",
-          useBuiltInNanoBanana: true,
-        });
+        console.log(`[/api/shopify/installations] Auto-creating merchant for user ${userId}`);
+        try {
+          merchant = await storage.createMerchant({
+            userId,
+            storeName: shopDomain || "My Store",
+            useBuiltInNanoBanana: true,
+          });
+        } catch (createError: any) {
+          // Handle race condition
+          if (createError.code === '23505') {
+            merchant = await storage.getMerchantByUserId(userId);
+          } else {
+            throw createError;
+          }
+        }
+      }
+
+      if (!merchant) {
+        console.log("[/api/shopify/installations] Still no merchant after create attempt");
+        return res.json({ installations: [] });
       }
 
       // Get installations linked to this merchant
@@ -2823,25 +2838,40 @@ thumbnailUrl = result.thumbnailUrl;
 
       // If we have a shop domain from session but no installation, create a placeholder
       if (shopDomain && combined.length === 0) {
-        console.log(`Creating placeholder installation for ${shopDomain} (from session token)`);
-        const existingInstallation = await storage.getShopifyInstallationByShop(shopDomain);
+        console.log(`[/api/shopify/installations] Creating placeholder installation for ${shopDomain}`);
+        try {
+          const existingInstallation = await storage.getShopifyInstallationByShop(shopDomain);
 
-        if (!existingInstallation) {
-          // Create a new installation - mark as needing reconnection
-          const newInstallation = await storage.createShopifyInstallation({
-            shopDomain,
-            accessToken: "NEEDS_RECONNECT", // Placeholder until OAuth completes
-            scope: "",
-            status: "needs_reconnect", // Needs OAuth to complete
-            installedAt: new Date(),
-            merchantId: merchant.id,
-          });
-          combined = [newInstallation];
-          console.log(`Created placeholder installation for ${shopDomain}`);
-        } else {
-          // Link existing installation to this merchant
-          await storage.updateShopifyInstallation(existingInstallation.id, { merchantId: merchant.id });
-          combined = [existingInstallation];
+          if (!existingInstallation) {
+            // Create a new installation - mark as needing reconnection
+            const newInstallation = await storage.createShopifyInstallation({
+              shopDomain,
+              accessToken: "NEEDS_RECONNECT", // Placeholder until OAuth completes
+              scope: "",
+              status: "needs_reconnect", // Needs OAuth to complete
+              installedAt: new Date(),
+              merchantId: merchant.id,
+            });
+            combined = [newInstallation];
+            console.log(`[/api/shopify/installations] Created placeholder installation for ${shopDomain}`);
+          } else {
+            // Link existing installation to this merchant
+            console.log(`[/api/shopify/installations] Linking existing installation to merchant`);
+            await storage.updateShopifyInstallation(existingInstallation.id, { merchantId: merchant.id });
+            combined = [existingInstallation];
+          }
+        } catch (installError: any) {
+          // Handle unique constraint - installation might exist from another attempt
+          if (installError.code === '23505') {
+            console.log(`[/api/shopify/installations] Installation exists (race condition), fetching...`);
+            const existing = await storage.getShopifyInstallationByShop(shopDomain);
+            if (existing) {
+              combined = [existing];
+            }
+          } else {
+            console.error(`[/api/shopify/installations] Error creating installation:`, installError);
+            // Don't throw - just continue with empty installations
+          }
         }
       }
 
@@ -3678,21 +3708,36 @@ thumbnailUrl = result.thumbnailUrl;
   app.get("/api/merchant", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
+      console.log("[/api/merchant] Getting merchant for userId:", userId);
+
       let merchant = await storage.getMerchantByUserId(userId);
-      
+      console.log("[/api/merchant] Existing merchant:", merchant ? "found" : "not found");
+
       if (!merchant) {
-        merchant = await storage.createMerchant({
-          userId,
-          useBuiltInNanoBanana: true,
-          subscriptionTier: "free",
-          monthlyGenerationLimit: 100,
-          generationsThisMonth: 0,
-        });
+        console.log("[/api/merchant] Creating new merchant...");
+        try {
+          merchant = await storage.createMerchant({
+            userId,
+            useBuiltInNanoBanana: true,
+            subscriptionTier: "free",
+            monthlyGenerationLimit: 100,
+            generationsThisMonth: 0,
+          });
+          console.log("[/api/merchant] Created merchant:", merchant.id);
+        } catch (createError: any) {
+          // Handle unique constraint violation - merchant might have been created by another request
+          if (createError.code === '23505') {
+            console.log("[/api/merchant] Merchant already exists (race condition), fetching again...");
+            merchant = await storage.getMerchantByUserId(userId);
+          } else {
+            throw createError;
+          }
+        }
       }
-      
+
       res.json(merchant);
     } catch (error) {
-      console.error("Error fetching merchant:", error);
+      console.error("[/api/merchant] Error:", error);
       res.status(500).json({ error: "Failed to fetch merchant" });
     }
   });
