@@ -261,12 +261,25 @@ export default function EmbedDesign() {
   };
 
   useEffect(() => {
+    // Add timeout wrapper for fetch to prevent infinite hanging
+    const fetchWithTimeout = (url: string, timeout = 10000): Promise<Response> => {
+      return Promise.race([
+        fetch(url),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Request to ${url} timed out after ${timeout}ms`)), timeout)
+        )
+      ]);
+    };
+
+    console.log('[EmbedDesign] Loading config for productTypeId:', productTypeId);
+
     Promise.all([
-      fetch("/api/config").then(res => res.json()),
+      fetchWithTimeout("/api/config").then(res => res.json()).catch(() => ({ stylePresets: [] })),
       // Use the designer endpoint to get proper designer config (same as design.tsx and admin pages)
-      fetch(`/api/product-types/${productTypeId}/designer`).then(res => res.ok ? res.json() : null)
+      fetchWithTimeout(`/api/product-types/${productTypeId}/designer`).then(res => res.ok ? res.json() : null).catch(() => null)
     ])
       .then(([configData, designerConfig]) => {
+        console.log('[EmbedDesign] Config loaded:', { hasPresets: !!configData?.stylePresets, hasDesigner: !!designerConfig });
         if (configData.stylePresets) {
           setStylePresets(configData.stylePresets);
         }
@@ -349,6 +362,15 @@ export default function EmbedDesign() {
 
   useEffect(() => {
     if (isShopify && shopDomain) {
+      console.log('[EmbedDesign] Starting session request for shop:', shopDomain);
+
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.warn('[EmbedDesign] Session request timed out after 10s');
+        controller.abort();
+      }, 10000);
+
       fetch("/api/shopify/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -360,8 +382,10 @@ export default function EmbedDesign() {
           customerEmail: shopifyCustomerEmail || undefined,
           customerName: shopifyCustomerName || undefined,
         }),
+        signal: controller.signal,
       })
         .then(async (res) => {
+          clearTimeout(timeoutId);
           const data = await res.json();
           if (!res.ok) {
             throw new Error(data.error || `Session failed: ${res.status}`);
@@ -369,6 +393,7 @@ export default function EmbedDesign() {
           return data;
         })
         .then((data) => {
+          console.log('[EmbedDesign] Session established successfully');
           if (data.sessionToken) {
             setSessionToken(data.sessionToken);
             if (data.customer) {
@@ -379,11 +404,18 @@ export default function EmbedDesign() {
           setSessionLoading(false);
         })
         .catch((error) => {
-          console.error("Failed to get session token:", error);
-          setSessionError(error.message || "Failed to connect to store");
+          clearTimeout(timeoutId);
+          if (error.name === 'AbortError') {
+            console.error('[EmbedDesign] Session request aborted (timeout)');
+            setSessionError("Connection timed out - please refresh");
+          } else {
+            console.error("[EmbedDesign] Failed to get session token:", error);
+            setSessionError(error.message || "Failed to connect to store");
+          }
           setSessionLoading(false);
         });
     } else {
+      console.log('[EmbedDesign] Skipping session - isShopify:', isShopify, 'shopDomain:', shopDomain);
       setSessionLoading(false);
     }
   }, [isShopify, shopDomain, productId, shopifyCustomerId, shopifyCustomerEmail, shopifyCustomerName]);
