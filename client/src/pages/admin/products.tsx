@@ -230,15 +230,32 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
-      toast({ 
+      toast({
         title: "Colors refreshed",
-        description: data.updatedCount > 0 
+        description: data.updatedCount > 0
           ? `Updated ${data.updatedCount} color${data.updatedCount !== 1 ? 's' : ''} with new hex values.`
           : "All colors already have the latest hex values."
       });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to refresh colors", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const refreshVariantsMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/refresh-variants`);
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({
+        title: "Variants refreshed",
+        description: data.message || `Found ${data.sizes?.length || 0} sizes and ${data.frameColors?.length || 0} colors.`
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to refresh variants", description: error.message, variant: "destructive" });
     },
   });
 
@@ -526,8 +543,8 @@ export default function AdminProducts() {
                       >
                         Test Generator
                       </Button>
-                      <Button 
-                        variant="outline" 
+                      <Button
+                        variant="outline"
                         size="sm"
                         onClick={() => handleEditVariants(pt)}
                         data-testid={`button-edit-variants-${pt.id}`}
@@ -535,6 +552,18 @@ export default function AdminProducts() {
                         <Settings className="h-3 w-3 mr-1" />
                         Variants
                       </Button>
+                      {pt.printifyBlueprintId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => refreshVariantsMutation.mutate(pt.id)}
+                          disabled={refreshVariantsMutation.isPending}
+                          data-testid={`button-refresh-variants-${pt.id}`}
+                        >
+                          <RefreshCw className={`h-3 w-3 mr-1 ${refreshVariantsMutation.isPending ? 'animate-spin' : ''}`} />
+                          Refresh Variants
+                        </Button>
+                      )}
                       {pt.printifyBlueprintId && JSON.parse(pt.frameColors || "[]").length > 0 && (
                         <Button 
                           variant="outline" 

@@ -6072,6 +6072,217 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // POST /api/admin/product-types/:id/refresh-variants - Re-fetch sizes and colors from Printify
+  // This re-runs the variant parsing logic to fix products with missing sizes/colors
+  app.post("/api/admin/product-types/:id/refresh-variants", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      if (!merchant.printifyApiToken) {
+        return res.status(400).json({ error: "Printify API token not configured" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+        return res.status(400).json({ error: "Product type not linked to Printify blueprint" });
+      }
+
+      const blueprintId = productType.printifyBlueprintId;
+      const providerId = productType.printifyProviderId;
+
+      // Fetch variants from Printify
+      const variantsResponse = await fetchWithRetry(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        {
+          headers: {
+            "Authorization": `Bearer ${merchant.printifyApiToken}`,
+            "Content-Type": "application/json"
+          }
+        },
+        3,
+        1500
+      );
+
+      if (!variantsResponse.ok) {
+        throw new Error(`Failed to fetch variants: ${variantsResponse.status}`);
+      }
+
+      const variantsData = await variantsResponse.json();
+      const variants = variantsData.variants || variantsData || [];
+
+      // Parse variants to extract sizes and colors (same logic as import)
+      const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
+      const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
+      const variantMap: Record<string, { printifyVariantId: number; providerId: number }> = {};
+
+      // Known size patterns
+      const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
+      const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
+      const namedSizes = ["small", "medium", "large", "extra large", "king", "queen", "twin", "full", "one size"];
+
+      const looksLikeSize = (str: string): boolean => {
+        const lower = str.toLowerCase().trim();
+        if (lower.match(/^\d+[""']?\s*[xX×]\s*\d+[""']?$/)) return true;
+        if (apparelSizesLower.includes(lower)) return true;
+        if (namedSizes.includes(lower)) return true;
+        if (lower.match(/^\d+\s*oz$/i)) return true;
+        return false;
+      };
+
+      // Color hex lookup map
+      const colorHexMap: Record<string, string> = {
+        "black": "#1a1a1a", "white": "#f5f5f5", "red": "#C41E3A", "blue": "#2563EB",
+        "navy": "#1B2838", "green": "#22C55E", "yellow": "#FACC15", "orange": "#F97316",
+        "pink": "#EC4899", "purple": "#A855F7", "gray": "#9E9E9E", "grey": "#9E9E9E",
+        "brown": "#795548", "beige": "#F5F5DC", "cream": "#FFFDD0", "tan": "#D2B48C",
+        "gold": "#FFD700", "silver": "#C0C0C0", "forest": "#228B22", "maroon": "#800000",
+        "coral": "#FF7F50", "teal": "#008080", "aqua": "#00FFFF", "mint": "#98FF98",
+        "lavender": "#E6E6FA", "peach": "#FFCBA4", "olive": "#808000", "charcoal": "#36454F",
+      };
+
+      for (const variant of variants) {
+        const title = variant.title || "";
+        const options = variant.options || {};
+
+        const normalizedTitle = title
+          .replace(/[″″‶‴]/g, '"')
+          .replace(/[′′‵]/g, "'")
+          .replace(/[""]/g, '"')
+          .replace(/['']/g, "'");
+
+        let extractedSizeId = "";
+
+        // Try dimensional sizes
+        const dimMatch = normalizedTitle.match(/(\d+)[""']?\s*[xX×]\s*(\d+)[""']?/);
+        if (dimMatch) {
+          const width = parseInt(dimMatch[1]);
+          const height = parseInt(dimMatch[2]);
+          extractedSizeId = `${width}x${height}`;
+          const sizeName = `${width}" x ${height}"`;
+          if (!sizesMap.has(extractedSizeId)) {
+            sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeName, width, height });
+          }
+        }
+
+        // Check options for size
+        if (!extractedSizeId && (options.size || options.Size)) {
+          const sizeVal = options.size || options.Size;
+          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          if (!sizesMap.has(extractedSizeId)) {
+            sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
+          }
+        }
+
+        // Extract from title patterns
+        if (!extractedSizeId && title) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          for (const part of parts) {
+            const volumeMatch = part.match(/^(\d+)\s*oz$/i);
+            if (volumeMatch) {
+              extractedSizeId = `${volumeMatch[1]}oz`;
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: `${volumeMatch[1]}oz`, width: 0, height: 0 });
+              }
+              break;
+            }
+            if (apparelSizesLower.includes(part.toLowerCase())) {
+              extractedSizeId = part.toLowerCase();
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
+              }
+              break;
+            }
+          }
+        }
+
+        // Extract color
+        let colorName = "";
+        if (options.color) colorName = options.color;
+        else if (options.colour) colorName = options.colour;
+        else if (options.Color) colorName = options.Color;
+        else if (title.includes("/")) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          for (let i = parts.length - 1; i >= 0; i--) {
+            if (!looksLikeSize(parts[i])) {
+              colorName = parts[i];
+              break;
+            }
+          }
+        } else if (!looksLikeSize(title)) {
+          // Single-word title that's not a size is likely a color
+          colorName = title;
+        }
+
+        let extractedColorId = "";
+        if (colorName) {
+          extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          if (!colorsMap.has(colorName.toLowerCase())) {
+            const hex = colorHexMap[colorName.toLowerCase()] || "#808080";
+            colorsMap.set(colorName.toLowerCase(), { id: extractedColorId, name: colorName, hex });
+          }
+        }
+
+        // Add to variantMap
+        if (extractedSizeId || extractedColorId) {
+          const mapKey = `${extractedSizeId || 'default'}:${extractedColorId || 'default'}`;
+          variantMap[mapKey] = { printifyVariantId: variant.id, providerId };
+        }
+      }
+
+      let sizes = Array.from(sizesMap.values());
+      const frameColors = Array.from(colorsMap.values());
+
+      // Fallback: If no sizes but colors exist, extract from product name
+      if (sizes.length === 0 && frameColors.length > 0) {
+        const sizeFromName = productType.name.match(/(\d+\s*oz)/i);
+        const defaultSizeId = sizeFromName ? sizeFromName[1].toLowerCase().replace(/\s+/g, '') : "default";
+        const defaultSizeName = sizeFromName ? sizeFromName[1] : "One Size";
+        sizes = [{ id: defaultSizeId, name: defaultSizeName, width: 0, height: 0 }];
+
+        if (defaultSizeId !== "default") {
+          for (const key of Object.keys(variantMap)) {
+            if (key.startsWith("default:")) {
+              const colorId = key.slice(8);
+              const newKey = `${defaultSizeId}:${colorId}`;
+              variantMap[newKey] = variantMap[key];
+              delete variantMap[key];
+            }
+          }
+        }
+      }
+
+      // Update product type
+      const updated = await storage.updateProductType(productTypeId, {
+        sizes: JSON.stringify(sizes),
+        frameColors: JSON.stringify(frameColors),
+        variantMap: JSON.stringify(variantMap),
+        selectedSizeIds: JSON.stringify(sizes.map(s => s.id)),
+        selectedColorIds: JSON.stringify(frameColors.map(c => c.id)),
+      });
+
+      res.json({
+        success: true,
+        message: `Found ${sizes.length} sizes and ${frameColors.length} colors`,
+        sizes,
+        frameColors,
+        productType: updated
+      });
+    } catch (error) {
+      console.error("Error refreshing product variants:", error);
+      res.status(500).json({ error: "Failed to refresh variants" });
+    }
+  });
+
   // POST /api/admin/product-types/:id/refresh-colors - Refresh color hex values using local lookup map
   // This only updates hex values - does NOT modify size/color selections
   // Note: Does NOT require Printify API token - uses local color lookup map
