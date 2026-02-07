@@ -5593,17 +5593,17 @@ thumbnailUrl = result.thumbnailUrl;
       let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
-      // Fallback: If no sizes were extracted but colors exist, create a "default" size
-      // This handles products like tumblers where all variants share the same size
-      if (sizes.length === 0 && frameColors.length > 0) {
+      // Fallback: If no sizes extracted, create from product name or use default
+      // This handles single-variant products and products where size wasn't parseable
+      if (sizes.length === 0) {
         // Try to extract size from product name (e.g., "Tumbler 20oz" -> "20oz")
         const sizeFromName = name.match(/(\d+\s*oz)/i);
         const defaultSizeId = sizeFromName ? sizeFromName[1].toLowerCase().replace(/\s+/g, '') : "default";
         const defaultSizeName = sizeFromName ? sizeFromName[1] : "One Size";
         sizes = [{ id: defaultSizeId, name: defaultSizeName, width: 0, height: 0 }];
+        console.log(`[Import] Created fallback size "${defaultSizeName}" (id: ${defaultSizeId})`);
 
-        // Update variantMap to use the extracted size name instead of "default"
-        // Keys are in format "default:colorId" when size wasn't extracted
+        // Update variantMap keys if we extracted a size from name
         if (defaultSizeId !== "default") {
           for (const key of Object.keys(variantMap)) {
             if (key.startsWith("default:")) {
@@ -5614,7 +5614,13 @@ thumbnailUrl = result.thumbnailUrl;
             }
           }
         }
-        console.log(`Added default size "${defaultSizeName}" (id: ${defaultSizeId}) for product with only color variants`);
+
+        // For single-variant products with no variantMap entries, create one
+        if (Object.keys(variantMap).length === 0 && variants.length > 0) {
+          const variantKey = `${defaultSizeId}:default`;
+          variantMap[variantKey] = { printifyVariantId: variants[0].id, providerId };
+          console.log(`[Import] Created fallback variantMap entry: ${variantKey}`);
+        }
       }
 
       // Fetch base mockup images (placeholder images) from the first variant
@@ -6265,13 +6271,16 @@ thumbnailUrl = result.thumbnailUrl;
       let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
-      // Fallback: If no sizes but colors exist, extract from product name
-      if (sizes.length === 0 && frameColors.length > 0) {
+      // Fallback: If no sizes extracted, create from product name or use default
+      // This handles single-variant products and products where size wasn't parseable
+      if (sizes.length === 0) {
         const sizeFromName = productType.name.match(/(\d+\s*oz)/i);
         const defaultSizeId = sizeFromName ? sizeFromName[1].toLowerCase().replace(/\s+/g, '') : "default";
         const defaultSizeName = sizeFromName ? sizeFromName[1] : "One Size";
         sizes = [{ id: defaultSizeId, name: defaultSizeName, width: 0, height: 0 }];
+        console.log(`[Refresh Variants] Created fallback size "${defaultSizeName}" (id: ${defaultSizeId})`);
 
+        // Update variantMap keys if we extracted a size from name
         if (defaultSizeId !== "default") {
           for (const key of Object.keys(variantMap)) {
             if (key.startsWith("default:")) {
@@ -6281,6 +6290,13 @@ thumbnailUrl = result.thumbnailUrl;
               delete variantMap[key];
             }
           }
+        }
+
+        // For single-variant products with no variantMap entries, create one
+        if (Object.keys(variantMap).length === 0 && variants.length > 0) {
+          const variantKey = `${defaultSizeId}:default`;
+          variantMap[variantKey] = { printifyVariantId: variants[0].id, providerId };
+          console.log(`[Refresh Variants] Created fallback variantMap entry: ${variantKey}`);
         }
       }
 
