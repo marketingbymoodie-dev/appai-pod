@@ -117,31 +117,37 @@ export default function AdminCreateProduct() {
   const filteredSizes = useMemo(() => {
     if (!designerConfig?.sizes) return [];
     if (!selectedProductType) return designerConfig.sizes;
-    
-    const savedSizeIds: string[] = typeof selectedProductType.selectedSizeIds === 'string' 
-      ? JSON.parse(selectedProductType.selectedSizeIds || "[]") 
+
+    const savedSizeIds: string[] = typeof selectedProductType.selectedSizeIds === 'string'
+      ? JSON.parse(selectedProductType.selectedSizeIds || "[]")
       : selectedProductType.selectedSizeIds || [];
-    
+
     // If no saved selections, show all sizes (legacy behavior)
     if (savedSizeIds.length === 0) return designerConfig.sizes;
-    
+
     const savedSizeSet = new Set(savedSizeIds);
-    return designerConfig.sizes.filter(size => savedSizeSet.has(size.id));
+    const filtered = designerConfig.sizes.filter(size => savedSizeSet.has(size.id));
+
+    // Fallback: if filter results in empty but sizes exist, show all (data mismatch recovery)
+    return filtered.length > 0 ? filtered : designerConfig.sizes;
   }, [designerConfig?.sizes, selectedProductType]);
 
   const filteredColors = useMemo(() => {
     if (!designerConfig?.frameColors) return [];
     if (!selectedProductType) return designerConfig.frameColors;
-    
-    const savedColorIds: string[] = typeof selectedProductType.selectedColorIds === 'string' 
-      ? JSON.parse(selectedProductType.selectedColorIds || "[]") 
+
+    const savedColorIds: string[] = typeof selectedProductType.selectedColorIds === 'string'
+      ? JSON.parse(selectedProductType.selectedColorIds || "[]")
       : selectedProductType.selectedColorIds || [];
-    
+
     // If no saved selections, show all colors (legacy behavior)
     if (savedColorIds.length === 0) return designerConfig.frameColors;
-    
+
     const savedColorSet = new Set(savedColorIds);
-    return designerConfig.frameColors.filter(color => savedColorSet.has(color.id));
+    const filtered = designerConfig.frameColors.filter(color => savedColorSet.has(color.id));
+
+    // Fallback: if filter results in empty but colors exist, show all (data mismatch recovery)
+    return filtered.length > 0 ? filtered : designerConfig.frameColors;
   }, [designerConfig?.frameColors, selectedProductType]);
 
   // Track if we've set defaults for the current product type
