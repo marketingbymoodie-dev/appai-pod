@@ -2852,9 +2852,9 @@ thumbnailUrl = result.thumbnailUrl;
           scope: i.scope,
         }))
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error fetching Shopify installations:", error);
-      res.status(500).json({ error: "Failed to fetch installations" });
+      res.status(500).json({ error: "Failed to fetch installations", details: error?.message || String(error) });
     }
   });
 
@@ -3705,9 +3705,9 @@ thumbnailUrl = result.thumbnailUrl;
       }
 
       res.json(merchant);
-    } catch (error) {
+    } catch (error: any) {
       console.error("[/api/merchant] Error:", error);
-      res.status(500).json({ error: "Failed to fetch merchant" });
+      res.status(500).json({ error: "Failed to fetch merchant", details: error?.message || String(error) });
     }
   });
 
@@ -3737,9 +3737,9 @@ thumbnailUrl = result.thumbnailUrl;
       });
 
       res.json(updated);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error updating merchant:", error);
-      res.status(500).json({ error: "Failed to update merchant" });
+      res.status(500).json({ error: "Failed to update merchant", details: error?.message || String(error) });
     }
   });
 
