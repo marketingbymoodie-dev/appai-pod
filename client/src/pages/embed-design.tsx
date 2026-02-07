@@ -1214,13 +1214,15 @@ export default function EmbedDesign() {
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
 
-  if (sessionLoading || configLoading) {
+  // Only wait for config to load - session can load in background
+  // Session is only needed for generating, not for viewing the UI
+  if (configLoading) {
     return (
       <div className={`p-4 ${isEmbedded ? "bg-transparent" : "bg-background min-h-screen"}`}>
         <div className="max-w-2xl mx-auto space-y-4">
           <div className="flex items-center justify-center gap-2 py-4" data-testid="container-loading">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
-            <span className="text-sm font-medium">Preparing AI Generator...</span>
+            <span className="text-sm font-medium">Loading design studio...</span>
           </div>
           <Skeleton className="h-8 w-48" />
           <Skeleton className="h-24 w-full" />
