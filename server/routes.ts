@@ -6120,6 +6120,13 @@ thumbnailUrl = result.thumbnailUrl;
       const variantsData = await variantsResponse.json();
       const variants = variantsData.variants || variantsData || [];
 
+      // Log first few variants to debug
+      console.log(`[Refresh Variants] Blueprint ${blueprintId} returned ${variants.length} variants`);
+      if (variants.length > 0) {
+        console.log(`[Refresh Variants] Sample variant:`, JSON.stringify(variants[0]).slice(0, 500));
+        console.log(`[Refresh Variants] First 5 variant titles:`, variants.slice(0, 5).map((v: any) => v.title));
+      }
+
       // Parse variants to extract sizes and colors (same logic as import)
       const sizesMap = new Map<string, { id: string; name: string; width: number; height: number }>();
       const colorsMap = new Map<string, { id: string; name: string; hex: string }>();
@@ -6205,22 +6212,38 @@ thumbnailUrl = result.thumbnailUrl;
           }
         }
 
-        // Extract color
+        // Extract color - check all possible option keys
         let colorName = "";
-        if (options.color) colorName = options.color;
-        else if (options.colour) colorName = options.colour;
-        else if (options.Color) colorName = options.Color;
-        else if (title.includes("/")) {
-          const parts = title.split("/").map((p: string) => p.trim());
-          for (let i = parts.length - 1; i >= 0; i--) {
-            if (!looksLikeSize(parts[i])) {
-              colorName = parts[i];
-              break;
-            }
+        const optionKeys = Object.keys(options);
+        // Check various color-related option names
+        for (const key of optionKeys) {
+          const lowerKey = key.toLowerCase();
+          if (lowerKey === 'color' || lowerKey === 'colour' || lowerKey === 'colors' ||
+              lowerKey === 'frame_color' || lowerKey === 'frame color' || lowerKey.includes('color')) {
+            colorName = options[key];
+            break;
           }
-        } else if (!looksLikeSize(title)) {
-          // Single-word title that's not a size is likely a color
-          colorName = title;
+        }
+
+        // If no color in options, try to extract from title
+        if (!colorName) {
+          if (title.includes("/")) {
+            const parts = title.split("/").map((p: string) => p.trim());
+            for (let i = parts.length - 1; i >= 0; i--) {
+              if (!looksLikeSize(parts[i])) {
+                colorName = parts[i];
+                break;
+              }
+            }
+          } else if (title && !looksLikeSize(title)) {
+            // Single-word title that's not a size is likely a color
+            colorName = title;
+          }
+        }
+
+        // Log what we found for debugging
+        if (variants.indexOf(variant) < 3) {
+          console.log(`[Refresh Variants] Variant "${title}" -> size: "${extractedSizeId}", color: "${colorName}", options:`, optionKeys);
         }
 
         let extractedColorId = "";
@@ -6270,11 +6293,15 @@ thumbnailUrl = result.thumbnailUrl;
         selectedColorIds: JSON.stringify(frameColors.map(c => c.id)),
       });
 
+      console.log(`[Refresh Variants] Final result: ${sizes.length} sizes, ${frameColors.length} colors from ${variants.length} variants`);
+
       res.json({
         success: true,
-        message: `Found ${sizes.length} sizes and ${frameColors.length} colors`,
+        message: `Found ${sizes.length} sizes and ${frameColors.length} colors from ${variants.length} Printify variants`,
+        variantCount: variants.length,
         sizes,
         frameColors,
+        variantMapKeys: Object.keys(variantMap).slice(0, 10),
         productType: updated
       });
     } catch (error) {
