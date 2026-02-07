@@ -101,7 +101,7 @@ export default function AdminCreateProduct() {
   });
 
   const { data: designerConfig, isLoading: designerConfigLoading } = useQuery<DesignerConfig>({
-    queryKey: ["/api/product-types", selectedProductTypeId, "designer"],
+    queryKey: [`/api/product-types/${selectedProductTypeId}/designer`],
     enabled: !!selectedProductTypeId,
   });
 
