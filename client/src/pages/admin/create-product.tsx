@@ -159,7 +159,7 @@ export default function AdminCreateProduct() {
       // Use filtered colors based on saved variant selections, or "default" for colorless products
       if (filteredColors.length > 0 && !selectedFrameColor) {
         setSelectedFrameColor(filteredColors[0].id);
-      } else if (designerConfig.frameColors.length === 0) {
+      } else if (!designerConfig.frameColors?.length) {
         setSelectedFrameColor("default");
       }
       // Set default zoom based on product type (135% for apparel, 100% for others)
@@ -538,8 +538,8 @@ export default function AdminCreateProduct() {
         : selectedProductType.selectedColorIds || [];
       
       // Use saved selections, only fall back to all available if nothing saved
-      const totalSizes = designerConfig?.sizes.length || 0;
-      const totalColors = designerConfig?.frameColors.length || 0;
+      const totalSizes = designerConfig?.sizes?.length || 0;
+      const totalColors = designerConfig?.frameColors?.length || 0;
       
       // Use saved size count if available, otherwise fall back to all sizes
       const sizeCount = savedSizeIds.length > 0 ? savedSizeIds.length : totalSizes;
@@ -554,7 +554,7 @@ export default function AdminCreateProduct() {
       if (savedColorIds.length > 0) {
         setSelectedColorsForPublish(new Set(savedColorIds));
       } else if (totalColors > 0) {
-        setSelectedColorsForPublish(new Set(designerConfig?.frameColors.map(c => c.id) || []));
+        setSelectedColorsForPublish(new Set(designerConfig?.frameColors?.map(c => c.id) || []));
       }
     }
   }, [showPublishDialog, selectedProductType, designerConfig]);
