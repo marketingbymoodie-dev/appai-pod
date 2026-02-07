@@ -2477,6 +2477,47 @@ thumbnailUrl = result.thumbnailUrl;
             );
           }
 
+          // Also update the product body_html to remove old iframe or update URL
+          // The theme extension now handles embedding, so we can simplify the body_html
+          if (product.body_html && (product.body_html.includes('replit') || product.body_html.includes('iframe'))) {
+            console.log(`[Sync Metafields] Updating body_html for product ${product.id} to remove old iframe`);
+
+            // Get product type info for display name
+            const displayName = product.title.replace(/^Custom\s+/i, '');
+
+            // Replace old body_html with clean version (no iframe - theme extension handles it)
+            const cleanBodyHtml = `
+              <div id="ai-art-studio-container" style="margin: 0 0 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
+                <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
+                <p style="margin: 0; color: #999; font-size: 14px;">The design studio will appear on your store's product page.</p>
+              </div>
+            `;
+
+            const updateProductResponse = await fetch(
+              `https://${shopDomain}/admin/api/2024-01/products/${product.id}.json`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({
+                  product: {
+                    id: product.id,
+                    body_html: cleanBodyHtml,
+                  },
+                }),
+              }
+            );
+
+            if (!updateProductResponse.ok) {
+              console.error(`[Sync Metafields] Failed to update body_html for product ${product.id}`);
+            } else {
+              console.log(`[Sync Metafields] Cleaned body_html for product ${product.id}`);
+            }
+          }
+
           updated++;
           console.log(`[Sync Metafields] Updated product ${product.id}: ${product.title}`);
         } catch (err) {

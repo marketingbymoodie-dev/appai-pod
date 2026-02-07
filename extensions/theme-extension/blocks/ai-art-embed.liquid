@@ -22,6 +22,20 @@
   style="display:none;"
 ></div>
 
+{% comment %} Output product metafields as JSON for JavaScript to read {% endcomment %}
+{% if product and product.metafields.ai_art_studio.app_url %}
+<script type="application/json" data-ai-art-studio>
+{
+  "appUrl": {{ product.metafields.ai_art_studio.app_url.value | json }},
+  "productTypeId": {{ product.metafields.ai_art_studio.product_type_id.value | default: "" | json }},
+  "displayName": {{ product.metafields.ai_art_studio.display_name.value | default: product.title | json }},
+  "description": {{ product.metafields.ai_art_studio.description.value | default: "" | json }},
+  "hideAddToCart": {{ product.metafields.ai_art_studio.hide_add_to_cart.value | default: false | json }},
+  "enabled": {{ product.metafields.ai_art_studio.enable.value | default: false | json }}
+}
+</script>
+{% endif %}
+
 <script>
 function showLoginRequiredPopup() {
   const overlay = document.createElement("div");
@@ -236,13 +250,11 @@ function showLoginRequiredPopup() {
       console.log('[AI Art Embed] Global listener received:', event.data.type, 'from:', event.origin);
     }
     
-    // Handle mockup updates from any Replit origin
+    // Handle mockup updates from Railway app origin
     if (event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
-      // Security: only accept from Replit origins
-      if (event.origin.indexOf('replit.dev') === -1 && 
-          event.origin.indexOf('replit.app') === -1 && 
-          event.origin.indexOf('repl.co') === -1) {
-        console.log('[AI Art Embed] Ignoring mockups from non-Replit origin:', event.origin);
+      // Security: only accept from Railway origins
+      if (event.origin.indexOf('railway.app') === -1) {
+        console.log('[AI Art Embed] Ignoring mockups from non-Railway origin:', event.origin);
         return;
       }
       
@@ -455,8 +467,8 @@ function showLoginRequiredPopup() {
       
       try {
         const appOrigin = new URL(config.appUrl).origin;
-        // Also accept replit origins
-        if (event.origin !== appOrigin && event.origin.indexOf('replit') === -1) {
+        // Accept messages from the configured app origin (Railway)
+        if (event.origin !== appOrigin) {
           console.log('[AI Art Embed] Origin mismatch:', event.origin, 'vs', appOrigin);
           return;
         }
