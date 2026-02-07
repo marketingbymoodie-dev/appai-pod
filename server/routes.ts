@@ -2047,38 +2047,7 @@ thumbnailUrl = result.thumbnailUrl;
   });
 
   // ==================== MERCHANT SHOPIFY INSTALLATIONS ====================
-  // Get all Shopify stores connected to the current merchant (for auto-fill in publish dialog)
-  app.get("/api/shopify/installations", isAuthenticated, async (req: any, res: Response) => {
-    try {
-      const userId = req.user.claims.sub;
-      const merchant = await storage.getMerchantByUserId(userId);
-      
-      if (!merchant) {
-        return res.json({ installations: [] });
-      }
-
-      // Get all installations for this merchant
-      const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
-      
-      // Filter to active installations only and return minimal data
-      const activeInstallations = installations
-        .filter(inst => inst.status === "active")
-        .map(inst => ({
-          id: inst.id,
-          shopDomain: inst.shopDomain,
-          shopName: inst.shopDomain.replace(".myshopify.com", ""),
-          installedAt: inst.installedAt,
-        }));
-
-      res.json({ 
-        installations: activeInstallations,
-        hasInstallations: activeInstallations.length > 0,
-      });
-    } catch (error) {
-      console.error("Error fetching Shopify installations:", error);
-      res.status(500).json({ error: "Failed to fetch Shopify installations" });
-    }
-  });
+  // NOTE: Main installations endpoint is defined later with auto-creation logic
 
   // ==================== SHOPIFY PRODUCT UPDATE ====================
   // Update an existing Shopify product with new variants/info from local product type
