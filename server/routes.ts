@@ -3070,6 +3070,7 @@ thumbnailUrl = result.thumbnailUrl;
         ? JSON.parse(productType.variantMap)
         : productType.variantMap || {};
 
+      console.log(`[Designer API] Building config for product type ${id}: ${productType.name}`);
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -3117,6 +3118,7 @@ thumbnailUrl = result.thumbnailUrl;
         variantMap,
       };
 
+      console.log(`[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
       res.json(designerConfig);
     } catch (error) {
       console.error("Error fetching designer config:", error);
