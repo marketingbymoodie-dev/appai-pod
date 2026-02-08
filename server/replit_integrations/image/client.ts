@@ -137,10 +137,11 @@ export async function generateImageBase64(
   const version = getReplicateModelVersion();
 
   // Nano Banana Pro uses aspect_ratio and resolution, not width/height
+  // Use 1K resolution for faster generation (~5-10s vs ~20-30s for 2K)
   const input: Record<string, any> = {
     prompt: params.prompt,
     aspect_ratio: mapToSupportedAspectRatio(params.aspectRatio),
-    resolution: "2K",
+    resolution: "1K",
     output_format: "png",
   };
 

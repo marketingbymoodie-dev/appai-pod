@@ -341,32 +341,25 @@ export default function AdminCreateProduct() {
 
     setMockupLoading(true);
     try {
-      const response = await fetch("/api/mockup/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          productTypeId: selectedProductTypeId,
-          designImageUrl: imageUrl,
-          sizeId: selectedSize,
-          colorId: selectedFrameColor || "default",
-          scale: imageScale,
-          x: imageX,
-          y: imageY,
-        }),
+      const response = await apiRequest("POST", "/api/mockup/generate", {
+        productTypeId: selectedProductTypeId,
+        designImageUrl: imageUrl,
+        sizeId: selectedSize,
+        colorId: selectedFrameColor || "default",
+        scale: imageScale,
+        x: imageX,
+        y: imageY,
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const mockups = data.mockupImages || data.mockups || [];
-        if (mockups.length > 0) {
-          setMockupImages(mockups.map((m: any) => ({
-            url: m.url || m,
-            label: m.label || "Mockup",
-          })));
-          // Auto-select first mockup to show artwork on product
-          setSelectedMockupIndex(0);
-        }
+      const data = await response.json();
+      const mockups = data.mockupImages || data.mockups || [];
+      if (mockups.length > 0) {
+        setMockupImages(mockups.map((m: any) => ({
+          url: m.url || m,
+          label: m.label || "Mockup",
+        })));
+        // Auto-select first mockup to show artwork on product
+        setSelectedMockupIndex(0);
       }
     } catch (error) {
       console.error("Mockup generation failed:", error);
