@@ -3031,10 +3031,21 @@ thumbnailUrl = result.thumbnailUrl;
   });
 
   app.get("/api/product-types/:id/designer", async (req: Request, res: Response) => {
+    console.log(`[Designer API] Route handler entered for ${req.params.id}`);
     try {
       const id = parseInt(req.params.id);
       console.log(`[Designer API] Fetching product type ${id}`);
-      const productType = await storage.getProductType(id);
+
+      // Add timeout wrapper to detect hanging queries
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Database query timeout after 5s')), 5000)
+      );
+
+      const productType = await Promise.race([
+        storage.getProductType(id),
+        timeoutPromise
+      ]);
+
       console.log(`[Designer API] Product type ${id} found:`, productType ? 'yes' : 'no');
       if (!productType) {
         return res.status(404).json({ error: "Product type not found" });
