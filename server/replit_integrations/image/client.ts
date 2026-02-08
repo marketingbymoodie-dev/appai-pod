@@ -1,5 +1,5 @@
 /**
- * Replicate image generation client (NO Gemini / NO Replit OIDC image stuff)
+ * Replicate image generation client
  *
  * Exports a single helper that returns base64 image data + mimeType, compatible
  * with the rest of the server that expects base64 image payloads.
@@ -8,7 +8,7 @@
  *   REPLICATE_API_TOKEN=...
  *
  * Optional env:
- *   REPLICATE_MODEL=black-forest-labs/nano-banana
+ *   REPLICATE_MODEL_VERSION=<version_hash> (defaults to nano-banana-pro)
  *
  * Notes:
  * - Replicate returns hosted image URLs; we fetch the image and convert to base64.
@@ -32,9 +32,10 @@ function getReplicateToken() {
   return token;
 }
 
-function getReplicateModel() {
-  // ✅ Default to Nano Banana
-  return process.env.REPLICATE_MODEL || "black-forest-labs/nano-banana";
+function getReplicateModelVersion() {
+  // Default to Nano Banana Pro (Google's Gemini image model)
+  // Version hash from: https://replicate.com/google/nano-banana-pro
+  return process.env.REPLICATE_MODEL_VERSION || "0acb550957f20951ffab7592a64c4da1305179e9f9bf413d4bf99f932dce3ffe";
 }
 
 async function sleep(ms: number) {
@@ -98,24 +99,29 @@ export type GenerateImageParams = {
   inputImageUrl?: string | null;
 };
 
-function aspectToDims(aspectRatio?: string) {
-  const maxDim = 1024;
-
-  if (!aspectRatio) return { width: 1024, height: 1024 };
+// Map aspect ratio to Nano Banana Pro supported values
+// Supported: "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"
+function mapToSupportedAspectRatio(aspectRatio?: string): string {
+  if (!aspectRatio) return "1:1";
 
   const [wStr, hStr] = aspectRatio.split(":");
   const w = Number(wStr);
   const h = Number(hStr);
-  if (!w || !h || Number.isNaN(w) || Number.isNaN(h)) {
-    return { width: 1024, height: 1024 };
-  }
+  if (!w || !h || Number.isNaN(w) || Number.isNaN(h)) return "1:1";
 
   const ratio = w / h;
-  if (ratio >= 1) {
-    return { width: maxDim, height: Math.max(256, Math.round(maxDim / ratio)) };
-  } else {
-    return { width: Math.max(256, Math.round(maxDim * ratio)), height: maxDim };
-  }
+
+  // Map to closest supported aspect ratio
+  if (ratio >= 2.1) return "21:9";
+  if (ratio >= 1.65) return "16:9";
+  if (ratio >= 1.4) return "3:2";
+  if (ratio >= 1.2) return "4:3";
+  if (ratio >= 1.1) return "5:4";
+  if (ratio >= 0.9) return "1:1";
+  if (ratio >= 0.75) return "4:5";
+  if (ratio >= 0.65) return "3:4";
+  if (ratio >= 0.55) return "2:3";
+  return "9:16";
 }
 
 /**
@@ -128,41 +134,48 @@ export async function generateImageBase64(
   data: string;
 }> {
   const token = getReplicateToken();
-  const model = getReplicateModel();
-  const { width, height } = aspectToDims(params.aspectRatio);
+  const version = getReplicateModelVersion();
 
+  // Nano Banana Pro uses aspect_ratio and resolution, not width/height
   const input: Record<string, any> = {
     prompt: params.prompt,
-    width,
-    height,
+    aspect_ratio: mapToSupportedAspectRatio(params.aspectRatio),
+    resolution: "2K",
+    output_format: "png",
   };
 
   if (params.inputImageUrl) {
-    input.image = params.inputImageUrl;
+    input.image_input = [params.inputImageUrl];
   }
+
+  console.log("[Replicate] Creating prediction with version:", version);
+  console.log("[Replicate] Input:", JSON.stringify(input, null, 2));
 
   const created: ReplicatePrediction = await fetchJson(
     "https://api.replicate.com/v1/predictions",
     {
       method: "POST",
       headers: {
-        Authorization: `Token ${token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model,
+        version,
         input,
       }),
     }
   );
+
+  console.log("[Replicate] Prediction created:", created.id, "status:", created.status);
 
   let prediction = created;
 
   for (let i = 0; i < 120; i++) {
     if (prediction.status === "succeeded") break;
     if (prediction.status === "failed" || prediction.status === "canceled") {
+      console.error("[Replicate] Generation failed:", prediction.error);
       throw new Error(
-        `Replicate generation ${prediction.status}: ${prediction.error || "Unknown error"}`
+        `Replicate generation ${prediction.status}: ${JSON.stringify(prediction.error) || "Unknown error"}`
       );
     }
 
@@ -173,7 +186,7 @@ export async function generateImageBase64(
       {
         method: "GET",
         headers: {
-          Authorization: `Token ${token}`,
+          Authorization: `Bearer ${token}`,
         },
       }
     );
@@ -183,12 +196,17 @@ export async function generateImageBase64(
     throw new Error(`Replicate generation timed out (status=${prediction.status})`);
   }
 
+  console.log("[Replicate] Prediction succeeded, output:", JSON.stringify(prediction.output));
+
   const imageUrl = pickFirstImageUrl(prediction.output);
   if (!imageUrl) {
+    console.error("[Replicate] Could not extract image URL from output:", prediction.output);
     throw new Error(
       "Replicate succeeded but did not return an image URL in output"
     );
   }
+
+  console.log("[Replicate] Extracted image URL:", imageUrl.substring(0, 100) + "...");
 
   return await urlToBase64(imageUrl);
 }

@@ -14,7 +14,9 @@
       "Bash(npm run build:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "WebFetch(domain:support.claude.com)",
+      "WebFetch(domain:replicate.com)"
     ]
   }
 }

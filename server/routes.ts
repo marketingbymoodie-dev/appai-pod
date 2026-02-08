@@ -893,9 +893,14 @@ console.log("[api/shopify/generate] saved image", result);
         design,
         creditsRemaining: customer.credits - 1,
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error generating artwork:", error);
-      res.status(500).json({ error: "Failed to generate artwork" });
+      // Return detailed error message for debugging
+      const errorMessage = error?.message || String(error) || "Unknown error";
+      res.status(500).json({
+        error: "Failed to generate artwork",
+        details: errorMessage
+      });
     }
   });
 
