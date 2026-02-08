@@ -274,9 +274,9 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
-      toast({ 
-        title: "Shopify product updated",
-        description: "The product description has been refreshed with the latest design studio embed."
+      toast({
+        title: "Shopify product refreshed",
+        description: "Product description and metafields updated. The correct design studio will now load."
       });
     },
     onError: (error: Error) => {
@@ -577,15 +577,15 @@ export default function AdminProducts() {
                         </Button>
                       )}
                       {pt.shopifyProductId && (
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           size="sm"
                           onClick={() => handleUpdateShopifyProduct(pt)}
                           disabled={updateShopifyProductMutation.isPending}
-                          data-testid={`button-update-shopify-${pt.id}`}
+                          data-testid={`button-refresh-shopify-${pt.id}`}
                         >
-                          <Upload className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-spin' : ''}`} />
-                          Update Shopify
+                          <RefreshCw className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-spin' : ''}`} />
+                          Refresh Shopify
                         </Button>
                       )}
                       <Button 

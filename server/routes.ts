@@ -2213,6 +2213,11 @@ thumbnailUrl = result.thumbnailUrl;
 
       const displayName = productType.name;
 
+      // Get the app URL for metafields
+      const appUrl =
+        (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
+        `http://localhost:${process.env.PORT || 5000}`;
+
       // Note: The design studio is embedded via theme extension (ai-art-embed.liquid)
       // using metafields - no iframe in body_html to avoid duplicates
       const updatePayload = {
@@ -2243,13 +2248,78 @@ thumbnailUrl = result.thumbnailUrl;
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
         console.error("Shopify API error:", errorText);
-        return res.status(shopifyResponse.status).json({ 
+        return res.status(shopifyResponse.status).json({
           error: "Failed to update Shopify product",
           details: errorText
         });
       }
 
       const updatedProduct = await shopifyResponse.json();
+
+      // ========== UPDATE METAFIELDS ==========
+      // This ensures the Shopify product points to the correct product_type_id
+      console.log(`[Update Shopify] Updating metafields for product ${productType.shopifyProductId} to use productTypeId=${productType.id}`);
+
+      // Fetch existing metafields
+      const metafieldsResponse = await fetch(
+        `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}/metafields.json`,
+        {
+          headers: { "X-Shopify-Access-Token": installation.accessToken },
+        }
+      );
+
+      const metafieldsData = await metafieldsResponse.json();
+      const existingMetafields = metafieldsData.metafields || [];
+
+      // Define all metafields that should be set
+      const metafieldUpdates = [
+        { namespace: "ai_art_studio", key: "enable", value: "true", type: "single_line_text_field" },
+        { namespace: "ai_art_studio", key: "product_type_id", value: String(productType.id), type: "single_line_text_field" },
+        { namespace: "ai_art_studio", key: "app_url", value: appUrl, type: "single_line_text_field" },
+        { namespace: "ai_art_studio", key: "display_name", value: displayName, type: "single_line_text_field" },
+        { namespace: "ai_art_studio", key: "description", value: `Use AI to generate a unique artwork for your ${displayName.toLowerCase()}. Describe your vision and our AI will bring it to life.`, type: "single_line_text_field" },
+        { namespace: "ai_art_studio", key: "design_studio_url", value: `${appUrl}/embed/design?productTypeId=${productType.id}`, type: "single_line_text_field" },
+        { namespace: "ai_art_studio", key: "hide_add_to_cart", value: "true", type: "single_line_text_field" },
+      ];
+
+      // Update or create each metafield
+      for (const mf of metafieldUpdates) {
+        const existing = existingMetafields.find(
+          (m: any) => m.namespace === mf.namespace && m.key === mf.key
+        );
+
+        if (existing) {
+          // Update existing metafield
+          await fetch(
+            `https://${shopDomain}/admin/api/2024-01/metafields/${existing.id}.json`,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": installation.accessToken,
+              },
+              body: JSON.stringify({
+                metafield: { id: existing.id, value: mf.value },
+              }),
+            }
+          );
+        } else {
+          // Create new metafield
+          await fetch(
+            `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}/metafields.json`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": installation.accessToken,
+              },
+              body: JSON.stringify({ metafield: mf }),
+            }
+          );
+        }
+      }
+
+      console.log(`[Update Shopify] Metafields updated for product ${productType.shopifyProductId}`);
 
       // Update last pushed timestamp
       await storage.updateProductType(productType.id, {
@@ -2258,7 +2328,7 @@ thumbnailUrl = result.thumbnailUrl;
 
       res.json({
         success: true,
-        message: "Product updated in Shopify. Note: Variant changes may require recreating the product.",
+        message: "Product and metafields updated in Shopify. The design studio will now load correctly.",
         adminUrl: `https://${shopDomain}/admin/products/${productType.shopifyProductId}`,
       });
 
