@@ -276,7 +276,22 @@ export default function EmbedDesign() {
     Promise.all([
       fetchWithTimeout("/api/config").then(res => res.json()).catch(() => ({ stylePresets: [] })),
       // Use the designer endpoint to get proper designer config (same as design.tsx and admin pages)
-      fetchWithTimeout(`/api/product-types/${productTypeId}/designer`).then(res => res.ok ? res.json() : null).catch(() => null)
+      fetchWithTimeout(`/api/product-types/${productTypeId}/designer`)
+        .then(async (res) => {
+          console.log('[EmbedDesign] Designer API response status:', res.status, res.statusText);
+          if (!res.ok) {
+            const errorBody = await res.text();
+            console.log('[EmbedDesign] Designer API error body:', errorBody);
+            return null;
+          }
+          const json = await res.json();
+          console.log('[EmbedDesign] Designer API response:', JSON.stringify(json).substring(0, 200));
+          return json;
+        })
+        .catch((err) => {
+          console.error('[EmbedDesign] Designer API fetch error:', err);
+          return null;
+        })
     ])
       .then(([configData, designerConfig]) => {
         console.log('[EmbedDesign] Config loaded:', { hasPresets: !!configData?.stylePresets, hasDesigner: !!designerConfig });
