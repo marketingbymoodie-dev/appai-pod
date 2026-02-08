@@ -56,6 +56,14 @@ export function log(message: string, source = "express") {
   console.log(`${formattedTime} [${source}] ${message}`);
 }
 
+// Early request logging for debugging
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    console.log(`[INCOMING] ${req.method} ${req.path}`);
+  }
+  next();
+});
+
 // Request logging (API only)
 app.use((req, res, next) => {
   const start = Date.now();
