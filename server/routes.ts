@@ -1892,25 +1892,14 @@ thumbnailUrl = result.thumbnailUrl;
       const displayName = productType.name;
 
       // Create the product in Shopify configured for Online Store only
-      // Embed the design studio iframe directly in the product description
-      const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true&shop=${encodeURIComponent(shopDomain)}`;
-      
+      // Note: The design studio is embedded via theme extension (ai-art-embed.liquid) using metafields
       const shopifyProduct = {
         product: {
           title: `Custom ${productType.name}`,
+          // Note: The design studio is embedded via theme extension (ai-art-embed.liquid)
+          // No iframe here to avoid duplicates - metafields control the embed
           body_html: `
-            <div id="ai-art-studio-container" style="margin: 0 0 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
-              <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
-              <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
-              <iframe 
-                src="${embedUrl}" 
-                style="width: 100%; height: 700px; border: none; border-radius: 8px; background: white;"
-                allow="clipboard-write"
-                loading="lazy"
-                title="AI Design Studio"
-              ></iframe>
-            </div>
-            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            <div style="padding: 15px 0;">
               <h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4>
               <p>${cleanDescription}</p>
             </div>
@@ -2222,31 +2211,15 @@ thumbnailUrl = result.thumbnailUrl;
         .replace(/\s+/g, ' ')
         .trim();
 
-      // Get the app URL for the design studio embed
-      const appUrl =
-  (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
-  `http://localhost:${process.env.PORT || 5000}`;
-
-      // Build the embed URL with shop parameter for authorization
-      const embedUrl = `${appUrl}/embed/design?productTypeId=${productType.id}&embedded=true&shopify=true&shop=${encodeURIComponent(shopDomain)}`;
       const displayName = productType.name;
 
+      // Note: The design studio is embedded via theme extension (ai-art-embed.liquid)
+      // using metafields - no iframe in body_html to avoid duplicates
       const updatePayload = {
         product: {
           id: productType.shopifyProductId,
           body_html: `
-            <div id="ai-art-studio-container" style="margin: 0 0 20px 0; padding: 20px; background: #f9fafb; border-radius: 8px;">
-              <h3 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 600;">Create Your Custom Design</h3>
-              <p style="margin: 0 0 15px 0; color: #666;">Use AI to generate a unique artwork for your ${displayName.toLowerCase()}, or upload your own design!</p>
-              <iframe 
-                src="${embedUrl}" 
-                style="width: 100%; height: 700px; border: none; border-radius: 8px; background: white;"
-                allow="clipboard-write"
-                loading="lazy"
-                title="AI Design Studio"
-              ></iframe>
-            </div>
-            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            <div style="padding: 15px 0;">
               <h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4>
               <p>${cleanDescription}</p>
             </div>

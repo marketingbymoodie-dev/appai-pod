@@ -371,9 +371,17 @@ function showLoginRequiredPopup() {
   
   // Skip if already initialized
   if (document.getElementById('ai-art-studio-auto-embed')) {
+    console.log('[AI Art Embed] Already initialized, skipping');
     return;
   }
-  
+
+  // Skip if there's already an iframe from body_html (legacy products)
+  var existingIframe = document.querySelector('#ai-art-studio-container iframe, iframe[title="AI Design Studio"]');
+  if (existingIframe) {
+    console.log('[AI Art Embed] Found existing iframe in body_html, skipping auto-embed');
+    return;
+  }
+
   function hideNativeAddToCart() {
     const selectors = [
       'form[action="/cart/add"]',
