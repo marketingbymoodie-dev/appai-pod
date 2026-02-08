@@ -33,9 +33,9 @@ function getReplicateToken() {
 }
 
 function getReplicateModelVersion() {
-  // Default to Nano Banana Pro (Google's Gemini image model)
-  // Version hash from: https://replicate.com/google/nano-banana-pro
-  return process.env.REPLICATE_MODEL_VERSION || "0acb550957f20951ffab7592a64c4da1305179e9f9bf413d4bf99f932dce3ffe";
+  // Default to Nano Banana (standard version - faster and cheaper than Pro)
+  // Version hash from: https://replicate.com/google/nano-banana
+  return process.env.REPLICATE_MODEL_VERSION || "5bdc2c7cd642ae33611d8c33f79615f98ff02509ab8db9d8ec1cc6c36d378fba";
 }
 
 async function sleep(ms: number) {
@@ -136,12 +136,10 @@ export async function generateImageBase64(
   const token = getReplicateToken();
   const version = getReplicateModelVersion();
 
-  // Nano Banana Pro uses aspect_ratio and resolution, not width/height
-  // Use 1K resolution for faster generation (~5-10s vs ~20-30s for 2K)
+  // Nano Banana uses aspect_ratio (no resolution param - that's Pro only)
   const input: Record<string, any> = {
     prompt: params.prompt,
     aspect_ratio: mapToSupportedAspectRatio(params.aspectRatio),
-    resolution: "1K",
     output_format: "png",
   };
 
