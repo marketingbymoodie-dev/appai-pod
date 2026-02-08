@@ -333,6 +333,12 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Simple health check (no database)
+  app.get("/api/health", (_req: Request, res: Response) => {
+    console.log("[Health] Health check endpoint hit");
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+
    // ✅ Public: Get product configuration (MUST be before setupAuth)
   app.get("/api/config", async (_req: Request, res: Response) => {
     console.log("🔥 HIT /api/config route");
