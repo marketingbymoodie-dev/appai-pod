@@ -2283,43 +2283,59 @@ thumbnailUrl = result.thumbnailUrl;
       ];
 
       // Update or create each metafield
+      console.log(`[Update Shopify] Found ${existingMetafields.length} existing metafields`);
+
       for (const mf of metafieldUpdates) {
         const existing = existingMetafields.find(
           (m: any) => m.namespace === mf.namespace && m.key === mf.key
         );
 
-        if (existing) {
-          // Update existing metafield
-          await fetch(
-            `https://${shopDomain}/admin/api/2024-01/metafields/${existing.id}.json`,
-            {
-              method: "PUT",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Shopify-Access-Token": installation.accessToken,
-              },
-              body: JSON.stringify({
-                metafield: { id: existing.id, value: mf.value },
-              }),
+        try {
+          if (existing) {
+            // Update existing metafield
+            console.log(`[Update Shopify] Updating ${mf.key}: ${existing.value} -> ${mf.value}`);
+            const updateRes = await fetch(
+              `https://${shopDomain}/admin/api/2024-01/metafields/${existing.id}.json`,
+              {
+                method: "PUT",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({
+                  metafield: { id: existing.id, value: mf.value },
+                }),
+              }
+            );
+            if (!updateRes.ok) {
+              const errText = await updateRes.text();
+              console.error(`[Update Shopify] Failed to update ${mf.key}:`, errText);
             }
-          );
-        } else {
-          // Create new metafield
-          await fetch(
-            `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}/metafields.json`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Shopify-Access-Token": installation.accessToken,
-              },
-              body: JSON.stringify({ metafield: mf }),
+          } else {
+            // Create new metafield
+            console.log(`[Update Shopify] Creating ${mf.key}: ${mf.value}`);
+            const createRes = await fetch(
+              `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}/metafields.json`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Shopify-Access-Token": installation.accessToken,
+                },
+                body: JSON.stringify({ metafield: mf }),
+              }
+            );
+            if (!createRes.ok) {
+              const errText = await createRes.text();
+              console.error(`[Update Shopify] Failed to create ${mf.key}:`, errText);
             }
-          );
+          }
+        } catch (err) {
+          console.error(`[Update Shopify] Error with metafield ${mf.key}:`, err);
         }
       }
 
-      console.log(`[Update Shopify] Metafields updated for product ${productType.shopifyProductId}`);
+      console.log(`[Update Shopify] Metafields update complete for product ${productType.shopifyProductId}`);
 
       // Update last pushed timestamp
       await storage.updateProductType(productType.id, {
