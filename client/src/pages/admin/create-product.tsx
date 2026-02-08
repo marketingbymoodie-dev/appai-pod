@@ -326,8 +326,16 @@ export default function AdminCreateProduct() {
       toast({ title: "Design generated!", description: "Your test design is ready" });
 
       // Generate mockups if available
+      console.log("[CreateProduct] Mockup conditions:", {
+        hasPrintifyMockups: designerConfig?.hasPrintifyMockups,
+        printifyShopId: merchant?.printifyShopId,
+        imageUrl: imageUrl?.substring(0, 50),
+      });
       if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId && imageUrl) {
+        console.log("[CreateProduct] Calling generateMockups...");
         await generateMockups(imageUrl);
+      } else {
+        console.log("[CreateProduct] Skipping mockup generation - conditions not met");
       }
     } catch (error: any) {
       toast({ title: "Generation failed", description: error.message, variant: "destructive" });
@@ -337,10 +345,15 @@ export default function AdminCreateProduct() {
   };
 
   const generateMockups = async (imageUrl: string) => {
-    if (!selectedProductTypeId || !selectedSize) return;
+    console.log("[CreateProduct] generateMockups called with:", imageUrl?.substring(0, 50));
+    if (!selectedProductTypeId || !selectedSize) {
+      console.log("[CreateProduct] generateMockups - missing productTypeId or size");
+      return;
+    }
 
     setMockupLoading(true);
     try {
+      console.log("[CreateProduct] Making mockup API request...");
       const response = await apiRequest("POST", "/api/mockup/generate", {
         productTypeId: selectedProductTypeId,
         designImageUrl: imageUrl,
@@ -352,7 +365,9 @@ export default function AdminCreateProduct() {
       });
 
       const data = await response.json();
+      console.log("[CreateProduct] Mockup API response:", data);
       const mockups = data.mockupImages || data.mockups || [];
+      console.log("[CreateProduct] Mockups found:", mockups.length);
       if (mockups.length > 0) {
         setMockupImages(mockups.map((m: any) => ({
           url: m.url || m,
@@ -362,7 +377,7 @@ export default function AdminCreateProduct() {
         setSelectedMockupIndex(0);
       }
     } catch (error) {
-      console.error("Mockup generation failed:", error);
+      console.error("[CreateProduct] Mockup generation failed:", error);
     } finally {
       setMockupLoading(false);
     }
