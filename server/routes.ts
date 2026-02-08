@@ -3027,7 +3027,9 @@ thumbnailUrl = result.thumbnailUrl;
   app.get("/api/product-types/:id/designer", async (req: Request, res: Response) => {
     try {
       const id = parseInt(req.params.id);
+      console.log(`[Designer API] Fetching product type ${id}`);
       const productType = await storage.getProductType(id);
+      console.log(`[Designer API] Product type ${id} found:`, productType ? 'yes' : 'no');
       if (!productType) {
         return res.status(404).json({ error: "Product type not found" });
       }
