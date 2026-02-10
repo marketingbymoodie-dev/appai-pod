@@ -273,10 +273,13 @@ export default function EmbedDesign() {
 
     console.log('[EmbedDesign] Loading config for productTypeId:', productTypeId);
 
+    // Add cache-busting timestamp to prevent browser caching stale responses
+    const cacheBuster = `_t=${Date.now()}`;
+
     Promise.all([
-      fetchWithTimeout("/api/config").then(res => res.json()).catch(() => ({ stylePresets: [] })),
+      fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
       // Use the designer endpoint to get proper designer config (same as design.tsx and admin pages)
-      fetchWithTimeout(`/api/product-types/${productTypeId}/designer`)
+      fetchWithTimeout(`/api/product-types/${productTypeId}/designer?${cacheBuster}`)
         .then(async (res) => {
           console.log('[EmbedDesign] Designer API response status:', res.status, res.statusText);
           if (!res.ok) {

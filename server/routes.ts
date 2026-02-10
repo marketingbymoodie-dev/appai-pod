@@ -3048,6 +3048,8 @@ thumbnailUrl = result.thumbnailUrl;
 
       console.log(`[Designer API] Product type ${id} found:`, productType ? 'yes' : 'no');
       if (!productType) {
+        // Prevent caching of 404 responses
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(404).json({ error: "Product type not found" });
       }
 
@@ -3136,6 +3138,10 @@ thumbnailUrl = result.thumbnailUrl;
       };
 
       console.log(`[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
+      // Prevent browser caching to ensure fresh data
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
       res.json(designerConfig);
     } catch (error) {
       console.error("Error fetching designer config:", error);
