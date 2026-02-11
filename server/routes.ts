@@ -3327,6 +3327,57 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // Debug endpoint to list all product types for a shop (no auth, for troubleshooting)
+  app.get("/api/storefront/debug/product-types", async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+
+    if (!shop) {
+      return res.status(400).json({ error: "Missing shop parameter" });
+    }
+
+    try {
+      // Try to find merchant
+      let merchant = await storage.getMerchantByShop(shop);
+      let merchantSource = "direct";
+
+      if (!merchant) {
+        const installation = await storage.getShopifyInstallationByShop(shop);
+        if (installation && installation.merchantId) {
+          merchant = await storage.getMerchant(installation.merchantId);
+          merchantSource = "installation";
+        }
+      }
+
+      const allProductTypes = await storage.getActiveProductTypes();
+      const merchantProductTypes = merchant
+        ? await storage.getProductTypesByMerchant(merchant.id)
+        : [];
+
+      res.json({
+        shop,
+        merchant: merchant ? { id: merchant.id, userId: merchant.userId } : null,
+        merchantSource,
+        productTypes: {
+          forMerchant: merchantProductTypes.map(pt => ({
+            id: pt.id,
+            name: pt.name,
+            merchantId: pt.merchantId,
+            designerType: pt.designerType
+          })),
+          allActive: allProductTypes.map(pt => ({
+            id: pt.id,
+            name: pt.name,
+            merchantId: pt.merchantId,
+            designerType: pt.designerType
+          }))
+        }
+      });
+    } catch (error) {
+      console.error("[Storefront Debug] Error:", error);
+      res.status(500).json({ error: "Failed to fetch debug info" });
+    }
+  });
+
   // Admin endpoints for product types (requires authentication)
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {
