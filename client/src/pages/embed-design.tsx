@@ -309,15 +309,34 @@ export default function EmbedDesign() {
 
   useEffect(() => {
     // Add timeout wrapper for fetch to prevent infinite hanging
-    const fetchWithTimeout = (url: string, timeout = 10000): Promise<Response> => {
+    const fetchWithTimeout = (url: string, timeout = 30000): Promise<Response> => {
       const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
       console.log('[EmbedDesign] Fetching:', fullUrl);
+      const startTime = Date.now();
       return Promise.race([
-        fetch(fullUrl),
+        fetch(fullUrl).then(res => {
+          console.log(`[EmbedDesign] Fetch completed in ${Date.now() - startTime}ms for:`, fullUrl.split('?')[0]);
+          return res;
+        }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Request to ${fullUrl} timed out after ${timeout}ms`)), timeout)
         )
       ]);
+    };
+
+    // Retry wrapper for cold start scenarios
+    const fetchWithRetry = async (url: string, retries = 2): Promise<Response> => {
+      for (let i = 0; i <= retries; i++) {
+        try {
+          return await fetchWithTimeout(url);
+        } catch (err) {
+          console.warn(`[EmbedDesign] Fetch attempt ${i + 1} failed:`, err);
+          if (i === retries) throw err;
+          console.log(`[EmbedDesign] Retrying in 1s...`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+      throw new Error('All retries failed');
     };
 
     console.log('[EmbedDesign] Loading config for productTypeId:', productTypeId, 'from API base:', API_BASE);
@@ -332,7 +351,8 @@ export default function EmbedDesign() {
     Promise.all([
       fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
       // Use the storefront-safe designer endpoint (no auth required, validates via shop param)
-      fetchWithTimeout(`/api/storefront/product-types/${productTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`)
+      // Use retry wrapper to handle Railway cold starts
+      fetchWithRetry(`/api/storefront/product-types/${productTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`)
         .then(async (res) => {
           console.log('[EmbedDesign] Designer API response status:', res.status, res.statusText);
           if (!res.ok) {
