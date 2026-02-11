@@ -676,20 +676,27 @@ function showLoginRequiredPopup() {
     
     if (!appUrl || !productTypeId) {
       const scriptData = document.querySelector('[data-ai-art-studio]');
+      console.log('[AI Art Embed] Looking for script data, found:', !!scriptData);
       if (scriptData) {
         try {
           const data = JSON.parse(scriptData.textContent);
+          console.log('[AI Art Embed] Parsed metafield data:', JSON.stringify(data));
           appUrl = data.appUrl;
           productTypeId = data.productTypeId;
           displayName = data.displayName;
           description = data.description;
           hideAddToCart = data.hideAddToCart === true || data.hideAddToCart === 'true';
           enabled = data.enabled === true || data.enabled === 'true';
-        } catch (e) {}
+        } catch (e) {
+          console.error('[AI Art Embed] Failed to parse script data:', e);
+        }
       }
     }
-    
+
+    console.log('[AI Art Embed] Final values - appUrl:', appUrl, 'productTypeId:', productTypeId, 'enabled:', enabled);
+
     if (!appUrl || !productTypeId) {
+      console.log('[AI Art Embed] Missing appUrl or productTypeId, stopping');
       return;
     }
     

@@ -3154,47 +3154,71 @@ thumbnailUrl = result.thumbnailUrl;
     const shop = req.query.shop as string;
     const id = parseInt(req.params.id);
 
-    console.log(`[Storefront Designer API] Request for product type ${id}, shop: ${shop}`);
+    console.log(`[Storefront Designer API] === REQUEST START ===`);
+    console.log(`[Storefront Designer API] Product type ID: ${id}, Shop: ${shop}`);
+    console.log(`[Storefront Designer API] Full URL: ${req.originalUrl}`);
 
     // Validate shop parameter
     if (!shop) {
-      console.log(`[Storefront Designer API] Missing shop parameter`);
+      console.log(`[Storefront Designer API] ERROR: Missing shop parameter`);
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-      return res.status(400).json({ error: "Missing shop parameter" });
+      return res.status(400).json({ error: "Missing shop parameter", debug: { productTypeId: id } });
     }
 
     try {
       // Get merchant by shop domain
+      console.log(`[Storefront Designer API] Looking up merchant for shop: ${shop}`);
       const merchant = await storage.getMerchantByShop(shop);
       if (!merchant) {
-        console.log(`[Storefront Designer API] Merchant not found for shop: ${shop}`);
+        console.log(`[Storefront Designer API] ERROR: Merchant not found for shop: ${shop}`);
+        console.log(`[Storefront Designer API] Expected userId format: shopify:merchant:${shop}`);
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        return res.status(404).json({ error: "Shop not found" });
+        return res.status(404).json({
+          error: "Shop not found",
+          debug: { shop, expectedUserId: `shopify:merchant:${shop}`, productTypeId: id }
+        });
       }
 
-      console.log(`[Storefront Designer API] Found merchant ${merchant.id} for shop ${shop}`);
+      console.log(`[Storefront Designer API] Found merchant ID: ${merchant.id}, userId: ${merchant.userId}`);
 
       // Fetch product type with timeout
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Database query timeout after 5s')), 5000)
       );
 
+      console.log(`[Storefront Designer API] Fetching product type ${id} from database...`);
       const productType = await Promise.race([
         storage.getProductType(id),
         timeoutPromise
       ]);
 
       if (!productType) {
-        console.log(`[Storefront Designer API] Product type ${id} not found`);
+        console.log(`[Storefront Designer API] ERROR: Product type ${id} not found in database`);
+        // List available product types for this merchant to help debug
+        const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
+        console.log(`[Storefront Designer API] Available product types for merchant ${merchant.id}:`,
+          merchantProductTypes.map(pt => ({ id: pt.id, name: pt.name })));
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        return res.status(404).json({ error: "Product type not found" });
+        return res.status(404).json({
+          error: "Product type not found",
+          debug: {
+            requestedId: id,
+            merchantId: merchant.id,
+            availableIds: merchantProductTypes.map(pt => pt.id)
+          }
+        });
       }
 
-      // Validate product type belongs to this merchant
+      console.log(`[Storefront Designer API] Found product type: ${productType.name} (ID: ${productType.id}, merchantId: ${productType.merchantId})`);
+
+      // Validate product type belongs to this merchant (or is global with null merchantId)
       if (productType.merchantId && productType.merchantId !== merchant.id) {
-        console.log(`[Storefront Designer API] Product type ${id} belongs to merchant ${productType.merchantId}, not ${merchant.id}`);
+        console.log(`[Storefront Designer API] ERROR: Product type ${id} belongs to merchant ${productType.merchantId}, not ${merchant.id}`);
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        return res.status(403).json({ error: "Product type not available for this shop" });
+        return res.status(403).json({
+          error: "Product type not available for this shop",
+          debug: { productTypeMerchantId: productType.merchantId, shopMerchantId: merchant.id }
+        });
       }
 
       console.log(`[Storefront Designer API] Building config for product type ${id}: ${productType.name}`);

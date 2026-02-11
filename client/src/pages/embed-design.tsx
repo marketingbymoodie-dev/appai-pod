@@ -96,6 +96,13 @@ export default function EmbedDesign() {
   const isShopify = searchParams.get("shopify") === "true";
   const productTypeId = searchParams.get("productTypeId") || "1";
   const productId = searchParams.get("productId") || "";
+
+  // Log all URL parameters for debugging
+  console.log('[EmbedDesign] === INITIALIZATION ===');
+  console.log('[EmbedDesign] Full URL:', window.location.href);
+  console.log('[EmbedDesign] productTypeId from URL:', searchParams.get("productTypeId"), '(using:', productTypeId, ')');
+  console.log('[EmbedDesign] shop from URL:', searchParams.get("shop"));
+  console.log('[EmbedDesign] isShopify:', isShopify, 'isEmbedded:', isEmbedded);
   
   // Get productHandle from URL params, or extract from referrer if not provided
   const getProductHandle = (): string => {
@@ -331,10 +338,23 @@ export default function EmbedDesign() {
           if (!res.ok) {
             const errorBody = await res.text();
             console.log('[EmbedDesign] Designer API error body:', errorBody);
+            // Try to parse error body for debug info
+            try {
+              const errorData = JSON.parse(errorBody);
+              console.log('[EmbedDesign] Designer API error details:', errorData);
+              if (errorData.debug) {
+                console.log('[EmbedDesign] Debug info:', JSON.stringify(errorData.debug, null, 2));
+                if (errorData.debug.availableIds) {
+                  console.log('[EmbedDesign] Available product type IDs for this shop:', errorData.debug.availableIds);
+                }
+              }
+            } catch (e) {
+              // Not JSON, that's ok
+            }
             return null;
           }
           const json = await res.json();
-          console.log('[EmbedDesign] Designer API response:', JSON.stringify(json).substring(0, 200));
+          console.log('[EmbedDesign] Designer API response:', JSON.stringify(json).substring(0, 300));
           return json;
         })
         .catch((err) => {
