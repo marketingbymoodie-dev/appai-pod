@@ -91,27 +91,15 @@ console.log('[EmbedDesign] API Base URL:', API_BASE);
 console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
 console.log('[EmbedDesign] window.location.href:', typeof window !== 'undefined' ? window.location.href : 'undefined');
 
-// DIAGNOSTIC: Test multiple routes on module load to identify which work/fail
+// DIAGNOSTIC: Quick sanity check on module load
 if (typeof window !== 'undefined') {
-  const testRoutes = [
-    { name: 'edge-test', url: `${API_BASE}/edge-test` },
-    { name: 'api-test', url: `${API_BASE}/api/test` },
-    { name: 'storefront-ping', url: `${API_BASE}/api/storefront/ping` },
-    { name: 'designer-direct', url: `${API_BASE}/api/storefront/product-types/2/designer-direct?shop=appai-2.myshopify.com` },
-  ];
-
-  console.log('[EmbedDesign] === DIAGNOSTIC FETCH TESTS ===');
-  testRoutes.forEach(({ name, url }) => {
-    const start = Date.now();
-    console.log(`[EmbedDesign] Testing ${name}: ${url}`);
-    fetch(url)
-      .then(r => {
-        console.log(`[EmbedDesign] ${name} status: ${r.status} (${Date.now() - start}ms)`);
-        return r.json();
-      })
-      .then(data => console.log(`[EmbedDesign] ${name} SUCCESS:`, data))
-      .catch(err => console.error(`[EmbedDesign] ${name} FAILED (${Date.now() - start}ms):`, err.message));
-  });
+  console.log('[EmbedDesign] === QUICK DIAGNOSTIC ===');
+  const pingUrl = `${API_BASE}/api/storefront/ping`;
+  const start = Date.now();
+  fetch(pingUrl)
+    .then(r => r.json())
+    .then(data => console.log(`[EmbedDesign] Ping OK in ${Date.now() - start}ms:`, data))
+    .catch(err => console.error(`[EmbedDesign] Ping FAILED in ${Date.now() - start}ms:`, err.message));
 }
 
 /**
@@ -375,38 +363,82 @@ export default function EmbedDesign() {
   };
 
   useEffect(() => {
-    // Add timeout wrapper for fetch to prevent infinite hanging
-    const fetchWithTimeout = (url: string, timeout = 30000): Promise<Response> => {
+    // AbortController for cleanup when component unmounts or dependencies change
+    const abortController = new AbortController();
+    let isCancelled = false;
+
+    // Robust fetch with timeout - properly cleans up timer and uses AbortController
+    const fetchWithTimeout = async (url: string, timeout = 30000): Promise<Response> => {
       const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
-      console.log('[EmbedDesign] Fetching:', fullUrl);
       const startTime = Date.now();
-      return Promise.race([
-        fetch(fullUrl).then(res => {
-          console.log(`[EmbedDesign] Fetch completed in ${Date.now() - startTime}ms for:`, fullUrl.split('?')[0]);
-          return res;
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Request to ${fullUrl} timed out after ${timeout}ms`)), timeout)
-        )
-      ]);
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      console.log(`[EmbedDesign] fetchWithTimeout START: ${fullUrl}`);
+
+      try {
+        // Create a timeout promise that rejects
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            console.error(`[EmbedDesign] TIMEOUT fired for: ${fullUrl} after ${timeout}ms`);
+            reject(new Error(`Request to ${fullUrl.split('?')[0]} timed out after ${timeout}ms`));
+          }, timeout);
+        });
+
+        // Race between fetch and timeout
+        const response = await Promise.race([
+          fetch(fullUrl, { signal: abortController.signal }).then(res => {
+            const elapsed = Date.now() - startTime;
+            console.log(`[EmbedDesign] fetch() resolved in ${elapsed}ms: ${res.status} ${res.statusText} for ${fullUrl.split('?')[0]}`);
+            return res;
+          }),
+          timeoutPromise
+        ]);
+
+        return response;
+      } finally {
+        // ALWAYS clear the timeout - this is critical!
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+          console.log(`[EmbedDesign] Timeout cleared for: ${fullUrl.split('?')[0]}`);
+        }
+      }
     };
 
     // Retry wrapper for cold start scenarios
     const fetchWithRetry = async (url: string, retries = 2): Promise<Response> => {
+      let lastError: Error | null = null;
+
       for (let i = 0; i <= retries; i++) {
+        if (isCancelled) {
+          throw new Error('Request cancelled');
+        }
+
         try {
-          return await fetchWithTimeout(url);
+          console.log(`[EmbedDesign] fetchWithRetry attempt ${i + 1}/${retries + 1} for: ${url}`);
+          const response = await fetchWithTimeout(url);
+          console.log(`[EmbedDesign] fetchWithRetry SUCCESS on attempt ${i + 1}`);
+          return response;
         } catch (err) {
-          console.warn(`[EmbedDesign] Fetch attempt ${i + 1} failed:`, err);
-          if (i === retries) throw err;
-          console.log(`[EmbedDesign] Retrying in 1s...`);
-          await new Promise(r => setTimeout(r, 1000));
+          lastError = err instanceof Error ? err : new Error(String(err));
+          console.warn(`[EmbedDesign] fetchWithRetry attempt ${i + 1} FAILED:`, lastError.message);
+
+          // Don't retry if aborted
+          if (lastError.name === 'AbortError' || isCancelled) {
+            throw lastError;
+          }
+
+          if (i < retries) {
+            console.log(`[EmbedDesign] Waiting 1s before retry...`);
+            await new Promise(r => setTimeout(r, 1000));
+          }
         }
       }
-      throw new Error('All retries failed');
+
+      throw lastError || new Error('All retries failed');
     };
 
     const loadConfig = async () => {
+      if (isCancelled) return;
       const cacheBuster = `_t=${Date.now()}`;
       const myshopifyDomain = getMyShopifyDomain();
       console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);
@@ -448,10 +480,17 @@ export default function EmbedDesign() {
 
       // Step 2: Fetch config and designer data
       try {
+        if (isCancelled) return;
+
+        const designerUrl = `/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`;
+        console.log('[EmbedDesign] Designer fetch URL:', `${API_BASE}${designerUrl}`);
+
         const [configRes, designerRes] = await Promise.all([
           fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
-          fetchWithRetry(`/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`)
+          fetchWithRetry(designerUrl)
         ]);
+
+        if (isCancelled) return;
 
         // Handle style presets
         if (configRes.stylePresets) {
@@ -462,7 +501,21 @@ export default function EmbedDesign() {
         console.log('[EmbedDesign] Designer API response status:', designerRes.status, designerRes.statusText);
 
         if (designerRes.ok) {
-          const designerConfig = await designerRes.json();
+          // Parse JSON with explicit error handling
+          console.log('[EmbedDesign] Parsing designer response body...');
+          const responseText = await designerRes.text();
+          console.log('[EmbedDesign] Response text length:', responseText.length);
+
+          if (isCancelled) return;
+
+          let designerConfig;
+          try {
+            designerConfig = JSON.parse(responseText);
+          } catch (parseErr) {
+            console.error('[EmbedDesign] JSON parse error:', parseErr, 'Response text:', responseText.substring(0, 500));
+            throw new Error('Failed to parse designer config JSON');
+          }
+
           console.log('[EmbedDesign] Designer config loaded:', designerConfig.name, 'designerType:', designerConfig.designerType);
 
           setProductTypeConfig({
@@ -506,15 +559,38 @@ export default function EmbedDesign() {
           // DO NOT set default config - leave productTypeConfig as null
         }
       } catch (err) {
-        console.error('[EmbedDesign] Config loading failed:', err);
-        setProductTypeError(`Failed to load configuration: ${err instanceof Error ? err.message : 'Unknown error'}. Please refresh and try again.`);
+        // Don't set error state if we were cancelled
+        if (isCancelled) {
+          console.log('[EmbedDesign] Config loading was cancelled, ignoring error');
+          return;
+        }
+
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        console.error('[EmbedDesign] Config loading failed:', errorMessage, err);
+
+        // Don't show error for abort
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.log('[EmbedDesign] Request was aborted, not showing error');
+          return;
+        }
+
+        setProductTypeError(`Failed to load configuration: ${errorMessage}. Please refresh and try again.`);
         // DO NOT set default config - leave productTypeConfig as null
       }
 
-      setConfigLoading(false);
+      if (!isCancelled) {
+        setConfigLoading(false);
+      }
     };
 
     loadConfig();
+
+    // Cleanup function: cancel in-flight requests when dependencies change or unmount
+    return () => {
+      console.log('[EmbedDesign] useEffect cleanup - aborting any in-flight requests');
+      isCancelled = true;
+      abortController.abort();
+    };
   }, [productTypeId, productHandle]);
 
   // Load shared design if sharedDesignId is present in URL
