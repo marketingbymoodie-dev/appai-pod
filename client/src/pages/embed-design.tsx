@@ -49,6 +49,46 @@ interface ProductTypeConfig {
   hasPrintifyMockups?: boolean;
 }
 
+/**
+ * Get the API base URL for the embed.
+ * Priority:
+ * 1. window.__APPAI_API_BASE__ (global override)
+ * 2. data-appai-api-base attribute on script
+ * 3. window.location.origin (iframe origin = Railway)
+ * 4. Fallback to production Railway URL
+ */
+function getApiBase(): string {
+  // Check global override
+  if (typeof window !== 'undefined' && (window as any).__APPAI_API_BASE__) {
+    return (window as any).__APPAI_API_BASE__;
+  }
+
+  // Check data attribute
+  if (typeof document !== 'undefined') {
+    const script = document.querySelector('script[data-appai-api-base]');
+    if (script) {
+      const base = script.getAttribute('data-appai-api-base');
+      if (base) return base;
+    }
+  }
+
+  // Use current origin (for iframe loaded from Railway)
+  if (typeof window !== 'undefined' && window.location.origin) {
+    // Only use origin if it looks like our Railway app
+    const origin = window.location.origin;
+    if (origin.includes('railway.app') || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      return origin;
+    }
+  }
+
+  // Fallback to production Railway URL
+  return 'https://appai-pod-production.up.railway.app';
+}
+
+// Get API base once at module load
+const API_BASE = getApiBase();
+console.log('[EmbedDesign] API Base URL:', API_BASE);
+
 export default function EmbedDesign() {
   const searchParams = new URLSearchParams(window.location.search);
 
@@ -263,15 +303,17 @@ export default function EmbedDesign() {
   useEffect(() => {
     // Add timeout wrapper for fetch to prevent infinite hanging
     const fetchWithTimeout = (url: string, timeout = 10000): Promise<Response> => {
+      const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+      console.log('[EmbedDesign] Fetching:', fullUrl);
       return Promise.race([
-        fetch(url),
+        fetch(fullUrl),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Request to ${url} timed out after ${timeout}ms`)), timeout)
+          setTimeout(() => reject(new Error(`Request to ${fullUrl} timed out after ${timeout}ms`)), timeout)
         )
       ]);
     };
 
-    console.log('[EmbedDesign] Loading config for productTypeId:', productTypeId);
+    console.log('[EmbedDesign] Loading config for productTypeId:', productTypeId, 'from API base:', API_BASE);
 
     // Add cache-busting timestamp to prevent browser caching stale responses
     const cacheBuster = `_t=${Date.now()}`;
@@ -342,7 +384,7 @@ export default function EmbedDesign() {
       return;
     }
 
-    fetch(`/api/shared-designs/${sharedDesignId}`)
+    fetch(`${API_BASE}/api/shared-designs/${sharedDesignId}`)
       .then(res => {
         if (!res.ok) {
           if (res.status === 410) {
@@ -389,7 +431,7 @@ export default function EmbedDesign() {
         controller.abort();
       }, 10000);
 
-      fetch("/api/shopify/session", {
+      fetch(`${API_BASE}/api/shopify/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -475,7 +517,7 @@ export default function EmbedDesign() {
     
     try {
       // Use Shopify-specific endpoint if in Shopify mode
-      const endpoint = isShopify ? "/api/shopify/mockup" : "/api/mockup/generate";
+      const endpoint = isShopify ? `${API_BASE}/api/shopify/mockup` : `${API_BASE}/api/mockup/generate`;
       const payload = isShopify ? {
         productTypeId: ptId,
         designImageUrl,
@@ -497,6 +539,7 @@ export default function EmbedDesign() {
       };
 
       setMockupError(null);
+      console.log('[EmbedDesign] Fetching mockup from:', endpoint);
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -542,7 +585,7 @@ export default function EmbedDesign() {
     ) {
       const fullImageUrl = generatedDesign.imageUrl.startsWith("http") 
         ? generatedDesign.imageUrl 
-        : window.location.origin + generatedDesign.imageUrl;
+        : API_BASE + generatedDesign.imageUrl;
       fetchPrintifyMockups(
         fullImageUrl, 
         productTypeConfig.id, 
@@ -576,7 +619,7 @@ export default function EmbedDesign() {
     mockupRegenerationTimeoutRef.current = setTimeout(() => {
       const fullImageUrl = generatedDesign.imageUrl.startsWith("http") 
         ? generatedDesign.imageUrl 
-        : window.location.origin + generatedDesign.imageUrl;
+        : API_BASE + generatedDesign.imageUrl;
       fetchPrintifyMockups(
         fullImageUrl, 
         productTypeConfig.id, 
@@ -607,7 +650,8 @@ export default function EmbedDesign() {
       sessionToken?: string;
       productTypeId?: string;
     }) => {
-      const endpoint = isShopify ? "/api/shopify/generate" : "/api/generate";
+      const endpoint = isShopify ? `${API_BASE}/api/shopify/generate` : `${API_BASE}/api/generate`;
+      console.log('[EmbedDesign] Generating design via:', endpoint);
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -646,7 +690,7 @@ export default function EmbedDesign() {
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       if (productTypeConfig?.hasPrintifyMockups && imageUrl && selectedSize) {
-        const fullImageUrl = imageUrl.startsWith("http") ? imageUrl : window.location.origin + imageUrl;
+        const fullImageUrl = imageUrl.startsWith("http") ? imageUrl : API_BASE + imageUrl;
         fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
     },
@@ -739,7 +783,7 @@ export default function EmbedDesign() {
       }
 
       // Step 1: Get presigned upload URL
-      const uploadUrlResponse = await fetch("/api/uploads/request-url", {
+      const uploadUrlResponse = await fetch(`${API_BASE}/api/uploads/request-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -755,7 +799,7 @@ export default function EmbedDesign() {
 
       const { uploadURL, objectPath } = await uploadUrlResponse.json();
 
-      // Step 2: Upload the file directly to storage
+      // Step 2: Upload the file directly to storage (uploadURL is already absolute)
       const uploadResponse = await fetch(uploadURL, {
         method: "PUT",
         headers: { "Content-Type": file.type },
@@ -767,7 +811,7 @@ export default function EmbedDesign() {
       }
 
       // Step 3: Validate and get image metadata
-      const importResponse = await fetch("/api/designs/import", {
+      const importResponse = await fetch(`${API_BASE}/api/designs/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -802,7 +846,7 @@ export default function EmbedDesign() {
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        const fullImageUrl = importedImageUrl.startsWith("http") ? importedImageUrl : window.location.origin + importedImageUrl;
+        const fullImageUrl = importedImageUrl.startsWith("http") ? importedImageUrl : API_BASE + importedImageUrl;
         fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
 
@@ -875,16 +919,17 @@ export default function EmbedDesign() {
     let fetchUrl: string;
     if (productHandle) {
       console.log('[Design Studio] Fetching variants using productHandle:', productHandle);
-      fetchUrl = `/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`;
+      fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`;
     } else if (productTypeId) {
       console.log('[Design Studio] Fetching variants using productTypeId:', productTypeId);
-      fetchUrl = `/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&productTypeId=${encodeURIComponent(productTypeId)}`;
+      fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&productTypeId=${encodeURIComponent(productTypeId)}`;
     } else {
       console.log('[Design Studio] No productHandle or productTypeId available, skipping variant fetch');
       setVariantsFetched(true);
       return;
     }
-    
+
+    console.log('[Design Studio] Fetching variants from:', fetchUrl);
     fetch(fetchUrl)
       .then(res => {
         if (!res.ok) {
@@ -991,9 +1036,8 @@ export default function EmbedDesign() {
     // The /objects/ URLs are served publicly from object storage
     let artworkFullUrl = generatedDesign.imageUrl;
     if (!artworkFullUrl.startsWith('http')) {
-      // Use the Replit app URL for public access to object storage
-      const appOrigin = window.location.origin;
-      artworkFullUrl = `${appOrigin}${generatedDesign.imageUrl}`;
+      // Use API_BASE for public access to object storage
+      artworkFullUrl = `${API_BASE}${generatedDesign.imageUrl}`;
     }
 
     // Get the rendered mockup URL if available (for cart display)
@@ -1001,15 +1045,15 @@ export default function EmbedDesign() {
     let mockupFullUrl = '';
     if (printifyMockups.length > 0) {
       const mockupUrl = printifyMockups[selectedMockupIndex] || printifyMockups[0];
-      mockupFullUrl = mockupUrl.startsWith('http') 
-        ? mockupUrl 
-        : `${window.location.origin}${mockupUrl}`;
+      mockupFullUrl = mockupUrl.startsWith('http')
+        ? mockupUrl
+        : `${API_BASE}${mockupUrl}`;
     } else if (printifyMockupImages.length > 0) {
       const mockupUrl = printifyMockupImages[selectedMockupIndex]?.url || printifyMockupImages[0]?.url;
       if (mockupUrl) {
-        mockupFullUrl = mockupUrl.startsWith('http') 
-          ? mockupUrl 
-          : `${window.location.origin}${mockupUrl}`;
+        mockupFullUrl = mockupUrl.startsWith('http')
+          ? mockupUrl
+          : `${API_BASE}${mockupUrl}`;
       }
     }
 
@@ -1065,7 +1109,7 @@ export default function EmbedDesign() {
 
     setIsSharing(true);
     try {
-      const response = await fetch("/api/designs/share", {
+      const response = await fetch(`${API_BASE}/api/designs/share`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1199,7 +1243,7 @@ export default function EmbedDesign() {
     // Debounce the save - wait 1 second after last change
     const timer = setTimeout(async () => {
       try {
-        await apiRequest("PATCH", `/api/designs/${generatedDesign.id}`, {
+        await apiRequest("PATCH", `${API_BASE}/api/designs/${generatedDesign.id}`, {
           transformScale: transform.scale,
           transformX: transform.x,
           transformY: transform.y,

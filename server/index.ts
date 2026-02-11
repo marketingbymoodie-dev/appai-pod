@@ -21,6 +21,40 @@ app.use((req, res, next) => {
   next();
 });
 
+/**
+ * ✅ CORS for Shopify storefront embeds
+ * Allow cross-origin requests from Shopify storefronts
+ */
+const ALLOWED_ORIGINS = [
+  /^https:\/\/[a-z0-9-]+\.myshopify\.com$/,
+  /^https:\/\/www\.[a-z0-9-]+\.myshopify\.com$/,
+  /^https:\/\/admin\.shopify\.com$/,
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  // Check if origin matches allowed patterns
+  if (origin) {
+    const isAllowed = ALLOWED_ORIGINS.some(pattern => pattern.test(origin));
+    if (isAllowed) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+      res.setHeader("Access-Control-Max-Age", "86400");
+    }
+  }
+
+  // Handle preflight requests
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+
+  next();
+});
+
 const httpServer = createServer(app);
 
 declare module "http" {
