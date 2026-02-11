@@ -404,7 +404,8 @@ export default function EmbedDesign() {
       };
       masterAbort.signal.addEventListener('abort', onMasterAbort);
 
-      console.log(`${logPrefix} START ${fullUrl.split('?')[0]}`);
+      // Log FULL URL including query params - critical for debugging
+      console.log(`${logPrefix} START FULL URL: ${fullUrl}`);
 
       try {
         const response = await new Promise<Response>((resolve, reject) => {
@@ -450,10 +451,16 @@ export default function EmbedDesign() {
 
     /**
      * Retry wrapper with cancellable delays.
+     * CRITICAL: The URL must be preserved EXACTLY as passed in - never modified.
      */
-    const fetchWithRetry = async (url: string, retries = 2): Promise<Response> => {
+    const fetchWithRetry = async (urlInput: string, retries = 2): Promise<Response> => {
+      // FREEZE the URL at entry - this exact string must be used for ALL retries
+      const frozenUrl = String(urlInput);
       const logPrefix = `[EmbedDesign] [${sessionId}]`;
       let lastError: Error | null = null;
+
+      // Log the FULL URL including query params for debugging
+      console.log(`${logPrefix} fetchWithRetry called with FULL URL: ${frozenUrl}`);
 
       for (let i = 0; i <= retries; i++) {
         // Check cancellation at start of each attempt
@@ -463,8 +470,10 @@ export default function EmbedDesign() {
         }
 
         try {
-          console.log(`${logPrefix} Attempt ${i + 1}/${retries + 1} for: ${url.split('?')[0]}`);
-          const response = await fetchWithTimeout(url);
+          // Log FULL URL for each attempt (not stripped)
+          console.log(`${logPrefix} Attempt ${i + 1}/${retries + 1} FULL URL: ${frozenUrl}`);
+          // Pass the FROZEN URL - never reconstruct or modify
+          const response = await fetchWithTimeout(frozenUrl);
           console.log(`${logPrefix} SUCCESS on attempt ${i + 1}`);
           return response;
         } catch (err) {
