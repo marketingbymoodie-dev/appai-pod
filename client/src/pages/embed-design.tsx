@@ -88,6 +88,20 @@ function getApiBase(): string {
 // Get API base once at module load
 const API_BASE = getApiBase();
 console.log('[EmbedDesign] API Base URL:', API_BASE);
+console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
+console.log('[EmbedDesign] window.location.href:', typeof window !== 'undefined' ? window.location.href : 'undefined');
+
+// DIAGNOSTIC: Immediate fetch test on module load
+if (typeof window !== 'undefined') {
+  console.log('[EmbedDesign] Running immediate edge-test fetch...');
+  fetch(`${API_BASE}/edge-test`)
+    .then(r => {
+      console.log('[EmbedDesign] edge-test response status:', r.status);
+      return r.json();
+    })
+    .then(data => console.log('[EmbedDesign] edge-test SUCCESS:', data))
+    .catch(err => console.error('[EmbedDesign] edge-test FAILED:', err));
+}
 
 /**
  * Runtime mode detection for the embed.
