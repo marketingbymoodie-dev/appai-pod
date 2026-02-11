@@ -421,12 +421,26 @@ export default function EmbedDesign() {
 
           // Start the actual fetch
           fetch(fullUrl, { signal: requestAbort.signal })
-            .then(res => {
+            .then(async res => {
               if (!completed) {
                 completed = true;
                 const elapsed = Date.now() - startTime;
-                console.log(`${logPrefix} OK ${res.status} in ${elapsed}ms`);
                 if (timeoutId) clearTimeout(timeoutId);
+
+                // Handle 4xx/5xx errors IMMEDIATELY - don't treat them as success
+                if (!res.ok) {
+                  let errorBody = '';
+                  try {
+                    errorBody = await res.text();
+                  } catch (e) {
+                    errorBody = res.statusText;
+                  }
+                  console.error(`${logPrefix} HTTP ${res.status} in ${elapsed}ms: ${errorBody}`);
+                  reject(new Error(`HTTP ${res.status}: ${errorBody || res.statusText}`));
+                  return;
+                }
+
+                console.log(`${logPrefix} OK ${res.status} in ${elapsed}ms`);
                 resolve(res);
               }
             })
@@ -458,6 +472,13 @@ export default function EmbedDesign() {
       const frozenUrl = String(urlInput);
       const logPrefix = `[EmbedDesign] [${sessionId}]`;
       let lastError: Error | null = null;
+
+      // GUARD: If this is a designer endpoint call, it MUST have shop= parameter
+      if (frozenUrl.includes('/designer') && !frozenUrl.includes('shop=')) {
+        const errorMsg = `CRITICAL BUG: Designer endpoint called without shop parameter! URL: ${frozenUrl}`;
+        console.error(`${logPrefix} ${errorMsg}`);
+        throw new Error(errorMsg);
+      }
 
       // Log the FULL URL including query params for debugging
       console.log(`${logPrefix} fetchWithRetry called with FULL URL: ${frozenUrl}`);
@@ -560,7 +581,15 @@ export default function EmbedDesign() {
       try {
         if (isCancelled) return;
 
-        const designerUrl = `/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`;
+        // GUARD: Ensure we have a valid shop domain before calling designer endpoint
+        if (!myshopifyDomain) {
+          console.error('[EmbedDesign] CRITICAL: No shop domain available for designer API call');
+          setProductTypeError('Unable to determine shop domain. Please ensure the shop parameter is provided in the URL.');
+          setConfigLoading(false);
+          return;
+        }
+
+        const designerUrl = `/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain)}&${cacheBuster}`;
         console.log('[EmbedDesign] Designer fetch URL:', `${API_BASE}${designerUrl}`);
 
         const [configRes, designerRes] = await Promise.all([
