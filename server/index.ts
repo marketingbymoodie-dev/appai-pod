@@ -128,6 +128,10 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
   // ✅ 3) Vite in dev, static in prod (LAST)
   if (process.env.NODE_ENV === "production") {
+    console.log("[server/index.ts] Production mode detected, initializing static serving...");
+    console.log(`  NODE_ENV: ${process.env.NODE_ENV}`);
+    console.log(`  app.get("env"): ${app.get("env")}`);
+    console.log(`  cwd: ${process.cwd()}`);
     serveStatic(app);
   } else {
     const { setupVite } = await import("./vite");
