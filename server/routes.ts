@@ -333,10 +333,55 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Simple health check (no database)
+  // Track server start time and DB readiness
+  const serverStartTime = Date.now();
+  let dbReady = false;
+
+  // Test DB connection asynchronously (non-blocking)
+  (async () => {
+    try {
+      // Simple query to test DB
+      await storage.getActiveProductTypes();
+      dbReady = true;
+      console.log(`[Health] Database ready after ${Date.now() - serverStartTime}ms`);
+    } catch (err) {
+      console.error("[Health] Database connection test failed:", err);
+      // Retry after 2s
+      setTimeout(async () => {
+        try {
+          await storage.getActiveProductTypes();
+          dbReady = true;
+          console.log(`[Health] Database ready (retry) after ${Date.now() - serverStartTime}ms`);
+        } catch (e) {
+          console.error("[Health] Database still not ready:", e);
+        }
+      }, 2000);
+    }
+  })();
+
+  // Health check - always responds fast, shows DB status
   app.get("/api/health", (_req: Request, res: Response) => {
-    console.log("[Health] Health check endpoint hit");
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
+    const uptime = Math.floor((Date.now() - serverStartTime) / 1000);
+    res.json({
+      ok: true,
+      uptime,
+      dbReady,
+      timestamp: new Date().toISOString(),
+      version: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_SHA || "dev"
+    });
+  });
+
+  // Ready check - returns 503 if DB not ready
+  app.get("/api/ready", async (_req: Request, res: Response) => {
+    if (!dbReady) {
+      res.set('Retry-After', '2');
+      return res.status(503).json({
+        ok: false,
+        reason: "Database not ready",
+        uptime: Math.floor((Date.now() - serverStartTime) / 1000)
+      });
+    }
+    res.json({ ok: true, dbReady: true });
   });
 
    // ✅ Public: Get product configuration (MUST be before setupAuth)
@@ -3151,12 +3196,9 @@ thumbnailUrl = result.thumbnailUrl;
 
   // Storefront-safe designer endpoint (no auth required, validates via shop param)
   app.get("/api/storefront/product-types/:id/designer", async (req: Request, res: Response) => {
+    const startTime = Date.now();
     const shop = req.query.shop as string;
     const id = parseInt(req.params.id);
-
-    console.log(`[Storefront Designer API] === REQUEST START ===`);
-    console.log(`[Storefront Designer API] Product type ID: ${id}, Shop: ${shop}`);
-    console.log(`[Storefront Designer API] Full URL: ${req.originalUrl}`);
 
     // Validate shop parameter
     if (!shop) {
@@ -3316,13 +3358,15 @@ thumbnailUrl = result.thumbnailUrl;
         variantMap,
       };
 
-      console.log(`[Storefront Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
+      const ms = Date.now() - startTime;
+      console.log(`[storefront/designer] shop=${shop} merchantId=${merchant.id} requestedId=${id} found=true ms=${ms}`);
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.set('Pragma', 'no-cache');
       res.set('Expires', '0');
       res.json(designerConfig);
     } catch (error) {
-      console.error("[Storefront Designer API] Error:", error);
+      const ms = Date.now() - startTime;
+      console.error(`[storefront/designer] shop=${shop} requestedId=${id} error=exception ms=${ms}`, error);
       res.status(500).json({ error: "Failed to fetch designer configuration" });
     }
   });
@@ -3353,6 +3397,8 @@ thumbnailUrl = result.thumbnailUrl;
         ? await storage.getProductTypesByMerchant(merchant.id)
         : [];
 
+      console.log(`[debug/product-types] shop=${shop} merchantId=${merchant?.id || 'none'} count=${merchantProductTypes.length}`);
+
       res.json({
         shop,
         merchant: merchant ? { id: merchant.id, userId: merchant.userId } : null,
@@ -3362,19 +3408,134 @@ thumbnailUrl = result.thumbnailUrl;
             id: pt.id,
             name: pt.name,
             merchantId: pt.merchantId,
-            designerType: pt.designerType
+            designerType: pt.designerType,
+            shopifyProductHandle: pt.shopifyProductHandle || null,
+            printifyBlueprintId: pt.printifyBlueprintId || null
           })),
           allActive: allProductTypes.map(pt => ({
             id: pt.id,
             name: pt.name,
             merchantId: pt.merchantId,
-            designerType: pt.designerType
+            designerType: pt.designerType,
+            shopifyProductHandle: pt.shopifyProductHandle || null
           }))
         }
       });
     } catch (error) {
       console.error("[Storefront Debug] Error:", error);
       res.status(500).json({ error: "Failed to fetch debug info" });
+    }
+  });
+
+  // Resolve product type ID from shop + product handle
+  app.get("/api/storefront/resolve-product-type", async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+    const handle = req.query.handle as string;
+    const startTime = Date.now();
+
+    if (!shop) {
+      return res.status(400).json({ error: "Missing shop parameter" });
+    }
+    if (!handle) {
+      return res.status(400).json({ error: "Missing handle parameter" });
+    }
+
+    try {
+      // Resolve merchant
+      let merchant = await storage.getMerchantByShop(shop);
+      let merchantSource = "direct";
+
+      if (!merchant) {
+        const installation = await storage.getShopifyInstallationByShop(shop);
+        if (installation && installation.merchantId) {
+          merchant = await storage.getMerchant(installation.merchantId);
+          merchantSource = "installation";
+        }
+      }
+
+      if (!merchant) {
+        console.log(`[resolve-product-type] shop=${shop} handle=${handle} error=merchant_not_found ms=${Date.now() - startTime}`);
+        return res.status(404).json({
+          error: "Shop not found",
+          shop,
+          handle
+        });
+      }
+
+      // Get all product types for this merchant
+      const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
+
+      // Try to match by shopifyProductHandle
+      let matchedProductType = merchantProductTypes.find(
+        pt => pt.shopifyProductHandle?.toLowerCase() === handle.toLowerCase()
+      );
+      let reason = "matched_by_shopify_handle";
+
+      // If no exact match, try fuzzy match by name containing handle keywords
+      if (!matchedProductType) {
+        const handleWords = handle.toLowerCase().replace(/-/g, ' ').split(' ').filter(w => w.length > 2);
+        matchedProductType = merchantProductTypes.find(pt => {
+          const ptNameLower = pt.name.toLowerCase();
+          // Check if product type name contains key words from handle
+          return handleWords.some(word => ptNameLower.includes(word));
+        });
+        if (matchedProductType) {
+          reason = "fuzzy_matched_by_name";
+        }
+      }
+
+      // If still no match, check for common product type mappings
+      if (!matchedProductType) {
+        // Map common handle patterns to designerType
+        const handleLower = handle.toLowerCase();
+        if (handleLower.includes('tumbler') || handleLower.includes('mug') || handleLower.includes('cup')) {
+          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'mug');
+          if (matchedProductType) reason = "matched_by_designer_type_mug";
+        } else if (handleLower.includes('frame') || handleLower.includes('poster') || handleLower.includes('print') || handleLower.includes('art')) {
+          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'framed-print');
+          if (matchedProductType) reason = "matched_by_designer_type_framed_print";
+        } else if (handleLower.includes('shirt') || handleLower.includes('tee') || handleLower.includes('hoodie')) {
+          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'apparel');
+          if (matchedProductType) reason = "matched_by_designer_type_apparel";
+        } else if (handleLower.includes('pillow') || handleLower.includes('cushion')) {
+          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'pillow');
+          if (matchedProductType) reason = "matched_by_designer_type_pillow";
+        }
+      }
+
+      const ms = Date.now() - startTime;
+
+      if (matchedProductType) {
+        console.log(`[resolve-product-type] shop=${shop} handle=${handle} resolved=${matchedProductType.id} reason=${reason} ms=${ms}`);
+        return res.json({
+          productTypeId: matchedProductType.id,
+          productTypeName: matchedProductType.name,
+          designerType: matchedProductType.designerType,
+          reason,
+          shop,
+          handle,
+          merchantId: merchant.id
+        });
+      }
+
+      // No match found
+      console.log(`[resolve-product-type] shop=${shop} handle=${handle} error=no_match ms=${ms}`);
+      return res.status(404).json({
+        error: "No matching product type found",
+        shop,
+        handle,
+        merchantId: merchant.id,
+        availableProductTypes: merchantProductTypes.map(pt => ({
+          id: pt.id,
+          name: pt.name,
+          designerType: pt.designerType,
+          shopifyProductHandle: pt.shopifyProductHandle || null
+        })),
+        hint: "Set shopifyProductHandle on the product type or use data attribute in storefront"
+      });
+    } catch (error) {
+      console.error("[resolve-product-type] Error:", error);
+      res.status(500).json({ error: "Failed to resolve product type" });
     }
   });
 

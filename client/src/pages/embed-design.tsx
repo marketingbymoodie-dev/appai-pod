@@ -339,56 +339,65 @@ export default function EmbedDesign() {
       throw new Error('All retries failed');
     };
 
-    console.log('[EmbedDesign] Loading config for productTypeId:', productTypeId, 'from API base:', API_BASE);
+    const loadConfig = async () => {
+      const cacheBuster = `_t=${Date.now()}`;
+      const myshopifyDomain = getMyShopifyDomain();
+      console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);
 
-    // Add cache-busting timestamp to prevent browser caching stale responses
-    const cacheBuster = `_t=${Date.now()}`;
+      // Step 1: Resolve productTypeId if it's the default "1" and we have a product handle
+      let resolvedProductTypeId = productTypeId;
+      let resolveSource = "url_param";
 
-    // Get the myshopify.com domain for the storefront API
-    const myshopifyDomain = getMyShopifyDomain();
-    console.log('[EmbedDesign] Using myshopify domain for storefront API:', myshopifyDomain);
-
-    Promise.all([
-      fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
-      // Use the storefront-safe designer endpoint (no auth required, validates via shop param)
-      // Use retry wrapper to handle Railway cold starts
-      fetchWithRetry(`/api/storefront/product-types/${productTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`)
-        .then(async (res) => {
-          console.log('[EmbedDesign] Designer API response status:', res.status, res.statusText);
-          if (!res.ok) {
-            const errorBody = await res.text();
-            console.log('[EmbedDesign] Designer API error body:', errorBody);
-            // Try to parse error body for debug info
-            try {
-              const errorData = JSON.parse(errorBody);
-              console.log('[EmbedDesign] Designer API error details:', errorData);
-              if (errorData.debug) {
-                console.log('[EmbedDesign] Debug info:', JSON.stringify(errorData.debug, null, 2));
-                if (errorData.debug.availableIds) {
-                  console.log('[EmbedDesign] Available product type IDs for this shop:', errorData.debug.availableIds);
-                }
-              }
-            } catch (e) {
-              // Not JSON, that's ok
+      if ((productTypeId === "1" || !searchParams.get("productTypeId")) && productHandle && myshopifyDomain) {
+        console.log('[EmbedDesign] ProductTypeId is default, attempting to resolve from handle:', productHandle);
+        try {
+          const resolveRes = await fetchWithRetry(
+            `/api/storefront/resolve-product-type?shop=${encodeURIComponent(myshopifyDomain)}&handle=${encodeURIComponent(productHandle)}&${cacheBuster}`
+          );
+          if (resolveRes.ok) {
+            const resolved = await resolveRes.json();
+            resolvedProductTypeId = String(resolved.productTypeId);
+            resolveSource = resolved.reason || "resolver";
+            console.log('[EmbedDesign] Resolved productTypeId:', resolvedProductTypeId, 'via:', resolveSource);
+          } else {
+            const errorData = await resolveRes.json().catch(() => ({}));
+            console.warn('[EmbedDesign] Resolver returned error:', errorData);
+            // If resolver fails with 404, we'll show a specific error
+            if (resolveRes.status === 404 && errorData.availableProductTypes) {
+              setProductTypeError(
+                `No product type found for "${productHandle}". ` +
+                `Available product types: ${errorData.availableProductTypes.map((pt: any) => `${pt.name} (ID: ${pt.id})`).join(', ')}. ` +
+                `Please set the correct productTypeId in the product metafield.`
+              );
+              setConfigLoading(false);
+              return;
             }
-            return null;
           }
-          const json = await res.json();
-          console.log('[EmbedDesign] Designer API response:', JSON.stringify(json).substring(0, 300));
-          return json;
-        })
-        .catch((err) => {
-          console.error('[EmbedDesign] Designer API fetch error:', err);
-          return null;
-        })
-    ])
-      .then(([configData, designerConfig]) => {
-        console.log('[EmbedDesign] Config loaded:', { hasPresets: !!configData?.stylePresets, hasDesigner: !!designerConfig });
-        if (configData.stylePresets) {
-          setStylePresets(configData.stylePresets);
+        } catch (err) {
+          console.warn('[EmbedDesign] Resolver failed:', err);
+          // Continue with original productTypeId
         }
-        if (designerConfig) {
-          // Designer endpoint returns properly formatted config
+      }
+
+      // Step 2: Fetch config and designer data
+      try {
+        const [configRes, designerRes] = await Promise.all([
+          fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
+          fetchWithRetry(`/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`)
+        ]);
+
+        // Handle style presets
+        if (configRes.stylePresets) {
+          setStylePresets(configRes.stylePresets);
+        }
+
+        // Handle designer config
+        console.log('[EmbedDesign] Designer API response status:', designerRes.status, designerRes.statusText);
+
+        if (designerRes.ok) {
+          const designerConfig = await designerRes.json();
+          console.log('[EmbedDesign] Designer config loaded:', designerConfig.name, 'designerType:', designerConfig.designerType);
+
           setProductTypeConfig({
             id: designerConfig.id,
             name: designerConfig.name,
@@ -401,25 +410,45 @@ export default function EmbedDesign() {
             frameColors: designerConfig.frameColors || [],
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
           });
-          // Don't auto-select size - require user selection
-          // Auto-select first frame color if available (optional field)
-          if (designerConfig.frameColors?.length > 0) setSelectedFrameColor(designerConfig.frameColors[0].id);
+
+          if (designerConfig.frameColors?.length > 0) {
+            setSelectedFrameColor(designerConfig.frameColors[0].id);
+          }
+          setProductTypeError(null);
         } else {
-          setProductTypeConfig(defaultProductTypeConfig);
-          // Don't auto-select size - require user selection
-          if (defaultProductTypeConfig.frameColors.length > 0) setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
-          setProductTypeError(`Product type "${productTypeId}" not found. Using default configuration.`);
+          // Designer endpoint failed - show explicit error, NO DEFAULT FALLBACK
+          const errorBody = await designerRes.text();
+          let errorMessage = `Product type "${resolvedProductTypeId}" not found.`;
+
+          try {
+            const errorData = JSON.parse(errorBody);
+            console.error('[EmbedDesign] Designer API error:', errorData);
+
+            if (errorData.debug?.availableIdsForMerchant) {
+              errorMessage += ` Available IDs for this shop: ${errorData.debug.availableIdsForMerchant.join(', ')}.`;
+            }
+            if (errorData.error) {
+              errorMessage = errorData.error + '. ' + errorMessage;
+            }
+          } catch (e) {
+            console.error('[EmbedDesign] Designer API raw error:', errorBody);
+          }
+
+          errorMessage += ' Please check the productTypeId in your product metafield.';
+          setProductTypeError(errorMessage);
+          // DO NOT set default config - leave productTypeConfig as null
         }
-        setConfigLoading(false);
-      })
-      .catch(() => {
-        setProductTypeConfig(defaultProductTypeConfig);
-        // Don't auto-select size - require user selection
-        if (defaultProductTypeConfig.frameColors.length > 0) setSelectedFrameColor(defaultProductTypeConfig.frameColors[0].id);
-        setProductTypeError("Failed to load product configuration. Using default settings.");
-        setConfigLoading(false);
-      });
-  }, [productTypeId]);
+      } catch (err) {
+        console.error('[EmbedDesign] Config loading failed:', err);
+        setProductTypeError(`Failed to load configuration: ${err instanceof Error ? err.message : 'Unknown error'}. Please refresh and try again.`);
+        // DO NOT set default config - leave productTypeConfig as null
+      }
+
+      setConfigLoading(false);
+    };
+
+    loadConfig();
+  }, [productTypeId, productHandle]);
 
   // Load shared design if sharedDesignId is present in URL
   useEffect(() => {
@@ -1374,10 +1403,38 @@ export default function EmbedDesign() {
           </Card>
         )}
 
-        {productTypeError && (
+        {/* Fatal error: no product type config loaded - stop rendering here */}
+        {!productTypeConfig && productTypeError && (
+          <Card className="border-destructive bg-destructive/10">
+            <CardContent className="py-4">
+              <div className="flex items-start gap-3">
+                <div className="text-destructive mt-0.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-destructive font-semibold text-sm">Configuration Error</h3>
+                  <p className="text-destructive/90 text-sm mt-1" data-testid="text-product-type-error">
+                    {productTypeError}
+                  </p>
+                  <p className="text-destructive/70 text-xs mt-2">
+                    Product handle: {productHandle || 'unknown'} | Shop: {searchParams.get("shop") || 'unknown'}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* If fatal error, don't show the rest of the UI */}
+        {!productTypeConfig && productTypeError ? null : (
+          <>
+        {/* Warning: product type config loaded but with issues */}
+        {productTypeConfig && productTypeError && (
           <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
             <CardContent className="py-3">
-              <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-product-type-error">
+              <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-product-type-warning">
                 {productTypeError}
               </p>
             </CardContent>
@@ -1807,6 +1864,8 @@ export default function EmbedDesign() {
             )}
           </div>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
