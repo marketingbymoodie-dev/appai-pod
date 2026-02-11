@@ -16,7 +16,8 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "WebFetch(domain:support.claude.com)",
-      "WebFetch(domain:replicate.com)"
+      "WebFetch(domain:replicate.com)",
+      "Bash(grep:*)"
     ]
   }
 }

@@ -10,10 +10,41 @@ import { createServer } from "http";
 const app = express();
 
 // ============================================================
+// EDGE TEST - Absolute first route, no middleware
+// ============================================================
+app.get("/edge-test", (req, res) => {
+  console.log("[EDGE TEST] HIT - origin:", req.headers.origin, "host:", req.headers.host);
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET");
+  res.json({ ok: true, edge: "reached", ts: Date.now() });
+});
+
+// ============================================================
 // STEP 1: GLOBAL PROBE - MUST BE FIRST MIDDLEWARE
 // ============================================================
 app.use((req, res, next) => {
   console.log(`[GLOBAL PROBE] ${new Date().toISOString()} ${req.method} ${req.url}`);
+  next();
+});
+
+// ============================================================
+// GLOBAL API CORS - Allow all origins for /api routes
+// ============================================================
+app.use("/api", (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  if (req.method === "OPTIONS") {
+    console.log(`[GLOBAL API CORS] OPTIONS preflight for ${req.originalUrl} from ${origin}`);
+    return res.sendStatus(204);
+  }
   next();
 });
 
@@ -30,16 +61,20 @@ app.use("/api/storefront", (req, res, next) => {
 // ============================================================
 app.use("/api/storefront", (req, res, next) => {
   const origin = req.headers.origin;
+  console.log(`[STOREFRONT CORS] origin=${origin} method=${req.method} url=${req.originalUrl}`);
 
-  if (origin && origin.includes("myshopify.com")) {
+  // Always allow - either echo origin or use wildcard
+  // This is safe because storefront endpoints are public by design
+  if (origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
   res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") {
     console.log(`[STOREFRONT CORS] Handling OPTIONS preflight for ${req.originalUrl}`);
@@ -69,39 +104,7 @@ app.use((req, res, next) => {
   next();
 });
 
-/**
- * ✅ CORS for Shopify storefront embeds (general)
- * Allow cross-origin requests from Shopify storefronts
- */
-const ALLOWED_ORIGINS = [
-  /^https:\/\/[a-z0-9-]+\.myshopify\.com$/,
-  /^https:\/\/www\.[a-z0-9-]+\.myshopify\.com$/,
-  /^https:\/\/admin\.shopify\.com$/,
-];
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-
-  // Check if origin matches allowed patterns
-  if (origin) {
-    const isAllowed = ALLOWED_ORIGINS.some(pattern => pattern.test(origin));
-    if (isAllowed) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-      res.setHeader("Access-Control-Max-Age", "86400");
-    }
-  }
-
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
-  }
-
-  next();
-});
+// NOTE: CORS is now handled globally at the top of the middleware chain
 
 const httpServer = createServer(app);
 
