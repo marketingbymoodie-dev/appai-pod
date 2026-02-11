@@ -3149,6 +3149,145 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // Storefront-safe designer endpoint (no auth required, validates via shop param)
+  app.get("/api/storefront/product-types/:id/designer", async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+    const id = parseInt(req.params.id);
+
+    console.log(`[Storefront Designer API] Request for product type ${id}, shop: ${shop}`);
+
+    // Validate shop parameter
+    if (!shop) {
+      console.log(`[Storefront Designer API] Missing shop parameter`);
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.status(400).json({ error: "Missing shop parameter" });
+    }
+
+    try {
+      // Get merchant by shop domain
+      const merchant = await storage.getMerchantByShop(shop);
+      if (!merchant) {
+        console.log(`[Storefront Designer API] Merchant not found for shop: ${shop}`);
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        return res.status(404).json({ error: "Shop not found" });
+      }
+
+      console.log(`[Storefront Designer API] Found merchant ${merchant.id} for shop ${shop}`);
+
+      // Fetch product type with timeout
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Database query timeout after 5s')), 5000)
+      );
+
+      const productType = await Promise.race([
+        storage.getProductType(id),
+        timeoutPromise
+      ]);
+
+      if (!productType) {
+        console.log(`[Storefront Designer API] Product type ${id} not found`);
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Validate product type belongs to this merchant
+      if (productType.merchantId && productType.merchantId !== merchant.id) {
+        console.log(`[Storefront Designer API] Product type ${id} belongs to merchant ${productType.merchantId}, not ${merchant.id}`);
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        return res.status(403).json({ error: "Product type not available for this shop" });
+      }
+
+      console.log(`[Storefront Designer API] Building config for product type ${id}: ${productType.name}`);
+
+      // Parse JSON fields
+      const sizes = typeof productType.sizes === 'string'
+        ? JSON.parse(productType.sizes)
+        : productType.sizes || [];
+      const frameColors = typeof productType.frameColors === 'string'
+        ? JSON.parse(productType.frameColors)
+        : productType.frameColors || [];
+
+      const [aspectW, aspectH] = (productType.aspectRatio || "1:1").split(":").map(Number);
+      const aspectRatio = aspectW / aspectH;
+
+      const maxDimension = 1024;
+      let canvasWidth: number, canvasHeight: number;
+      if (aspectRatio >= 1) {
+        canvasWidth = maxDimension;
+        canvasHeight = Math.round(maxDimension / aspectRatio);
+      } else {
+        canvasHeight = maxDimension;
+        canvasWidth = Math.round(maxDimension * aspectRatio);
+      }
+
+      const bleedMarginPercent = productType.bleedMarginPercent || 5;
+      const safeZoneMargin = Math.round(Math.min(canvasWidth, canvasHeight) * (bleedMarginPercent / 100));
+      const sizeType = (productType as any).sizeType || "dimensional";
+
+      const baseMockupImages = typeof productType.baseMockupImages === 'string'
+        ? JSON.parse(productType.baseMockupImages)
+        : productType.baseMockupImages || {};
+
+      const variantMap = typeof productType.variantMap === 'string'
+        ? JSON.parse(productType.variantMap)
+        : productType.variantMap || {};
+
+      const designerConfig = {
+        id: productType.id,
+        name: productType.name,
+        description: productType.description,
+        printifyBlueprintId: productType.printifyBlueprintId,
+        aspectRatio: productType.aspectRatio,
+        printShape: productType.printShape || "rectangle",
+        printAreaWidth: productType.printAreaWidth,
+        printAreaHeight: productType.printAreaHeight,
+        bleedMarginPercent,
+        designerType: productType.designerType || "generic",
+        sizeType,
+        hasPrintifyMockups: productType.hasPrintifyMockups || false,
+        baseMockupImages,
+        primaryMockupIndex: productType.primaryMockupIndex || 0,
+        doubleSidedPrint: productType.doubleSidedPrint || false,
+        sizes: sizes.map((s: any) => {
+          let sizeAspectRatio = s.aspectRatio || productType.aspectRatio;
+          if (sizeType === "dimensional" && s.width && s.height) {
+            const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+            const divisor = gcd(s.width, s.height);
+            sizeAspectRatio = `${s.width / divisor}:${s.height / divisor}`;
+          }
+          return {
+            id: s.id,
+            name: s.name,
+            width: s.width || 0,
+            height: s.height || 0,
+            aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
+          };
+        }),
+        frameColors: frameColors.map((c: any) => ({
+          id: c.id,
+          name: c.name,
+          hex: c.hex,
+        })),
+        canvasConfig: {
+          maxDimension,
+          width: canvasWidth,
+          height: canvasHeight,
+          safeZoneMargin,
+        },
+        variantMap,
+      };
+
+      console.log(`[Storefront Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+      res.json(designerConfig);
+    } catch (error) {
+      console.error("[Storefront Designer API] Error:", error);
+      res.status(500).json({ error: "Failed to fetch designer configuration" });
+    }
+  });
+
   // Admin endpoints for product types (requires authentication)
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {

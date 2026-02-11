@@ -318,10 +318,14 @@ export default function EmbedDesign() {
     // Add cache-busting timestamp to prevent browser caching stale responses
     const cacheBuster = `_t=${Date.now()}`;
 
+    // Get the myshopify.com domain for the storefront API
+    const myshopifyDomain = getMyShopifyDomain();
+    console.log('[EmbedDesign] Using myshopify domain for storefront API:', myshopifyDomain);
+
     Promise.all([
       fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
-      // Use the designer endpoint to get proper designer config (same as design.tsx and admin pages)
-      fetchWithTimeout(`/api/product-types/${productTypeId}/designer?${cacheBuster}`)
+      // Use the storefront-safe designer endpoint (no auth required, validates via shop param)
+      fetchWithTimeout(`/api/storefront/product-types/${productTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain || '')}&${cacheBuster}`)
         .then(async (res) => {
           console.log('[EmbedDesign] Designer API response status:', res.status, res.statusText);
           if (!res.ok) {
