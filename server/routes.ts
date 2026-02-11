@@ -3210,37 +3210,96 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // Helper: wrap any promise with a timeout
+  const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`TIMEOUT: ${label} exceeded ${ms}ms`)), ms)
+      )
+    ]);
+  };
+
   // Storefront-safe designer endpoint (no auth required, validates via shop param)
   app.get("/api/storefront/product-types/:id/designer", async (req: Request, res: Response) => {
+    const requestId = crypto.randomBytes(4).toString("hex");
     const startTime = Date.now();
+    let killSwitchTimeout: NodeJS.Timeout | null = null;
+    let responded = false;
+
+    // 1️⃣ STRUCTURED LOGGING AT VERY TOP
+    console.log(`[SF-DESIGNER ${requestId}] ========== REQUEST START ==========`);
+    console.log(`[SF-DESIGNER ${requestId}] timestamp=${new Date().toISOString()}`);
+    console.log(`[SF-DESIGNER ${requestId}] originalUrl=${req.originalUrl}`);
+    console.log(`[SF-DESIGNER ${requestId}] params.id=${req.params.id}`);
+    console.log(`[SF-DESIGNER ${requestId}] query.shop=${req.query.shop}`);
+    console.log(`[SF-DESIGNER ${requestId}] NODE_ENV=${process.env.NODE_ENV}`);
+    console.log(`[SF-DESIGNER ${requestId}] headers.host=${req.headers.host}`);
+    console.log(`[SF-DESIGNER ${requestId}] headers.origin=${req.headers.origin}`);
+
     const shop = req.query.shop as string;
     const id = parseInt(req.params.id);
 
-    // Validate shop parameter
-    if (!shop) {
-      console.log(`[Storefront Designer API] ERROR: Missing shop parameter`);
-      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-      return res.status(400).json({ error: "Missing shop parameter", debug: { productTypeId: id } });
-    }
+    // 2️⃣ SERVER-SIDE KILL SWITCH (5 seconds)
+    killSwitchTimeout = setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        console.error(`[SF-DESIGNER ${requestId}] ⚠️ KILL SWITCH FIRED after 5000ms - request did not complete`);
+        console.error(`[SF-DESIGNER ${requestId}] Last known state: shop=${shop} id=${id}`);
+        res.status(504).json({
+          error: "server-side timeout kill switch",
+          requestId,
+          elapsed: Date.now() - startTime,
+          shop,
+          productTypeId: id
+        });
+      }
+    }, 5000);
 
     try {
-      // Get merchant by shop domain - try direct lookup first, then via installation
-      console.log(`[Storefront Designer API] Looking up merchant for shop: ${shop}`);
-      let merchant = await storage.getMerchantByShop(shop);
+      // Validate shop parameter
+      if (!shop) {
+        console.log(`[SF-DESIGNER ${requestId}] ERROR: Missing shop parameter`);
+        responded = true;
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        return res.status(400).json({ error: "Missing shop parameter", debug: { productTypeId: id } });
+      }
+
+      // 3️⃣ MERCHANT LOOKUP - getMerchantByShop
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 1] Before getMerchantByShop(${shop})`);
+      const merchantStart = Date.now();
+      let merchant = await withTimeout(
+        storage.getMerchantByShop(shop),
+        4000,
+        "getMerchantByShop"
+      );
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 1] After getMerchantByShop - ${Date.now() - merchantStart}ms - found=${!!merchant}`);
 
       if (!merchant) {
-        console.log(`[Storefront Designer API] Direct merchant lookup failed, trying via installation...`);
-        // Fallback: look up via Shopify installation
-        const installation = await storage.getShopifyInstallationByShop(shop);
+        console.log(`[SF-DESIGNER ${requestId}] [STEP 2] Before getShopifyInstallationByShop(${shop})`);
+        const installStart = Date.now();
+        const installation = await withTimeout(
+          storage.getShopifyInstallationByShop(shop),
+          4000,
+          "getShopifyInstallationByShop"
+        );
+        console.log(`[SF-DESIGNER ${requestId}] [STEP 2] After getShopifyInstallationByShop - ${Date.now() - installStart}ms - found=${!!installation}`);
+
         if (installation && installation.merchantId) {
-          console.log(`[Storefront Designer API] Found installation with merchantId: ${installation.merchantId}`);
-          merchant = await storage.getMerchant(installation.merchantId);
+          console.log(`[SF-DESIGNER ${requestId}] [STEP 3] Before getMerchant(${installation.merchantId})`);
+          const getMerchStart = Date.now();
+          merchant = await withTimeout(
+            storage.getMerchant(installation.merchantId),
+            4000,
+            "getMerchant"
+          );
+          console.log(`[SF-DESIGNER ${requestId}] [STEP 3] After getMerchant - ${Date.now() - getMerchStart}ms - found=${!!merchant}`);
         }
       }
 
       if (!merchant) {
-        console.log(`[Storefront Designer API] ERROR: Merchant not found for shop: ${shop}`);
-        console.log(`[Storefront Designer API] Tried: direct lookup (userId: shopify:merchant:${shop}) and installation lookup`);
+        console.log(`[SF-DESIGNER ${requestId}] ERROR: Merchant not found for shop: ${shop}`);
+        responded = true;
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(404).json({
           error: "Shop not found",
@@ -3248,45 +3307,47 @@ thumbnailUrl = result.thumbnailUrl;
         });
       }
 
-      console.log(`[Storefront Designer API] Found merchant ID: ${merchant.id}, userId: ${merchant.userId}`);
+      console.log(`[SF-DESIGNER ${requestId}] Found merchant ID: ${merchant.id}`);
 
-      // Fetch product type with timeout
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Database query timeout after 5s')), 5000)
-      );
-
-      console.log(`[Storefront Designer API] Fetching product type ${id} from database...`);
-      const productType = await Promise.race([
+      // 4️⃣ PRODUCT TYPE LOOKUP
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 4] Before getProductType(${id})`);
+      const ptStart = Date.now();
+      const productType = await withTimeout(
         storage.getProductType(id),
-        timeoutPromise
-      ]);
+        4000,
+        "getProductType"
+      );
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 4] After getProductType - ${Date.now() - ptStart}ms - found=${!!productType}`);
 
       if (!productType) {
-        console.log(`[Storefront Designer API] ERROR: Product type ${id} not found in database`);
-        // List available product types for this merchant AND all active product types to help debug
-        const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
-        const allProductTypes = await storage.getActiveProductTypes();
-        console.log(`[Storefront Designer API] Available product types for merchant ${merchant.id}:`,
-          merchantProductTypes.map(pt => ({ id: pt.id, name: pt.name })));
-        console.log(`[Storefront Designer API] All active product types in system:`,
-          allProductTypes.map(pt => ({ id: pt.id, name: pt.name, merchantId: pt.merchantId })));
+        console.log(`[SF-DESIGNER ${requestId}] ERROR: Product type ${id} not found`);
+        console.log(`[SF-DESIGNER ${requestId}] [STEP 5] Before getProductTypesByMerchant`);
+        const listStart = Date.now();
+        const merchantProductTypes = await withTimeout(
+          storage.getProductTypesByMerchant(merchant.id),
+          4000,
+          "getProductTypesByMerchant"
+        );
+        console.log(`[SF-DESIGNER ${requestId}] [STEP 5] After getProductTypesByMerchant - ${Date.now() - listStart}ms - count=${merchantProductTypes.length}`);
+
+        responded = true;
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(404).json({
           error: "Product type not found",
           debug: {
             requestedId: id,
             merchantId: merchant.id,
-            availableIdsForMerchant: merchantProductTypes.map(pt => pt.id),
-            allActiveIds: allProductTypes.map(pt => ({ id: pt.id, merchantId: pt.merchantId }))
+            availableIdsForMerchant: merchantProductTypes.map(pt => pt.id)
           }
         });
       }
 
-      console.log(`[Storefront Designer API] Found product type: ${productType.name} (ID: ${productType.id}, merchantId: ${productType.merchantId})`);
+      console.log(`[SF-DESIGNER ${requestId}] Found product type: ${productType.name} (merchantId: ${productType.merchantId})`);
 
-      // Validate product type belongs to this merchant (or is global with null merchantId)
+      // Validate ownership
       if (productType.merchantId && productType.merchantId !== merchant.id) {
-        console.log(`[Storefront Designer API] ERROR: Product type ${id} belongs to merchant ${productType.merchantId}, not ${merchant.id}`);
+        console.log(`[SF-DESIGNER ${requestId}] ERROR: Ownership mismatch`);
+        responded = true;
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         return res.status(403).json({
           error: "Product type not available for this shop",
@@ -3294,9 +3355,10 @@ thumbnailUrl = result.thumbnailUrl;
         });
       }
 
-      console.log(`[Storefront Designer API] Building config for product type ${id}: ${productType.name}`);
+      // 5️⃣ BUILD CONFIG (CPU-bound, should be fast)
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
+      const buildStart = Date.now();
 
-      // Parse JSON fields
       const sizes = typeof productType.sizes === 'string'
         ? JSON.parse(productType.sizes)
         : productType.sizes || [];
@@ -3374,16 +3436,44 @@ thumbnailUrl = result.thumbnailUrl;
         variantMap,
       };
 
-      const ms = Date.now() - startTime;
-      console.log(`[storefront/designer] shop=${shop} merchantId=${merchant.id} requestedId=${id} found=true ms=${ms}`);
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
+
+      // 6️⃣ SEND RESPONSE
+      const totalMs = Date.now() - startTime;
+      console.log(`[SF-DESIGNER ${requestId}] [STEP 7] Before sending response - total elapsed: ${totalMs}ms`);
+
+      responded = true;
       res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.set('Pragma', 'no-cache');
       res.set('Expires', '0');
       res.json(designerConfig);
+
+      console.log(`[SF-DESIGNER ${requestId}] ✅ SUCCESS - shop=${shop} id=${id} ms=${totalMs}`);
+      console.log(`[SF-DESIGNER ${requestId}] ========== REQUEST END ==========`);
+
     } catch (error) {
-      const ms = Date.now() - startTime;
-      console.error(`[storefront/designer] shop=${shop} requestedId=${id} error=exception ms=${ms}`, error);
-      res.status(500).json({ error: "Failed to fetch designer configuration" });
+      // 4️⃣ CATCH BLOCK - log full error stack
+      const totalMs = Date.now() - startTime;
+      console.error(`[SF-DESIGNER ${requestId}] ❌ EXCEPTION after ${totalMs}ms`);
+      console.error(`[SF-DESIGNER ${requestId}] Error name: ${(error as Error).name}`);
+      console.error(`[SF-DESIGNER ${requestId}] Error message: ${(error as Error).message}`);
+      console.error(`[SF-DESIGNER ${requestId}] Error stack: ${(error as Error).stack}`);
+
+      if (!responded) {
+        responded = true;
+        res.status(500).json({
+          error: "Failed to fetch designer configuration",
+          requestId,
+          elapsed: totalMs,
+          errorMessage: (error as Error).message
+        });
+      }
+    } finally {
+      // 5️⃣ CLEAR TIMEOUT IN FINALLY
+      if (killSwitchTimeout) {
+        clearTimeout(killSwitchTimeout);
+        console.log(`[SF-DESIGNER ${requestId}] Kill switch timeout cleared`);
+      }
     }
   });
 
