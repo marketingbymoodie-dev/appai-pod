@@ -91,16 +91,27 @@ console.log('[EmbedDesign] API Base URL:', API_BASE);
 console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
 console.log('[EmbedDesign] window.location.href:', typeof window !== 'undefined' ? window.location.href : 'undefined');
 
-// DIAGNOSTIC: Immediate fetch test on module load
+// DIAGNOSTIC: Test multiple routes on module load to identify which work/fail
 if (typeof window !== 'undefined') {
-  console.log('[EmbedDesign] Running immediate edge-test fetch...');
-  fetch(`${API_BASE}/edge-test`)
-    .then(r => {
-      console.log('[EmbedDesign] edge-test response status:', r.status);
-      return r.json();
-    })
-    .then(data => console.log('[EmbedDesign] edge-test SUCCESS:', data))
-    .catch(err => console.error('[EmbedDesign] edge-test FAILED:', err));
+  const testRoutes = [
+    { name: 'edge-test', url: `${API_BASE}/edge-test` },
+    { name: 'api-test', url: `${API_BASE}/api/test` },
+    { name: 'storefront-ping', url: `${API_BASE}/api/storefront/ping` },
+    { name: 'designer-direct', url: `${API_BASE}/api/storefront/product-types/2/designer-direct?shop=appai-2.myshopify.com` },
+  ];
+
+  console.log('[EmbedDesign] === DIAGNOSTIC FETCH TESTS ===');
+  testRoutes.forEach(({ name, url }) => {
+    const start = Date.now();
+    console.log(`[EmbedDesign] Testing ${name}: ${url}`);
+    fetch(url)
+      .then(r => {
+        console.log(`[EmbedDesign] ${name} status: ${r.status} (${Date.now() - start}ms)`);
+        return r.json();
+      })
+      .then(data => console.log(`[EmbedDesign] ${name} SUCCESS:`, data))
+      .catch(err => console.error(`[EmbedDesign] ${name} FAILED (${Date.now() - start}ms):`, err.message));
+  });
 }
 
 /**
