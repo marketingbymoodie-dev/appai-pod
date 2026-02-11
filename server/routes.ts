@@ -359,6 +359,22 @@ export async function registerRoutes(
     }
   })();
 
+  // Storefront request logging middleware
+  app.use("/api/storefront", (req: Request, res: Response, next) => {
+    const startTime = Date.now();
+    const requestId = crypto.randomBytes(4).toString("hex");
+
+    console.log(`[Storefront ${requestId}] ${req.method} ${req.originalUrl} - started`);
+
+    // Log when response finishes
+    res.on("finish", () => {
+      const duration = Date.now() - startTime;
+      console.log(`[Storefront ${requestId}] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
+    });
+
+    next();
+  });
+
   // Health check - always responds fast, shows DB status
   app.get("/api/health", (_req: Request, res: Response) => {
     const uptime = Math.floor((Date.now() - serverStartTime) / 1000);
@@ -3425,6 +3441,18 @@ thumbnailUrl = result.thumbnailUrl;
       console.error("[Storefront Debug] Error:", error);
       res.status(500).json({ error: "Failed to fetch debug info" });
     }
+  });
+
+  // Storefront ping endpoint - quick health check for embed to verify connectivity
+  app.get("/api/storefront/ping", (_req: Request, res: Response) => {
+    const timestamp = Date.now();
+    console.log(`[Storefront Ping] Ping received at ${new Date(timestamp).toISOString()}`);
+    res.json({
+      ok: true,
+      timestamp,
+      service: "appai-pod",
+      mode: "storefront",
+    });
   });
 
   // Resolve product type ID from shop + product handle

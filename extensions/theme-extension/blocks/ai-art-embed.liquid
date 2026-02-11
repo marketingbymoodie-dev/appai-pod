@@ -433,7 +433,7 @@ function showLoginRequiredPopup() {
     const studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     
     const params = new URLSearchParams();
-    params.set('embedded', 'true');
+    params.set('storefront', 'true');  // IMPORTANT: Use storefront=true, NOT embedded=true
     params.set('shopify', 'true');
     params.set('shop', config.shopDomain);
     params.set('productTypeId', config.productTypeId);

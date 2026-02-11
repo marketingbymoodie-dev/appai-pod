@@ -89,20 +89,62 @@ function getApiBase(): string {
 const API_BASE = getApiBase();
 console.log('[EmbedDesign] API Base URL:', API_BASE);
 
+/**
+ * Runtime mode detection for the embed.
+ *
+ * Modes:
+ * - storefront: Embedded on Shopify storefront (storefront=true). NO session token, uses public /api/storefront/* endpoints.
+ * - admin-embedded: Embedded in Shopify admin (embedded=true, shopify=true). Uses App Bridge and session tokens.
+ * - standalone: Direct access without Shopify context. Uses standard auth.
+ */
+type RuntimeMode = 'storefront' | 'admin-embedded' | 'standalone';
+
+function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
+  const isStorefront = params.get("storefront") === "true";
+  const isEmbedded = params.get("embedded") === "true";
+  const isShopify = params.get("shopify") === "true";
+
+  // Storefront mode: explicitly set via storefront=true
+  // This mode does NOT use session tokens - all APIs are public
+  if (isStorefront) {
+    return 'storefront';
+  }
+
+  // Admin embedded mode: embedded=true with shopify=true
+  // This mode requires App Bridge and session tokens
+  if (isEmbedded && isShopify) {
+    return 'admin-embedded';
+  }
+
+  // Standalone mode: direct access without Shopify context
+  return 'standalone';
+}
+
 export default function EmbedDesign() {
   const searchParams = new URLSearchParams(window.location.search);
 
+  // Detect runtime mode
+  const runtimeMode = detectRuntimeMode(searchParams);
+
+  // Legacy params - kept for backwards compatibility
   const isEmbedded = searchParams.get("embedded") === "true";
   const isShopify = searchParams.get("shopify") === "true";
+  const isStorefront = runtimeMode === 'storefront';
+
+  // Key behavioral flags based on runtime mode
+  const requiresSessionToken = runtimeMode === 'admin-embedded';
+  const usesPublicStorefrontApi = runtimeMode === 'storefront';
+
   const productTypeId = searchParams.get("productTypeId") || "1";
   const productId = searchParams.get("productId") || "";
 
   // Log all URL parameters for debugging
   console.log('[EmbedDesign] === INITIALIZATION ===');
   console.log('[EmbedDesign] Full URL:', window.location.href);
+  console.log('[EmbedDesign] Runtime mode:', runtimeMode);
   console.log('[EmbedDesign] productTypeId from URL:', searchParams.get("productTypeId"), '(using:', productTypeId, ')');
   console.log('[EmbedDesign] shop from URL:', searchParams.get("shop"));
-  console.log('[EmbedDesign] isShopify:', isShopify, 'isEmbedded:', isEmbedded);
+  console.log('[EmbedDesign] isStorefront:', isStorefront, 'requiresSessionToken:', requiresSessionToken);
   
   // Get productHandle from URL params, or extract from referrer if not provided
   const getProductHandle = (): string => {
@@ -494,8 +536,10 @@ export default function EmbedDesign() {
   }, [sharedDesignId]);
 
   useEffect(() => {
-    if (isShopify && shopDomain) {
-      console.log('[EmbedDesign] Starting session request for shop:', shopDomain);
+    // IMPORTANT: Only request session token for admin-embedded mode
+    // Storefront mode uses public /api/storefront/* endpoints - NO session token required
+    if (requiresSessionToken && shopDomain) {
+      console.log('[EmbedDesign] Starting session request for admin-embedded mode, shop:', shopDomain);
 
       // Create abort controller for timeout
       const controller = new AbortController();
@@ -548,16 +592,18 @@ export default function EmbedDesign() {
           setSessionLoading(false);
         });
     } else {
-      console.log('[EmbedDesign] Skipping session - isShopify:', isShopify, 'shopDomain:', shopDomain);
+      // Storefront mode or standalone mode - no session token needed
+      console.log('[EmbedDesign] Skipping session - runtimeMode:', runtimeMode, 'requiresSessionToken:', requiresSessionToken, 'shopDomain:', shopDomain);
       setSessionLoading(false);
     }
-  }, [isShopify, shopDomain, productId, shopifyCustomerId, shopifyCustomerEmail, shopifyCustomerName]);
+  }, [requiresSessionToken, runtimeMode, shopDomain, productId, shopifyCustomerId, shopifyCustomerEmail, shopifyCustomerName]);
 
   // Fetch Printify composite mockups (artwork overlaid on product photos)
   // Send mockup URLs to parent Shopify page via postMessage
   const sendMockupsToParent = useCallback((mockupUrls: string[]) => {
-    if (!isShopify || !isEmbedded) return;
-    
+    // Send mockups for both storefront and admin-embedded modes (both use iframes)
+    if (runtimeMode === 'standalone') return;
+
     try {
       // Use "*" for targetOrigin to support Shopify preview environments
       // Origin validation is done on the receiving end in ai-art-embed.liquid
@@ -571,7 +617,7 @@ export default function EmbedDesign() {
     } catch (error) {
       console.error("[EmbedDesign] Failed to send mockups to parent:", error);
     }
-  }, [isShopify, isEmbedded, productId, productHandle]);
+  }, [runtimeMode, productId, productHandle]);
 
   const fetchPrintifyMockups = useCallback(async (
     designImageUrl: string, 
