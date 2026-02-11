@@ -363,73 +363,138 @@ export default function EmbedDesign() {
   };
 
   useEffect(() => {
-    // AbortController for cleanup when component unmounts or dependencies change
-    const abortController = new AbortController();
+    // Unique session ID for tracing this effect run
+    const sessionId = Math.random().toString(36).substring(2, 8);
+    console.log(`[EmbedDesign] [${sessionId}] useEffect START`);
+
+    // Master abort controller for this entire effect session
+    const masterAbort = new AbortController();
     let isCancelled = false;
 
-    // Robust fetch with timeout - properly cleans up timer and uses AbortController
+    /**
+     * Robust fetch with timeout.
+     * - Each call creates its own AbortController (linked to master)
+     * - Timeout ALSO aborts the fetch (doesn't leave it hanging)
+     * - Uses completed flag to prevent race conditions
+     * - Properly cleans up all resources
+     */
     const fetchWithTimeout = async (url: string, timeout = 30000): Promise<Response> => {
       const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+      const reqId = Math.random().toString(36).substring(2, 6);
       const startTime = Date.now();
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const logPrefix = `[EmbedDesign] [${sessionId}/${reqId}]`;
 
-      console.log(`[EmbedDesign] fetchWithTimeout START: ${fullUrl}`);
+      // Each request gets its own AbortController
+      const requestAbort = new AbortController();
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      let completed = false;
+
+      // Check if already cancelled before starting
+      if (masterAbort.signal.aborted || isCancelled) {
+        console.log(`${logPrefix} Skipping - already cancelled`);
+        throw new DOMException('Request aborted', 'AbortError');
+      }
+
+      // Link request abort to master - if master aborts, abort this request too
+      const onMasterAbort = () => {
+        if (!completed) {
+          console.log(`${logPrefix} Master abort received`);
+          requestAbort.abort();
+        }
+      };
+      masterAbort.signal.addEventListener('abort', onMasterAbort);
+
+      console.log(`${logPrefix} START ${fullUrl.split('?')[0]}`);
 
       try {
-        // Create a timeout promise that rejects
-        const timeoutPromise = new Promise<never>((_, reject) => {
+        const response = await new Promise<Response>((resolve, reject) => {
+          // Set up timeout - IMPORTANT: also aborts the fetch when it fires
           timeoutId = setTimeout(() => {
-            console.error(`[EmbedDesign] TIMEOUT fired for: ${fullUrl} after ${timeout}ms`);
-            reject(new Error(`Request to ${fullUrl.split('?')[0]} timed out after ${timeout}ms`));
+            if (!completed) {
+              completed = true;
+              console.error(`${logPrefix} TIMEOUT after ${timeout}ms - aborting fetch`);
+              requestAbort.abort(); // Abort the fetch so it doesn't keep running
+              reject(new Error(`Request timed out after ${timeout}ms`));
+            }
           }, timeout);
-        });
 
-        // Race between fetch and timeout
-        const response = await Promise.race([
-          fetch(fullUrl, { signal: abortController.signal }).then(res => {
-            const elapsed = Date.now() - startTime;
-            console.log(`[EmbedDesign] fetch() resolved in ${elapsed}ms: ${res.status} ${res.statusText} for ${fullUrl.split('?')[0]}`);
-            return res;
-          }),
-          timeoutPromise
-        ]);
+          // Start the actual fetch
+          fetch(fullUrl, { signal: requestAbort.signal })
+            .then(res => {
+              if (!completed) {
+                completed = true;
+                const elapsed = Date.now() - startTime;
+                console.log(`${logPrefix} OK ${res.status} in ${elapsed}ms`);
+                if (timeoutId) clearTimeout(timeoutId);
+                resolve(res);
+              }
+            })
+            .catch(err => {
+              if (!completed) {
+                completed = true;
+                if (timeoutId) clearTimeout(timeoutId);
+                reject(err);
+              }
+            });
+        });
 
         return response;
       } finally {
-        // ALWAYS clear the timeout - this is critical!
+        completed = true;
         if (timeoutId !== null) {
           clearTimeout(timeoutId);
-          console.log(`[EmbedDesign] Timeout cleared for: ${fullUrl.split('?')[0]}`);
         }
+        masterAbort.signal.removeEventListener('abort', onMasterAbort);
       }
     };
 
-    // Retry wrapper for cold start scenarios
+    /**
+     * Retry wrapper with cancellable delays.
+     */
     const fetchWithRetry = async (url: string, retries = 2): Promise<Response> => {
+      const logPrefix = `[EmbedDesign] [${sessionId}]`;
       let lastError: Error | null = null;
 
       for (let i = 0; i <= retries; i++) {
-        if (isCancelled) {
-          throw new Error('Request cancelled');
+        // Check cancellation at start of each attempt
+        if (isCancelled || masterAbort.signal.aborted) {
+          console.log(`${logPrefix} Retry cancelled before attempt ${i + 1}`);
+          throw new DOMException('Request cancelled', 'AbortError');
         }
 
         try {
-          console.log(`[EmbedDesign] fetchWithRetry attempt ${i + 1}/${retries + 1} for: ${url}`);
+          console.log(`${logPrefix} Attempt ${i + 1}/${retries + 1} for: ${url.split('?')[0]}`);
           const response = await fetchWithTimeout(url);
-          console.log(`[EmbedDesign] fetchWithRetry SUCCESS on attempt ${i + 1}`);
+          console.log(`${logPrefix} SUCCESS on attempt ${i + 1}`);
           return response;
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
-          console.warn(`[EmbedDesign] fetchWithRetry attempt ${i + 1} FAILED:`, lastError.message);
+          console.warn(`${logPrefix} Attempt ${i + 1} FAILED: ${lastError.message}`);
 
-          // Don't retry if aborted
-          if (lastError.name === 'AbortError' || isCancelled) {
+          // Don't retry if aborted/cancelled
+          if (lastError.name === 'AbortError' || isCancelled || masterAbort.signal.aborted) {
             throw lastError;
           }
 
+          // Cancellable delay before retry
           if (i < retries) {
-            console.log(`[EmbedDesign] Waiting 1s before retry...`);
-            await new Promise(r => setTimeout(r, 1000));
+            console.log(`${logPrefix} Waiting 1s before retry...`);
+            try {
+              await new Promise<void>((resolve, reject) => {
+                if (masterAbort.signal.aborted) {
+                  reject(new DOMException('Cancelled during delay', 'AbortError'));
+                  return;
+                }
+                const delayTimer = setTimeout(resolve, 1000);
+                const onAbort = () => {
+                  clearTimeout(delayTimer);
+                  reject(new DOMException('Cancelled during delay', 'AbortError'));
+                };
+                masterAbort.signal.addEventListener('abort', onAbort, { once: true });
+              });
+            } catch (delayErr) {
+              throw delayErr; // Re-throw abort error
+            }
           }
         }
       }
@@ -438,7 +503,11 @@ export default function EmbedDesign() {
     };
 
     const loadConfig = async () => {
-      if (isCancelled) return;
+      const logPrefix = `[EmbedDesign] [${sessionId}]`;
+      if (isCancelled || masterAbort.signal.aborted) {
+        console.log(`${logPrefix} loadConfig skipped - already cancelled`);
+        return;
+      }
       const cacheBuster = `_t=${Date.now()}`;
       const myshopifyDomain = getMyShopifyDomain();
       console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);
@@ -589,7 +658,7 @@ export default function EmbedDesign() {
     return () => {
       console.log('[EmbedDesign] useEffect cleanup - aborting any in-flight requests');
       isCancelled = true;
-      abortController.abort();
+      masterAbort.abort();
     };
   }, [productTypeId, productHandle]);
 
