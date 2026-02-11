@@ -3237,8 +3237,49 @@ thumbnailUrl = result.thumbnailUrl;
     console.log(`[SF-DESIGNER ${requestId}] headers.host=${req.headers.host}`);
     console.log(`[SF-DESIGNER ${requestId}] headers.origin=${req.headers.origin}`);
 
-    const shop = req.query.shop as string;
+    let shop = req.query.shop as string;
     const id = parseInt(req.params.id);
+
+    // 🛡️ DEFENSIVE FALLBACK: If shop param is missing, try to derive from Origin/Referer
+    if (!shop) {
+      console.log(`[SF-DESIGNER ${requestId}] No shop param, attempting fallback from headers...`);
+
+      // Try Origin header first (most reliable for cross-origin requests)
+      const origin = req.headers.origin;
+      if (origin) {
+        try {
+          const originUrl = new URL(origin);
+          if (originUrl.hostname.endsWith('.myshopify.com')) {
+            shop = originUrl.hostname;
+            console.log(`[SF-DESIGNER ${requestId}] Derived shop from Origin: ${shop}`);
+          }
+        } catch (e) {
+          console.log(`[SF-DESIGNER ${requestId}] Failed to parse Origin: ${origin}`);
+        }
+      }
+
+      // Try Referer header as backup
+      if (!shop) {
+        const referer = req.headers.referer || req.headers.referrer;
+        if (referer) {
+          try {
+            const refererUrl = new URL(referer as string);
+            if (refererUrl.hostname.endsWith('.myshopify.com')) {
+              shop = refererUrl.hostname;
+              console.log(`[SF-DESIGNER ${requestId}] Derived shop from Referer: ${shop}`);
+            }
+          } catch (e) {
+            console.log(`[SF-DESIGNER ${requestId}] Failed to parse Referer: ${referer}`);
+          }
+        }
+      }
+
+      if (shop) {
+        console.log(`[SF-DESIGNER ${requestId}] ✅ Fallback succeeded: shop=${shop}`);
+      } else {
+        console.log(`[SF-DESIGNER ${requestId}] ❌ Fallback failed: no valid .myshopify.com domain in headers`);
+      }
+    }
 
     // 2️⃣ SERVER-SIDE KILL SWITCH (5 seconds)
     killSwitchTimeout = setTimeout(() => {
@@ -3257,12 +3298,21 @@ thumbnailUrl = result.thumbnailUrl;
     }, 5000);
 
     try {
-      // Validate shop parameter
+      // Validate shop parameter (after fallback attempt)
       if (!shop) {
-        console.log(`[SF-DESIGNER ${requestId}] ERROR: Missing shop parameter`);
+        console.log(`[SF-DESIGNER ${requestId}] ERROR: Missing shop parameter and fallback failed`);
+        console.log(`[SF-DESIGNER ${requestId}] Headers: origin=${req.headers.origin}, referer=${req.headers.referer}`);
         responded = true;
         res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        return res.status(400).json({ error: "Missing shop parameter", debug: { productTypeId: id } });
+        return res.status(400).json({
+          error: "Missing shop parameter",
+          message: "The shop parameter is required. Provide ?shop=yourstore.myshopify.com or ensure Origin/Referer headers contain a .myshopify.com domain.",
+          debug: {
+            productTypeId: id,
+            originHeader: req.headers.origin || null,
+            refererHeader: req.headers.referer || null
+          }
+        });
       }
 
       // 3️⃣ MERCHANT LOOKUP - getMerchantByShop
