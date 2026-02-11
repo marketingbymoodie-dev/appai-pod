@@ -9,6 +9,54 @@ import { createServer } from "http";
 
 const app = express();
 
+// ============================================================
+// STEP 1: GLOBAL PROBE - MUST BE FIRST MIDDLEWARE
+// ============================================================
+app.use((req, res, next) => {
+  console.log(`[GLOBAL PROBE] ${new Date().toISOString()} ${req.method} ${req.url}`);
+  next();
+});
+
+// ============================================================
+// STEP 2: STOREFRONT PROBE - Log all /api/storefront requests
+// ============================================================
+app.use("/api/storefront", (req, res, next) => {
+  console.log(`[STOREFRONT PROBE] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
+// ============================================================
+// STEP 4: EXPLICIT CORS FOR STOREFRONT - Before any other middleware
+// ============================================================
+app.use("/api/storefront", (req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin && origin.includes("myshopify.com")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+
+  if (req.method === "OPTIONS") {
+    console.log(`[STOREFRONT CORS] Handling OPTIONS preflight for ${req.originalUrl}`);
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+// ============================================================
+// STEP 3: SAFE PING ROUTE - Before any auth middleware
+// ============================================================
+app.get("/api/storefront/ping", (req, res) => {
+  console.log("[PING HIT] /api/storefront/ping");
+  res.status(200).json({ ok: true, ts: Date.now(), probe: "direct" });
+});
+
 /**
  * ✅ Required for Shopify iframe embedding
  */
@@ -22,7 +70,7 @@ app.use((req, res, next) => {
 });
 
 /**
- * ✅ CORS for Shopify storefront embeds
+ * ✅ CORS for Shopify storefront embeds (general)
  * Allow cross-origin requests from Shopify storefronts
  */
 const ALLOWED_ORIGINS = [
