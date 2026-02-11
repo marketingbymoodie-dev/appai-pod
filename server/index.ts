@@ -92,6 +92,28 @@ app.get("/api/storefront/ping", (req, res) => {
   res.status(200).json({ ok: true, ts: Date.now(), probe: "direct" });
 });
 
+// ============================================================
+// API TEST ROUTE - Direct test before registerRoutes
+// ============================================================
+app.get("/api/test", (req, res) => {
+  console.log("[API TEST] HIT - origin:", req.headers.origin);
+  res.json({ ok: true, api: "test", ts: Date.now() });
+});
+
+// ============================================================
+// DIRECT DESIGNER ROUTE - Bypass registerRoutes to test
+// ============================================================
+app.get("/api/storefront/product-types/:id/designer-direct", (req, res) => {
+  console.log("[DESIGNER-DIRECT] HIT - id:", req.params.id, "shop:", req.query.shop);
+  res.json({
+    ok: true,
+    route: "designer-direct",
+    id: req.params.id,
+    shop: req.query.shop,
+    ts: Date.now()
+  });
+});
+
 /**
  * ✅ Required for Shopify iframe embedding
  */
