@@ -379,7 +379,14 @@ export default function EmbedDesign() {
      * - Properly cleans up all resources
      */
     const fetchWithTimeout = async (url: string, timeout = 30000): Promise<Response> => {
-      const fullUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
+      // SAFETY: All URLs MUST be absolute. If a relative URL slips through, fix it but warn loudly.
+      let fullUrl: string;
+      if (url.startsWith('http')) {
+        fullUrl = url;
+      } else {
+        console.error(`[EmbedDesign] BUG: Relative URL passed to fetchWithTimeout: ${url} — auto-fixing with API_BASE`);
+        fullUrl = `${API_BASE}${url}`;
+      }
       const reqId = Math.random().toString(36).substring(2, 6);
       const startTime = Date.now();
       const logPrefix = `[EmbedDesign] [${sessionId}/${reqId}]`;
@@ -550,7 +557,7 @@ export default function EmbedDesign() {
         console.log('[EmbedDesign] ProductTypeId is default, attempting to resolve from handle:', productHandle);
         try {
           const resolveRes = await fetchWithRetry(
-            `/api/storefront/resolve-product-type?shop=${encodeURIComponent(myshopifyDomain)}&handle=${encodeURIComponent(productHandle)}&${cacheBuster}`
+            `${API_BASE}/api/storefront/resolve-product-type?shop=${encodeURIComponent(myshopifyDomain)}&handle=${encodeURIComponent(productHandle)}&${cacheBuster}`
           );
           if (resolveRes.ok) {
             const resolved = await resolveRes.json();
@@ -589,11 +596,11 @@ export default function EmbedDesign() {
           return;
         }
 
-        const designerUrl = `/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain)}&${cacheBuster}`;
-        console.log('[EmbedDesign] Designer fetch URL:', `${API_BASE}${designerUrl}`);
+        const designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain)}&${cacheBuster}`;
+        console.log('[EmbedDesign] Designer fetch URL:', designerUrl);
 
         const [configRes, designerRes] = await Promise.all([
-          fetchWithTimeout(`/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
+          fetchWithTimeout(`${API_BASE}/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
           fetchWithRetry(designerUrl)
         ]);
 

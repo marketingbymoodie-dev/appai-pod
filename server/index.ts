@@ -7,6 +7,19 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
+// ============================================================
+// STARTUP BANNER - Identify deployed version
+// ============================================================
+const BUILD_ID = "2024-02-12-shop-fallback-v2";
+const GIT_COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "unknown";
+console.log("=".repeat(60));
+console.log("[SERVER STARTUP] Build ID:", BUILD_ID);
+console.log("[SERVER STARTUP] Git Commit:", GIT_COMMIT);
+console.log("[SERVER STARTUP] Node Version:", process.version);
+console.log("[SERVER STARTUP] NODE_ENV:", process.env.NODE_ENV);
+console.log("[SERVER STARTUP] Timestamp:", new Date().toISOString());
+console.log("=".repeat(60));
+
 const app = express();
 
 // ============================================================

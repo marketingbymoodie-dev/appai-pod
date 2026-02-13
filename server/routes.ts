@@ -3241,44 +3241,55 @@ thumbnailUrl = result.thumbnailUrl;
     const id = parseInt(req.params.id);
 
     // 🛡️ DEFENSIVE FALLBACK: If shop param is missing, try to derive from Origin/Referer
+    const originHeader = req.headers.origin as string | undefined;
+    const refererHeader = (req.headers.referer || req.headers.referrer) as string | undefined;
+
     if (!shop) {
-      console.log(`[SF-DESIGNER ${requestId}] No shop param, attempting fallback from headers...`);
+      console.log(`[SF-DESIGNER ${requestId}] ⚠️ SHOP MISSING from query params`);
+      console.log(`[SF-DESIGNER ${requestId}] Headers available: origin=${originHeader}, referer=${refererHeader}`);
 
       // Try Origin header first (most reliable for cross-origin requests)
-      const origin = req.headers.origin;
-      if (origin) {
+      if (originHeader) {
         try {
-          const originUrl = new URL(origin);
+          const originUrl = new URL(originHeader);
+          console.log(`[SF-DESIGNER ${requestId}] Parsed origin hostname: ${originUrl.hostname}`);
           if (originUrl.hostname.endsWith('.myshopify.com')) {
             shop = originUrl.hostname;
-            console.log(`[SF-DESIGNER ${requestId}] Derived shop from Origin: ${shop}`);
+            console.log(`[SF-DESIGNER ${requestId}] ✅ DERIVED shop from Origin: ${shop}`);
+          } else {
+            console.log(`[SF-DESIGNER ${requestId}] Origin hostname does not end with .myshopify.com`);
           }
         } catch (e) {
-          console.log(`[SF-DESIGNER ${requestId}] Failed to parse Origin: ${origin}`);
+          console.log(`[SF-DESIGNER ${requestId}] Failed to parse Origin: ${originHeader}`, e);
         }
+      } else {
+        console.log(`[SF-DESIGNER ${requestId}] No Origin header present`);
       }
 
       // Try Referer header as backup
-      if (!shop) {
-        const referer = req.headers.referer || req.headers.referrer;
-        if (referer) {
-          try {
-            const refererUrl = new URL(referer as string);
-            if (refererUrl.hostname.endsWith('.myshopify.com')) {
-              shop = refererUrl.hostname;
-              console.log(`[SF-DESIGNER ${requestId}] Derived shop from Referer: ${shop}`);
-            }
-          } catch (e) {
-            console.log(`[SF-DESIGNER ${requestId}] Failed to parse Referer: ${referer}`);
+      if (!shop && refererHeader) {
+        try {
+          const refererUrl = new URL(refererHeader);
+          console.log(`[SF-DESIGNER ${requestId}] Parsed referer hostname: ${refererUrl.hostname}`);
+          if (refererUrl.hostname.endsWith('.myshopify.com')) {
+            shop = refererUrl.hostname;
+            console.log(`[SF-DESIGNER ${requestId}] ✅ DERIVED shop from Referer: ${shop}`);
+          } else {
+            console.log(`[SF-DESIGNER ${requestId}] Referer hostname does not end with .myshopify.com`);
           }
+        } catch (e) {
+          console.log(`[SF-DESIGNER ${requestId}] Failed to parse Referer: ${refererHeader}`, e);
         }
       }
 
+      // Final result logging
       if (shop) {
-        console.log(`[SF-DESIGNER ${requestId}] ✅ Fallback succeeded: shop=${shop}`);
+        console.log(`[SF-DESIGNER ${requestId}] 🎯 FALLBACK SUCCEEDED: derivedShop=${shop}`);
       } else {
-        console.log(`[SF-DESIGNER ${requestId}] ❌ Fallback failed: no valid .myshopify.com domain in headers`);
+        console.log(`[SF-DESIGNER ${requestId}] ❌ FALLBACK FAILED: shop still missing after checking headers`, { originHeader, refererHeader });
       }
+    } else {
+      console.log(`[SF-DESIGNER ${requestId}] Shop provided in query: ${shop}`);
     }
 
     // 2️⃣ SERVER-SIDE KILL SWITCH (5 seconds)
