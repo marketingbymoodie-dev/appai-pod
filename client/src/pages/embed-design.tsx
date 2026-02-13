@@ -87,16 +87,33 @@ function getApiBase(): string {
 
 // Get API base once at module load
 const API_BASE = getApiBase();
-console.log('[EmbedDesign] API Base URL:', API_BASE);
-console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
-console.log('[EmbedDesign] window.location.href:', typeof window !== 'undefined' ? window.location.href : 'undefined');
 
-// DIAGNOSTIC: Quick sanity check on module load
+/**
+ * Safe fetch that bypasses Shopify App Bridge's monkey-patched window.fetch.
+ *
+ * App Bridge intercepts fetch() to inject session tokens via postMessage to the
+ * Shopify admin parent. In STOREFRONT mode there is no admin parent, so the
+ * token handshake hangs forever and every fetch() silently blocks until our
+ * 30 s timeout fires.
+ *
+ * We saved the real browser fetch as window.__nativeFetch in index.html
+ * (before the App Bridge script tag), so we can always call the real one.
+ */
+const safeFetch: typeof fetch =
+  typeof window !== 'undefined' && (window as any).__nativeFetch
+    ? (window as any).__nativeFetch
+    : fetch;
+
+console.log('[EmbedDesign] API Base URL:', API_BASE);
+console.log('[EmbedDesign] Using native fetch bypass:', !!(typeof window !== 'undefined' && (window as any).__nativeFetch));
+console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
+
+// DIAGNOSTIC: Quick sanity check on module load using safeFetch
 if (typeof window !== 'undefined') {
   console.log('[EmbedDesign] === QUICK DIAGNOSTIC ===');
   const pingUrl = `${API_BASE}/api/storefront/ping`;
   const start = Date.now();
-  fetch(pingUrl)
+  safeFetch(pingUrl)
     .then(r => r.json())
     .then(data => console.log(`[EmbedDesign] Ping OK in ${Date.now() - start}ms:`, data))
     .catch(err => console.error(`[EmbedDesign] Ping FAILED in ${Date.now() - start}ms:`, err.message));
@@ -426,8 +443,8 @@ export default function EmbedDesign() {
             }
           }, timeout);
 
-          // Start the actual fetch
-          fetch(fullUrl, { signal: requestAbort.signal })
+          // Start the actual fetch — use safeFetch to bypass App Bridge interception
+          safeFetch(fullUrl, { signal: requestAbort.signal })
             .then(async res => {
               if (!completed) {
                 completed = true;
@@ -714,7 +731,7 @@ export default function EmbedDesign() {
       return;
     }
 
-    fetch(`${API_BASE}/api/shared-designs/${sharedDesignId}`)
+    safeFetch(`${API_BASE}/api/shared-designs/${sharedDesignId}`)
       .then(res => {
         if (!res.ok) {
           if (res.status === 410) {
@@ -763,7 +780,7 @@ export default function EmbedDesign() {
         controller.abort();
       }, 10000);
 
-      fetch(`${API_BASE}/api/shopify/session`, {
+      safeFetch(`${API_BASE}/api/shopify/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -874,7 +891,7 @@ export default function EmbedDesign() {
 
       setMockupError(null);
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
-      const response = await fetch(endpoint, {
+      const response = await safeFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -986,7 +1003,7 @@ export default function EmbedDesign() {
     }) => {
       const endpoint = isShopify ? `${API_BASE}/api/shopify/generate` : `${API_BASE}/api/generate`;
       console.log('[EmbedDesign] Generating design via:', endpoint);
-      const response = await fetch(endpoint, {
+      const response = await safeFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1117,7 +1134,7 @@ export default function EmbedDesign() {
       }
 
       // Step 1: Get presigned upload URL
-      const uploadUrlResponse = await fetch(`${API_BASE}/api/uploads/request-url`, {
+      const uploadUrlResponse = await safeFetch(`${API_BASE}/api/uploads/request-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1134,7 +1151,7 @@ export default function EmbedDesign() {
       const { uploadURL, objectPath } = await uploadUrlResponse.json();
 
       // Step 2: Upload the file directly to storage (uploadURL is already absolute)
-      const uploadResponse = await fetch(uploadURL, {
+      const uploadResponse = await safeFetch(uploadURL, {
         method: "PUT",
         headers: { "Content-Type": file.type },
         body: file,
@@ -1145,7 +1162,7 @@ export default function EmbedDesign() {
       }
 
       // Step 3: Validate and get image metadata
-      const importResponse = await fetch(`${API_BASE}/api/designs/import`, {
+      const importResponse = await safeFetch(`${API_BASE}/api/designs/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1264,7 +1281,7 @@ export default function EmbedDesign() {
     }
 
     console.log('[Design Studio] Fetching variants from:', fetchUrl);
-    fetch(fetchUrl)
+    safeFetch(fetchUrl)
       .then(res => {
         if (!res.ok) {
           console.log('[Design Studio] Variant fetch failed with status:', res.status);
@@ -1443,7 +1460,7 @@ export default function EmbedDesign() {
 
     setIsSharing(true);
     try {
-      const response = await fetch(`${API_BASE}/api/designs/share`, {
+      const response = await safeFetch(`${API_BASE}/api/designs/share`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
