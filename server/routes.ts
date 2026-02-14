@@ -4030,13 +4030,35 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      // Sanitized URL prefix for logging (never log full data URLs)
+      const urlPrefix = designImageUrl.startsWith("data:")
+        ? `data:${designImageUrl.substring(5, 30)}... (${designImageUrl.length} chars)`
+        : designImageUrl.substring(0, 120);
+      console.log("[Storefront Mockup] Incoming request:", { shop, productTypeId, sizeId, colorId, urlPrefix });
+
+      // Reject obviously malformed URLs (e.g. API_BASE + data: concatenation)
+      if (designImageUrl.includes("appdata:") || designImageUrl.includes("blob:")) {
+        return res.status(400).json({
+          error: "Invalid designImageUrl: appears to be a malformed or local URL. Must be a public https URL, a relative /objects/ path, or a data: URL."
+        });
+      }
+
       // Convert relative URLs to absolute URLs for Printify
       let absoluteImageUrl = designImageUrl;
       if (designImageUrl.startsWith("/objects/")) {
         const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
         absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
-        console.log("[Storefront Mockup] Converting image URL for Printify:", absoluteImageUrl);
+        console.log("[Storefront Mockup] Converted relative path to absolute:", absoluteImageUrl);
+      } else if (designImageUrl.startsWith("data:")) {
+        // data: URLs are valid - printify-mockups.ts handles base64 extraction
+        console.log("[Storefront Mockup] Received data: URL, will upload base64 to Printify");
+      } else if (designImageUrl.startsWith("https://")) {
+        console.log("[Storefront Mockup] Using absolute URL:", absoluteImageUrl);
+      } else {
+        return res.status(400).json({
+          error: "Invalid designImageUrl: must start with https://, /objects/, or data:"
+        });
       }
 
       // Get merchant from shop installation
@@ -4085,7 +4107,7 @@ ${textEdgeRestrictions}
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 
-      console.log("[Storefront Mockup] Generating mockup for:", { shop, productTypeId, sizeId, colorId, variantId: targetVariantId });
+      console.log("[Storefront Mockup] Generating Printify mockup:", { shop, productTypeId, sizeId, colorId, variantId: targetVariantId, blueprintId: productType.printifyBlueprintId });
 
       const result = await generatePrintifyMockup({
         blueprintId: productType.printifyBlueprintId,
@@ -4100,7 +4122,7 @@ ${textEdgeRestrictions}
         doubleSided: productType.doubleSidedPrint || false,
       });
 
-      console.log("[Storefront Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });
+      console.log("[Storefront Mockup] Result:", { success: result.success, mockupCount: result.mockupUrls?.length, error: result.error || null });
       res.json(result);
     } catch (error) {
       console.error("[Storefront Mockup] Error generating mockup:", error);

@@ -51,15 +51,16 @@ function extractBase64FromDataUrl(dataUrl: string): string {
 
 function isAllowedImageUrl(url: string): boolean {
   if (isDataUrl(url)) return true;
-  
+
   try {
     const parsedUrl = new URL(url);
     const allowedHosts = [
       process.env.REPLIT_DEV_DOMAIN,
       process.env.REPL_SLUG ? `${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co` : null,
       'storage.googleapis.com',
+      'up.railway.app', // Railway hosted apps
     ].filter(Boolean);
-    
+
     return allowedHosts.some(host => host && parsedUrl.hostname.includes(host as string));
   } catch {
     return false;
@@ -112,9 +113,11 @@ async function uploadImageToPrintify(
 ): Promise<PrintifyImage | null> {
   try {
     let requestBody: Record<string, string>;
+    let uploadMethod: string;
 
     if (Buffer.isBuffer(imageUrlOrBuffer)) {
       const base64Data = imageUrlOrBuffer.toString('base64');
+      uploadMethod = `buffer (${base64Data.length} chars base64)`;
       requestBody = {
         file_name: `design-${Date.now()}.png`,
         contents: base64Data,
@@ -122,19 +125,23 @@ async function uploadImageToPrintify(
     } else if (isDataUrl(imageUrlOrBuffer)) {
       const base64Data = extractBase64FromDataUrl(imageUrlOrBuffer);
       if (!base64Data) {
-        console.error("Failed to extract base64 from data URL");
+        console.error("[Printify Upload] Failed to extract base64 from data URL");
         return null;
       }
+      uploadMethod = `data-url (${base64Data.length} chars base64)`;
       requestBody = {
         file_name: `design-${Date.now()}.png`,
         contents: base64Data,
       };
     } else {
+      uploadMethod = `url: ${imageUrlOrBuffer.substring(0, 100)}`;
       requestBody = {
         file_name: `design-${Date.now()}.png`,
         url: imageUrlOrBuffer,
       };
     }
+
+    console.log(`[Printify Upload] Uploading via ${uploadMethod}`);
 
     const response = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
       method: "POST",
@@ -147,11 +154,13 @@ async function uploadImageToPrintify(
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Failed to upload image to Printify:", response.status, errorText);
+      console.error(`[Printify Upload] Failed (${response.status}):`, errorText.substring(0, 500));
       return null;
     }
 
-    return await response.json();
+    const result = await response.json();
+    console.log(`[Printify Upload] Success: id=${result.id}, ${result.width}x${result.height}`);
+    return result;
   } catch (error) {
     console.error("Error uploading image to Printify:", error);
     return null;

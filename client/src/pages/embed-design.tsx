@@ -89,6 +89,21 @@ function getApiBase(): string {
 const API_BASE = getApiBase();
 
 /**
+ * Resolve an image URL to an absolute URL suitable for sending to the backend.
+ * Handles three cases:
+ * - Already absolute (http/https) → pass through
+ * - data: URL (base64 fallback) → pass through unchanged (backend can handle it)
+ * - Relative path (/objects/...) → prepend API_BASE
+ */
+function toAbsoluteImageUrl(url: string): string {
+  if (!url) return url;
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  if (url.startsWith("data:")) return url; // base64 fallback - don't prepend API_BASE
+  // Relative path like /objects/designs/xxx.png
+  return API_BASE + url;
+}
+
+/**
  * Safe fetch that bypasses Shopify App Bridge's monkey-patched window.fetch.
  *
  * App Bridge intercepts fetch() to inject session tokens via postMessage to the
@@ -947,16 +962,13 @@ export default function EmbedDesign() {
       printifyMockups.length === 0 &&
       !mockupLoading
     ) {
-      const fullImageUrl = generatedDesign.imageUrl.startsWith("http") 
-        ? generatedDesign.imageUrl 
-        : API_BASE + generatedDesign.imageUrl;
       fetchPrintifyMockups(
-        fullImageUrl, 
-        productTypeConfig.id, 
-        selectedSize, 
-        selectedFrameColor || 'default', 
-        transform.scale, 
-        transform.x, 
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor || 'default',
+        transform.scale,
+        transform.x,
         transform.y
       );
     }
@@ -981,16 +993,13 @@ export default function EmbedDesign() {
 
     // Debounce the regeneration by 1 second after user stops adjusting
     mockupRegenerationTimeoutRef.current = setTimeout(() => {
-      const fullImageUrl = generatedDesign.imageUrl.startsWith("http") 
-        ? generatedDesign.imageUrl 
-        : API_BASE + generatedDesign.imageUrl;
       fetchPrintifyMockups(
-        fullImageUrl, 
-        productTypeConfig.id, 
-        selectedSize, 
-        selectedFrameColor || 'default', 
-        transform.scale, 
-        transform.x, 
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor || 'default',
+        transform.scale,
+        transform.x,
         transform.y
       );
     }, 1000);
@@ -1058,8 +1067,7 @@ export default function EmbedDesign() {
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       if (productTypeConfig?.hasPrintifyMockups && imageUrl && selectedSize) {
-        const fullImageUrl = imageUrl.startsWith("http") ? imageUrl : API_BASE + imageUrl;
-        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+        fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
     },
   });
@@ -1214,8 +1222,7 @@ export default function EmbedDesign() {
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        const fullImageUrl = importedImageUrl.startsWith("http") ? importedImageUrl : API_BASE + importedImageUrl;
-        fetchPrintifyMockups(fullImageUrl, productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+        fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
 
       toast({
