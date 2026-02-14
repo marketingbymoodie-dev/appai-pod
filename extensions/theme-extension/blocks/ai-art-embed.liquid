@@ -489,63 +489,126 @@ function showLoginRequiredPopup() {
       
       const data = event.data;
       
-      if (data.type === 'ai-art-studio:add-to-cart') {
-        console.log('[AI Art Embed] Adding to cart:', {
-          variantId: data.variantId,
-          artworkUrl: data.artworkUrl,
-          designId: data.designId
+      // New protocol: AI_ART_STUDIO_ADD_TO_CART with correlationId
+      if (data.type === 'AI_ART_STUDIO_ADD_TO_CART') {
+        var correlationId = data.correlationId || '';
+        var variantId = data.variantId;
+        var quantity = data.quantity || 1;
+        var properties = data.properties || {};
+
+        console.log('[AI Art Embed] Add to cart (v2):', {
+          correlationId: correlationId,
+          variantId: variantId,
+          quantity: quantity,
+          properties: Object.keys(properties)
         });
-        
-        const formData = {
+
+        if (!variantId) {
+          console.error('[AI Art Embed] Missing variantId in add-to-cart message');
+          iframe.contentWindow.postMessage({
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: correlationId,
+            success: false,
+            error: 'Missing variant ID'
+          }, config.appUrl);
+          return;
+        }
+
+        var formData = {
           items: [{
-            id: data.variantId,
-            quantity: 1,
-            properties: {
-              '_artwork_url': data.artworkUrl,
-              '_design_id': data.designId,
-              'Artwork': 'Custom AI Design'
-            }
+            id: Number(variantId),
+            quantity: quantity,
+            properties: properties
           }]
         };
-        
+
         console.log('[AI Art Embed] Sending cart request to /cart/add.js');
-        
+
         fetch('/cart/add.js', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(formData)
         })
-        .then(response => {
+        .then(function(response) {
           console.log('[AI Art Embed] Cart response status:', response.status);
           if (!response.ok) {
-            return response.text().then(text => {
+            return response.text().then(function(text) {
               throw new Error('Cart error (' + response.status + '): ' + text);
             });
           }
           return response.json();
         })
-        .then(result => {
+        .then(function(result) {
           console.log('[AI Art Embed] Cart success:', result);
           iframe.contentWindow.postMessage({
-            type: 'ai-art-studio:cart-updated',
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: correlationId,
             success: true,
             cart: result
           }, config.appUrl);
-          
+
+          // Trigger Shopify cart refresh events
           document.dispatchEvent(new CustomEvent('cart:refresh'));
-          
-          // Also try to update cart drawer/icon count
+
+          // Try to update cart drawer/icon count via section rendering API
           if (window.Shopify && window.Shopify.theme && window.Shopify.theme.sections) {
             document.dispatchEvent(new CustomEvent('shopify:section:rerender'));
           }
+
+          // Try fetch cart count and update common cart icon selectors
+          fetch('/cart.js')
+            .then(function(r) { return r.json(); })
+            .then(function(cart) {
+              var countEls = document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]');
+              countEls.forEach(function(el) {
+                el.textContent = String(cart.item_count);
+                el.style.display = cart.item_count > 0 ? '' : 'none';
+              });
+            })
+            .catch(function() { /* ignore cart count update failure */ });
         })
-        .catch(error => {
+        .catch(function(error) {
           console.error('[AI Art Embed] Failed to add to cart:', error);
           iframe.contentWindow.postMessage({
-            type: 'ai-art-studio:cart-updated',
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: correlationId,
             success: false,
             error: error.message
           }, config.appUrl);
+        });
+      }
+
+      // Legacy protocol: ai-art-studio:add-to-cart (kept for backwards compatibility)
+      if (data.type === 'ai-art-studio:add-to-cart') {
+        console.log('[AI Art Embed] Legacy add-to-cart:', { variantId: data.variantId });
+        var legacyFormData = {
+          items: [{
+            id: Number(data.variantId),
+            quantity: 1,
+            properties: {
+              '_artwork_url': data.artworkUrl || '',
+              '_design_id': data.designId || '',
+              'Artwork': 'Custom AI Design'
+            }
+          }]
+        };
+        fetch('/cart/add.js', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(legacyFormData)
+        })
+        .then(function(response) {
+          if (!response.ok) {
+            return response.text().then(function(text) { throw new Error('Cart error: ' + text); });
+          }
+          return response.json();
+        })
+        .then(function(result) {
+          iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: true, cart: result }, config.appUrl);
+          document.dispatchEvent(new CustomEvent('cart:refresh'));
+        })
+        .catch(function(error) {
+          iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: false, error: error.message }, config.appUrl);
         });
       }
       

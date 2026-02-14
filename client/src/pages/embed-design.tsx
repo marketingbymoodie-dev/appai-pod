@@ -104,6 +104,23 @@ function toAbsoluteImageUrl(url: string): string {
 }
 
 /**
+ * Normalise a Shopify variant ID to its numeric form.
+ * Accepts GID format ("gid://shopify/ProductVariant/12345") or plain numeric ("12345").
+ * Returns the numeric string, or the original value if it can't be parsed.
+ */
+function normalizeVariantId(raw: string | number): string {
+  const s = String(raw);
+  // GID format: gid://shopify/ProductVariant/12345
+  const gidMatch = s.match(/\/(\d+)$/);
+  if (gidMatch) return gidMatch[1];
+  // Already numeric
+  if (/^\d+$/.test(s)) return s;
+  // Fallback — return as-is and let Shopify reject if invalid
+  console.warn('[Design Studio] Unexpected variant ID format:', s);
+  return s;
+}
+
+/**
  * Safe fetch that bypasses Shopify App Bridge's monkey-patched window.fetch.
  *
  * App Bridge intercepts fetch() to inject session tokens via postMessage to the
@@ -1286,7 +1303,7 @@ export default function EmbedDesign() {
 
   // Fetch variants from server if not provided in URL (works for all themes)
   useEffect(() => {
-    if (variantsFetched || !isShopify) return;
+    if (variantsFetched || (!isShopify && !isStorefront)) return;
     if (selectedVariantParam) {
       // If we have a selected variant, we don't need to fetch all variants
       setVariantsFetched(true);
@@ -1335,10 +1352,10 @@ export default function EmbedDesign() {
         console.error('[Design Studio] Failed to fetch variants:', err);
         setVariantsFetched(true);
       });
-  }, [isShopify, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
+  }, [isShopify, isStorefront, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
 
   const findVariantId = (): string | null => {
-    if (!isShopify) return null;
+    if (!isShopify && !isStorefront) return null;
 
     console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
                 'variants:', variants.length, 'selectedSize:', selectedSize, 
@@ -1394,13 +1411,66 @@ export default function EmbedDesign() {
     return null;
   };
 
-  const handleAddToCart = () => {
-    if (!generatedDesign || !isShopify) return;
+  /**
+   * Send add-to-cart via postMessage to the parent Shopify storefront page.
+   * The parent's theme extension script handles the actual /cart/add.js fetch.
+   * Returns a promise that resolves when the parent confirms the cart update.
+   */
+  const addToCartStorefront = (payload: {
+    variantId: string;
+    quantity: number;
+    properties: Record<string, string>;
+  }): Promise<{ success: boolean; error?: string }> => {
+    return new Promise((resolve) => {
+      const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const TIMEOUT_MS = 10_000;
+
+      const cleanup = () => {
+        window.removeEventListener('message', handler);
+        clearTimeout(timer);
+      };
+
+      const handler = (event: MessageEvent) => {
+        if (
+          event.data?.type === 'AI_ART_STUDIO_ADD_TO_CART_RESULT' &&
+          event.data?.correlationId === correlationId
+        ) {
+          cleanup();
+          resolve({
+            success: !!event.data.success,
+            error: event.data.error,
+          });
+        }
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        console.error('[Design Studio] Add-to-cart postMessage timed out after', TIMEOUT_MS, 'ms');
+        resolve({ success: false, error: 'Cart update timed out. Please try again.' });
+      }, TIMEOUT_MS);
+
+      window.addEventListener('message', handler);
+
+      const message = {
+        type: 'AI_ART_STUDIO_ADD_TO_CART',
+        correlationId,
+        variantId: payload.variantId,
+        quantity: payload.quantity,
+        properties: payload.properties,
+      };
+
+      console.log('[Design Studio] Sending add-to-cart postMessage:', message);
+      window.parent.postMessage(message, '*');
+    });
+  };
+
+  const handleAddToCart = async () => {
+    if (!generatedDesign || (!isShopify && !isStorefront)) return;
+    if (isAddingToCart) return; // double-click guard
 
     const variantId = findVariantId();
 
     if (!variantId) {
-      // Show context-aware error message
       const hasColors = frameColorObjects.length > 0;
       const errorMsg = hasColors
         ? "Unable to find matching product variant. Please select a valid size and color combination."
@@ -1409,7 +1479,6 @@ export default function EmbedDesign() {
       return;
     }
 
-    // Validate shop domain is available
     if (!shopDomain) {
       setVariantError("Unable to add to cart: Shop information is missing. Please refresh the page.");
       return;
@@ -1418,57 +1487,84 @@ export default function EmbedDesign() {
     setVariantError(null);
     setIsAddingToCart(true);
 
-    // Build the full artwork URL (needs to be absolute and publicly accessible for Printify)
-    // The /objects/ URLs are served publicly from object storage
-    let artworkFullUrl = generatedDesign.imageUrl;
-    if (!artworkFullUrl.startsWith('http')) {
-      // Use API_BASE for public access to object storage
-      artworkFullUrl = `${API_BASE}${generatedDesign.imageUrl}`;
-    }
+    // Normalize variant ID (strip GID prefix if present)
+    const normalizedVariant = normalizeVariantId(variantId);
 
-    // Get the rendered mockup URL if available (for cart display)
-    // Try printifyMockups first, then fall back to printifyMockupImages
+    // Build the full artwork URL
+    const artworkFullUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+
+    // Get the rendered mockup URL if available
     let mockupFullUrl = '';
     if (printifyMockups.length > 0) {
-      const mockupUrl = printifyMockups[selectedMockupIndex] || printifyMockups[0];
-      mockupFullUrl = mockupUrl.startsWith('http')
-        ? mockupUrl
-        : `${API_BASE}${mockupUrl}`;
+      mockupFullUrl = toAbsoluteImageUrl(printifyMockups[selectedMockupIndex] || printifyMockups[0]);
     } else if (printifyMockupImages.length > 0) {
       const mockupUrl = printifyMockupImages[selectedMockupIndex]?.url || printifyMockupImages[0]?.url;
       if (mockupUrl) {
-        mockupFullUrl = mockupUrl.startsWith('http')
-          ? mockupUrl
-          : `${API_BASE}${mockupUrl}`;
+        mockupFullUrl = toAbsoluteImageUrl(mockupUrl);
       }
     }
 
-    // Build Shopify cart URL with line item properties
-    // Properties will be attached to the order for Printify fulfillment
+    // Build line item properties for Printify fulfillment
+    const properties: Record<string, string> = {
+      '_artwork_url': artworkFullUrl,
+      '_design_id': generatedDesign.id,
+      'Artwork': 'Custom AI Design',
+    };
+    if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
+    if (selectedSize) properties['Size'] = selectedSize;
+    if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+
+    // Storefront mode: use postMessage to parent (AJAX cart, no navigation)
+    if (isStorefront) {
+      try {
+        const result = await addToCartStorefront({
+          variantId: normalizedVariant,
+          quantity: 1,
+          properties,
+        });
+
+        if (result.success) {
+          console.log('[Design Studio] Storefront add-to-cart success');
+          // Persist design state before clearing
+          try {
+            const stateKey = `aiart:last_design:${shopDomain}:${productHandle || 'unknown'}:${normalizedVariant}`;
+            sessionStorage.setItem(stateKey, JSON.stringify({
+              designId: generatedDesign.id,
+              imageUrl: generatedDesign.imageUrl,
+              prompt: generatedDesign.prompt,
+              addedAt: Date.now(),
+            }));
+          } catch (e) {
+            // sessionStorage may be unavailable in some iframe contexts
+            console.warn('[Design Studio] Could not persist design state:', e);
+          }
+          setGeneratedDesign(null);
+          setPrompt("");
+        } else {
+          setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
+        }
+      } catch (e: any) {
+        console.error('[Design Studio] Add-to-cart error:', e);
+        setVariantError(`Failed to add to cart: ${e.message || 'Unknown error'}`);
+      } finally {
+        setIsAddingToCart(false);
+      }
+      return;
+    }
+
+    // Admin-embedded / standalone mode: navigate to cart URL (legacy behavior)
     const cartParams = new URLSearchParams();
-    cartParams.set('id', String(variantId));
+    cartParams.set('id', normalizedVariant);
     cartParams.set('quantity', '1');
-    cartParams.set('properties[_artwork_url]', artworkFullUrl);
-    cartParams.set('properties[_design_id]', generatedDesign.id);
-    cartParams.set('properties[Artwork]', 'Custom AI Design');
-    if (mockupFullUrl) {
-      cartParams.set('properties[_mockup_url]', mockupFullUrl);
-    }
-    if (selectedSize) {
-      cartParams.set('properties[Size]', selectedSize);
-    }
-    if (selectedFrameColor) {
-      cartParams.set('properties[Color]', selectedFrameColor);
+    for (const [key, value] of Object.entries(properties)) {
+      cartParams.set(`properties[${key}]`, value);
     }
 
     const cartUrl = `https://${shopDomain}/cart/add?${cartParams.toString()}`;
-
     console.log('[Design Studio] Redirecting to cart:', cartUrl);
 
-    // Navigate to cart - try multiple approaches for iframe compatibility
     try {
       if (window.top && window.top !== window) {
-        // In iframe - try to navigate the top window
         window.top.location.href = cartUrl;
       } else if (window.parent && window.parent !== window) {
         window.parent.location.href = cartUrl;
@@ -1476,11 +1572,9 @@ export default function EmbedDesign() {
         window.location.href = cartUrl;
       }
     } catch (e) {
-      // If navigation is blocked (sandbox restrictions), try opening in new tab
       console.log('[Design Studio] Navigation blocked, opening in new tab:', e);
       const newWindow = window.open(cartUrl, '_blank');
       if (!newWindow) {
-        // Popup blocked - show error
         setIsAddingToCart(false);
         setVariantError("Unable to open cart. Please disable popup blocker and try again.");
       } else {
@@ -2115,7 +2209,7 @@ export default function EmbedDesign() {
                 )}
                 
                 {/* Shopify Add to Cart - Prominent, styled like native button */}
-                {isShopify && (
+                {(isShopify || isStorefront) && (
                   <Button
                     onClick={handleAddToCart}
                     disabled={isAddingToCart}
