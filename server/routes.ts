@@ -3718,6 +3718,396 @@ thumbnailUrl = result.thumbnailUrl;
     }
   });
 
+  // ==================== STOREFRONT GENERATE (NO SESSION TOKEN) ====================
+  // Used by storefront embeds where App Bridge session tokens are not available.
+  // Validates shop domain + active installation instead of session token.
+  app.post("/api/storefront/generate", async (req: Request, res: Response) => {
+    try {
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId } = req.body;
+
+      if (!shop) {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+
+      // Validate shop domain format
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Verify shop is installed (this is the auth check for storefront mode)
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      // Rate limiting per shop (shared with admin endpoint)
+      const now = Date.now();
+      let rateLimit = shopifyGenerationRateLimits.get(shop);
+
+      if (!rateLimit || now > rateLimit.resetAt) {
+        rateLimit = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+        shopifyGenerationRateLimits.set(shop, rateLimit);
+      }
+
+      if (rateLimit.count >= SHOPIFY_RATE_LIMIT) {
+        return res.status(429).json({
+          error: "Rate limit exceeded. Please try again later.",
+          retryAfter: Math.ceil((rateLimit.resetAt - now) / 1000)
+        });
+      }
+
+      rateLimit.count++;
+
+      if (!prompt || !size) {
+        return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Look up style preset and get its promptSuffix
+      let stylePromptPrefix = "";
+      if (stylePreset && installation.merchantId) {
+        const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
+        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
+        if (selectedStyle && selectedStyle.promptPrefix) {
+          stylePromptPrefix = selectedStyle.promptPrefix;
+        }
+        if (!stylePromptPrefix) {
+          const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+          if (hardcodedStyle && hardcodedStyle.promptPrefix) {
+            stylePromptPrefix = hardcodedStyle.promptPrefix;
+          }
+        }
+      }
+
+      // Load product type config if provided
+      let productType = null;
+      if (productTypeId) {
+        productType = await storage.getProductType(parseInt(productTypeId));
+      }
+
+      // Helper function to calculate generation dimensions from aspect ratio
+      const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
+        const [w, h] = aspectRatioStr.split(":").map(Number);
+        if (!w || !h || isNaN(w) || isNaN(h)) {
+          return { genWidth: 1024, genHeight: 1024 };
+        }
+        const ratio = w / h;
+        const maxDim = 1024;
+        if (ratio >= 1) {
+          return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
+        } else {
+          return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
+        }
+      };
+
+      // Helper function to map aspect ratio to Gemini-supported aspect ratios
+      const mapToGeminiAspectRatioStorefront = (aspectRatioStr: string): string => {
+        const [w, h] = aspectRatioStr.split(":").map(Number);
+        if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
+        const ratio = w / h;
+        if (ratio >= 2.1) return "21:9";
+        if (ratio >= 1.65) return "16:9";
+        if (ratio >= 1.4) return "3:2";
+        if (ratio >= 1.2) return "4:3";
+        if (ratio >= 1.1) return "5:4";
+        if (ratio >= 0.9) return "1:1";
+        if (ratio >= 0.75) return "4:5";
+        if (ratio >= 0.65) return "3:4";
+        if (ratio >= 0.55) return "2:3";
+        return "9:16";
+      };
+
+      // Find size config
+      let sizeConfig = PRINT_SIZES.find(s => s.id === size);
+
+      if (!sizeConfig && productType) {
+        const productSizes = JSON.parse(productType.sizes || "[]");
+        const productSize = productSizes.find((s: any) => s.id === size);
+        const aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
+        const genDims = calculateGenDimensions(aspectRatioStr);
+
+        sizeConfig = {
+          id: productSize?.id || size,
+          name: productSize?.name || size,
+          width: productSize?.width || 12,
+          height: productSize?.height || 16,
+          aspectRatio: aspectRatioStr,
+          genWidth: genDims.genWidth,
+          genHeight: genDims.genHeight,
+        } as any;
+      }
+
+      if (!sizeConfig) {
+        sizeConfig = PRINT_SIZES[0];
+      }
+
+      // Apply style prompt prefix if available
+      let fullPrompt = stylePromptPrefix
+        ? `${stylePromptPrefix} ${prompt}`
+        : prompt;
+
+      // Build shape-specific safe zone instructions
+      const printShape = productType?.printShape || "rectangle";
+      const bleedMargin = productType?.bleedMarginPercent || 5;
+      const safeZonePercent = 100 - (bleedMargin * 2);
+
+      let shapeInstructions = "";
+      if (printShape === "circle") {
+        shapeInstructions = `
+CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
+- Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
+- Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
+- The corners of the canvas will be cropped to a circle - nothing important should be in the corners
+- Design with radial/circular composition in mind`;
+      } else if (printShape === "square") {
+        shapeInstructions = `
+SQUARE PRINT AREA: This design is for a square product.
+- Center important elements within the inner ${safeZonePercent}% of the canvas
+- Keep a ${bleedMargin}% margin from all edges for bleed`;
+      } else {
+        shapeInstructions = `
+RECTANGULAR PRINT AREA:
+- Keep important elements within the inner ${safeZonePercent}% of the canvas
+- Maintain a ${bleedMargin}% margin from edges for bleed`;
+      }
+
+      // Determine aspect ratio and orientation
+      const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
+      const aspectRatioValue = arW / arH;
+      let orientationDescription: string;
+      if (aspectRatioValue > 1.05) {
+        orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
+      } else if (aspectRatioValue < 0.95) {
+        orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
+      } else {
+        orientationDescription = `SQUARE`;
+      }
+
+      const isWrapAround = aspectRatioValue >= 1.2;
+      const textEdgeRestrictions = isWrapAround
+        ? `
+TEXT AND ELEMENT PLACEMENT - CRITICAL:
+- DO NOT place any text, letters, words, or important elements within 20% of ANY edge
+- ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
+- The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
+- This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
+        : `
+TEXT AND ELEMENT PLACEMENT:
+- Keep all text and important elements within the central 75% of the image
+- Avoid placing critical content near the edges where it may be cut off during printing`;
+
+      const sizingRequirements = `
+
+=== CRITICAL CANVAS REQUIREMENTS (MUST FOLLOW) ===
+CANVAS: ${orientationDescription} format
+FULL-BLEED MANDATORY: The artwork MUST fill the ENTIRE canvas edge-to-edge with NO blank margins, borders, or empty space. Paint/draw to ALL four edges.
+${shapeInstructions}
+${textEdgeRestrictions}
+
+=== IMAGE CONTENT REQUIREMENTS ===
+1. The background/scene MUST extend fully to ALL four edges - no visible canvas boundaries
+2. NO decorative borders, picture frames, drop shadows, or vignettes
+3. The subject must NOT appear floating - complete the background behind and around it
+4. This is for high-quality printing - create finished artwork that bleeds to all edges
+`;
+
+      const geminiAspectRatio = mapToGeminiAspectRatioStorefront(sizeConfig.aspectRatio);
+      const constraintsFirst = sizingRequirements;
+      const styleAndContent = fullPrompt;
+      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+
+      console.log(`[Storefront Generate] shop=${shop} Using aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
+
+      // Generate image
+      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
+
+      if (referenceImage) {
+        let base64Data: string;
+        let refMimeType = "image/png";
+
+        if (referenceImage.startsWith("/objects/")) {
+          try {
+            const imageData = await fetchImageFromStorageAsBase64(referenceImage);
+            base64Data = imageData.base64;
+            refMimeType = imageData.mimeType;
+          } catch (fetchError) {
+            console.error("Failed to fetch reference image from storage:", fetchError);
+            return res.status(400).json({ error: "Failed to load reference image" });
+          }
+        } else {
+          base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        }
+
+        contents[0].parts.unshift({
+          inlineData: {
+            mimeType: refMimeType,
+            data: base64Data,
+          },
+        });
+      }
+
+      const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
+        prompt: fullPrompt,
+        aspectRatio: geminiAspectRatio ?? "1:1",
+      });
+
+      if (!base64Data) {
+        return res.status(500).json({ error: "Failed to generate image" });
+      }
+
+      const mimeType = generatedMimeType || "image/png";
+
+      // Check if this is an apparel product
+      let isApparel = productType?.designerType === "apparel";
+
+      if (!isApparel && stylePreset) {
+        const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
+        if (hardcodedStyle && hardcodedStyle.category === "apparel") {
+          isApparel = true;
+        }
+      }
+
+      // Get target dimensions for resizing - skip for apparel (keep square)
+      let targetDims: TargetDimensions | undefined;
+      if (!isApparel) {
+        const genWidth = (sizeConfig as any).genWidth || 1024;
+        const genHeight = (sizeConfig as any).genHeight || 1024;
+        targetDims = { width: genWidth, height: genHeight };
+      }
+
+      // Save image to object storage
+      let imageUrl: string;
+      let thumbnailUrl: string | undefined;
+      try {
+        const result = await saveImageToStorage(base64Data, mimeType, {
+          isApparel,
+          targetDims,
+        });
+        imageUrl = result.imageUrl;
+        thumbnailUrl = result.thumbnailUrl;
+      } catch (storageError) {
+        console.error("Failed to save to object storage, falling back to base64:", storageError);
+        imageUrl = `data:${mimeType};base64,${base64Data}`;
+      }
+
+      const designId = `storefront-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+      console.log(`[Storefront Generate] shop=${shop} designId=${designId} success`);
+
+      res.json({
+        imageUrl,
+        thumbnailUrl,
+        designId,
+        prompt,
+        creditsRemaining: 0,
+      });
+    } catch (error) {
+      console.error("[Storefront Generate] Error:", error);
+      res.status(500).json({ error: "Failed to generate artwork" });
+    }
+  });
+
+  // ==================== STOREFRONT MOCKUP (NO SESSION TOKEN) ====================
+  // Used by storefront embeds to generate Printify mockups without session tokens.
+  app.post("/api/storefront/mockup", async (req: Request, res: Response) => {
+    try {
+      const { productTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop } = req.body;
+
+      if (!shop) {
+        return res.status(400).json({ error: "Shop domain required" });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Verify shop is installed
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      if (!productTypeId || !designImageUrl) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Convert relative URLs to absolute URLs for Printify
+      let absoluteImageUrl = designImageUrl;
+      if (designImageUrl.startsWith("/objects/")) {
+        const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
+        const protocol = req.protocol || "https";
+        absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
+        console.log("[Storefront Mockup] Converting image URL for Printify:", absoluteImageUrl);
+      }
+
+      // Get merchant from shop installation
+      if (!installation.merchantId) {
+        return res.status(404).json({ error: "Shop not associated with a merchant" });
+      }
+      const merchant = await storage.getMerchant(installation.merchantId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found for shop" });
+      }
+
+      const productType = await storage.getProductType(parseInt(productTypeId));
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      // Check if we have Printify credentials and blueprint ID
+      if (!merchant.printifyApiToken || !merchant.printifyShopId || !productType.printifyBlueprintId) {
+        return res.json({
+          success: false,
+          mockupUrls: [],
+          source: "fallback",
+          message: "Printify not configured",
+        });
+      }
+
+      // Generate Printify mockup
+      const { generatePrintifyMockup } = await import("./printify-mockups.js");
+
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
+      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
+
+      const variantData = variantMapData[variantKey] ||
+                          variantMapData[`${sizeId || 'default'}:default`] ||
+                          variantMapData[`default:${colorId || 'default'}`] ||
+                          variantMapData['default:default'] ||
+                          Object.values(variantMapData)[0];
+
+      if (!variantData || !variantData.printifyVariantId) {
+        return res.status(400).json({
+          error: "Could not resolve product variant",
+          availableKeys: Object.keys(variantMapData)
+        });
+      }
+
+      const providerId = variantData.providerId || productType.printifyProviderId || 1;
+      const targetVariantId = variantData.printifyVariantId;
+
+      console.log("[Storefront Mockup] Generating mockup for:", { shop, productTypeId, sizeId, colorId, variantId: targetVariantId });
+
+      const result = await generatePrintifyMockup({
+        blueprintId: productType.printifyBlueprintId,
+        providerId,
+        variantId: targetVariantId,
+        imageUrl: absoluteImageUrl,
+        printifyApiToken: merchant.printifyApiToken,
+        printifyShopId: merchant.printifyShopId,
+        scale: scale ? scale / 100 : 1,
+        x: x !== undefined ? (x - 50) / 50 : 0,
+        y: y !== undefined ? (y - 50) / 50 : 0,
+        doubleSided: productType.doubleSidedPrint || false,
+      });
+
+      console.log("[Storefront Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });
+      res.json(result);
+    } catch (error) {
+      console.error("[Storefront Mockup] Error generating mockup:", error);
+      res.status(500).json({ error: "Failed to generate mockup" });
+    }
+  });
+
   // Admin endpoints for product types (requires authentication)
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {

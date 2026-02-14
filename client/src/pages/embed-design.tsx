@@ -868,8 +868,21 @@ export default function EmbedDesign() {
     
     try {
       // Use Shopify-specific endpoint if in Shopify mode
-      const endpoint = isShopify ? `${API_BASE}/api/shopify/mockup` : `${API_BASE}/api/mockup/generate`;
-      const payload = isShopify ? {
+      const endpoint = isStorefront
+        ? `${API_BASE}/api/storefront/mockup`
+        : isShopify
+          ? `${API_BASE}/api/shopify/mockup`
+          : `${API_BASE}/api/mockup/generate`;
+      const payload = isStorefront ? {
+        productTypeId: ptId,
+        designImageUrl,
+        sizeId,
+        colorId,
+        scale: clampedScale,
+        x: clampedX,
+        y: clampedY,
+        shop: shopDomain,
+      } : isShopify ? {
         productTypeId: ptId,
         designImageUrl,
         sizeId,
@@ -922,7 +935,7 @@ export default function EmbedDesign() {
     } finally {
       setMockupLoading(false);
     }
-  }, [isShopify, shopDomain, sessionToken, sendMockupsToParent]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent]);
 
   // Fetch Printify mockups for shared designs once product config is loaded
   useEffect(() => {
@@ -1001,8 +1014,12 @@ export default function EmbedDesign() {
       sessionToken?: string;
       productTypeId?: string;
     }) => {
-      const endpoint = isShopify ? `${API_BASE}/api/shopify/generate` : `${API_BASE}/api/generate`;
-      console.log('[EmbedDesign] Generating design via:', endpoint);
+      const endpoint = isStorefront
+        ? `${API_BASE}/api/storefront/generate`
+        : isShopify
+          ? `${API_BASE}/api/shopify/generate`
+          : `${API_BASE}/api/generate`;
+      console.log('[EmbedDesign] Generating design via:', endpoint, '(mode:', runtimeMode, ')');
       const response = await safeFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1106,8 +1123,8 @@ export default function EmbedDesign() {
       frameColor: selectedFrameColor || "black",
       stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
       referenceImage: referenceImageBase64,
-      shop: isShopify ? shopDomain : undefined,
-      sessionToken: isShopify ? sessionToken || undefined : undefined,
+      shop: (isShopify || isStorefront) ? shopDomain : undefined,
+      sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
       productTypeId: productTypeId,
     });
     setDesignSource("ai");
