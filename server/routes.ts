@@ -3380,54 +3380,96 @@ thumbnailUrl = result.thumbnailUrl;
       );
       console.log(`[SF-DESIGNER ${requestId}] [STEP 4] After getProductType - ${Date.now() - ptStart}ms - found=${!!productType}`);
 
-      if (!productType) {
-        console.log(`[SF-DESIGNER ${requestId}] ERROR: Product type ${id} not found`);
-        console.log(`[SF-DESIGNER ${requestId}] [STEP 5] Before getProductTypesByMerchant`);
-        const listStart = Date.now();
+      // Extra context from query params for smart matching
+      const displayName = req.query.displayName as string | undefined;
+      const productHandle = req.query.productHandle as string | undefined;
+
+      let resolvedProductType = productType;
+      let resolvedFrom: string | undefined;
+
+      // Ownership mismatch counts as "not found" for this merchant
+      if (productType && productType.merchantId && productType.merchantId !== merchant.id) {
+        console.log(`[SF-DESIGNER ${requestId}] Ownership mismatch: productType.merchantId=${productType.merchantId} vs merchant.id=${merchant.id} - treating as not found`);
+        resolvedProductType = undefined;
+      }
+
+      if (!resolvedProductType) {
+        // FALLBACK: Auto-resolve to a valid product type for this merchant
+        console.log(`[SF-DESIGNER ${requestId}] Product type ${id} not found/not owned - attempting fallback`);
         const merchantProductTypes = await withTimeout(
           storage.getProductTypesByMerchant(merchant.id),
           4000,
           "getProductTypesByMerchant"
         );
-        console.log(`[SF-DESIGNER ${requestId}] [STEP 5] After getProductTypesByMerchant - ${Date.now() - listStart}ms - count=${merchantProductTypes.length}`);
+        console.log(`[SF-DESIGNER ${requestId}] Merchant has ${merchantProductTypes.length} product types: [${merchantProductTypes.map(pt => `${pt.id}:${pt.name}`).join(', ')}]`);
 
-        responded = true;
-        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        return res.status(404).json({
-          error: "Product type not found",
-          debug: {
-            requestedId: id,
-            merchantId: merchant.id,
-            availableIdsForMerchant: merchantProductTypes.map(pt => pt.id)
+        if (merchantProductTypes.length === 0) {
+          // True misconfiguration - no product types at all
+          console.error(`[SF-DESIGNER ${requestId}] ❌ ZERO product types for merchant ${merchant.id} - cannot fallback`);
+          responded = true;
+          res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+          return res.status(404).json({
+            error: "No product types configured for this shop",
+            debug: { requestedId: id, merchantId: merchant.id, availableIdsForMerchant: [] }
+          });
+        }
+
+        // Try matching by productHandle first (most precise)
+        if (productHandle && !resolvedProductType) {
+          resolvedProductType = merchantProductTypes.find(
+            pt => (pt as any).shopifyProductHandle === productHandle
+          );
+          if (resolvedProductType) {
+            resolvedFrom = "handle_match";
+            console.log(`[SF-DESIGNER ${requestId}] ✅ Matched by productHandle "${productHandle}" → id=${resolvedProductType.id}`);
           }
-        });
+        }
+
+        // Try matching by displayName (fuzzy)
+        if (displayName && !resolvedProductType) {
+          const normalizedDisplay = displayName.toLowerCase().trim();
+          resolvedProductType = merchantProductTypes.find(
+            pt => pt.name.toLowerCase().trim() === normalizedDisplay
+          );
+          if (resolvedProductType) {
+            resolvedFrom = "displayName_match";
+            console.log(`[SF-DESIGNER ${requestId}] ✅ Matched by displayName "${displayName}" → id=${resolvedProductType.id}`);
+          }
+        }
+
+        // If exactly one product type, use it
+        if (!resolvedProductType && merchantProductTypes.length === 1) {
+          resolvedProductType = merchantProductTypes[0];
+          resolvedFrom = "only_available";
+          console.log(`[SF-DESIGNER ${requestId}] ✅ Only one product type available → id=${resolvedProductType.id}`);
+        }
+
+        // Last resort: pick the smallest ID (deterministic)
+        if (!resolvedProductType) {
+          resolvedProductType = merchantProductTypes.reduce((a, b) => a.id < b.id ? a : b);
+          resolvedFrom = "smallest_id_fallback";
+          console.log(`[SF-DESIGNER ${requestId}] ⚠️ Multiple product types, picking smallest id=${resolvedProductType.id}`);
+        }
+
+        console.warn(`[SF-DESIGNER ${requestId}] ⚠️ FALLBACK RESOLVED: requested=${id} → resolved=${resolvedProductType.id} reason=${resolvedFrom} shop=${shop}`);
       }
 
-      console.log(`[SF-DESIGNER ${requestId}] Found product type: ${productType.name} (merchantId: ${productType.merchantId})`);
+      const productTypeToUse = resolvedProductType;
+      console.log(`[SF-DESIGNER ${requestId}] Using product type: ${productTypeToUse.name} (id=${productTypeToUse.id}, merchantId: ${productTypeToUse.merchantId})`);
 
-      // Validate ownership
-      if (productType.merchantId && productType.merchantId !== merchant.id) {
-        console.log(`[SF-DESIGNER ${requestId}] ERROR: Ownership mismatch`);
-        responded = true;
-        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        return res.status(403).json({
-          error: "Product type not available for this shop",
-          debug: { productTypeMerchantId: productType.merchantId, shopMerchantId: merchant.id }
-        });
-      }
 
       // 5️⃣ BUILD CONFIG (CPU-bound, should be fast)
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
 
-      const sizes = typeof productType.sizes === 'string'
-        ? JSON.parse(productType.sizes)
-        : productType.sizes || [];
-      const frameColors = typeof productType.frameColors === 'string'
-        ? JSON.parse(productType.frameColors)
-        : productType.frameColors || [];
+      const sizes = typeof productTypeToUse.sizes === 'string'
+        ? JSON.parse(productTypeToUse.sizes)
+        : productTypeToUse.sizes || [];
+      const frameColors = typeof productTypeToUse.frameColors === 'string'
+        ? JSON.parse(productTypeToUse.frameColors)
+        : productTypeToUse.frameColors || [];
 
-      const [aspectW, aspectH] = (productType.aspectRatio || "1:1").split(":").map(Number);
+      const [aspectW, aspectH] = (productTypeToUse.aspectRatio || "1:1").split(":").map(Number);
       const aspectRatio = aspectW / aspectH;
 
       const maxDimension = 1024;
@@ -3440,36 +3482,36 @@ thumbnailUrl = result.thumbnailUrl;
         canvasWidth = Math.round(maxDimension * aspectRatio);
       }
 
-      const bleedMarginPercent = productType.bleedMarginPercent || 5;
+      const bleedMarginPercent = productTypeToUse.bleedMarginPercent || 5;
       const safeZoneMargin = Math.round(Math.min(canvasWidth, canvasHeight) * (bleedMarginPercent / 100));
-      const sizeType = (productType as any).sizeType || "dimensional";
+      const sizeType = (productTypeToUse as any).sizeType || "dimensional";
 
-      const baseMockupImages = typeof productType.baseMockupImages === 'string'
-        ? JSON.parse(productType.baseMockupImages)
-        : productType.baseMockupImages || {};
+      const baseMockupImages = typeof productTypeToUse.baseMockupImages === 'string'
+        ? JSON.parse(productTypeToUse.baseMockupImages)
+        : productTypeToUse.baseMockupImages || {};
 
-      const variantMap = typeof productType.variantMap === 'string'
-        ? JSON.parse(productType.variantMap)
-        : productType.variantMap || {};
+      const variantMap = typeof productTypeToUse.variantMap === 'string'
+        ? JSON.parse(productTypeToUse.variantMap)
+        : productTypeToUse.variantMap || {};
 
-      const designerConfig = {
-        id: productType.id,
-        name: productType.name,
-        description: productType.description,
-        printifyBlueprintId: productType.printifyBlueprintId,
-        aspectRatio: productType.aspectRatio,
-        printShape: productType.printShape || "rectangle",
-        printAreaWidth: productType.printAreaWidth,
-        printAreaHeight: productType.printAreaHeight,
+      const designerConfig: Record<string, any> = {
+        id: productTypeToUse.id,
+        name: productTypeToUse.name,
+        description: productTypeToUse.description,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+        aspectRatio: productTypeToUse.aspectRatio,
+        printShape: productTypeToUse.printShape || "rectangle",
+        printAreaWidth: productTypeToUse.printAreaWidth,
+        printAreaHeight: productTypeToUse.printAreaHeight,
         bleedMarginPercent,
-        designerType: productType.designerType || "generic",
+        designerType: productTypeToUse.designerType || "generic",
         sizeType,
-        hasPrintifyMockups: productType.hasPrintifyMockups || false,
+        hasPrintifyMockups: productTypeToUse.hasPrintifyMockups || false,
         baseMockupImages,
-        primaryMockupIndex: productType.primaryMockupIndex || 0,
-        doubleSidedPrint: productType.doubleSidedPrint || false,
+        primaryMockupIndex: productTypeToUse.primaryMockupIndex || 0,
+        doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
         sizes: sizes.map((s: any) => {
-          let sizeAspectRatio = s.aspectRatio || productType.aspectRatio;
+          let sizeAspectRatio = s.aspectRatio || productTypeToUse.aspectRatio;
           if (sizeType === "dimensional" && s.width && s.height) {
             const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
             const divisor = gcd(s.width, s.height);
@@ -3496,6 +3538,13 @@ thumbnailUrl = result.thumbnailUrl;
         },
         variantMap,
       };
+
+      // Include fallback info if we resolved to a different product type
+      if (resolvedFrom) {
+        designerConfig.resolvedProductTypeId = productTypeToUse.id;
+        designerConfig.requestedProductTypeId = id;
+        designerConfig.resolutionReason = resolvedFrom;
+      }
 
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 

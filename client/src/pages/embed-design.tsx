@@ -628,7 +628,13 @@ export default function EmbedDesign() {
           return;
         }
 
-        const designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?shop=${encodeURIComponent(myshopifyDomain)}&${cacheBuster}`;
+        const designerParams = new URLSearchParams({
+          shop: myshopifyDomain,
+          _t: String(Date.now()),
+        });
+        if (productHandle) designerParams.set('productHandle', productHandle);
+        if (displayName) designerParams.set('displayName', displayName);
+        const designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?${designerParams.toString()}`;
         console.log('[EmbedDesign] Designer fetch URL:', designerUrl);
 
         const [configRes, designerRes] = await Promise.all([
@@ -663,6 +669,11 @@ export default function EmbedDesign() {
           }
 
           console.log('[EmbedDesign] Designer config loaded:', designerConfig.name, 'designerType:', designerConfig.designerType);
+
+          // Log if the backend resolved to a different productTypeId (fallback)
+          if (designerConfig.resolvedProductTypeId && designerConfig.requestedProductTypeId !== designerConfig.resolvedProductTypeId) {
+            console.warn(`[EmbedDesign] ⚠️ Backend resolved productTypeId: requested=${designerConfig.requestedProductTypeId} → resolved=${designerConfig.resolvedProductTypeId} reason=${designerConfig.resolutionReason}`);
+          }
 
           setProductTypeConfig({
             id: designerConfig.id,
@@ -1133,7 +1144,7 @@ export default function EmbedDesign() {
       referenceImage: referenceImageBase64,
       shop: (isShopify || isStorefront) ? shopDomain : undefined,
       sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
-      productTypeId: productTypeId,
+      productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
     });
     setDesignSource("ai");
   };

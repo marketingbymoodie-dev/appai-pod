@@ -31,7 +31,9 @@
   "displayName": {{ product.metafields.ai_art_studio.display_name.value | default: product.title | json }},
   "description": {{ product.metafields.ai_art_studio.description.value | default: "" | json }},
   "hideAddToCart": {{ product.metafields.ai_art_studio.hide_add_to_cart.value | default: false | json }},
-  "enabled": {{ product.metafields.ai_art_studio.enable.value | default: false | json }}
+  "enabled": {{ product.metafields.ai_art_studio.enable.value | default: false | json }},
+  "productHandle": {{ product.handle | json }},
+  "productType": {{ product.type | json }}
 }
 </script>
 {% endif %}
@@ -693,10 +695,16 @@ function showLoginRequiredPopup() {
       }
     }
 
+    // productTypeId is now optional - backend will auto-resolve using productHandle/displayName
+    if (!productTypeId) {
+      productTypeId = '0';
+      console.log('[AI Art Embed] No productTypeId set - will use backend auto-resolution');
+    }
+
     console.log('[AI Art Embed] Final values - appUrl:', appUrl, 'productTypeId:', productTypeId, 'enabled:', enabled);
 
-    if (!appUrl || !productTypeId) {
-      console.log('[AI Art Embed] Missing appUrl or productTypeId, stopping');
+    if (!appUrl) {
+      console.log('[AI Art Embed] Missing appUrl, stopping');
       return;
     }
     
