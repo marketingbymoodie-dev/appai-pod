@@ -178,14 +178,14 @@ async function createTemporaryProduct(
   x: number = 0,
   y: number = 0,
   doubleSided: boolean = false
-): Promise<string | null> {
+): Promise<{ productId: string } | { error: string }> {
   try {
     // Printify uses 0-1 range where 0.5 is center
     // Our x/y comes in as -1 to 1 range, convert to Printify's 0-1 range
     // -1 = 0.0 (left/top), 0 = 0.5 (center), 1 = 1.0 (right/bottom)
     const printifyX = 0.5 + (x * 0.5);
     const printifyY = 0.5 + (y * 0.5);
-    
+
     // Build placeholders array
     // For double-sided products: the image has already been duplicated side-by-side,
     // so we only send to the "front" placeholder - Printify wraps it around
@@ -203,7 +203,38 @@ async function createTemporaryProduct(
         ],
       },
     ];
-    
+
+    const requestBody = {
+      title: `Mockup Preview - ${Date.now()}`,
+      description: "Temporary product for mockup generation",
+      blueprint_id: blueprintId,
+      print_provider_id: providerId,
+      variants: [
+        {
+          id: variantId,
+          price: 100,
+          is_enabled: true,
+        },
+      ],
+      print_areas: [
+        {
+          variant_ids: [variantId],
+          placeholders,
+        },
+      ],
+    };
+
+    console.log("[Printify] Creating temp product:", {
+      shopId,
+      blueprintId,
+      providerId,
+      variantId,
+      imageId,
+      scale,
+      x: printifyX,
+      y: printifyY,
+    });
+
     const response = await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
       {
@@ -212,39 +243,22 @@ async function createTemporaryProduct(
           "Authorization": `Bearer ${apiToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          title: `Mockup Preview - ${Date.now()}`,
-          description: "Temporary product for mockup generation",
-          blueprint_id: blueprintId,
-          print_provider_id: providerId,
-          variants: [
-            {
-              id: variantId,
-              price: 100, // Minimum price required by Printify (in cents)
-              is_enabled: true,
-            },
-          ],
-          print_areas: [
-            {
-              variant_ids: [variantId],
-              placeholders,
-            },
-          ],
-        }),
+        body: JSON.stringify(requestBody),
       }
     );
 
     if (!response.ok) {
-      const error = await response.text();
-      console.error("Failed to create Printify product:", error);
-      return null;
+      const errorText = await response.text();
+      console.error(`[Printify] Failed to create temp product (HTTP ${response.status}):`, errorText.substring(0, 500));
+      return { error: `Printify rejected product (${response.status}): ${errorText.substring(0, 200)}` };
     }
 
     const product = await response.json();
-    return product.id;
-  } catch (error) {
-    console.error("Error creating Printify product:", error);
-    return null;
+    console.log("[Printify] Temp product created:", product.id);
+    return { productId: product.id };
+  } catch (error: any) {
+    console.error("[Printify] Error creating temp product:", error);
+    return { error: `Exception: ${error.message || String(error)}` };
   }
 }
 
@@ -370,7 +384,7 @@ export async function generatePrintifyMockup(
       };
     }
 
-    productId = await createTemporaryProduct(
+    const createResult = await createTemporaryProduct(
       printifyShopId,
       blueprintId,
       providerId,
@@ -383,15 +397,17 @@ export async function generatePrintifyMockup(
       doubleSided
     );
 
-    if (!productId) {
+    if ("error" in createResult) {
       return {
         success: false,
         mockupUrls: [],
         mockupImages: [],
         source: "fallback",
-        error: "Failed to create temporary product",
+        error: `Failed to create temporary product: ${createResult.error}`,
       };
     }
+
+    productId = createResult.productId;
 
     const mockupData = await pRetry(
       async () => {

@@ -4057,9 +4057,10 @@ ${textEdgeRestrictions}
 
   // ==================== STOREFRONT MOCKUP (NO SESSION TOKEN) ====================
   // Used by storefront embeds to generate Printify mockups without session tokens.
+  // Includes auto-resolution of productTypeId (same logic as designer endpoint).
   app.post("/api/storefront/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -4075,15 +4076,15 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      if (!productTypeId || !designImageUrl) {
-        return res.status(400).json({ error: "Missing required fields" });
+      if (!requestedProductTypeId || !designImageUrl) {
+        return res.status(400).json({ error: "Missing required fields (productTypeId, designImageUrl)" });
       }
 
       // Sanitized URL prefix for logging (never log full data URLs)
       const urlPrefix = designImageUrl.startsWith("data:")
         ? `data:${designImageUrl.substring(5, 30)}... (${designImageUrl.length} chars)`
         : designImageUrl.substring(0, 120);
-      console.log("[Storefront Mockup] Incoming request:", { shop, productTypeId, sizeId, colorId, urlPrefix });
+      console.log("[Storefront Mockup] Incoming request:", { shop, requestedProductTypeId, sizeId, colorId, urlPrefix });
 
       // Reject obviously malformed URLs (e.g. API_BASE + data: concatenation)
       if (designImageUrl.includes("appdata:") || designImageUrl.includes("blob:")) {
@@ -4100,7 +4101,6 @@ ${textEdgeRestrictions}
         absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
         console.log("[Storefront Mockup] Converted relative path to absolute:", absoluteImageUrl);
       } else if (designImageUrl.startsWith("data:")) {
-        // data: URLs are valid - printify-mockups.ts handles base64 extraction
         console.log("[Storefront Mockup] Received data: URL, will upload base64 to Printify");
       } else if (designImageUrl.startsWith("https://")) {
         console.log("[Storefront Mockup] Using absolute URL:", absoluteImageUrl);
@@ -4119,24 +4119,69 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found for shop" });
       }
 
-      const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
+      // ========== AUTO-RESOLUTION OF PRODUCT TYPE ==========
+      // Same logic as designer endpoint: if the requested ID doesn't belong to this
+      // merchant, fall back to a valid product type using the same resolution chain.
+      const parsedId = parseInt(requestedProductTypeId);
+      let productType = await storage.getProductType(parsedId);
+      let resolvedFrom: string | undefined;
+
+      // Ownership check — treat mismatch as "not found"
+      if (productType && productType.merchantId !== merchant.id) {
+        console.log(`[Storefront Mockup] Ownership mismatch: productType(${parsedId}).merchantId=${productType.merchantId} vs merchant.id=${merchant.id}`);
+        productType = undefined;
       }
 
-      // Check if we have Printify credentials and blueprint ID
-      if (!merchant.printifyApiToken || !merchant.printifyShopId || !productType.printifyBlueprintId) {
+      if (!productType) {
+        // Fallback: resolve to a valid product type for this merchant
+        const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
+        const availableIds = merchantProductTypes.map(pt => pt.id);
+        console.log(`[Storefront Mockup] Product type ${parsedId} not found/not owned. Merchant has: [${availableIds.join(', ')}]`);
+
+        if (merchantProductTypes.length === 0) {
+          return res.status(400).json({
+            error: "No product types configured for this merchant",
+            debug: { requestedProductTypeId: parsedId, merchantId: merchant.id }
+          });
+        }
+
+        // Single available → use it
+        if (merchantProductTypes.length === 1) {
+          productType = merchantProductTypes[0];
+          resolvedFrom = "only_available";
+        } else {
+          // Pick the smallest ID (deterministic)
+          productType = merchantProductTypes.reduce((a, b) => a.id < b.id ? a : b);
+          resolvedFrom = "smallest_id_fallback";
+        }
+
+        console.warn(`[Storefront Mockup] FALLBACK RESOLVED: requested=${parsedId} → resolved=${productType.id} reason=${resolvedFrom}`);
+      }
+
+      console.log(`[Storefront Mockup] Using productType: id=${productType.id} name="${productType.name}" merchantId=${productType.merchantId}`);
+
+      // ========== VALIDATE PRINTIFY CONFIGURATION ==========
+      if (!merchant.printifyApiToken || !merchant.printifyShopId) {
         return res.json({
           success: false,
           mockupUrls: [],
+          mockupImages: [],
           source: "fallback",
-          message: "Printify not configured",
+          message: "Printify credentials not configured for merchant",
         });
       }
 
-      // Generate Printify mockup
-      const { generatePrintifyMockup } = await import("./printify-mockups.js");
+      if (!productType.printifyBlueprintId) {
+        return res.json({
+          success: false,
+          mockupUrls: [],
+          mockupImages: [],
+          source: "fallback",
+          message: `Product type "${productType.name}" (id=${productType.id}) has no Printify blueprint configured`,
+        });
+      }
 
+      // ========== RESOLVE VARIANT ==========
       const variantMapData = JSON.parse(productType.variantMap as string || "{}");
       const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
 
@@ -4148,18 +4193,40 @@ ${textEdgeRestrictions}
 
       if (!variantData || !variantData.printifyVariantId) {
         return res.status(400).json({
-          error: "Could not resolve product variant",
-          availableKeys: Object.keys(variantMapData)
+          error: "Could not resolve Printify variant for mockup",
+          debug: {
+            productTypeId: productType.id,
+            requestedKey: variantKey,
+            availableKeys: Object.keys(variantMapData),
+          }
         });
       }
 
+      const blueprintId = productType.printifyBlueprintId;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 
-      console.log("[Storefront Mockup] Generating Printify mockup:", { shop, productTypeId, sizeId, colorId, variantId: targetVariantId, blueprintId: productType.printifyBlueprintId });
+      // ========== STRUCTURED LOGGING BEFORE PRINTIFY CALL ==========
+      console.log("[Storefront Mockup] Printify params:", {
+        shop,
+        resolvedProductTypeId: productType.id,
+        requestedProductTypeId: parsedId,
+        resolvedFrom: resolvedFrom || "direct_match",
+        blueprintId,
+        providerId,
+        variantId: targetVariantId,
+        merchantId: merchant.id,
+        printifyShopId: merchant.printifyShopId,
+        sizeId: sizeId || 'default',
+        colorId: colorId || 'default',
+        doubleSided: productType.doubleSidedPrint || false,
+      });
+
+      // ========== GENERATE MOCKUP ==========
+      const { generatePrintifyMockup } = await import("./printify-mockups.js");
 
       const result = await generatePrintifyMockup({
-        blueprintId: productType.printifyBlueprintId,
+        blueprintId,
         providerId,
         variantId: targetVariantId,
         imageUrl: absoluteImageUrl,
@@ -4171,7 +4238,14 @@ ${textEdgeRestrictions}
         doubleSided: productType.doubleSidedPrint || false,
       });
 
-      console.log("[Storefront Mockup] Result:", { success: result.success, mockupCount: result.mockupUrls?.length, error: result.error || null });
+      console.log("[Storefront Mockup] Result:", {
+        success: result.success,
+        mockupCount: result.mockupUrls?.length,
+        source: result.source,
+        error: result.error || null,
+        resolvedProductTypeId: productType.id,
+        requestedProductTypeId: parsedId,
+      });
       res.json(result);
     } catch (error) {
       console.error("[Storefront Mockup] Error generating mockup:", error);
