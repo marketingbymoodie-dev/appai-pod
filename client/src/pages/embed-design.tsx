@@ -1423,7 +1423,7 @@ export default function EmbedDesign() {
   }): Promise<{ success: boolean; error?: string }> => {
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const TIMEOUT_MS = 10_000;
+      const TIMEOUT_MS = 12_000;
 
       const cleanup = () => {
         window.removeEventListener('message', handler);
@@ -1436,9 +1436,13 @@ export default function EmbedDesign() {
           event.data?.correlationId === correlationId
         ) {
           cleanup();
-          // Accept both "ok" and "success" fields for compatibility
           const isOk = !!(event.data.ok || event.data.success);
-          console.log('[Design Studio] Received cart result:', { ok: isOk, error: event.data.error });
+          console.log('[Design Studio] Received cart result:', {
+            ok: isOk,
+            error: event.data.error,
+            bridgeVersion: event.data._bridgeVersion,
+            origin: event.origin,
+          });
           resolve({
             success: isOk,
             error: event.data.error,
@@ -1449,7 +1453,15 @@ export default function EmbedDesign() {
       const timer = setTimeout(() => {
         cleanup();
         console.error('[Design Studio] Add-to-cart postMessage timed out after', TIMEOUT_MS, 'ms');
-        resolve({ success: false, error: 'Cart update timed out. Please try again.' });
+        console.error('[Design Studio] Timeout diagnostics:', {
+          correlationId,
+          variantId: payload.variantId,
+          parentExists: window.parent !== window,
+          topExists: window.top !== window,
+          bridgeReady: !!(window as any).__aiArtBridgeReady,
+          locationOrigin: window.location.origin,
+        });
+        resolve({ success: false, error: 'Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.' });
       }, TIMEOUT_MS);
 
       window.addEventListener('message', handler);
@@ -1460,10 +1472,28 @@ export default function EmbedDesign() {
         variantId: payload.variantId,
         quantity: payload.quantity,
         properties: payload.properties,
+        _bridgeVersion: 'v2.1',
       };
 
-      console.log('[Design Studio] Sending add-to-cart postMessage:', message);
+      // Send to parent (primary target)
+      console.log('[Design Studio] Sending add-to-cart postMessage:', {
+        correlationId,
+        variantId: payload.variantId,
+        propertyKeys: Object.keys(payload.properties),
+        sentTo: 'parent',
+        origin: window.location.origin,
+      });
       window.parent.postMessage(message, '*');
+
+      // Also send to top if different from parent (nested iframe scenario)
+      try {
+        if (window.top && window.top !== window.parent) {
+          console.log('[Design Studio] Also sending to window.top (nested iframe)');
+          window.top.postMessage(message, '*');
+        }
+      } catch (e) {
+        // Cross-origin access to window.top — ignore
+      }
     });
   };
 
@@ -1654,13 +1684,12 @@ export default function EmbedDesign() {
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data.type === "ai-art-studio:cart-updated") {
-        // Clear the timeout since we got a response
+      // Legacy cart-updated handler (backwards compat)
+      if (event.data?.type === "ai-art-studio:cart-updated") {
         if ((window as any).__addToCartTimeout) {
           clearTimeout((window as any).__addToCartTimeout);
           delete (window as any).__addToCartTimeout;
         }
-        
         setIsAddingToCart(false);
         if (event.data.success) {
           setGeneratedDesign(null);
@@ -1668,6 +1697,17 @@ export default function EmbedDesign() {
         } else if (event.data.error) {
           setVariantError(`Failed to add to cart: ${event.data.error}`);
         }
+      }
+
+      // PING from parent — respond with PONG to confirm bridge is live
+      if (event.data?.type === "AI_ART_STUDIO_PING") {
+        console.log('[Design Studio] Received PING from parent, sending PONG. Parent bridge:', event.data._bridgeVersion);
+        (window as any).__aiArtBridgeReady = true;
+        window.parent.postMessage({
+          type: 'AI_ART_STUDIO_PONG',
+          _bridgeVersion: 'v2.1',
+          pingTimestamp: event.data.timestamp,
+        }, '*');
       }
     };
 
