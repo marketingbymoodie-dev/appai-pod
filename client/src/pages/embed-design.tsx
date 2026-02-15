@@ -1436,8 +1436,11 @@ export default function EmbedDesign() {
           event.data?.correlationId === correlationId
         ) {
           cleanup();
+          // Accept both "ok" and "success" fields for compatibility
+          const isOk = !!(event.data.ok || event.data.success);
+          console.log('[Design Studio] Received cart result:', { ok: isOk, error: event.data.error });
           resolve({
-            success: !!event.data.success,
+            success: isOk,
             error: event.data.error,
           });
         }

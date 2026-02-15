@@ -468,150 +468,185 @@ function showLoginRequiredPopup() {
     studioContainer.appendChild(iframe);
     
     console.log('[AI Art Embed] Setting up message listener for origin:', config.appUrl);
-    
-    window.addEventListener('message', function(event) {
-      // Log all messages from our app
-      if (event.data && event.data.type && (event.data.type.indexOf('art-studio') !== -1 || event.data.type === 'AI_ART_STUDIO_MOCKUPS')) {
-        console.log('[AI Art Embed] Received message:', event.data.type, 'from:', event.origin);
+
+    // --- Origin validation helpers ---
+    var appOrigin;
+    try { appOrigin = new URL(config.appUrl).origin; } catch(e) { appOrigin = ''; }
+    console.log('[AI Art Embed] Resolved appOrigin:', appOrigin);
+
+    function isValidRailwayOrigin(origin) {
+      try { return new URL(origin).hostname.endsWith('railway.app'); } catch(e) { return false; }
+    }
+
+    function isAllowedOrigin(origin) {
+      if (appOrigin && origin === appOrigin) return true;
+      if (isValidRailwayOrigin(origin)) return true;
+      return false;
+    }
+
+    // --- Cart add helper (form-urlencoded, with AbortController timeout) ---
+    function addToCartFromParent(msg) {
+      var variantId = msg.variantId;
+      var quantity = msg.quantity || 1;
+      var properties = msg.properties || {};
+
+      if (!variantId) throw new Error('Missing variantId');
+
+      var body = new URLSearchParams();
+      body.set('id', String(variantId));
+      body.set('quantity', String(quantity));
+      var propKeys = Object.keys(properties);
+      for (var i = 0; i < propKeys.length; i++) {
+        body.set('properties[' + propKeys[i] + ']', String(properties[propKeys[i]]));
       }
-      
+
+      console.log('[AI Art Embed] /cart/add.js request body:', body.toString().substring(0, 500));
+
+      // AbortController with 15s timeout so UI never spins forever
+      var controller = new AbortController();
+      var timeoutId = setTimeout(function() { controller.abort(); }, 15000);
+
+      return fetch('/cart/add.js', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Accept': 'application/json'
+        },
+        body: body,
+        credentials: 'same-origin',
+        signal: controller.signal
+      }).then(function(res) {
+        clearTimeout(timeoutId);
+        console.log('[AI Art Embed] /cart/add.js response status:', res.status);
+        return res.text().then(function(text) {
+          var json;
+          try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
+          if (!res.ok) {
+            var errMsg = (json && (json.description || json.message)) || text || ('HTTP ' + res.status);
+            throw new Error('Cart add failed: ' + errMsg);
+          }
+          return json;
+        });
+      }).catch(function(err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+          throw new Error('Cart request timed out after 15s');
+        }
+        throw err;
+      });
+    }
+
+    // --- Post result back to iframe (uses e.source for reliability) ---
+    function sendCartResult(eventSource, eventOrigin, correlationId, ok, resultOrError) {
+      var msg = {
+        type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+        correlationId: correlationId,
+        ok: ok,
+        success: ok  // compat: iframe checks both "ok" and "success"
+      };
+      if (ok) {
+        msg.result = resultOrError;
+        msg.cart = resultOrError;
+      } else {
+        msg.error = String(resultOrError);
+      }
+
+      console.log('[AI Art Embed] Sending cart result:', { ok: ok, correlationId: correlationId, error: ok ? undefined : msg.error });
+
+      // Prefer e.source (the actual window that sent the message)
       try {
-        const appOrigin = new URL(config.appUrl).origin;
-        // Accept messages from the configured app origin (Railway)
-        if (event.origin !== appOrigin) {
-          console.log('[AI Art Embed] Origin mismatch:', event.origin, 'vs', appOrigin);
+        if (eventSource && typeof eventSource.postMessage === 'function') {
+          eventSource.postMessage(msg, eventOrigin || '*');
           return;
         }
-      } catch (e) {
-        console.log('[AI Art Embed] Error parsing origin:', e);
+      } catch(e) {
+        console.warn('[AI Art Embed] e.source.postMessage failed, falling back to iframe.contentWindow:', e);
+      }
+      // Fallback to iframe reference
+      try {
+        iframe.contentWindow.postMessage(msg, appOrigin || '*');
+      } catch(e2) {
+        console.error('[AI Art Embed] Failed to send cart result via any method:', e2);
+      }
+    }
+
+    // --- Main message listener ---
+    window.addEventListener('message', function(event) {
+      // Log ALL messages from our app (expanded filter)
+      if (event.data && event.data.type && (
+        event.data.type.indexOf('art-studio') !== -1 ||
+        event.data.type.indexOf('AI_ART_STUDIO') !== -1
+      )) {
+        console.log('[AI Art Embed] Received message:', event.data.type, 'from:', event.origin, 'data:', JSON.stringify(event.data).substring(0, 300));
+      }
+
+      // Origin check
+      if (!isAllowedOrigin(event.origin)) {
+        // Only log for messages that look like ours (avoid spam from other extensions)
+        if (event.data && event.data.type && event.data.type.indexOf('AI_ART_STUDIO') !== -1) {
+          console.warn('[AI Art Embed] Blocked message from disallowed origin:', event.origin, '(allowed:', appOrigin, ')');
+        }
         return;
       }
-      
-      const data = event.data;
-      
-      // New protocol: AI_ART_STUDIO_ADD_TO_CART with correlationId
+
+      var data = event.data;
+      if (!data || !data.type) return;
+
+      // ========== ADD TO CART (v2 protocol) ==========
       if (data.type === 'AI_ART_STUDIO_ADD_TO_CART') {
         var correlationId = data.correlationId || '';
-        var variantId = data.variantId;
-        var quantity = data.quantity || 1;
-        var properties = data.properties || {};
+        console.log('[AI Art Embed] >>> ADD TO CART handler entered. correlationId:', correlationId, 'variantId:', data.variantId);
 
-        console.log('[AI Art Embed] Add to cart (v2):', {
-          correlationId: correlationId,
-          variantId: variantId,
-          quantity: quantity,
-          properties: Object.keys(properties)
-        });
-
-        if (!variantId) {
-          console.error('[AI Art Embed] Missing variantId in add-to-cart message');
-          iframe.contentWindow.postMessage({
-            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-            correlationId: correlationId,
-            success: false,
-            error: 'Missing variant ID'
-          }, config.appUrl);
+        if (!data.variantId) {
+          console.error('[AI Art Embed] Missing variantId');
+          sendCartResult(event.source, event.origin, correlationId, false, 'Missing variant ID');
           return;
         }
 
-        var formData = {
-          items: [{
-            id: Number(variantId),
-            quantity: quantity,
-            properties: properties
-          }]
-        };
+        addToCartFromParent(data)
+          .then(function(result) {
+            console.log('[AI Art Embed] Cart add SUCCESS:', result);
+            sendCartResult(event.source, event.origin, correlationId, true, result);
 
-        console.log('[AI Art Embed] Sending cart request to /cart/add.js');
+            // Refresh cart UI
+            document.dispatchEvent(new CustomEvent('cart:refresh'));
+            if (window.Shopify && window.Shopify.theme && window.Shopify.theme.sections) {
+              document.dispatchEvent(new CustomEvent('shopify:section:rerender'));
+            }
+            // Update cart count badges
+            fetch('/cart.js')
+              .then(function(r) { return r.json(); })
+              .then(function(cart) {
+                var countEls = document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]');
+                countEls.forEach(function(el) {
+                  el.textContent = String(cart.item_count);
+                  el.style.display = cart.item_count > 0 ? '' : 'none';
+                });
+              })
+              .catch(function() {});
+          })
+          .catch(function(err) {
+            console.error('[AI Art Embed] Cart add FAILED:', err);
+            sendCartResult(event.source, event.origin, correlationId, false, err.message || String(err));
+          });
 
-        fetch('/cart/add.js', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formData)
-        })
-        .then(function(response) {
-          console.log('[AI Art Embed] Cart response status:', response.status);
-          if (!response.ok) {
-            return response.text().then(function(text) {
-              throw new Error('Cart error (' + response.status + '): ' + text);
-            });
-          }
-          return response.json();
-        })
-        .then(function(result) {
-          console.log('[AI Art Embed] Cart success:', result);
-          iframe.contentWindow.postMessage({
-            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-            correlationId: correlationId,
-            success: true,
-            cart: result
-          }, config.appUrl);
-
-          // Trigger Shopify cart refresh events
-          document.dispatchEvent(new CustomEvent('cart:refresh'));
-
-          // Try to update cart drawer/icon count via section rendering API
-          if (window.Shopify && window.Shopify.theme && window.Shopify.theme.sections) {
-            document.dispatchEvent(new CustomEvent('shopify:section:rerender'));
-          }
-
-          // Try fetch cart count and update common cart icon selectors
-          fetch('/cart.js')
-            .then(function(r) { return r.json(); })
-            .then(function(cart) {
-              var countEls = document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]');
-              countEls.forEach(function(el) {
-                el.textContent = String(cart.item_count);
-                el.style.display = cart.item_count > 0 ? '' : 'none';
-              });
-            })
-            .catch(function() { /* ignore cart count update failure */ });
-        })
-        .catch(function(error) {
-          console.error('[AI Art Embed] Failed to add to cart:', error);
-          iframe.contentWindow.postMessage({
-            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-            correlationId: correlationId,
-            success: false,
-            error: error.message
-          }, config.appUrl);
-        });
+        return; // handled — don't fall through to other handlers
       }
 
-      // Legacy protocol: ai-art-studio:add-to-cart (kept for backwards compatibility)
+      // ========== LEGACY ADD TO CART ==========
       if (data.type === 'ai-art-studio:add-to-cart') {
         console.log('[AI Art Embed] Legacy add-to-cart:', { variantId: data.variantId });
-        var legacyFormData = {
-          items: [{
-            id: Number(data.variantId),
-            quantity: 1,
-            properties: {
-              '_artwork_url': data.artworkUrl || '',
-              '_design_id': data.designId || '',
-              'Artwork': 'Custom AI Design'
-            }
-          }]
-        };
-        fetch('/cart/add.js', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(legacyFormData)
-        })
-        .then(function(response) {
-          if (!response.ok) {
-            return response.text().then(function(text) { throw new Error('Cart error: ' + text); });
-          }
-          return response.json();
-        })
-        .then(function(result) {
-          iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: true, cart: result }, config.appUrl);
-          document.dispatchEvent(new CustomEvent('cart:refresh'));
-        })
-        .catch(function(error) {
-          iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: false, error: error.message }, config.appUrl);
-        });
+        addToCartFromParent({ variantId: data.variantId, quantity: 1, properties: { '_artwork_url': data.artworkUrl || '', '_design_id': data.designId || '', 'Artwork': 'Custom AI Design' } })
+          .then(function(result) {
+            iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: true, cart: result }, appOrigin || '*');
+            document.dispatchEvent(new CustomEvent('cart:refresh'));
+          })
+          .catch(function(error) {
+            iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: false, error: error.message }, appOrigin || '*');
+          });
+        return;
       }
-      
+
       if (data.type === 'ai-art-studio:resize') {
         studioContainer.style.height = data.height + 'px';
       }
