@@ -267,12 +267,21 @@ export default function EmbedDesign() {
   const productId = searchParams.get("productId") || "";
 
   // Log all URL parameters for debugging
+  // Compute endpoint prefixes once for logging and assertions
+  const storefrontApiPrefix = `${API_BASE}/api/storefront`;
+  const shopifyApiPrefix = `${API_BASE}/api/shopify`;
+  const endpointBase = isStorefront ? storefrontApiPrefix : isShopify ? shopifyApiPrefix : `${API_BASE}/api`;
+
   console.log('[EmbedDesign] === INITIALIZATION ===');
   console.log('[EmbedDesign] Full URL:', window.location.href);
   console.log('[EmbedDesign] Runtime mode:', runtimeMode);
+  console.log('[EmbedDesign] Endpoints: generate=%s/generate, mockup=%s/mockup', endpointBase, endpointBase);
   console.log('[EmbedDesign] productTypeId from URL:', searchParams.get("productTypeId"), '(using:', productTypeId, ')');
   console.log('[EmbedDesign] shop from URL:', searchParams.get("shop"));
   console.log('[EmbedDesign] isStorefront:', isStorefront, 'requiresSessionToken:', requiresSessionToken);
+  if (isStorefront && requiresSessionToken) {
+    console.error('[EmbedDesign] BUG: isStorefront=true but requiresSessionToken=true — this should never happen');
+  }
   
   // Get productHandle from URL params, or extract from referrer if not provided
   const getProductHandle = (): string => {
@@ -667,12 +676,14 @@ export default function EmbedDesign() {
       const myshopifyDomain = getMyShopifyDomain();
       console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);
 
-      // Step 1: Resolve productTypeId if it's the default "1" and we have a product handle
+      // Step 1: Resolve productTypeId — always try resolver when we have a product handle.
+      // The theme block metafield may contain a stale ID (e.g. "34" when real ID is "2").
+      // The server designer endpoint also has fallback, but resolving upfront avoids spurious 404 logs.
       let resolvedProductTypeId = productTypeId;
       let resolveSource = "url_param";
 
-      if ((productTypeId === "1" || !searchParams.get("productTypeId")) && productHandle && myshopifyDomain) {
-        console.log('[EmbedDesign] ProductTypeId is default, attempting to resolve from handle:', productHandle);
+      if (productHandle && myshopifyDomain) {
+        console.log('[EmbedDesign] Attempting to resolve productTypeId from handle:', productHandle, '(current:', productTypeId, ')');
         try {
           const resolveRes = await fetchWithRetry(
             `${API_BASE}/api/storefront/resolve-product-type?shop=${encodeURIComponent(myshopifyDomain)}&handle=${encodeURIComponent(productHandle)}&${cacheBuster}`
@@ -684,21 +695,13 @@ export default function EmbedDesign() {
             console.log('[EmbedDesign] Resolved productTypeId:', resolvedProductTypeId, 'via:', resolveSource);
           } else {
             const errorData = await resolveRes.json().catch(() => ({}));
-            console.warn('[EmbedDesign] Resolver returned error:', errorData);
-            // If resolver fails with 404, we'll show a specific error
-            if (resolveRes.status === 404 && errorData.availableProductTypes) {
-              setProductTypeError(
-                `No product type found for "${productHandle}". ` +
-                `Available product types: ${errorData.availableProductTypes.map((pt: any) => `${pt.name} (ID: ${pt.id})`).join(', ')}. ` +
-                `Please set the correct productTypeId in the product metafield.`
-              );
-              setConfigLoading(false);
-              return;
-            }
+            console.warn('[EmbedDesign] Resolver returned error (non-fatal, designer endpoint has fallback):', errorData);
+            // Do NOT early-return here — the designer endpoint has its own robust fallback chain.
+            // It will resolve stale IDs by handle, displayName, or smallest-available-ID.
           }
         } catch (err) {
-          console.warn('[EmbedDesign] Resolver failed:', err);
-          // Continue with original productTypeId
+          console.warn('[EmbedDesign] Resolver failed (non-fatal):', err);
+          // Continue with original productTypeId — designer endpoint will attempt fallback
         }
       }
 
@@ -1913,32 +1916,45 @@ export default function EmbedDesign() {
 
     window.addEventListener("message", handleMessage);
 
-    // Bridge timeout: if not ready after 20s in storefront mode, show error
+    // Bridge handshake: retry IFRAME_READY every 2s until parent responds with BRIDGE_READY
     let bridgeTimeout: ReturnType<typeof setTimeout> | null = null;
+    let iframeReadyTimer: ReturnType<typeof setInterval> | null = null;
     if (isStorefront) {
-      // Announce to parent that iframe is mounted and ready for messages.
-      console.log('[Design Studio] Sending IFRAME_READY to parent');
-      window.parent.postMessage({
-        type: 'AI_ART_STUDIO_IFRAME_READY',
-        _bridgeVersion: '1.0.0',
-      }, '*');
-      // Also send to top in case of nested iframes
-      try {
-        if (window.top && window.top !== window.parent) {
-          window.top.postMessage({
-            type: 'AI_ART_STUDIO_IFRAME_READY',
-            _bridgeVersion: '1.0.0',
-          }, '*');
+      const sendIframeReady = () => {
+        if ((window as any).__aiArtBridgeReady) return; // already connected
+        console.log('[Design Studio] Sending IFRAME_READY to parent');
+        window.parent.postMessage({
+          type: 'AI_ART_STUDIO_IFRAME_READY',
+          _bridgeVersion: '1.0.0',
+        }, '*');
+        try {
+          if (window.top && window.top !== window.parent) {
+            window.top.postMessage({
+              type: 'AI_ART_STUDIO_IFRAME_READY',
+              _bridgeVersion: '1.0.0',
+            }, '*');
+          }
+        } catch (e) {
+          // Cross-origin access — ignore
         }
-      } catch (e) {
-        // Cross-origin access — ignore
-      }
+      };
 
-      // If bridge doesn't connect in 20s, show error
+      // Send immediately, then retry every 2s for 20s (handles slow parent load)
+      sendIframeReady();
+      iframeReadyTimer = setInterval(() => {
+        if ((window as any).__aiArtBridgeReady) {
+          if (iframeReadyTimer) { clearInterval(iframeReadyTimer); iframeReadyTimer = null; }
+          return;
+        }
+        sendIframeReady();
+      }, 2_000);
+
+      // If bridge doesn't connect in 20s, show actionable error
       bridgeTimeout = setTimeout(() => {
+        if (iframeReadyTimer) { clearInterval(iframeReadyTimer); iframeReadyTimer = null; }
         if (!(window as any).__aiArtBridgeReady) {
           console.error('[Design Studio] Bridge timeout: no BRIDGE_READY after 20s');
-          setBridgeError('Storefront bridge not detected. The add-to-cart feature requires the AI Art Studio theme extension to be enabled. Please contact the store owner.');
+          setBridgeError('Storefront bridge not detected. The add-to-cart feature requires the AI Art Studio theme extension to be enabled on your product page. Please contact the store owner.');
         }
       }, 20_000);
     }
@@ -1946,6 +1962,7 @@ export default function EmbedDesign() {
     return () => {
       window.removeEventListener("message", handleMessage);
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
+      if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
   }, [isStorefront, debugBridge]);
 

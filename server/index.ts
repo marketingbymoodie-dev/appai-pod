@@ -10,7 +10,7 @@ import { createServer } from "http";
 // ============================================================
 // STARTUP BANNER - Identify deployed version
 // ============================================================
-const BUILD_ID = "2024-02-12-shop-fallback-v2";
+const BUILD_ID = "2025-02-13-storefront-e2e-v3";
 const GIT_COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "unknown";
 console.log("=".repeat(60));
 console.log("[SERVER STARTUP] Build ID:", BUILD_ID);
@@ -219,6 +219,28 @@ app.use((req, res, next) => {
 
   // ✅ 1) Register API + server routes FIRST
   await registerRoutes(httpServer, app);
+
+  // ✅ Route registration sanity check — list all storefront routes
+  const storefrontRoutes: string[] = [];
+  app._router.stack.forEach((layer: any) => {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase()).join(',');
+      const path = layer.route.path;
+      if (typeof path === 'string' && path.includes('/api/storefront')) {
+        storefrontRoutes.push(`${methods} ${path}`);
+      }
+    }
+  });
+  console.log("[ROUTE CHECK] Registered /api/storefront routes:", storefrontRoutes.length);
+  storefrontRoutes.forEach(r => console.log("  →", r));
+  // Verify critical routes exist
+  const criticalRoutes = ['/api/storefront/generate', '/api/storefront/mockup', '/api/storefront/ping'];
+  for (const route of criticalRoutes) {
+    const found = storefrontRoutes.some(r => r.includes(route));
+    if (!found) {
+      console.error(`[ROUTE CHECK] CRITICAL: ${route} is NOT registered!`);
+    }
+  }
 
   /**
    * ✅ 2) CRITICAL FIX:

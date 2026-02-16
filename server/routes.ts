@@ -1627,23 +1627,34 @@ if (!base64Data) {
         targetDims = { width: genWidth, height: genHeight };
       }
       
-      // Save image to object storage (with background removal for apparel, aspect ratio resizing for wall art)
+      // Save image to object storage (retry once on failure — never return data URLs)
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
-      const result = await saveImageToStorage(base64Data, mimeType, {
-  isApparel,
-  targetDims,
-});
-imageUrl = result.imageUrl;
-thumbnailUrl = result.thumbnailUrl;
-} catch (storageError) {
-  console.error(
-    "Failed to save to object storage, falling back to base64:",
-    storageError
-  );
-  imageUrl = `data:${mimeType};base64,${base64Data}`;
-}
+        const result = await saveImageToStorage(base64Data, mimeType, {
+          isApparel,
+          targetDims,
+        });
+        imageUrl = result.imageUrl;
+        thumbnailUrl = result.thumbnailUrl;
+      } catch (storageError) {
+        console.warn("[Shopify Generate] Storage save failed, retrying once:", storageError);
+        try {
+          const result = await saveImageToStorage(base64Data, mimeType, {
+            isApparel,
+            targetDims,
+          });
+          imageUrl = result.imageUrl;
+          thumbnailUrl = result.thumbnailUrl;
+        } catch (retryError) {
+          console.error("[Shopify Generate] Storage save failed on retry:", retryError);
+          // Return error instead of data URL — data URLs break downstream mockup calls
+          return res.status(503).json({
+            error: "Image storage temporarily unavailable. Please try again.",
+            retryable: true,
+          });
+        }
+      }
 
       
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

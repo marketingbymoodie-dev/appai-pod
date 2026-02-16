@@ -600,12 +600,15 @@ function showLoginRequiredPopup() {
     function sendBridgeReady() {
       if (bridgeAcked) return;
       try {
+        // Use '*' for BRIDGE_READY — this is a non-sensitive handshake ping.
+        // Using appOrigin can silently fail if the iframe's effective origin
+        // differs (e.g. Shopify CDN proxy, redirect, or cross-origin quirk).
         iframe.contentWindow.postMessage({
           type: 'AI_ART_STUDIO_BRIDGE_READY',
           _bridgeVersion: BRIDGE_VERSION,
           timestamp: Date.now(),
           heartbeat: heartbeatN
-        }, appOrigin || '*');
+        }, '*');
         if (heartbeatN % 10 === 0) console.log(B, 'BRIDGE_READY heartbeat #' + heartbeatN);
         heartbeatN++;
       } catch(e) {
