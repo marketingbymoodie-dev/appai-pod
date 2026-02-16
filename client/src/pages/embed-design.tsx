@@ -88,19 +88,85 @@ function getApiBase(): string {
 // Get API base once at module load
 const API_BASE = getApiBase();
 
+/** Check if a URL is a base64 data URL */
+function isDataUrl(url: string): boolean {
+  return !!url && url.startsWith("data:");
+}
+
 /**
  * Resolve an image URL to an absolute URL suitable for sending to the backend.
  * Handles three cases:
  * - Already absolute (http/https) → pass through
- * - data: URL (base64 fallback) → pass through unchanged (backend can handle it)
+ * - data: URL → pass through (caller MUST use ensureHostedUrl before sending to backend APIs)
  * - Relative path (/objects/...) → prepend API_BASE
  */
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  if (url.startsWith("data:")) return url; // base64 fallback - don't prepend API_BASE
+  if (isDataUrl(url)) return url; // data URL — cannot prepend API_BASE
   // Relative path like /objects/designs/xxx.png
   return API_BASE + url;
+}
+
+/**
+ * Convert a data URL to a Blob for upload.
+ */
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [header, b64] = dataUrl.split(",");
+  const mime = header.match(/:(.*?);/)?.[1] || "image/png";
+  const bytes = atob(b64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+/**
+ * Ensure a URL is a publicly-accessible hosted URL (https://...).
+ * If the input is a data URL, uploads it to object storage first.
+ * If the input is a relative path, resolves it to an absolute URL.
+ * If the input is already an https URL, passes through.
+ */
+async function ensureHostedUrl(url: string): Promise<string> {
+  if (!url) throw new Error("No image URL provided");
+
+  // Already hosted — pass through
+  if (url.startsWith("https://") || url.startsWith("http://")) return url;
+
+  // Relative path — resolve to absolute
+  if (url.startsWith("/")) return API_BASE + url;
+
+  // data: URL — must upload to storage first
+  if (isDataUrl(url)) {
+    console.log("[EmbedDesign] Converting data URL to hosted URL via upload...");
+    const blob = dataUrlToBlob(url);
+
+    // Step 1: Get presigned upload URL
+    const reqRes = await safeFetch(`${API_BASE}/api/uploads/request-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `design-${Date.now()}.png`,
+        size: blob.size,
+        contentType: blob.type,
+      }),
+    });
+    if (!reqRes.ok) throw new Error("Failed to get upload URL for data URL conversion");
+    const { uploadURL, objectPath } = await reqRes.json();
+
+    // Step 2: Upload blob to storage
+    const uploadRes = await safeFetch(uploadURL, {
+      method: "PUT",
+      headers: { "Content-Type": blob.type },
+      body: blob,
+    });
+    if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
+
+    const hostedUrl = API_BASE + objectPath;
+    console.log("[EmbedDesign] Data URL uploaded, hosted URL:", hostedUrl);
+    return hostedUrl;
+  }
+
+  throw new Error(`Unsupported URL format: ${url.substring(0, 30)}...`);
 }
 
 /**
@@ -813,6 +879,36 @@ export default function EmbedDesign() {
       });
   }, [sharedDesignId]);
 
+  // Restore design state from sessionStorage on load (survives page refresh / back navigation)
+  useEffect(() => {
+    // Don't restore if we already have a design (e.g., from shared link) or are loading one
+    if (generatedDesign || sharedDesignId || isLoadingSharedDesign) return;
+    try {
+      const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+      const saved = sessionStorage.getItem(stateKey);
+      if (!saved) return;
+      const state = JSON.parse(saved);
+      // Only restore if saved within the last 30 minutes
+      if (state.savedAt && Date.now() - state.savedAt < 30 * 60 * 1000 && state.imageUrl) {
+        console.log('[Design Studio] Restoring design from sessionStorage:', state.designId);
+        setGeneratedDesign({
+          id: state.designId || crypto.randomUUID(),
+          imageUrl: state.imageUrl,
+          prompt: state.prompt || '',
+        });
+        if (state.prompt) setPrompt(state.prompt);
+        if (state.selectedSize) setSelectedSize(state.selectedSize);
+        if (state.selectedFrameColor) setSelectedFrameColor(state.selectedFrameColor);
+      } else {
+        // Expired — clean up
+        sessionStorage.removeItem(stateKey);
+      }
+    } catch (e) {
+      // sessionStorage may be unavailable
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run once on mount only
+
   useEffect(() => {
     // IMPORTANT: Only request session token for admin-embedded mode
     // Storefront mode uses public /api/storefront/* endpoints - NO session token required
@@ -898,12 +994,12 @@ export default function EmbedDesign() {
   }, [runtimeMode, productId, productHandle]);
 
   const fetchPrintifyMockups = useCallback(async (
-    designImageUrl: string, 
-    ptId: number, 
-    sizeId: string, 
-    colorId: string, 
-    scale: number = 100, 
-    x: number = 50, 
+    designImageUrl: string,
+    ptId: number,
+    sizeId: string,
+    colorId: string,
+    scale: number = 100,
+    x: number = 50,
     y: number = 50
   ) => {
     setMockupLoading(true);
@@ -911,8 +1007,23 @@ export default function EmbedDesign() {
     const clampedX = Math.max(0, Math.min(100, x));
     const clampedY = Math.max(0, Math.min(100, y));
     const clampedScale = Math.max(10, Math.min(200, scale));
-    
+
     try {
+      // GUARD: Never send data URLs to the mockup endpoint — upload first
+      let hostedUrl = designImageUrl;
+      if (isDataUrl(designImageUrl)) {
+        console.warn('[EmbedDesign] Mockup called with data URL — uploading to storage first');
+        setMockupError(null); // clear previous error while uploading
+        try {
+          hostedUrl = await ensureHostedUrl(designImageUrl);
+          // Also update the stored design so future calls use the hosted URL
+          setGeneratedDesign(prev => prev ? { ...prev, imageUrl: hostedUrl } : prev);
+        } catch (uploadErr: any) {
+          console.error('[EmbedDesign] Failed to upload data URL for mockup:', uploadErr);
+          throw new Error('Failed to upload design image. Please regenerate your design.');
+        }
+      }
+
       // Use Shopify-specific endpoint if in Shopify mode
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/mockup`
@@ -921,7 +1032,7 @@ export default function EmbedDesign() {
           : `${API_BASE}/api/mockup/generate`;
       const payload = isStorefront ? {
         productTypeId: ptId,
-        designImageUrl,
+        designImageUrl: hostedUrl,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -930,7 +1041,7 @@ export default function EmbedDesign() {
         shop: shopDomain,
       } : isShopify ? {
         productTypeId: ptId,
-        designImageUrl,
+        designImageUrl: hostedUrl,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -940,7 +1051,7 @@ export default function EmbedDesign() {
         sessionToken,
       } : {
         productTypeId: ptId,
-        designImageUrl,
+        designImageUrl: hostedUrl,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1078,8 +1189,9 @@ export default function EmbedDesign() {
     },
     onSuccess: (data) => {
       const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
+      const designId = data.designId || data.design?.id || crypto.randomUUID();
       setGeneratedDesign({
-        id: data.designId || data.design?.id || crypto.randomUUID(),
+        id: designId,
         imageUrl: imageUrl,
         prompt: prompt,
       });
@@ -1093,7 +1205,20 @@ export default function EmbedDesign() {
       // Reset the initial transform ref for the new design
       initialTransformRef.current = newTransform;
       setLoginError(null);
-      
+
+      // Persist design state to sessionStorage so refresh doesn't lose it
+      try {
+        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+        sessionStorage.setItem(stateKey, JSON.stringify({
+          designId,
+          imageUrl,
+          prompt,
+          selectedSize,
+          selectedFrameColor,
+          savedAt: Date.now(),
+        }));
+      } catch (e) { /* sessionStorage may be unavailable */ }
+
       // Clear any existing mockups and fetch new Printify composite mockups
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
@@ -1249,6 +1374,19 @@ export default function EmbedDesign() {
       const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
       
+      // Persist design state to sessionStorage so refresh doesn't lose it
+      try {
+        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+        sessionStorage.setItem(stateKey, JSON.stringify({
+          designId: crypto.randomUUID(),
+          imageUrl: importedImageUrl,
+          prompt: source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`,
+          selectedSize,
+          selectedFrameColor,
+          savedAt: Date.now(),
+        }));
+      } catch (e) { /* sessionStorage may be unavailable */ }
+
       // Clear any existing mockups and fetch Printify composite mockups for imported design
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
@@ -1535,8 +1673,19 @@ export default function EmbedDesign() {
     // Normalize variant ID (strip GID prefix if present)
     const normalizedVariant = normalizeVariantId(variantId);
 
-    // Build the full artwork URL
-    const artworkFullUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+    // Build the full artwork URL — ensure it's hosted (never a data URL)
+    let artworkFullUrl: string;
+    try {
+      artworkFullUrl = await ensureHostedUrl(generatedDesign.imageUrl);
+      // If we had to upload, also update stored design
+      if (artworkFullUrl !== toAbsoluteImageUrl(generatedDesign.imageUrl)) {
+        setGeneratedDesign(prev => prev ? { ...prev, imageUrl: artworkFullUrl } : prev);
+      }
+    } catch (e: any) {
+      setIsAddingToCart(false);
+      setVariantError("Failed to prepare artwork for cart. Please regenerate your design.");
+      return;
+    }
 
     // Get the rendered mockup URL if available
     let mockupFullUrl = '';
@@ -1597,35 +1746,46 @@ export default function EmbedDesign() {
       return;
     }
 
-    // Admin-embedded / standalone mode: navigate to cart URL (legacy behavior)
-    const cartParams = new URLSearchParams();
-    cartParams.set('id', normalizedVariant);
-    cartParams.set('quantity', '1');
-    for (const [key, value] of Object.entries(properties)) {
-      cartParams.set(`properties[${key}]`, value);
-    }
-
-    const cartUrl = `https://${shopDomain}/cart/add?${cartParams.toString()}`;
-    console.log('[Design Studio] Redirecting to cart:', cartUrl);
-
+    // Admin-embedded / standalone mode: use AJAX cart add via Shopify API
+    // Avoids navigating to a blank page which can lose state
     try {
-      if (window.top && window.top !== window) {
-        window.top.location.href = cartUrl;
-      } else if (window.parent && window.parent !== window) {
-        window.parent.location.href = cartUrl;
-      } else {
-        window.location.href = cartUrl;
-      }
-    } catch (e) {
-      console.log('[Design Studio] Navigation blocked, opening in new tab:', e);
-      const newWindow = window.open(cartUrl, '_blank');
-      if (!newWindow) {
-        setIsAddingToCart(false);
-        setVariantError("Unable to open cart. Please disable popup blocker and try again.");
-      } else {
-        setIsAddingToCart(false);
+      const cartApiUrl = `https://${shopDomain}/cart/add.js`;
+      console.log('[Design Studio] Admin-embedded cart add via AJAX:', cartApiUrl);
+      const cartResponse = await fetch(cartApiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          items: [{ id: Number(normalizedVariant), quantity: 1, properties }],
+        }),
+        credentials: 'include',
+      });
+
+      if (cartResponse.ok) {
+        console.log('[Design Studio] Admin-embedded cart add success');
+        toast({
+          title: "Added to cart!",
+          description: "Your custom design has been added to the cart.",
+        });
         setGeneratedDesign(null);
+        setPrompt("");
+      } else {
+        const errorData = await cartResponse.json().catch(() => ({}));
+        const errorMsg = errorData.description || errorData.message || `HTTP ${cartResponse.status}`;
+        setVariantError(`Failed to add to cart: ${errorMsg}`);
       }
+    } catch (e: any) {
+      console.warn('[Design Studio] AJAX cart add failed, falling back to navigation:', e);
+      // Fallback: open cart URL in a new tab (never navigate the current iframe)
+      const cartParams = new URLSearchParams();
+      cartParams.set('id', normalizedVariant);
+      cartParams.set('quantity', '1');
+      for (const [key, value] of Object.entries(properties)) {
+        cartParams.set(`properties[${key}]`, value);
+      }
+      const cartUrl = `https://${shopDomain}/cart/add?${cartParams.toString()}`;
+      window.open(cartUrl, '_blank');
+    } finally {
+      setIsAddingToCart(false);
     }
   };
 

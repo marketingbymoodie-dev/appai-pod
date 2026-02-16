@@ -4023,7 +4023,7 @@ ${textEdgeRestrictions}
         targetDims = { width: genWidth, height: genHeight };
       }
 
-      // Save image to object storage
+      // Save image to object storage (retry once on failure)
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
@@ -4034,8 +4034,22 @@ ${textEdgeRestrictions}
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
       } catch (storageError) {
-        console.error("Failed to save to object storage, falling back to base64:", storageError);
-        imageUrl = `data:${mimeType};base64,${base64Data}`;
+        console.warn("[Storefront Generate] Storage save failed, retrying once:", storageError);
+        try {
+          const result = await saveImageToStorage(base64Data, mimeType, {
+            isApparel,
+            targetDims,
+          });
+          imageUrl = result.imageUrl;
+          thumbnailUrl = result.thumbnailUrl;
+        } catch (retryError) {
+          console.error("[Storefront Generate] Storage save failed on retry:", retryError);
+          // Return error instead of data URL — data URLs break downstream mockup calls
+          return res.status(503).json({
+            error: "Image storage temporarily unavailable. Please try again.",
+            retryable: true,
+          });
+        }
       }
 
       const designId = `storefront-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

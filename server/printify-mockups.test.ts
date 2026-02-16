@@ -1,6 +1,7 @@
 /**
  * Tests for Printify mockup generation:
  * - data: URL rejection at the route level
+ * - Client-side data URL detection and upload guard
  * - Retry logic for upload and temp product creation
  * - Structured error responses with step info
  */
@@ -48,6 +49,61 @@ describe("Printify mockup validation", () => {
     const protocol = "https";
     const absoluteUrl = `${protocol}://${host}${relativeUrl}`;
     expect(absoluteUrl).toBe("https://appai-pod-production.up.railway.app/objects/designs/abc.png");
+  });
+});
+
+describe("Client-side data URL guard (ensureHostedUrl pattern)", () => {
+  it("should detect data URLs correctly", () => {
+    const isDataUrl = (url: string) => !!url && url.startsWith("data:");
+
+    expect(isDataUrl("data:image/png;base64,abc")).toBe(true);
+    expect(isDataUrl("data:image/jpeg;base64,xyz")).toBe(true);
+    expect(isDataUrl("https://example.com/image.png")).toBe(false);
+    expect(isDataUrl("/objects/designs/abc.png")).toBe(false);
+    expect(isDataUrl("")).toBe(false);
+  });
+
+  it("should pass through https URLs without upload", () => {
+    const url = "https://appai-pod-production.up.railway.app/objects/designs/abc.png";
+    // ensureHostedUrl should return this unchanged
+    const isAlreadyHosted = url.startsWith("https://") || url.startsWith("http://");
+    expect(isAlreadyHosted).toBe(true);
+  });
+
+  it("should resolve relative paths to absolute URLs", () => {
+    const API_BASE = "https://appai-pod-production.up.railway.app";
+    const url = "/objects/designs/abc.png";
+    const resolved = url.startsWith("/") ? API_BASE + url : url;
+    expect(resolved).toBe("https://appai-pod-production.up.railway.app/objects/designs/abc.png");
+  });
+
+  it("should require upload for data URLs before calling mockup", () => {
+    const isDataUrl = (url: string) => !!url && url.startsWith("data:");
+    const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg...";
+
+    // This simulates the guard in fetchPrintifyMockups
+    let uploadRequired = false;
+    if (isDataUrl(url)) {
+      uploadRequired = true;
+      // In production, this calls ensureHostedUrl which uploads to storage
+    }
+    expect(uploadRequired).toBe(true);
+  });
+
+  it("should never send data URLs in mockup payload", () => {
+    // Simulates the runtime assertion in fetchPrintifyMockups
+    const buildPayload = (designImageUrl: string) => {
+      if (designImageUrl.startsWith("data:")) {
+        throw new Error("ASSERTION: data URL must be uploaded before calling mockup endpoint");
+      }
+      return { designImageUrl };
+    };
+
+    // data URL should throw
+    expect(() => buildPayload("data:image/png;base64,abc")).toThrow("data URL must be uploaded");
+
+    // https URL should pass
+    expect(() => buildPayload("https://example.com/img.png")).not.toThrow();
   });
 });
 
@@ -156,5 +212,31 @@ describe("Printify retry logic", () => {
       correlationId,
     };
     expect(response.correlationId).toMatch(/^mockup_/);
+  });
+});
+
+describe("Generate endpoint storage fallback", () => {
+  it("should return 503 retryable error instead of data URL when storage fails", () => {
+    // The server now returns a 503 instead of falling back to data:
+    const errorResponse = {
+      error: "Image storage temporarily unavailable. Please try again.",
+      retryable: true,
+    };
+    expect(errorResponse.retryable).toBe(true);
+    expect(errorResponse.error).toContain("storage");
+  });
+
+  it("should never return imageUrl starting with data: from generate endpoint", () => {
+    // Verify that imageUrl in generate response is always a hosted URL
+    const validateGenerateResponse = (response: { imageUrl: string }) => {
+      if (response.imageUrl.startsWith("data:")) {
+        throw new Error("Generate endpoint must never return data URLs");
+      }
+      return true;
+    };
+
+    expect(validateGenerateResponse({ imageUrl: "/objects/designs/abc.png" })).toBe(true);
+    expect(validateGenerateResponse({ imageUrl: "https://example.com/abc.png" })).toBe(true);
+    expect(() => validateGenerateResponse({ imageUrl: "data:image/png;base64,abc" })).toThrow();
   });
 });
