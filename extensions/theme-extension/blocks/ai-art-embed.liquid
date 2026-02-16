@@ -467,294 +467,285 @@ function showLoginRequiredPopup() {
     
     studioContainer.appendChild(iframe);
     
-    // === AI Art Embed Bridge v2 ===
-    var BRIDGE_VERSION = 'v2.1';
-    console.log('[AI Art Embed] Setting up message bridge', BRIDGE_VERSION, 'for origin:', config.appUrl);
+    // ================================================================
+    // AI Art Bridge v1.0.0 — Production-grade storefront bridge
+    // ================================================================
+    var BRIDGE_VERSION = '1.0.0';
+    window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
-    // --- Origin validation helpers ---
-    var appOrigin;
-    try { appOrigin = new URL(config.appUrl).origin; } catch(e) { appOrigin = ''; }
-    console.log('[AI Art Embed] Resolved appOrigin:', appOrigin);
+    var B = '[AI Art Bridge]'; // log prefix
+    console.log(B, 'Installing bridge', BRIDGE_VERSION, 'appUrl:', config.appUrl);
 
-    function isValidRailwayOrigin(origin) {
-      try { return new URL(origin).hostname.endsWith('railway.app'); } catch(e) { return false; }
-    }
+    // --- Strict origin allowlist ---
+    var appOrigin = '';
+    try { appOrigin = new URL(config.appUrl).origin; } catch(e) {}
+    var ALLOWED_ORIGINS = [
+      appOrigin,
+      'https://appai-pod-production.up.railway.app'
+    ].filter(Boolean);
+    console.log(B, 'Allowed origins:', ALLOWED_ORIGINS);
 
-    // Primary trust check: is this message from our iframe?
-    // event.source === iframe.contentWindow works regardless of origin string.
-    // This handles the "null" origin case that Shopify CDN/proxy can produce.
+    // --- Origin validation ---
     function isFromOurIframe(event) {
-      try {
-        if (event.source === iframe.contentWindow) return true;
-      } catch(e) { /* cross-origin access error — fall through */ }
-      return false;
+      try { return event.source === iframe.contentWindow; } catch(e) { return false; }
     }
 
-    function isAllowedMessage(event) {
-      // 1) Direct source identity — most reliable, works with null origins
+    function isAllowedOrigin(origin) {
+      if (!origin || origin === 'null') return false;
+      if (ALLOWED_ORIGINS.indexOf(origin) !== -1) return true;
+      // Also allow any *.railway.app as staging fallback
+      try { return new URL(origin).hostname.endsWith('.railway.app'); } catch(e) { return false; }
+    }
+
+    function isTrustedMessage(event) {
+      // 1) Source identity — most reliable, works with "null" origins from Shopify CDN proxy
       if (isFromOurIframe(event)) return true;
-      // 2) Origin matches configured app URL
-      if (appOrigin && event.origin === appOrigin) return true;
-      // 3) Origin is any *.railway.app domain
-      if (isValidRailwayOrigin(event.origin)) return true;
-      // 4) Null/empty origin with our protocol prefix (Shopify CDN proxy)
+      // 2) Origin in allowlist
+      if (isAllowedOrigin(event.origin)) return true;
+      // 3) Null origin with our protocol prefix (Shopify CDN/proxy rewrites)
       if ((!event.origin || event.origin === 'null') &&
-          event.data && event.data.type &&
-          (typeof event.data.type === 'string') &&
-          (event.data.type.indexOf('AI_ART_STUDIO') === 0 || event.data.type.indexOf('ai-art-studio') === 0)) {
-        console.log('[AI Art Embed] Accepting null-origin message with known type:', event.data.type);
+          event.data && typeof event.data.type === 'string' &&
+          event.data.type.indexOf('AI_ART_STUDIO') === 0) {
+        console.log(B, 'Accepting null-origin AI_ART_STUDIO message:', event.data.type);
         return true;
       }
       return false;
     }
 
-    // --- Cart add helper (JSON body + AbortController timeout) ---
-    function addToCartFromParent(msg) {
-      var variantId = msg.variantId;
-      var quantity = msg.quantity || 1;
-      var properties = msg.properties || {};
-
-      if (!variantId) {
-        return Promise.reject(new Error('Missing variantId'));
+    // --- Reply helper: always reply via event.source + strict origin ---
+    function replyToIframe(eventOrNull, msg) {
+      var targets = [];
+      // Prefer event.source + event.origin (spec-correct)
+      if (eventOrNull && eventOrNull.source) {
+        var replyOrigin = isAllowedOrigin(eventOrNull.origin) ? eventOrNull.origin : (appOrigin || '*');
+        targets.push({ target: eventOrNull.source, origin: replyOrigin, label: 'event.source' });
       }
+      // Fallback: iframe.contentWindow + appOrigin
+      targets.push({ target: iframe.contentWindow, origin: appOrigin || '*', label: 'iframe.cw' });
 
-      var requestBody = {
-        items: [{
-          id: Number(variantId),
-          quantity: quantity,
-          properties: properties
-        }]
-      };
+      for (var i = 0; i < targets.length; i++) {
+        try {
+          targets[i].target.postMessage(msg, targets[i].origin);
+          console.log(B, 'Reply sent via', targets[i].label, 'origin:', targets[i].origin, 'type:', msg.type);
+          return;
+        } catch(e) {
+          console.warn(B, 'Reply via', targets[i].label, 'failed:', e.message);
+        }
+      }
+      // Last resort: wildcard
+      try {
+        iframe.contentWindow.postMessage(msg, '*');
+        console.log(B, 'Reply sent via wildcard fallback');
+      } catch(e) {
+        console.error(B, 'ALL reply methods failed:', e.message);
+      }
+    }
 
-      console.log('[AI Art Embed] /cart/add.js request:', JSON.stringify(requestBody).substring(0, 400));
+    // --- Cart add via Shopify Ajax API ---
+    function addToCart(variantId, quantity, properties) {
+      if (!variantId) return Promise.reject(new Error('Missing variantId'));
 
-      // AbortController with 15s timeout so UI never spins forever
+      var body = { items: [{ id: Number(variantId), quantity: quantity || 1, properties: properties || {} }] };
+      console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
+
       var controller = new AbortController();
-      var timeoutId = setTimeout(function() { controller.abort(); }, 15000);
+      var tid = setTimeout(function() { controller.abort(); }, 15000);
 
       return fetch('/cart/add.js', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
         credentials: 'same-origin',
         signal: controller.signal
       }).then(function(res) {
-        clearTimeout(timeoutId);
-        console.log('[AI Art Embed] /cart/add.js response status:', res.status);
+        clearTimeout(tid);
+        console.log(B, '/cart/add.js status:', res.status);
         return res.text().then(function(text) {
           var json;
           try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
-          if (!res.ok) {
-            var errMsg = (json && (json.description || json.message)) || text || ('HTTP ' + res.status);
-            throw new Error('Cart add failed: ' + errMsg);
-          }
+          if (!res.ok) throw new Error('Cart add failed: ' + ((json && (json.description || json.message)) || text || 'HTTP ' + res.status));
           return json;
         });
       }).catch(function(err) {
-        clearTimeout(timeoutId);
-        if (err.name === 'AbortError') {
-          throw new Error('Cart request timed out after 15s');
-        }
+        clearTimeout(tid);
+        if (err.name === 'AbortError') throw new Error('Cart request timed out after 15s');
         throw err;
       });
     }
 
-    // --- Post result back to iframe (uses multiple fallback methods) ---
-    function sendCartResult(eventSource, eventOrigin, correlationId, ok, resultOrError) {
-      var msg = {
-        type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
-        correlationId: correlationId,
-        ok: ok,
-        success: ok,
-        _bridgeVersion: BRIDGE_VERSION
-      };
-      if (ok) {
-        msg.result = resultOrError;
-        msg.cart = resultOrError;
-      } else {
-        msg.error = String(resultOrError);
-      }
-
-      console.log('[AI Art Embed] Sending cart result:', { ok: ok, correlationId: correlationId, error: ok ? undefined : msg.error });
-
-      var sent = false;
-
-      // Method 1: e.source with e.origin (most correct per spec)
-      if (!sent && eventSource) {
-        try {
-          var replyOrigin = (eventOrigin && eventOrigin !== 'null') ? eventOrigin : '*';
-          eventSource.postMessage(msg, replyOrigin);
-          console.log('[AI Art Embed] Result sent via event.source, targetOrigin:', replyOrigin);
-          sent = true;
-        } catch(e) {
-          console.warn('[AI Art Embed] event.source.postMessage failed:', e.message);
+    // --- Refresh cart UI after successful add ---
+    function refreshCartUI() {
+      document.dispatchEvent(new CustomEvent('cart:refresh'));
+      try {
+        if (window.Shopify && window.Shopify.theme && window.Shopify.theme.sections) {
+          document.dispatchEvent(new CustomEvent('shopify:section:rerender'));
         }
-      }
+      } catch(e) {}
+      fetch('/cart.js').then(function(r) { return r.json(); }).then(function(cart) {
+        document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]').forEach(function(el) {
+          el.textContent = String(cart.item_count);
+          el.style.display = cart.item_count > 0 ? '' : 'none';
+        });
+      }).catch(function() {});
+    }
 
-      // Method 2: iframe.contentWindow with appOrigin
-      if (!sent) {
-        try {
-          iframe.contentWindow.postMessage(msg, appOrigin || '*');
-          console.log('[AI Art Embed] Result sent via iframe.contentWindow, targetOrigin:', appOrigin || '*');
-          sent = true;
-        } catch(e) {
-          console.warn('[AI Art Embed] iframe.contentWindow.postMessage failed:', e.message);
-        }
-      }
+    // --- BRIDGE_READY heartbeat ---
+    // React app inside iframe may not have mounted when iframe.onload fires.
+    // Send BRIDGE_READY every 500ms until the iframe ACKs.
+    var bridgeAcked = false;
+    var heartbeatN = 0;
+    var MAX_HEARTBEATS = 60; // 30s
+    var heartbeatTimer = null;
 
-      // Method 3: iframe.contentWindow with '*' (last resort)
-      if (!sent) {
-        try {
-          iframe.contentWindow.postMessage(msg, '*');
-          console.log('[AI Art Embed] Result sent via iframe.contentWindow with wildcard');
-          sent = true;
-        } catch(e) {
-          console.error('[AI Art Embed] ALL postMessage methods failed:', e.message);
-        }
+    function sendBridgeReady() {
+      if (bridgeAcked) return;
+      try {
+        iframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_BRIDGE_READY',
+          _bridgeVersion: BRIDGE_VERSION,
+          timestamp: Date.now(),
+          heartbeat: heartbeatN
+        }, appOrigin || '*');
+        if (heartbeatN % 10 === 0) console.log(B, 'BRIDGE_READY heartbeat #' + heartbeatN);
+        heartbeatN++;
+      } catch(e) {
+        console.warn(B, 'Failed to send BRIDGE_READY:', e.message);
       }
     }
 
-    // --- PING/PONG bridge test ---
-    // After iframe loads, send PING. Iframe responds with PONG. Confirms bridge is live.
     iframe.addEventListener('load', function() {
-      try {
-        iframe.contentWindow.postMessage({
-          type: 'AI_ART_STUDIO_PING',
-          _bridgeVersion: BRIDGE_VERSION,
-          timestamp: Date.now()
-        }, '*');
-        console.log('[AI Art Embed] Sent PING to iframe');
-      } catch(e) {
-        console.warn('[AI Art Embed] Failed to send PING:', e.message);
-      }
+      console.log(B, 'Iframe loaded, starting BRIDGE_READY heartbeat');
+      sendBridgeReady();
+      heartbeatTimer = setInterval(function() {
+        if (bridgeAcked || heartbeatN >= MAX_HEARTBEATS) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+          if (!bridgeAcked) console.error(B, 'Bridge never acknowledged after', MAX_HEARTBEATS, 'heartbeats');
+          return;
+        }
+        sendBridgeReady();
+      }, 500);
     });
 
     // --- Main message listener ---
     window.addEventListener('message', function(event) {
       var data = event.data;
-      if (!data || !data.type) return;
+      if (!data || typeof data.type !== 'string') return;
 
-      // Log ALL messages from our app (expanded filter)
-      var isOurMessage = (typeof data.type === 'string') && (
-        data.type.indexOf('art-studio') !== -1 ||
-        data.type.indexOf('AI_ART_STUDIO') !== -1
-      );
+      var isOurs = data.type.indexOf('AI_ART_STUDIO') === 0 || data.type.indexOf('ai-art-studio') === 0;
 
-      if (isOurMessage) {
-        console.log('[AI Art Embed ' + BRIDGE_VERSION + '] Received:', data.type,
-          'origin:', event.origin,
-          'fromOurIframe:', isFromOurIframe(event),
-          'data:', JSON.stringify(data).substring(0, 300));
+      // Debug logging
+      if (isOurs) {
+        console.log(B, 'MSG:', data.type, 'origin:', event.origin, 'fromIframe:', isFromOurIframe(event));
       }
 
-      // Message trust check (replaces old origin-only check)
-      if (isOurMessage && !isAllowedMessage(event)) {
-        console.warn('[AI Art Embed] BLOCKED message:', data.type,
-          'origin:', event.origin,
-          'isFromIframe:', isFromOurIframe(event),
-          'appOrigin:', appOrigin);
+      // Trust gate
+      if (!isTrustedMessage(event)) {
+        if (isOurs) console.warn(B, 'BLOCKED untrusted:', data.type, 'origin:', event.origin);
         return;
       }
 
-      // Non-app messages that fail trust: just ignore silently
-      if (!isOurMessage && !isAllowedMessage(event)) return;
-
-      // ========== PONG (bridge test response) ==========
-      if (data.type === 'AI_ART_STUDIO_PONG') {
-        console.log('[AI Art Embed] Bridge confirmed! PONG received.', BRIDGE_VERSION,
-          'iframe version:', data._bridgeVersion,
-          'roundtrip:', (Date.now() - (data.pingTimestamp || 0)) + 'ms');
+      // ===== BRIDGE_ACK =====
+      if (data.type === 'AI_ART_STUDIO_BRIDGE_ACK') {
+        bridgeAcked = true;
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        console.log(B, 'Handshake COMPLETE. parent:', BRIDGE_VERSION, 'iframe:', data._bridgeVersion, 'after', heartbeatN, 'heartbeats');
         return;
       }
 
-      // ========== ADD TO CART (v2 protocol) ==========
+      // ===== IFRAME_READY (iframe mounted before heartbeat reached it) =====
+      if (data.type === 'AI_ART_STUDIO_IFRAME_READY') {
+        console.log(B, 'Iframe announced READY, sending BRIDGE_READY immediately');
+        sendBridgeReady();
+        return;
+      }
+
+      // ===== PING → PONG =====
+      if (data.type === 'AI_ART_STUDIO_PING') {
+        console.log(B, 'PING received, replying PONG');
+        replyToIframe(event, {
+          type: 'AI_ART_STUDIO_PONG',
+          _bridgeVersion: BRIDGE_VERSION,
+          pingTimestamp: data.timestamp
+        });
+        return;
+      }
+
+      // ===== ADD TO CART =====
       if (data.type === 'AI_ART_STUDIO_ADD_TO_CART') {
-        var correlationId = data.correlationId || '';
-        console.log('[AI Art Embed] >>> ADD TO CART handler entered.',
-          'correlationId:', correlationId,
-          'variantId:', data.variantId,
-          'origin:', event.origin,
-          'fromOurIframe:', isFromOurIframe(event));
+        var cid = data.correlationId || '';
+        console.log(B, '>>> ADD_TO_CART cid:', cid, 'variant:', data.variantId);
 
         if (!data.variantId) {
-          console.error('[AI Art Embed] Missing variantId');
-          sendCartResult(event.source, event.origin, correlationId, false, 'Missing variant ID');
+          replyToIframe(event, {
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: cid, ok: false, success: false,
+            error: 'Missing variant ID', _bridgeVersion: BRIDGE_VERSION
+          });
           return;
         }
 
-        addToCartFromParent(data)
-          .then(function(result) {
-            console.log('[AI Art Embed] Cart add SUCCESS:', JSON.stringify(result).substring(0, 200));
-            sendCartResult(event.source, event.origin, correlationId, true, result);
-
-            // Refresh cart UI
-            document.dispatchEvent(new CustomEvent('cart:refresh'));
-            if (window.Shopify && window.Shopify.theme && window.Shopify.theme.sections) {
-              document.dispatchEvent(new CustomEvent('shopify:section:rerender'));
-            }
-            // Update cart count badges
-            fetch('/cart.js')
-              .then(function(r) { return r.json(); })
-              .then(function(cart) {
-                var countEls = document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]');
-                countEls.forEach(function(el) {
-                  el.textContent = String(cart.item_count);
-                  el.style.display = cart.item_count > 0 ? '' : 'none';
-                });
-              })
-              .catch(function() {});
+        addToCart(data.variantId, data.quantity, data.properties)
+          .then(function(cart) {
+            console.log(B, 'Cart add SUCCESS for cid:', cid);
+            replyToIframe(event, {
+              type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+              correlationId: cid, ok: true, success: true,
+              cart: cart, result: cart, _bridgeVersion: BRIDGE_VERSION
+            });
+            refreshCartUI();
           })
           .catch(function(err) {
-            console.error('[AI Art Embed] Cart add FAILED:', err);
-            sendCartResult(event.source, event.origin, correlationId, false, err.message || String(err));
+            console.error(B, 'Cart add FAILED for cid:', cid, err.message);
+            replyToIframe(event, {
+              type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+              correlationId: cid, ok: false, success: false,
+              error: err.message || String(err), _bridgeVersion: BRIDGE_VERSION
+            });
           });
-
         return;
       }
 
-      // ========== LEGACY ADD TO CART ==========
+      // ===== LEGACY ADD TO CART =====
       if (data.type === 'ai-art-studio:add-to-cart') {
-        console.log('[AI Art Embed] Legacy add-to-cart:', { variantId: data.variantId });
-        addToCartFromParent({ variantId: data.variantId, quantity: 1, properties: { '_artwork_url': data.artworkUrl || '', '_design_id': data.designId || '', 'Artwork': 'Custom AI Design' } })
-          .then(function(result) {
-            iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: true, cart: result }, '*');
-            document.dispatchEvent(new CustomEvent('cart:refresh'));
+        console.log(B, 'Legacy add-to-cart variant:', data.variantId);
+        addToCart(data.variantId, 1, { '_artwork_url': data.artworkUrl || '', '_design_id': data.designId || '', 'Artwork': 'Custom AI Design' })
+          .then(function(cart) {
+            replyToIframe(event, { type: 'ai-art-studio:cart-updated', success: true, cart: cart });
+            refreshCartUI();
           })
-          .catch(function(error) {
-            iframe.contentWindow.postMessage({ type: 'ai-art-studio:cart-updated', success: false, error: error.message }, '*');
+          .catch(function(err) {
+            replyToIframe(event, { type: 'ai-art-studio:cart-updated', success: false, error: err.message });
           });
         return;
       }
 
+      // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
         studioContainer.style.height = data.height + 'px';
+        return;
       }
-      
-      // Handle mockup updates - create preview section
+
+      // ===== MOCKUPS =====
       if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
         var mockupUrls = data.mockupUrls;
         if (!mockupUrls || mockupUrls.length === 0) return;
-        
-        console.log('[AI Art Embed] Received mockups:', mockupUrls.length);
-        
+        console.log(B, 'Received mockups:', mockupUrls.length);
+
         var previewSection = document.getElementById('ai-art-mockup-preview');
         if (!previewSection) {
           previewSection = document.createElement('div');
           previewSection.id = 'ai-art-mockup-preview';
           previewSection.style.cssText = 'display:block;margin-bottom:2rem;padding:1.5rem;background:#fff;border:1px solid #e5e5e5;border-radius:8px;';
           previewSection.innerHTML = '<h4 style="font-size:1.25rem;font-weight:600;margin-bottom:1rem;text-align:center;color:#333;">Your Custom Design Preview</h4><div id="ai-art-mockup-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;max-width:800px;margin:0 auto;"></div>';
-          
           var studioWrapper = container.closest('.ai-art-studio-embed');
           if (studioWrapper && studioWrapper.parentNode) {
             studioWrapper.parentNode.insertBefore(previewSection, studioWrapper);
-          } else {
+          } else if (container.parentNode) {
             container.parentNode.insertBefore(previewSection, container);
           }
         }
-        
+
         var grid = document.getElementById('ai-art-mockup-grid');
         if (grid) {
           grid.innerHTML = '';
@@ -763,16 +754,17 @@ function showLoginRequiredPopup() {
             item.style.cssText = 'aspect-ratio:1;overflow:hidden;border-radius:6px;border:1px solid #e5e5e5;background:#fafafa;';
             var img = document.createElement('img');
             img.src = url;
-            img.alt = 'Product mockup with custom design';
+            img.alt = 'Product mockup';
             img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
             item.appendChild(img);
             grid.appendChild(item);
           });
         }
-        
-        console.log('[AI Art Embed] Mockup preview updated');
+        console.log(B, 'Mockup preview updated');
       }
     });
+
+    console.log(B, 'Bridge installed successfully.');
     
     return container;
   }

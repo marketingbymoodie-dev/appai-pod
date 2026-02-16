@@ -259,6 +259,9 @@ export default function EmbedDesign() {
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [bridgeReady, setBridgeReady] = useState(false);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
+  const debugBridge = searchParams.get("debugBridge") === "1";
   const [transform, setTransform] = useState<ImageTransform>({ scale: 100, x: 50, y: 50 });
   const fileInputRef = useRef<HTMLInputElement>(null);
   
@@ -1421,6 +1424,15 @@ export default function EmbedDesign() {
     quantity: number;
     properties: Record<string, string>;
   }): Promise<{ success: boolean; error?: string }> => {
+    // Fail fast if bridge is not ready — don't waste 12s on a timeout
+    if (!bridgeReady && !(window as any).__aiArtBridgeReady) {
+      console.error('[Design Studio] addToCartStorefront called but bridge is NOT ready');
+      return Promise.resolve({
+        success: false,
+        error: 'The storefront add-to-cart bridge is not connected. Please refresh the page and try again.',
+      });
+    }
+
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const TIMEOUT_MS = 12_000;
@@ -1458,7 +1470,7 @@ export default function EmbedDesign() {
           variantId: payload.variantId,
           parentExists: window.parent !== window,
           topExists: window.top !== window,
-          bridgeReady: !!(window as any).__aiArtBridgeReady,
+          bridgeReady: bridgeReady || !!(window as any).__aiArtBridgeReady,
           locationOrigin: window.location.origin,
         });
         resolve({ success: false, error: 'Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.' });
@@ -1472,7 +1484,7 @@ export default function EmbedDesign() {
         variantId: payload.variantId,
         quantity: payload.quantity,
         properties: payload.properties,
-        _bridgeVersion: 'v2.1',
+        _bridgeVersion: '1.0.0',
       };
 
       // Send to parent (primary target)
@@ -1683,9 +1695,20 @@ export default function EmbedDesign() {
   };
 
   useEffect(() => {
+    const DB = debugBridge;
+    if (DB) console.log('[Bridge Debug] Setting up bridge listeners, isStorefront:', isStorefront);
+
     const handleMessage = (event: MessageEvent) => {
+      const type = event.data?.type;
+      if (!type) return;
+
+      // Debug: log all AI_ART_STUDIO messages
+      if (DB && typeof type === 'string' && type.indexOf('AI_ART_STUDIO') === 0) {
+        console.log('[Bridge Debug] MSG:', type, 'origin:', event.origin, 'data:', JSON.stringify(event.data).substring(0, 300));
+      }
+
       // Legacy cart-updated handler (backwards compat)
-      if (event.data?.type === "ai-art-studio:cart-updated") {
+      if (type === "ai-art-studio:cart-updated") {
         if ((window as any).__addToCartTimeout) {
           clearTimeout((window as any).__addToCartTimeout);
           delete (window as any).__addToCartTimeout;
@@ -1699,21 +1722,72 @@ export default function EmbedDesign() {
         }
       }
 
-      // PING from parent — respond with PONG to confirm bridge is live
-      if (event.data?.type === "AI_ART_STUDIO_PING") {
-        console.log('[Design Studio] Received PING from parent, sending PONG. Parent bridge:', event.data._bridgeVersion);
+      // BRIDGE_READY from parent — the parent's message listener is active
+      if (type === "AI_ART_STUDIO_BRIDGE_READY") {
+        console.log('[Design Studio] BRIDGE_READY received from parent!',
+          'parentVersion:', event.data._bridgeVersion,
+          'heartbeat:', event.data.heartbeat);
+        setBridgeReady(true);
+        setBridgeError(null);
         (window as any).__aiArtBridgeReady = true;
+        // Send ACK so parent stops the heartbeat
+        window.parent.postMessage({
+          type: 'AI_ART_STUDIO_BRIDGE_ACK',
+          _bridgeVersion: '1.0.0',
+        }, '*');
+      }
+
+      // Legacy PING from parent — respond with PONG (backwards compat)
+      if (type === "AI_ART_STUDIO_PING") {
+        console.log('[Design Studio] Received PING from parent, sending PONG');
+        (window as any).__aiArtBridgeReady = true;
+        setBridgeReady(true);
+        setBridgeError(null);
         window.parent.postMessage({
           type: 'AI_ART_STUDIO_PONG',
-          _bridgeVersion: 'v2.1',
+          _bridgeVersion: '1.0.0',
           pingTimestamp: event.data.timestamp,
         }, '*');
       }
     };
 
     window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
+
+    // Bridge timeout: if not ready after 20s in storefront mode, show error
+    let bridgeTimeout: ReturnType<typeof setTimeout> | null = null;
+    if (isStorefront) {
+      // Announce to parent that iframe is mounted and ready for messages.
+      console.log('[Design Studio] Sending IFRAME_READY to parent');
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_IFRAME_READY',
+        _bridgeVersion: '1.0.0',
+      }, '*');
+      // Also send to top in case of nested iframes
+      try {
+        if (window.top && window.top !== window.parent) {
+          window.top.postMessage({
+            type: 'AI_ART_STUDIO_IFRAME_READY',
+            _bridgeVersion: '1.0.0',
+          }, '*');
+        }
+      } catch (e) {
+        // Cross-origin access — ignore
+      }
+
+      // If bridge doesn't connect in 20s, show error
+      bridgeTimeout = setTimeout(() => {
+        if (!(window as any).__aiArtBridgeReady) {
+          console.error('[Design Studio] Bridge timeout: no BRIDGE_READY after 20s');
+          setBridgeError('Storefront bridge not detected. The add-to-cart feature requires the AI Art Studio theme extension to be enabled. Please contact the store owner.');
+        }
+      }, 20_000);
+    }
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      if (bridgeTimeout) clearTimeout(bridgeTimeout);
+    };
+  }, [isStorefront, debugBridge]);
 
   useEffect(() => {
     if (isEmbedded) {
@@ -2253,24 +2327,46 @@ export default function EmbedDesign() {
                 
                 {/* Shopify Add to Cart - Prominent, styled like native button */}
                 {(isShopify || isStorefront) && (
-                  <Button
-                    onClick={handleAddToCart}
-                    disabled={isAddingToCart}
-                    className="w-full h-12 text-base font-medium"
-                    data-testid="button-add-to-cart"
-                  >
-                    {isAddingToCart ? (
-                      <>
-                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                        Adding to Cart...
-                      </>
-                    ) : (
-                      <>
-                        <ShoppingCart className="w-5 h-5 mr-2" />
-                        Add to Cart
-                      </>
+                  <>
+                    <Button
+                      onClick={handleAddToCart}
+                      disabled={isAddingToCart || (isStorefront && !bridgeReady)}
+                      className="w-full h-12 text-base font-medium"
+                      data-testid="button-add-to-cart"
+                    >
+                      {isAddingToCart ? (
+                        <>
+                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                          Adding to Cart...
+                        </>
+                      ) : isStorefront && bridgeError ? (
+                        <>
+                          <ShoppingCart className="w-5 h-5 mr-2" />
+                          Add to Cart (unavailable)
+                        </>
+                      ) : isStorefront && !bridgeReady ? (
+                        <>
+                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                          Connecting to store...
+                        </>
+                      ) : (
+                        <>
+                          <ShoppingCart className="w-5 h-5 mr-2" />
+                          Add to Cart
+                        </>
+                      )}
+                    </Button>
+                    {isStorefront && bridgeError && (
+                      <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
+                        {bridgeError}
+                      </p>
                     )}
-                  </Button>
+                    {isStorefront && !bridgeReady && !bridgeError && (
+                      <p className="text-xs text-muted-foreground text-center">
+                        Waiting for storefront connection. If this persists, please refresh the page.
+                      </p>
+                    )}
+                  </>
                 )}
                 
                 {/* Secondary actions */}

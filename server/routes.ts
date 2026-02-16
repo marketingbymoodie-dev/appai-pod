@@ -4059,6 +4059,8 @@ ${textEdgeRestrictions}
   // Used by storefront embeds to generate Printify mockups without session tokens.
   // Includes auto-resolution of productTypeId (same logic as designer endpoint).
   app.post("/api/storefront/mockup", async (req: Request, res: Response) => {
+    // Generate correlationId before try so it's available in catch
+    const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
       const { productTypeId: requestedProductTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop } = req.body;
 
@@ -4077,19 +4079,31 @@ ${textEdgeRestrictions}
       }
 
       if (!requestedProductTypeId || !designImageUrl) {
-        return res.status(400).json({ error: "Missing required fields (productTypeId, designImageUrl)" });
+        return res.status(400).json({ ok: false, step: "validation", correlationId, error: "Missing required fields (productTypeId, designImageUrl)" });
       }
 
       // Sanitized URL prefix for logging (never log full data URLs)
       const urlPrefix = designImageUrl.startsWith("data:")
         ? `data:${designImageUrl.substring(5, 30)}... (${designImageUrl.length} chars)`
         : designImageUrl.substring(0, 120);
-      console.log("[Storefront Mockup] Incoming request:", { shop, requestedProductTypeId, sizeId, colorId, urlPrefix });
+      console.log(`[Storefront Mockup] [${correlationId}] Incoming:`, { shop, requestedProductTypeId, sizeId, colorId, urlPrefix });
+
+      // REJECT data: URLs — Printify requires a publicly accessible URL.
+      // The client must always pass the hosted design URL from /generate, not raw base64.
+      if (designImageUrl.startsWith("data:")) {
+        return res.status(400).json({
+          ok: false,
+          step: "validation",
+          correlationId,
+          error: "data: URLs are not accepted. Please pass the hosted design image URL (https://...) returned by the /generate endpoint.",
+        });
+      }
 
       // Reject obviously malformed URLs (e.g. API_BASE + data: concatenation)
       if (designImageUrl.includes("appdata:") || designImageUrl.includes("blob:")) {
         return res.status(400).json({
-          error: "Invalid designImageUrl: appears to be a malformed or local URL. Must be a public https URL, a relative /objects/ path, or a data: URL."
+          ok: false, step: "validation", correlationId,
+          error: "Invalid designImageUrl: appears to be a malformed or local URL. Must be a public https URL or a relative /objects/ path."
         });
       }
 
@@ -4099,14 +4113,13 @@ ${textEdgeRestrictions}
         const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
         absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
-        console.log("[Storefront Mockup] Converted relative path to absolute:", absoluteImageUrl);
-      } else if (designImageUrl.startsWith("data:")) {
-        console.log("[Storefront Mockup] Received data: URL, will upload base64 to Printify");
+        console.log(`[Storefront Mockup] [${correlationId}] Converted relative path:`, absoluteImageUrl);
       } else if (designImageUrl.startsWith("https://")) {
-        console.log("[Storefront Mockup] Using absolute URL:", absoluteImageUrl);
+        console.log(`[Storefront Mockup] [${correlationId}] Using absolute URL:`, absoluteImageUrl);
       } else {
         return res.status(400).json({
-          error: "Invalid designImageUrl: must start with https://, /objects/, or data:"
+          ok: false, step: "validation", correlationId,
+          error: "Invalid designImageUrl: must start with https:// or /objects/"
         });
       }
 
@@ -4207,7 +4220,7 @@ ${textEdgeRestrictions}
       const targetVariantId = variantData.printifyVariantId;
 
       // ========== STRUCTURED LOGGING BEFORE PRINTIFY CALL ==========
-      console.log("[Storefront Mockup] Printify params:", {
+      console.log(`[Storefront Mockup] [${correlationId}] Printify params:`, {
         shop,
         resolvedProductTypeId: productType.id,
         requestedProductTypeId: parsedId,
@@ -4238,7 +4251,7 @@ ${textEdgeRestrictions}
         doubleSided: productType.doubleSidedPrint || false,
       });
 
-      console.log("[Storefront Mockup] Result:", {
+      console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
         success: result.success,
         mockupCount: result.mockupUrls?.length,
         source: result.source,
@@ -4246,10 +4259,15 @@ ${textEdgeRestrictions}
         resolvedProductTypeId: productType.id,
         requestedProductTypeId: parsedId,
       });
-      res.json(result);
-    } catch (error) {
-      console.error("[Storefront Mockup] Error generating mockup:", error);
-      res.status(500).json({ error: "Failed to generate mockup" });
+      res.json({ ...result, correlationId });
+    } catch (error: any) {
+      console.error(`[Storefront Mockup] [${correlationId}] Error:`, error);
+      res.status(500).json({
+        ok: false,
+        step: "server_error",
+        error: error?.message || "Failed to generate mockup",
+        correlationId,
+      });
     }
   });
 

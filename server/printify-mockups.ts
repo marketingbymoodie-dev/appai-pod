@@ -25,6 +25,7 @@ interface MockupResult {
   mockupImages: MockupImage[];
   source: "printify" | "fallback";
   error?: string;
+  step?: "printify_upload" | "temp_product" | "mockup_fetch" | "image_duplicate";
 }
 
 interface PrintifyImage {
@@ -107,64 +108,75 @@ async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
   return duplicatedImage;
 }
 
+const MAX_RETRIES = 3;
+
+async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
 async function uploadImageToPrintify(
   imageUrlOrBuffer: string | Buffer,
   apiToken: string
 ): Promise<PrintifyImage | null> {
-  try {
-    let requestBody: Record<string, string>;
-    let uploadMethod: string;
+  let requestBody: Record<string, string>;
+  let uploadMethod: string;
 
-    if (Buffer.isBuffer(imageUrlOrBuffer)) {
-      const base64Data = imageUrlOrBuffer.toString('base64');
-      uploadMethod = `buffer (${base64Data.length} chars base64)`;
-      requestBody = {
-        file_name: `design-${Date.now()}.png`,
-        contents: base64Data,
-      };
-    } else if (isDataUrl(imageUrlOrBuffer)) {
-      const base64Data = extractBase64FromDataUrl(imageUrlOrBuffer);
-      if (!base64Data) {
-        console.error("[Printify Upload] Failed to extract base64 from data URL");
-        return null;
-      }
-      uploadMethod = `data-url (${base64Data.length} chars base64)`;
-      requestBody = {
-        file_name: `design-${Date.now()}.png`,
-        contents: base64Data,
-      };
-    } else {
-      uploadMethod = `url: ${imageUrlOrBuffer.substring(0, 100)}`;
-      requestBody = {
-        file_name: `design-${Date.now()}.png`,
-        url: imageUrlOrBuffer,
-      };
-    }
-
-    console.log(`[Printify Upload] Uploading via ${uploadMethod}`);
-
-    const response = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Printify Upload] Failed (${response.status}):`, errorText.substring(0, 500));
+  if (Buffer.isBuffer(imageUrlOrBuffer)) {
+    const base64Data = imageUrlOrBuffer.toString('base64');
+    uploadMethod = `buffer (${base64Data.length} chars base64)`;
+    requestBody = {
+      file_name: `design-${Date.now()}.png`,
+      contents: base64Data,
+    };
+  } else if (isDataUrl(imageUrlOrBuffer)) {
+    const base64Data = extractBase64FromDataUrl(imageUrlOrBuffer);
+    if (!base64Data) {
+      console.error("[Printify Upload] Failed to extract base64 from data URL");
       return null;
     }
-
-    const result = await response.json();
-    console.log(`[Printify Upload] Success: id=${result.id}, ${result.width}x${result.height}`);
-    return result;
-  } catch (error) {
-    console.error("Error uploading image to Printify:", error);
-    return null;
+    uploadMethod = `data-url (${base64Data.length} chars base64)`;
+    requestBody = {
+      file_name: `design-${Date.now()}.png`,
+      contents: base64Data,
+    };
+  } else {
+    uploadMethod = `url: ${imageUrlOrBuffer.substring(0, 100)}`;
+    requestBody = {
+      file_name: `design-${Date.now()}.png`,
+      url: imageUrlOrBuffer,
+    };
   }
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`[Printify Upload] Attempt ${attempt}/${MAX_RETRIES} via ${uploadMethod}`);
+
+      const response = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Printify Upload] Attempt ${attempt} failed (${response.status}):`, errorText.substring(0, 500));
+        // 4xx = client error, not retryable
+        if (response.status >= 400 && response.status < 500) return null;
+        if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
+        return null;
+      }
+
+      const result = await response.json();
+      console.log(`[Printify Upload] Success on attempt ${attempt}: id=${result.id}, ${result.width}x${result.height}`);
+      return result;
+    } catch (error) {
+      console.error(`[Printify Upload] Attempt ${attempt} exception:`, error);
+      if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
+      return null;
+    }
+  }
+  return null;
 }
 
 async function createTemporaryProduct(
@@ -179,87 +191,66 @@ async function createTemporaryProduct(
   y: number = 0,
   doubleSided: boolean = false
 ): Promise<{ productId: string } | { error: string }> {
-  try {
-    // Printify uses 0-1 range where 0.5 is center
-    // Our x/y comes in as -1 to 1 range, convert to Printify's 0-1 range
-    // -1 = 0.0 (left/top), 0 = 0.5 (center), 1 = 1.0 (right/bottom)
-    const printifyX = 0.5 + (x * 0.5);
-    const printifyY = 0.5 + (y * 0.5);
+  const printifyX = 0.5 + (x * 0.5);
+  const printifyY = 0.5 + (y * 0.5);
 
-    // Build placeholders array
-    // For double-sided products: the image has already been duplicated side-by-side,
-    // so we only send to the "front" placeholder - Printify wraps it around
-    const placeholders = [
-      {
-        position: "front",
-        images: [
-          {
-            id: imageId,
-            x: printifyX,
-            y: printifyY,
-            scale: scale,
-            angle: 0,
+  const placeholders = [
+    {
+      position: "front",
+      images: [
+        { id: imageId, x: printifyX, y: printifyY, scale: scale, angle: 0 },
+      ],
+    },
+  ];
+
+  const requestBody = {
+    title: `Mockup Preview - ${Date.now()}`,
+    description: "Temporary product for mockup generation",
+    blueprint_id: blueprintId,
+    print_provider_id: providerId,
+    variants: [{ id: variantId, price: 100, is_enabled: true }],
+    print_areas: [{ variant_ids: [variantId], placeholders }],
+  };
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`[Printify] Creating temp product (attempt ${attempt}/${MAX_RETRIES}):`, {
+        shopId, blueprintId, providerId, variantId, imageId, scale, x: printifyX, y: printifyY,
+      });
+
+      const response = await fetch(
+        `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiToken}`,
+            "Content-Type": "application/json",
           },
-        ],
-      },
-    ];
+          body: JSON.stringify(requestBody),
+        }
+      );
 
-    const requestBody = {
-      title: `Mockup Preview - ${Date.now()}`,
-      description: "Temporary product for mockup generation",
-      blueprint_id: blueprintId,
-      print_provider_id: providerId,
-      variants: [
-        {
-          id: variantId,
-          price: 100,
-          is_enabled: true,
-        },
-      ],
-      print_areas: [
-        {
-          variant_ids: [variantId],
-          placeholders,
-        },
-      ],
-    };
-
-    console.log("[Printify] Creating temp product:", {
-      shopId,
-      blueprintId,
-      providerId,
-      variantId,
-      imageId,
-      scale,
-      x: printifyX,
-      y: printifyY,
-    });
-
-    const response = await fetch(
-      `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Printify] Attempt ${attempt} create product failed (${response.status}):`, errorText.substring(0, 500));
+        // 4xx = client error, not retryable
+        if (response.status >= 400 && response.status < 500) {
+          return { error: `Printify rejected product (${response.status}): ${errorText.substring(0, 200)}` };
+        }
+        if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
+        return { error: `Printify server error after ${MAX_RETRIES} attempts (${response.status})` };
       }
-    );
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Printify] Failed to create temp product (HTTP ${response.status}):`, errorText.substring(0, 500));
-      return { error: `Printify rejected product (${response.status}): ${errorText.substring(0, 200)}` };
+      const product = await response.json();
+      console.log(`[Printify] Temp product created on attempt ${attempt}:`, product.id);
+      return { productId: product.id };
+    } catch (error: any) {
+      console.error(`[Printify] Attempt ${attempt} create product exception:`, error);
+      if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
+      return { error: `Exception after ${MAX_RETRIES} attempts: ${error.message || String(error)}` };
     }
-
-    const product = await response.json();
-    console.log("[Printify] Temp product created:", product.id);
-    return { productId: product.id };
-  } catch (error: any) {
-    console.error("[Printify] Error creating temp product:", error);
-    return { error: `Exception: ${error.message || String(error)}` };
   }
+  return { error: "Unexpected: exhausted retries" };
 }
 
 function extractCameraLabel(url: string): string {
@@ -380,7 +371,8 @@ export async function generatePrintifyMockup(
         mockupUrls: [],
         mockupImages: [],
         source: "fallback",
-        error: "Failed to upload image to Printify",
+        step: "printify_upload",
+        error: "Failed to upload image to Printify after retries",
       };
     }
 
@@ -403,6 +395,7 @@ export async function generatePrintifyMockup(
         mockupUrls: [],
         mockupImages: [],
         source: "fallback",
+        step: "temp_product",
         error: `Failed to create temporary product: ${createResult.error}`,
       };
     }
@@ -435,12 +428,14 @@ export async function generatePrintifyMockup(
     };
   } catch (error) {
     console.error("Printify mockup generation failed:", error);
+    const errMsg = error instanceof Error ? error.message : "Unknown error";
     return {
       success: false,
       mockupUrls: [],
       mockupImages: [],
       source: "fallback",
-      error: error instanceof Error ? error.message : "Unknown error",
+      step: errMsg.includes("Mockups not ready") ? "mockup_fetch" as const : "printify_upload" as const,
+      error: errMsg,
     };
   } finally {
     if (productId) {
