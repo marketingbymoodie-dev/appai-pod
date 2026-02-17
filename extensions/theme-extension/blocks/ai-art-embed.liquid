@@ -115,12 +115,9 @@ function showLoginRequiredPopup() {
 
 
 
-  // Cart page handling - load cart script to replace images with mockups
-  var isCartPage = window.location.pathname.includes('/cart');
-  if (isCartPage) {
-    console.log('[AI Art Studio Cart] Loading cart image replacement script...');
-    loadCartScript();
-  }
+  // Cart image replacement — run on ALL pages (cart drawers can appear anywhere)
+  console.log('[AI Art Studio Cart] Loading cart image replacement script...');
+  loadCartScript();
   
   // Cart script loader function
   function loadCartScript() {
@@ -153,7 +150,9 @@ function showLoginRequiredPopup() {
     function findCartElements() {
       var selectors = [
         '[data-cart-item]', '.cart-item', '.cart__item', '[class*="cart-item"]',
-        'tr[data-variant-id]', 'tr.cart__row', '.line-item', '[data-line-item]'
+        'tr[data-variant-id]', 'tr.cart__row', '.line-item', '[data-line-item]',
+        '.cart-drawer__item', '.mini-cart__item', '[data-mini-cart-item]',
+        '[data-cart-drawer] [data-cart-item]', '.cart-drawer .cart-item'
       ];
       var items = [];
       selectors.forEach(function(sel) {
@@ -223,11 +222,13 @@ function showLoginRequiredPopup() {
       if (shouldUpdate) setTimeout(replaceCartImages, 300);
     });
     
-    var container = document.querySelector('[data-cart], .cart, #cart, main');
-    if (container) observer.observe(container, { childList: true, subtree: true });
+    // Watch for cart drawers (injected anywhere in the DOM) and cart page containers
+    var container = document.querySelector('[data-cart-drawer], [data-cart], .cart-drawer, .cart, #cart, main') || document.body;
+    observer.observe(container, { childList: true, subtree: true });
     
-    // Listen for cart events
+    // Listen for cart events (refreshCartUI dispatches cart:refresh after add-to-cart)
     document.addEventListener('cart:updated', function() { setTimeout(replaceCartImages, 300); });
+    document.addEventListener('cart:refresh', function() { setTimeout(replaceCartImages, 500); });
   }
   
   // Only run product page logic on product pages
