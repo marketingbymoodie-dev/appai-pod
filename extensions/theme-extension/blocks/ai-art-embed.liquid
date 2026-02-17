@@ -611,11 +611,68 @@ function showLoginRequiredPopup() {
     // --- Refresh cart UI after successful add ---
     function refreshCartUI() {
       document.dispatchEvent(new CustomEvent('cart:refresh'));
-      try {
-        if (window.Shopify && window.Shopify.theme && window.Shopify.theme.sections) {
-          document.dispatchEvent(new CustomEvent('shopify:section:rerender'));
+
+      // Strategy 1: Dawn/OS 2.0 — re-render cart drawer via Section Rendering API
+      var cartDrawer = document.querySelector('cart-drawer');
+      var cartNotification = document.querySelector('cart-notification');
+
+      if (cartDrawer || cartNotification) {
+        var target = cartDrawer || cartNotification;
+        var sectionWrapper = target.closest('[id^="shopify-section-"]');
+        var sectionId = sectionWrapper ? sectionWrapper.id.replace('shopify-section-', '') : null;
+
+        if (sectionId) {
+          console.log(B, 'Fetching section render for:', sectionId);
+          fetch('/?sections=' + sectionId)
+            .then(function(r) { return r.json(); })
+            .then(function(sections) {
+              var html = sections[sectionId];
+              if (html && sectionWrapper) {
+                var parsed = new DOMParser().parseFromString(html, 'text/html');
+                var newContent = parsed.querySelector('[id="' + sectionWrapper.id + '"]');
+                sectionWrapper.innerHTML = newContent ? newContent.innerHTML : html;
+
+                // Re-query and open the drawer
+                var newDrawer = document.querySelector('cart-drawer');
+                if (newDrawer) {
+                  var details = newDrawer.querySelector('details');
+                  if (details) details.open = true;
+                  newDrawer.classList.add('active');
+                  console.log(B, 'Opened cart-drawer via Section Rendering API');
+                }
+                var newNotification = document.querySelector('cart-notification');
+                if (newNotification) {
+                  newNotification.classList.add('active');
+                  try { if (typeof newNotification.open === 'function') newNotification.open(); } catch(e) {}
+                }
+              }
+            }).catch(function(e) { console.warn(B, 'Section render failed:', e); });
         }
-      } catch(e) {}
+      }
+
+      // Strategy 2: Click the native cart trigger (for non-Dawn themes)
+      if (!cartDrawer && !cartNotification) {
+        setTimeout(function() {
+          var triggers = [
+            '#cart-icon-bubble', '[data-cart-trigger]',
+            'button[aria-controls*="cart" i]',
+            '.header__icon--cart', '.cart-icon-bubble',
+            '[data-action="toggle-cart"]', 'a[href="/cart"]'
+          ];
+          for (var i = 0; i < triggers.length; i++) {
+            try {
+              var btn = document.querySelector(triggers[i]);
+              if (btn) {
+                console.log(B, 'Opening cart via trigger click:', triggers[i]);
+                btn.click();
+                break;
+              }
+            } catch(e) {}
+          }
+        }, 300);
+      }
+
+      // Update cart count badges
       fetch('/cart.js').then(function(r) { return r.json(); }).then(function(cart) {
         document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]').forEach(function(el) {
           el.textContent = String(cart.item_count);
