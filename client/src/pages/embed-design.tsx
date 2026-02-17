@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2, Upload, ExternalLink } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   ProductMockup,
@@ -429,6 +429,7 @@ export default function EmbedDesign() {
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const mockupRegenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
+  const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
@@ -1184,6 +1185,7 @@ export default function EmbedDesign() {
     onSuccess: (data) => {
       const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
       const designId = data.designId || data.design?.id || crypto.randomUUID();
+      setAddedToCart(false);
       setGeneratedDesign({
         id: designId,
         imageUrl: imageUrl,
@@ -1356,6 +1358,7 @@ export default function EmbedDesign() {
 
       // Step 4: Set the imported design as the current design
       const importedImageUrl = importData.imageUrl;
+      setAddedToCart(false);
       setGeneratedDesign({
         id: crypto.randomUUID(),
         imageUrl: importedImageUrl,
@@ -1716,11 +1719,12 @@ export default function EmbedDesign() {
 
         if (result.success) {
           console.log('[Design Studio] Storefront add-to-cart success');
+          setAddedToCart(true);
           toast({
             title: "Added to cart!",
             description: "Your custom design has been added to the cart.",
           });
-          // Persist design state before clearing
+          // Persist design state
           try {
             const stateKey = `aiart:last_design:${shopDomain}:${productHandle || 'unknown'}:${normalizedVariant}`;
             sessionStorage.setItem(stateKey, JSON.stringify({
@@ -1733,8 +1737,6 @@ export default function EmbedDesign() {
             // sessionStorage may be unavailable in some iframe contexts
             console.warn('[Design Studio] Could not persist design state:', e);
           }
-          setGeneratedDesign(null);
-          setPrompt("");
         } else {
           setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
         }
@@ -1763,12 +1765,11 @@ export default function EmbedDesign() {
 
       if (cartResponse.ok) {
         console.log('[Design Studio] Admin-embedded cart add success');
+        setAddedToCart(true);
         toast({
           title: "Added to cart!",
           description: "Your custom design has been added to the cart.",
         });
-        setGeneratedDesign(null);
-        setPrompt("");
       } else {
         const errorData = await cartResponse.json().catch(() => ({}));
         const errorMsg = errorData.description || errorData.message || `HTTP ${cartResponse.status}`;
@@ -2503,43 +2504,65 @@ export default function EmbedDesign() {
                 {/* Shopify Add to Cart - Prominent, styled like native button */}
                 {(isShopify || isStorefront) && (
                   <>
-                    <Button
-                      onClick={handleAddToCart}
-                      disabled={isAddingToCart || (isStorefront && !bridgeReady)}
-                      className="w-full h-12 text-base font-medium"
-                      data-testid="button-add-to-cart"
-                    >
-                      {isAddingToCart ? (
-                        <>
-                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                          Adding to Cart...
-                        </>
-                      ) : isStorefront && bridgeError ? (
-                        <>
-                          <ShoppingCart className="w-5 h-5 mr-2" />
-                          Add to Cart (unavailable)
-                        </>
-                      ) : isStorefront && !bridgeReady ? (
-                        <>
-                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                          Connecting to store...
-                        </>
-                      ) : (
-                        <>
-                          <ShoppingCart className="w-5 h-5 mr-2" />
-                          Add to Cart
-                        </>
-                      )}
-                    </Button>
-                    {isStorefront && bridgeError && (
-                      <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
-                        {bridgeError}
-                      </p>
-                    )}
-                    {isStorefront && !bridgeReady && !bridgeError && (
-                      <p className="text-xs text-muted-foreground text-center">
-                        Waiting for storefront connection. If this persists, please refresh the page.
-                      </p>
+                    {addedToCart ? (
+                      <>
+                        <Button
+                          className="w-full h-12 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
+                          onClick={() => { window.parent.location.href = '/cart'; }}
+                          data-testid="button-view-cart"
+                        >
+                          <CheckCircle className="w-5 h-5 mr-2" />
+                          Added to Cart — View Cart
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="w-full"
+                          onClick={() => { setAddedToCart(false); setGeneratedDesign(null); setPrompt(""); }}
+                        >
+                          Create Another Design
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          onClick={handleAddToCart}
+                          disabled={isAddingToCart || (isStorefront && !bridgeReady)}
+                          className="w-full h-12 text-base font-medium"
+                          data-testid="button-add-to-cart"
+                        >
+                          {isAddingToCart ? (
+                            <>
+                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                              Adding to Cart...
+                            </>
+                          ) : isStorefront && bridgeError ? (
+                            <>
+                              <ShoppingCart className="w-5 h-5 mr-2" />
+                              Add to Cart (unavailable)
+                            </>
+                          ) : isStorefront && !bridgeReady ? (
+                            <>
+                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                              Connecting to store...
+                            </>
+                          ) : (
+                            <>
+                              <ShoppingCart className="w-5 h-5 mr-2" />
+                              Add to Cart
+                            </>
+                          )}
+                        </Button>
+                        {isStorefront && bridgeError && (
+                          <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
+                            {bridgeError}
+                          </p>
+                        )}
+                        {isStorefront && !bridgeReady && !bridgeError && (
+                          <p className="text-xs text-muted-foreground text-center">
+                            Waiting for storefront connection. If this persists, please refresh the page.
+                          </p>
+                        )}
+                      </>
                     )}
                   </>
                 )}

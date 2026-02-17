@@ -162,6 +162,40 @@ function showLoginRequiredPopup() {
           });
         } catch(e) {}
       });
+
+      // Fallback: if no elements found, search for cart drawer containers with images
+      if (items.length === 0) {
+        var drawerSels = ['cart-drawer', '[data-cart-drawer]', '.cart-drawer', '#CartDrawer',
+          '.mini-cart', '.side-cart', 'cart-notification', '[data-section-type="cart-drawer"]'];
+        var drawer = null;
+        for (var d = 0; d < drawerSels.length; d++) {
+          drawer = document.querySelector(drawerSels[d]);
+          if (drawer) break;
+        }
+        if (!drawer) {
+          drawer = document.querySelector('[class*="cart"][class*="drawer"]') ||
+                   document.querySelector('[id*="cart"][id*="drawer"]');
+        }
+        // Also check the full /cart page
+        if (!drawer && window.location.pathname.includes('/cart')) {
+          drawer = document.querySelector('form[action="/cart"]') ||
+                   document.querySelector('[data-cart-form]') ||
+                   document.querySelector('.cart') ||
+                   document.querySelector('main');
+        }
+        if (drawer) {
+          var wrappers = drawer.querySelectorAll('li, [role="row"], [class*="item"]');
+          var validWrappers = [];
+          wrappers.forEach(function(w) {
+            if (w.querySelector('img') && validWrappers.indexOf(w) === -1) validWrappers.push(w);
+          });
+          if (validWrappers.length > 0) {
+            console.log('[AI Art Studio Cart] Fallback: found', validWrappers.length, 'item wrappers in drawer');
+            items = validWrappers;
+          }
+        }
+      }
+
       return items;
     }
 
