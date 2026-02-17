@@ -4171,28 +4171,22 @@ ${textEdgeRestrictions}
         : designImageUrl.substring(0, 120);
       console.log(`[Storefront Mockup] [${correlationId}] Incoming:`, { shop, requestedProductTypeId, sizeId, colorId, urlPrefix });
 
-      // REJECT data: URLs — Printify requires a publicly accessible URL.
-      // The client must always pass the hosted design URL from /generate, not raw base64.
-      if (designImageUrl.startsWith("data:")) {
-        return res.status(400).json({
-          ok: false,
-          step: "validation",
-          correlationId,
-          error: "data: URLs are not accepted. Please pass the hosted design image URL (https://...) returned by the /generate endpoint.",
-        });
-      }
-
-      // Reject obviously malformed URLs (e.g. API_BASE + data: concatenation)
+      // Reject obviously malformed URLs (e.g. API_BASE + data: concatenation, blob:)
       if (designImageUrl.includes("appdata:") || designImageUrl.includes("blob:")) {
         return res.status(400).json({
           ok: false, step: "validation", correlationId,
-          error: "Invalid designImageUrl: appears to be a malformed or local URL. Must be a public https URL or a relative /objects/ path."
+          error: "Invalid designImageUrl: appears to be a malformed or local URL."
         });
       }
 
-      // Convert relative URLs to absolute URLs for Printify
+      // Resolve designImageUrl to an absolute URL (or pass data URLs through).
+      // uploadImageToPrintify() in printify-mockups.ts natively handles data URLs
+      // by extracting the base64 and sending { contents: base64Data } to Printify.
       let absoluteImageUrl = designImageUrl;
-      if (designImageUrl.startsWith("/objects/")) {
+      if (designImageUrl.startsWith("data:")) {
+        // Data URL from generate fallback — pass through to Printify upload
+        console.log(`[Storefront Mockup] [${correlationId}] Data URL (${designImageUrl.length} chars) — will upload base64 to Printify`);
+      } else if (designImageUrl.startsWith("/objects/")) {
         const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
         absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
@@ -4202,7 +4196,7 @@ ${textEdgeRestrictions}
       } else {
         return res.status(400).json({
           ok: false, step: "validation", correlationId,
-          error: "Invalid designImageUrl: must start with https:// or /objects/"
+          error: "Invalid designImageUrl: must start with https://, /objects/, or data:"
         });
       }
 

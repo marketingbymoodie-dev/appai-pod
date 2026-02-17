@@ -1012,20 +1012,11 @@ export default function EmbedDesign() {
     const clampedScale = Math.max(10, Math.min(200, scale));
 
     try {
-      // GUARD: Never send data URLs to the mockup endpoint — upload first
-      let hostedUrl = designImageUrl;
-      if (isDataUrl(designImageUrl)) {
-        console.warn('[EmbedDesign] Mockup called with data URL — uploading to storage first');
-        setMockupError(null); // clear previous error while uploading
-        try {
-          hostedUrl = await ensureHostedUrl(designImageUrl);
-          // Also update the stored design so future calls use the hosted URL
-          setGeneratedDesign(prev => prev ? { ...prev, imageUrl: hostedUrl } : prev);
-        } catch (uploadErr: any) {
-          console.error('[EmbedDesign] Failed to upload data URL for mockup:', uploadErr);
-          throw new Error('Failed to upload design image. Please regenerate your design.');
-        }
-      }
+      // The server's uploadImageToPrintify() handles data URLs natively
+      // (extracts base64 and sends directly to Printify). No client-side
+      // conversion needed — this allows mockups to work even when our
+      // object storage is down.
+      const hostedUrl = designImageUrl;
 
       // Use Shopify-specific endpoint if in Shopify mode
       const endpoint = isStorefront
@@ -1676,8 +1667,8 @@ export default function EmbedDesign() {
     // Normalize variant ID (strip GID prefix if present)
     const normalizedVariant = normalizeVariantId(variantId);
 
-    // Build the full artwork URL — ensure it's hosted (never a data URL)
-    let artworkFullUrl: string;
+    // Build the full artwork URL — try to get hosted, but don't block cart add
+    let artworkFullUrl = '';
     try {
       artworkFullUrl = await ensureHostedUrl(generatedDesign.imageUrl);
       // If we had to upload, also update stored design
@@ -1685,9 +1676,12 @@ export default function EmbedDesign() {
         setGeneratedDesign(prev => prev ? { ...prev, imageUrl: artworkFullUrl } : prev);
       }
     } catch (e: any) {
-      setIsAddingToCart(false);
-      setVariantError("Failed to prepare artwork for cart. Please regenerate your design.");
-      return;
+      console.warn('[Design Studio] ensureHostedUrl failed, proceeding without _artwork_url:', e.message);
+      // If it's already a hosted URL (not data:), use it as-is
+      if (!isDataUrl(generatedDesign.imageUrl)) {
+        artworkFullUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
+      }
+      // else: data URL too large for Shopify cart property (255 char limit) — omit
     }
 
     // Get the rendered mockup URL if available
@@ -1703,10 +1697,10 @@ export default function EmbedDesign() {
 
     // Build line item properties for Printify fulfillment
     const properties: Record<string, string> = {
-      '_artwork_url': artworkFullUrl,
       '_design_id': generatedDesign.id,
       'Artwork': 'Custom AI Design',
     };
+    if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
