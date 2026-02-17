@@ -216,27 +216,25 @@ describe("Printify retry logic", () => {
 });
 
 describe("Generate endpoint storage fallback", () => {
-  it("should return 503 retryable error instead of data URL when storage fails", () => {
-    // The server now returns a 503 instead of falling back to data:
-    const errorResponse = {
-      error: "Image storage temporarily unavailable. Please try again.",
-      retryable: true,
-    };
-    expect(errorResponse.retryable).toBe(true);
-    expect(errorResponse.error).toContain("storage");
+  it("should fall back to data URL when storage fails after retry", () => {
+    // When storage fails twice, generate falls back to data URL so the
+    // user sees their image. Client's ensureHostedUrl() uploads data URLs
+    // before sending to mockup endpoint.
+    const fallbackUrl = "data:image/png;base64,iVBOR...";
+    expect(fallbackUrl.startsWith("data:")).toBe(true);
+
+    const normalUrl = "/objects/designs/abc.png";
+    expect(normalUrl.startsWith("data:")).toBe(false);
   });
 
-  it("should never return imageUrl starting with data: from generate endpoint", () => {
-    // Verify that imageUrl in generate response is always a hosted URL
-    const validateGenerateResponse = (response: { imageUrl: string }) => {
-      if (response.imageUrl.startsWith("data:")) {
-        throw new Error("Generate endpoint must never return data URLs");
-      }
-      return true;
-    };
+  it("should accept both hosted and data URL responses from generate", () => {
+    // Both are valid — data URL means storage was down but generation succeeded
+    const isValidResponse = (url: string) =>
+      url.startsWith("https://") || url.startsWith("/objects/") || url.startsWith("data:");
 
-    expect(validateGenerateResponse({ imageUrl: "/objects/designs/abc.png" })).toBe(true);
-    expect(validateGenerateResponse({ imageUrl: "https://example.com/abc.png" })).toBe(true);
-    expect(() => validateGenerateResponse({ imageUrl: "data:image/png;base64,abc" })).toThrow();
+    expect(isValidResponse("/objects/designs/abc.png")).toBe(true);
+    expect(isValidResponse("https://example.com/abc.png")).toBe(true);
+    expect(isValidResponse("data:image/png;base64,abc")).toBe(true);
+    expect(isValidResponse("")).toBe(false);
   });
 });

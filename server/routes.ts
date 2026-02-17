@@ -1627,7 +1627,7 @@ if (!base64Data) {
         targetDims = { width: genWidth, height: genHeight };
       }
       
-      // Save image to object storage (retry once on failure — never return data URLs)
+      // Save image to object storage (retry once, then fall back to data URL)
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
@@ -1647,16 +1647,14 @@ if (!base64Data) {
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
         } catch (retryError) {
-          console.error("[Shopify Generate] Storage save failed on retry:", retryError);
-          // Return error instead of data URL — data URLs break downstream mockup calls
-          return res.status(503).json({
-            error: "Image storage temporarily unavailable. Please try again.",
-            retryable: true,
-          });
+          // Fall back to data URL so the user still sees their generated image.
+          // The client's ensureHostedUrl() will upload data URLs to storage
+          // before sending them to the mockup endpoint.
+          console.error("[Shopify Generate] Storage save failed on retry, falling back to data URL:", retryError);
+          imageUrl = `data:${mimeType};base64,${base64Data}`;
         }
       }
 
-      
       const designId = `shopify-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
       // Log the generation only if credits were deducted from a customer account
@@ -3231,6 +3229,54 @@ if (!base64Data) {
     ]);
   };
 
+  // ==================== SHARED STOREFRONT PRODUCT TYPE RESOLVER ====================
+  // Centralized fallback: given a productTypeId and merchantId, resolve to a valid
+  // product type owned by that merchant. Never returns null when the merchant has at
+  // least one product type — instead falls back through a resolution chain.
+  // Admin endpoints should NOT use this; they should 404 on invalid IDs.
+  async function resolveStorefrontProductType(
+    requestedId: number | null | undefined,
+    merchantId: string,
+    logPrefix: string = "[Storefront]"
+  ): Promise<{ productType: any; resolvedFrom?: string } | { error: string }> {
+    // 1) Direct lookup by ID
+    if (requestedId && !isNaN(requestedId)) {
+      const pt = await storage.getProductType(requestedId);
+      if (pt && pt.merchantId === merchantId) {
+        return { productType: pt };
+      }
+      if (pt) {
+        console.warn(`${logPrefix} Ownership mismatch: productType(${requestedId}).merchantId=${pt.merchantId} vs merchantId=${merchantId}`);
+      } else {
+        console.warn(`${logPrefix} Product type ${requestedId} not found in database`);
+      }
+    }
+
+    // 2) Fallback chain — resolve to a valid product type for this merchant
+    const merchantProductTypes = await storage.getProductTypesByMerchant(merchantId);
+    const availableIds = merchantProductTypes.map(pt => pt.id);
+    console.warn(`${logPrefix} FALLBACK: requested=${requestedId ?? "none"}, merchant ${merchantId} has [${availableIds.join(", ")}]`);
+
+    if (merchantProductTypes.length === 0) {
+      return { error: "No product types configured for this merchant" };
+    }
+
+    let resolved: any;
+    let resolvedFrom: string;
+
+    if (merchantProductTypes.length === 1) {
+      resolved = merchantProductTypes[0];
+      resolvedFrom = "only_available";
+    } else {
+      // Deterministic: pick the smallest ID
+      resolved = merchantProductTypes.reduce((a, b) => a.id < b.id ? a : b);
+      resolvedFrom = "smallest_id_fallback";
+    }
+
+    console.warn(`${logPrefix} FALLBACK RESOLVED: requested=${requestedId ?? "none"} → resolved=${resolved.id} (${resolved.name}) reason=${resolvedFrom}`);
+    return { productType: resolved, resolvedFrom };
+  }
+
   // Storefront-safe designer endpoint (no auth required, validates via shop param)
   app.get("/api/storefront/product-types/:id/designer", async (req: Request, res: Response) => {
     const requestId = crypto.randomBytes(4).toString("hex");
@@ -3838,9 +3884,22 @@ if (!base64Data) {
         }
       }
 
-      // Load product type config if provided
-      let productType = null;
-      if (productTypeId) {
+      // Load product type config — use centralized resolver so stale/invalid IDs
+      // fall back to a valid product type instead of silently proceeding with null.
+      let productType: any = null;
+      if (productTypeId && installation.merchantId) {
+        const resolved = await resolveStorefrontProductType(
+          parseInt(productTypeId),
+          installation.merchantId,
+          "[Storefront Generate]"
+        );
+        if ("productType" in resolved) {
+          productType = resolved.productType;
+        }
+        // If resolver returned an error (merchant has zero product types),
+        // productType stays null — generation still works with default sizes.
+      } else if (productTypeId) {
+        // No merchantId on installation — direct lookup fallback
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
@@ -4034,7 +4093,7 @@ ${textEdgeRestrictions}
         targetDims = { width: genWidth, height: genHeight };
       }
 
-      // Save image to object storage (retry once on failure)
+      // Save image to object storage (retry once, then fall back to data URL)
       let imageUrl: string;
       let thumbnailUrl: string | undefined;
       try {
@@ -4054,12 +4113,11 @@ ${textEdgeRestrictions}
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
         } catch (retryError) {
-          console.error("[Storefront Generate] Storage save failed on retry:", retryError);
-          // Return error instead of data URL — data URLs break downstream mockup calls
-          return res.status(503).json({
-            error: "Image storage temporarily unavailable. Please try again.",
-            retryable: true,
-          });
+          // Fall back to data URL so the user still sees their generated image.
+          // The client's ensureHostedUrl() will upload data URLs to storage
+          // before sending them to the mockup endpoint.
+          console.error("[Storefront Generate] Storage save failed on retry, falling back to data URL:", retryError);
+          imageUrl = `data:${mimeType};base64,${base64Data}`;
         }
       }
 
@@ -4158,45 +4216,19 @@ ${textEdgeRestrictions}
       }
 
       // ========== AUTO-RESOLUTION OF PRODUCT TYPE ==========
-      // Same logic as designer endpoint: if the requested ID doesn't belong to this
-      // merchant, fall back to a valid product type using the same resolution chain.
+      // Uses centralized resolver — never 404s on invalid productTypeId in storefront mode.
       const parsedId = parseInt(requestedProductTypeId);
-      let productType = await storage.getProductType(parsedId);
-      let resolvedFrom: string | undefined;
+      const resolved = await resolveStorefrontProductType(parsedId, merchant.id, `[Storefront Mockup] [${correlationId}]`);
 
-      // Ownership check — treat mismatch as "not found"
-      if (productType && productType.merchantId !== merchant.id) {
-        console.log(`[Storefront Mockup] Ownership mismatch: productType(${parsedId}).merchantId=${productType.merchantId} vs merchant.id=${merchant.id}`);
-        productType = undefined;
+      if ("error" in resolved) {
+        return res.status(400).json({
+          error: resolved.error,
+          debug: { requestedProductTypeId: parsedId, merchantId: merchant.id }
+        });
       }
 
-      if (!productType) {
-        // Fallback: resolve to a valid product type for this merchant
-        const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
-        const availableIds = merchantProductTypes.map(pt => pt.id);
-        console.log(`[Storefront Mockup] Product type ${parsedId} not found/not owned. Merchant has: [${availableIds.join(', ')}]`);
-
-        if (merchantProductTypes.length === 0) {
-          return res.status(400).json({
-            error: "No product types configured for this merchant",
-            debug: { requestedProductTypeId: parsedId, merchantId: merchant.id }
-          });
-        }
-
-        // Single available → use it
-        if (merchantProductTypes.length === 1) {
-          productType = merchantProductTypes[0];
-          resolvedFrom = "only_available";
-        } else {
-          // Pick the smallest ID (deterministic)
-          productType = merchantProductTypes.reduce((a, b) => a.id < b.id ? a : b);
-          resolvedFrom = "smallest_id_fallback";
-        }
-
-        console.warn(`[Storefront Mockup] FALLBACK RESOLVED: requested=${parsedId} → resolved=${productType.id} reason=${resolvedFrom}`);
-      }
-
-      console.log(`[Storefront Mockup] Using productType: id=${productType.id} name="${productType.name}" merchantId=${productType.merchantId}`);
+      const productType = resolved.productType;
+      console.log(`[Storefront Mockup] [${correlationId}] Using productType: id=${productType.id} name="${productType.name}" merchantId=${productType.merchantId}${resolved.resolvedFrom ? ` (resolved via ${resolved.resolvedFrom})` : ""}`);
 
       // ========== VALIDATE PRINTIFY CONFIGURATION ==========
       if (!merchant.printifyApiToken || !merchant.printifyShopId) {

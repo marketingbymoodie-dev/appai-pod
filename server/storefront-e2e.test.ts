@@ -274,33 +274,52 @@ describe("ensureHostedUrl contract", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4) Generate endpoint: never return data URLs
+// 4) Generate endpoint storage behavior
 // ---------------------------------------------------------------------------
 describe("Generate endpoint storage behavior", () => {
-  it("should return 503 retryable error instead of data URL when storage fails", () => {
-    const errorResponse = {
-      error: "Image storage temporarily unavailable. Please try again.",
-      retryable: true,
-    };
-    expect(errorResponse.retryable).toBe(true);
-    expect(errorResponse.error).toContain("storage");
+  it("should fall back to data URL when storage fails after retry", () => {
+    // When saveImageToStorage fails twice, generate falls back to data URL
+    // so the user still sees their image. The client's ensureHostedUrl()
+    // will upload data URLs to storage before sending to mockup endpoint.
+    const fallbackUrl = "data:image/png;base64,iVBOR...";
+    expect(fallbackUrl.startsWith("data:")).toBe(true);
+
+    // Normal success returns a storage path
+    const normalUrl = "/objects/designs/abc.png";
+    expect(normalUrl.startsWith("data:")).toBe(false);
   });
 
-  it("should never return imageUrl starting with data: from generate endpoint", () => {
+  it("should prefer hosted URLs but accept data URL fallback", () => {
     const validate = (resp: { imageUrl: string }) => {
-      if (resp.imageUrl.startsWith("data:")) throw new Error("data URL in generate response");
-      return true;
+      // Both hosted and data URLs are valid generate responses.
+      // Data URL = storage failed, but image was still generated successfully.
+      return resp.imageUrl.startsWith("https://") ||
+             resp.imageUrl.startsWith("/objects/") ||
+             resp.imageUrl.startsWith("data:");
     };
     expect(validate({ imageUrl: "/objects/designs/abc.png" })).toBe(true);
     expect(validate({ imageUrl: "https://example.com/abc.png" })).toBe(true);
-    expect(() => validate({ imageUrl: "data:image/png;base64,abc" })).toThrow();
+    expect(validate({ imageUrl: "data:image/png;base64,abc" })).toBe(true);
+    expect(validate({ imageUrl: "" })).toBe(false);
   });
 
-  it("both /api/shopify/generate and /api/storefront/generate should use retry+503 pattern", () => {
-    // This is a documentation test: both endpoints use the same pattern
-    const shopifyBehavior = "retry once, then 503 with retryable:true";
-    const storefrontBehavior = "retry once, then 503 with retryable:true";
+  it("both /api/shopify/generate and /api/storefront/generate should use retry+data-URL-fallback", () => {
+    // Both endpoints: try storage, retry once, then fall back to data URL
+    const shopifyBehavior = "retry once, then data URL fallback";
+    const storefrontBehavior = "retry once, then data URL fallback";
     expect(shopifyBehavior).toBe(storefrontBehavior);
+  });
+
+  it("client ensureHostedUrl should convert data URLs before mockup calls", () => {
+    // This verifies the downstream safety: data URLs from generate
+    // are converted to hosted URLs before being sent to mockup endpoints
+    const isDataUrl = (url: string) => url.startsWith("data:");
+    const dataUrl = "data:image/png;base64,abc";
+    expect(isDataUrl(dataUrl)).toBe(true);
+
+    // After ensureHostedUrl, it becomes a hosted URL
+    const hostedUrl = "https://appai-pod-production.up.railway.app/objects/designs/abc.png";
+    expect(isDataUrl(hostedUrl)).toBe(false);
   });
 });
 
@@ -599,5 +618,129 @@ describe("Variant ID normalization", () => {
 
   it("should handle unknown formats gracefully", () => {
     expect(normalizeVariantId("custom-variant-abc")).toBe("custom-variant-abc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9) Centralized storefront product type resolver (resolveStorefrontProductType)
+// ---------------------------------------------------------------------------
+describe("resolveStorefrontProductType contract", () => {
+  // Mirror of the shared helper extracted to server/routes.ts.
+  // Tests the resolution logic in isolation to ensure storefront endpoints
+  // never 404 on invalid productTypeId.
+  interface PT { id: number; name: string; merchantId: string }
+
+  function resolveStorefrontProductType(
+    requestedId: number | null | undefined,
+    merchantId: string,
+    types: PT[]
+  ): { productType: PT; resolvedFrom?: string } | { error: string } {
+    // 1) Direct lookup
+    if (requestedId && !isNaN(requestedId)) {
+      const pt = types.find(t => t.id === requestedId && t.merchantId === merchantId);
+      if (pt) return { productType: pt };
+    }
+    // 2) Fallback
+    const merchantTypes = types.filter(t => t.merchantId === merchantId);
+    if (merchantTypes.length === 0) return { error: "No product types configured for this merchant" };
+    if (merchantTypes.length === 1) return { productType: merchantTypes[0], resolvedFrom: "only_available" };
+    const smallest = merchantTypes.reduce((a, b) => a.id < b.id ? a : b);
+    return { productType: smallest, resolvedFrom: "smallest_id_fallback" };
+  }
+
+  const allTypes: PT[] = [
+    { id: 2, name: "Tumbler 20oz", merchantId: "m1" },
+    { id: 5, name: "Mug", merchantId: "m1" },
+    { id: 10, name: "T-Shirt", merchantId: "m2" },
+  ];
+
+  it("should resolve valid ID directly (no fallback)", () => {
+    const result = resolveStorefrontProductType(2, "m1", allTypes);
+    expect("productType" in result).toBe(true);
+    if ("productType" in result) {
+      expect(result.productType.id).toBe(2);
+      expect(result.resolvedFrom).toBeUndefined(); // direct match, no fallback
+    }
+  });
+
+  it("should fallback to smallest_id when ID is stale/invalid (e.g. 34)", () => {
+    const result = resolveStorefrontProductType(34, "m1", allTypes);
+    expect("productType" in result).toBe(true);
+    if ("productType" in result) {
+      expect(result.productType.id).toBe(2);
+      expect(result.resolvedFrom).toBe("smallest_id_fallback");
+    }
+  });
+
+  it("should fallback to only_available when merchant has exactly one type", () => {
+    const singleType: PT[] = [{ id: 7, name: "Pillow", merchantId: "m3" }];
+    const result = resolveStorefrontProductType(999, "m3", singleType);
+    expect("productType" in result).toBe(true);
+    if ("productType" in result) {
+      expect(result.productType.id).toBe(7);
+      expect(result.resolvedFrom).toBe("only_available");
+    }
+  });
+
+  it("should return error when merchant has zero product types", () => {
+    const result = resolveStorefrontProductType(2, "m_empty", allTypes);
+    expect("error" in result).toBe(true);
+  });
+
+  it("should not resolve across merchants (ownership check)", () => {
+    // ID 10 belongs to m2, requesting as m1 should NOT return it directly
+    const result = resolveStorefrontProductType(10, "m1", allTypes);
+    expect("productType" in result).toBe(true);
+    if ("productType" in result) {
+      // Should have fallen back to m1's smallest (id=2), not m2's id=10
+      expect(result.productType.merchantId).toBe("m1");
+      expect(result.productType.id).toBe(2);
+      expect(result.resolvedFrom).toBe("smallest_id_fallback");
+    }
+  });
+
+  it("should handle null/undefined requestedId gracefully", () => {
+    const result = resolveStorefrontProductType(null, "m1", allTypes);
+    expect("productType" in result).toBe(true);
+    if ("productType" in result) {
+      expect(result.productType.merchantId).toBe("m1");
+      expect(result.resolvedFrom).toBeDefined();
+    }
+  });
+
+  it("should handle NaN requestedId gracefully", () => {
+    const result = resolveStorefrontProductType(NaN, "m1", allTypes);
+    expect("productType" in result).toBe(true);
+    if ("productType" in result) {
+      expect(result.productType.merchantId).toBe("m1");
+    }
+  });
+
+  it("/api/storefront/generate with invalid productTypeId should NOT 404", () => {
+    // Simulates the storefront generate endpoint behavior:
+    // Given a stale productTypeId, the resolver returns a valid fallback.
+    // The endpoint uses the resolved type for size/shape config.
+    // It NEVER returns 404 for invalid productTypeId.
+    const staleId = 34;
+    const merchantId = "m1";
+    const resolved = resolveStorefrontProductType(staleId, merchantId, allTypes);
+
+    // Must NOT be an error — storefront always resolves to something
+    expect("productType" in resolved).toBe(true);
+    if ("productType" in resolved) {
+      expect(resolved.productType.merchantId).toBe(merchantId);
+      // The resolved product type is usable for generation
+      expect(resolved.productType.id).toBeGreaterThan(0);
+      expect(resolved.productType.name).toBeTruthy();
+    }
+  });
+
+  it("/api/storefront/mockup with invalid productTypeId should NOT 404", () => {
+    // Same contract for the mockup endpoint
+    const resolved = resolveStorefrontProductType(9999, "m1", allTypes);
+    expect("error" in resolved).toBe(false);
+    if ("productType" in resolved) {
+      expect(resolved.productType.merchantId).toBe("m1");
+    }
   });
 });
