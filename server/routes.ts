@@ -4281,7 +4281,7 @@ ${textEdgeRestrictions}
         shop,
         resolvedProductTypeId: productType.id,
         requestedProductTypeId: parsedId,
-        resolvedFrom: resolvedFrom || "direct_match",
+        resolvedFrom: resolved.resolvedFrom || "direct_match",
         blueprintId,
         providerId,
         variantId: targetVariantId,
