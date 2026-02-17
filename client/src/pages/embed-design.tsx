@@ -1716,6 +1716,10 @@ export default function EmbedDesign() {
 
         if (result.success) {
           console.log('[Design Studio] Storefront add-to-cart success');
+          toast({
+            title: "Added to cart!",
+            description: "Your custom design has been added to the cart.",
+          });
           // Persist design state before clearing
           try {
             const stateKey = `aiart:last_design:${shopDomain}:${productHandle || 'unknown'}:${normalizedVariant}`;
