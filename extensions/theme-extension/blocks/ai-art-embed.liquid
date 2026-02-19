@@ -845,12 +845,6 @@ function showLoginRequiredPopup() {
         console.log(B, 'MSG:', data.type, 'origin:', event.origin, 'fromIframe:', isFromOurIframe(event));
       }
 
-      // Relay debug messages from the React app (iframe) to parent console
-      if (data.type === 'AI_ART_STUDIO_DEBUG') {
-        console.log('[AI Art Embed DEBUG from iframe]', data.msg, data.data || '');
-        return;
-      }
-
       // Trust gate
       if (!isTrustedMessage(event)) {
         if (isOurs) console.warn(B, 'BLOCKED untrusted:', data.type, 'origin:', event.origin);
@@ -1267,10 +1261,6 @@ function showLoginRequiredPopup() {
       return;
     }
 
-    // Pre-warm Railway as early as possible to reduce cold-start latency.
-    // By the time the iframe actually loads, the container may already be running.
-    fetch(appUrl + '/api/health', {method:'GET', mode:'no-cors', cache:'no-store'}).catch(function(){});
-    
     // Only proceed if the product is enabled for AI Art Studio
     if (!enabled) {
       return;
