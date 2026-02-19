@@ -1160,8 +1160,8 @@ export default function EmbedDesign() {
       return;
     }
 
-    const variantId = findVariantId();
-    if (!variantId) {
+    const rawVariantId = findVariantId();
+    if (!rawVariantId) {
       window.parent.postMessage({
         type: 'AI_ART_STUDIO_CART_STATE',
         ready: false,
@@ -1172,9 +1172,12 @@ export default function EmbedDesign() {
       return;
     }
 
+    // Normalize to numeric (strip GID prefix if present) — /cart/add.js requires numeric IDs
+    const variantId = normalizeVariantId(rawVariantId);
+
     // Build cart properties (sync — only hosted URLs, no async ensureHostedUrl)
     const properties: Record<string, string> = {
-      '_design_id': generatedDesign.id || '',
+      '_design_id': String(generatedDesign.id || ''),
       'Artwork': 'Custom AI Design',
     };
     const artworkUrl = generatedDesign.imageUrl;
@@ -1199,12 +1202,12 @@ export default function EmbedDesign() {
       waitingForMockups,
       label: waitingForMockups ? 'Generating preview\u2026' : 'Add to Cart',
       payload: {
-        variantId: variantId,
+        variantId,
         quantity: 1,
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, printifyMockups, printifyMockupImages, selectedMockupIndex, isAddingToCart, selectedSize, productTypeConfig, bridgeReady]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, printifyMockups, printifyMockupImages, selectedMockupIndex, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {

@@ -403,18 +403,20 @@ function showLoginRequiredPopup() {
       if (phEl) phEl.style.display = 'none';
 
       // Ensure the native gallery is hidden (in case placeholder wasn't created)
-      var nativeGallerySelectors = [
-        '.product__media-wrapper',
-        '.product__media-gallery',
-        '.product-single__photos',
-        '.product__images',
-        '.product-gallery',
-        '[data-product-media-container]'
-      ];
       var nativeGallery = aiArtNativeGallery; // prefer the one already found by createPlaceholderGallery
       if (!nativeGallery) {
-        for (var i = 0; i < nativeGallerySelectors.length; i++) {
-          nativeGallery = document.querySelector(nativeGallerySelectors[i]);
+        var ngSelectors = [
+          '.product__media-wrapper', '.product__media-gallery',
+          '.product-single__photos', '.product__images',
+          '.product-gallery', '.product__photo-container',
+          '.product-images', '.product-media',
+          '[data-product-media-container]', '[data-product-images]',
+          '[data-media-gallery]', '.product__media-list',
+          '.product__media', '.product-single__media-wrapper',
+          '.product-featured-media'
+        ];
+        for (var i = 0; i < ngSelectors.length; i++) {
+          nativeGallery = document.querySelector(ngSelectors[i]);
           if (nativeGallery) {
             nativeGallery.style.display = 'none';
             break;
@@ -1013,6 +1015,21 @@ function showLoginRequiredPopup() {
                 _bridgeVersion: BRIDGE_VERSION
               }, '*');
             } catch(e) {}
+
+            // Fire-and-forget: update variant image for checkout display
+            if (mockupUrl && mockupUrl.indexOf('https://') === 0 && config.productId) {
+              fetch(config.appUrl + '/api/storefront/variant-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  shop: config.shopDomain,
+                  productId: config.productId,
+                  variantId: String(payload.variantId),
+                  mockupUrl: mockupUrl
+                })
+              }).catch(function(e) { console.warn(B, 'Variant image update failed:', e.message); });
+            }
+
             atcBtn.textContent = 'Added to Cart \u2713';
             atcBtn.style.background = '#2d7a2d';
             atcBtn.disabled = false;
@@ -1056,15 +1073,47 @@ function showLoginRequiredPopup() {
       '.product-single__photos',
       '.product__images',
       '.product-gallery',
-      '[data-product-media-container]'
+      '.product__photo-container',
+      '.product-images',
+      '.product-media',
+      '[data-product-media-container]',
+      '[data-product-images]',
+      '[data-media-gallery]',
+      '.product__media-list',
+      '.product__media',
+      '.product-single__media-wrapper',
+      '.product-featured-media'
     ];
 
     var native = null;
     for (var gi = 0; gi < nativeGallerySelectors.length; gi++) {
       native = document.querySelector(nativeGallerySelectors[gi]);
-      if (native) break;
+      if (native) {
+        console.log('[AI Art Embed] Found native gallery with:', nativeGallerySelectors[gi]);
+        break;
+      }
     }
-    if (!native) return;
+
+    // Fallback: find the first container with product images near the product info
+    if (!native) {
+      var productContainer = document.querySelector('.product, [data-product], .product-template, main');
+      if (productContainer) {
+        var imgs = productContainer.querySelectorAll('img');
+        for (var ii = 0; ii < imgs.length; ii++) {
+          var parentEl = imgs[ii].closest('[class*="media"], [class*="gallery"], [class*="image"], [class*="photo"]');
+          if (parentEl && !parentEl.closest('.ai-art-studio-embed')) {
+            native = parentEl;
+            console.log('[AI Art Embed] Found native gallery via image fallback:', native.className);
+            break;
+          }
+        }
+      }
+    }
+
+    if (!native) {
+      console.log('[AI Art Embed] Could not find native gallery - skipping placeholder');
+      return;
+    }
 
     // Hide the native gallery — replaced by our placeholder / custom gallery
     native.style.display = 'none';
