@@ -1,4 +1,23 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+// #region agent log — module-level error relay & load probe
+(function() {
+  var dbgSend = function(msg: string, data?: any) {
+    try { window.parent.postMessage({type:'AI_ART_STUDIO_DEBUG',msg,data},'*'); } catch(e){}
+  };
+  dbgSend('MODULE_LOAD_START', {url: typeof window !== 'undefined' ? window.location.href : 'ssr'});
+  if (typeof window !== 'undefined') {
+    var origOnError = window.onerror;
+    window.onerror = function(message, source, lineno, colno, error) {
+      dbgSend('WINDOW_ERROR', {message: String(message), source, lineno, colno, errorMsg: error ? String(error.message) : null});
+      if (typeof origOnError === 'function') return origOnError.apply(this, arguments as any);
+      return false;
+    };
+    window.addEventListener('unhandledrejection', function(e) {
+      dbgSend('UNHANDLED_REJECTION', {reason: e.reason ? String(e.reason) : 'unknown'});
+    });
+  }
+})();
+// #endregion
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -321,7 +340,7 @@ export default function EmbedDesign() {
   const [bridgeReady, setBridgeReady] = useState(false);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
   // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:321',message:'PROBE_A: component_render_started',data:{isStorefront,runtimeMode},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+  try { window.parent.postMessage({type:'AI_ART_STUDIO_DEBUG',msg:'PROBE_A: component_render_started',data:{isStorefront,runtimeMode}},'*'); } catch(e){}
   // #endregion
   const debugBridge = searchParams.get("debugBridge") === "1";
   const [transform, setTransform] = useState<ImageTransform>({ scale: 100, x: 50, y: 50 });
@@ -1151,7 +1170,7 @@ export default function EmbedDesign() {
   const [variantsFetched, setVariantsFetched] = useState(false);
 
   // #region agent log
-  (() => { try { const _v = variants; fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:1147',message:'PROBE_B: variants_accessible_before_useEffect',data:{type:typeof _v,len:Array.isArray(_v)?_v.length:'n/a'},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{}); } catch(e:any) { fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:1147',message:'PROBE_B: variants_TDZ_CONFIRMED',data:{error:e.message},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{}); } })();
+  (() => { try { const _v = variants; try{window.parent.postMessage({type:'AI_ART_STUDIO_DEBUG',msg:'PROBE_B: variants_ok',data:{type:typeof _v,len:Array.isArray(_v)?_v.length:'n/a'}},'*');}catch(ex){} } catch(e:any) { try{window.parent.postMessage({type:'AI_ART_STUDIO_DEBUG',msg:'PROBE_B: variants_TDZ',data:{err:String(e)}},'*');}catch(ex){} } })();
   // #endregion
   // Sync cart state with the parent page's Add to Cart button (storefront mode only)
   useEffect(() => {
@@ -1221,7 +1240,7 @@ export default function EmbedDesign() {
     }, '*');
   }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, printifyMockups, printifyMockupImages, selectedMockupIndex, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants]);
   // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:1216',message:'PROBE_C: passed_useEffect_dep_array',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+  try { window.parent.postMessage({type:'AI_ART_STUDIO_DEBUG',msg:'PROBE_C: passed_cart_state_useEffect_dep_array',data:{}},'*'); } catch(e){}
   // #endregion
 
   const generateMutation = useMutation({
