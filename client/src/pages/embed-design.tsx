@@ -967,15 +967,19 @@ export default function EmbedDesign() {
     if (runtimeMode === 'standalone') return;
 
     try {
+      // Convert relative /objects/... paths to absolute Railway URLs so the
+      // Shopify parent page (a different domain) can load the images.
+      const absoluteUrls = mockupUrls.map(toAbsoluteImageUrl);
+
       // Use "*" for targetOrigin to support Shopify preview environments
       // Origin validation is done on the receiving end in ai-art-embed.liquid
       window.parent.postMessage({
         type: "AI_ART_STUDIO_MOCKUPS",
-        mockupUrls,
+        mockupUrls: absoluteUrls,
         productId,
         productHandle,
       }, "*");
-      console.log("[EmbedDesign] Sent mockups to parent:", mockupUrls.length);
+      console.log("[EmbedDesign] Sent mockups to parent:", absoluteUrls.length);
     } catch (error) {
       console.error("[EmbedDesign] Failed to send mockups to parent:", error);
     }

@@ -33,7 +33,8 @@
   "hideAddToCart": {{ product.metafields.ai_art_studio.hide_add_to_cart.value | default: false | json }},
   "enabled": {{ product.metafields.ai_art_studio.enable.value | default: false | json }},
   "productHandle": {{ product.handle | json }},
-  "productType": {{ product.type | json }}
+  "productType": {{ product.type | json }},
+  "featuredImageUrl": {{ product.featured_image | image_url: width: 800 | json }}
 }
 </script>
 {% endif %}
@@ -1123,18 +1124,39 @@ function showLoginRequiredPopup() {
 
     var ph = document.createElement('div');
     ph.id = 'ai-art-placeholder';
-    ph.style.cssText = 'width:100%;aspect-ratio:1/1;background:#f0f0f0;border-radius:8px;overflow:hidden;margin-bottom:20px;position:relative;';
+    // max-width matches the custom gallery so the page layout doesn't shift
+    ph.style.cssText = 'width:100%;max-width:600px;aspect-ratio:1/1;background:#f0f0f0;border-radius:8px;overflow:hidden;margin-bottom:20px;position:relative;';
 
-    // Show the first product image inside the placeholder so it looks like the native gallery
-    var firstProductImg = native.querySelector('img[src]:not([src=""]), img[data-src]:not([data-src=""])');
-    if (firstProductImg) {
-      var imgSrc = firstProductImg.src || firstProductImg.dataset.src || '';
-      // Use a hosted-size image if available in srcset, otherwise fallback to src
-      var imgSrcset = firstProductImg.srcset || firstProductImg.dataset.srcset || '';
+    // Prefer the Liquid-rendered original product image (immune to variant image mutations
+    // that happen when a user adds a custom design to cart). Fall back to DOM scraping.
+    var liquidImgSrc = '';
+    var scriptDataEl = document.querySelector('[data-ai-art-studio]');
+    if (scriptDataEl) {
+      try {
+        var scriptData = JSON.parse(scriptDataEl.textContent);
+        if (scriptData.featuredImageUrl) {
+          liquidImgSrc = scriptData.featuredImageUrl;
+        }
+      } catch(e) {}
+    }
+
+    var imgSrc = liquidImgSrc;
+    var imgSrcset = '';
+
+    if (!imgSrc) {
+      // Fallback: scrape first image from native gallery
+      var firstProductImg = native.querySelector('img[src]:not([src=""]), img[data-src]:not([data-src=""])');
+      if (firstProductImg) {
+        imgSrc = firstProductImg.src || firstProductImg.dataset.src || '';
+        imgSrcset = firstProductImg.srcset || firstProductImg.dataset.srcset || '';
+      }
+    }
+
+    if (imgSrc) {
       var placeholderProductImg = document.createElement('img');
       placeholderProductImg.src = imgSrc;
       if (imgSrcset) placeholderProductImg.srcset = imgSrcset;
-      placeholderProductImg.alt = firstProductImg.alt || 'Product image';
+      placeholderProductImg.alt = 'Product image';
       placeholderProductImg.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
       ph.appendChild(placeholderProductImg);
     }
@@ -1147,7 +1169,7 @@ function showLoginRequiredPopup() {
     ph.appendChild(overlay);
 
     native.parentNode.insertBefore(ph, native);
-    console.log('[AI Art Embed] Created placeholder gallery with product image:', !!firstProductImg);
+    console.log('[AI Art Embed] Created placeholder gallery. liquidImg:', !!liquidImgSrc, 'fallbackImg:', !liquidImgSrc && !!imgSrc);
   }
 
   function insertStudioAfterProductInfo(studioElement) {
@@ -1255,6 +1277,26 @@ function showLoginRequiredPopup() {
     }
 
     console.log('[AI Art Embed] Final values - appUrl:', appUrl, 'productTypeId:', productTypeId, 'enabled:', enabled);
+
+    // Inject preconnect hints as early as possible so the browser can start the
+    // TCP handshake to Railway before the iframe src is set. This reduces perceived
+    // cold-start latency without making an HTTP request that can visibly fail.
+    if (appUrl) {
+      try {
+        var appOriginHint = new URL(appUrl).origin;
+        if (!document.querySelector('link[rel="preconnect"][href="' + appOriginHint + '"]')) {
+          var pcLink = document.createElement('link');
+          pcLink.rel = 'preconnect';
+          pcLink.href = appOriginHint;
+          pcLink.crossOrigin = 'anonymous';
+          document.head.appendChild(pcLink);
+          var dnsPrefetch = document.createElement('link');
+          dnsPrefetch.rel = 'dns-prefetch';
+          dnsPrefetch.href = appOriginHint;
+          document.head.appendChild(dnsPrefetch);
+        }
+      } catch(e) {}
+    }
 
     if (!appUrl) {
       console.log('[AI Art Embed] Missing appUrl, stopping');
