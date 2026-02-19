@@ -4322,6 +4322,98 @@ ${textEdgeRestrictions}
     }
   });
 
+  // ==================== STOREFRONT VARIANT IMAGE (FOR CHECKOUT) ====================
+  // Updates the Shopify variant image so checkout displays the custom mockup.
+  // Called before add-to-cart; no session auth (storefront customers).
+  app.post("/api/storefront/variant-image", async (req: Request, res: Response) => {
+    try {
+      const { shop, productId, variantId, mockupUrl } = req.body;
+
+      if (!shop || !productId || !variantId || !mockupUrl) {
+        return res.status(400).json({
+          success: false,
+          error: "Missing required fields: shop, productId, variantId, mockupUrl",
+        });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ success: false, error: "Invalid shop domain format" });
+      }
+
+      if (!mockupUrl.startsWith("https://")) {
+        return res.status(400).json({ success: false, error: "mockupUrl must be an absolute https URL" });
+      }
+
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ success: false, error: "Shop not authorized" });
+      }
+
+      const productIdNum = typeof productId === "string" ? parseInt(productId, 10) : Number(productId);
+      const variantIdNum = typeof variantId === "string" ? parseInt(variantId, 10) : Number(variantId);
+      if (isNaN(productIdNum) || isNaN(variantIdNum)) {
+        return res.status(400).json({ success: false, error: "Invalid productId or variantId" });
+      }
+
+      // 1. Upload image to Shopify product
+      const imageRes = await fetch(
+        `https://${shop}/admin/api/2024-01/products/${productIdNum}/images.json`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": installation.accessToken!,
+          },
+          body: JSON.stringify({ image: { src: mockupUrl } }),
+        }
+      );
+
+      if (!imageRes.ok) {
+        const errText = await imageRes.text();
+        console.error("[Variant Image] Shopify image upload failed:", imageRes.status, errText);
+        return res.status(imageRes.status).json({
+          success: false,
+          error: "Failed to upload image to Shopify",
+          details: errText.substring(0, 200),
+        });
+      }
+
+      const imageData = await imageRes.json();
+      const imageId = imageData?.image?.id;
+      if (!imageId) {
+        return res.status(500).json({ success: false, error: "Shopify did not return image ID" });
+      }
+
+      // 2. Assign image to variant
+      const variantRes = await fetch(
+        `https://${shop}/admin/api/2024-01/variants/${variantIdNum}.json`,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": installation.accessToken!,
+          },
+          body: JSON.stringify({ variant: { id: variantIdNum, image_id: imageId } }),
+        }
+      );
+
+      if (!variantRes.ok) {
+        const errText = await variantRes.text();
+        console.error("[Variant Image] Shopify variant update failed:", variantRes.status, errText);
+        return res.status(variantRes.status).json({
+          success: false,
+          error: "Failed to assign image to variant",
+          details: errText.substring(0, 200),
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("[Variant Image] Error:", error);
+      res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+    }
+  });
+
   // Admin endpoints for product types (requires authentication)
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {

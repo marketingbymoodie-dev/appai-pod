@@ -118,12 +118,12 @@ function showLoginRequiredPopup() {
   // Cart image replacement — run on ALL pages (cart drawers can appear anywhere)
   console.log('[AI Art Studio Cart] Loading cart image replacement script...');
   loadCartScript();
-  
-  // Cart script loader function
+
   function loadCartScript() {
-    // Inline cart image replacement logic
+    var CL = '[AI Art Studio Cart]';
     var cartData = null;
     var isUpdating = false;
+    var replaceDebounce = null;
 
     function fetchCartData() {
       return fetch('/cart.js', { headers: { 'Accept': 'application/json' } })
@@ -133,11 +133,10 @@ function showLoginRequiredPopup() {
         })
         .then(function(data) {
           cartData = data;
-          console.log('[AI Art Studio Cart] Cart data fetched:', (cartData.items && cartData.items.length) || 0, 'items');
           return cartData;
         })
         .catch(function(error) {
-          console.error('[AI Art Studio Cart] Error fetching cart:', error);
+          console.error(CL, 'Error fetching cart:', error);
           return null;
         });
     }
@@ -152,7 +151,8 @@ function showLoginRequiredPopup() {
         '[data-cart-item]', '.cart-item', '.cart__item', '[class*="cart-item"]',
         'tr[data-variant-id]', 'tr.cart__row', '.line-item', '[data-line-item]',
         '.cart-drawer__item', '.mini-cart__item', '[data-mini-cart-item]',
-        '[data-cart-drawer] [data-cart-item]', '.cart-drawer .cart-item'
+        '[data-cart-drawer] [data-cart-item]', '.cart-drawer .cart-item',
+        'cart-drawer-items [id^="CartDrawer-Item"]'
       ];
       var items = [];
       selectors.forEach(function(sel) {
@@ -163,7 +163,6 @@ function showLoginRequiredPopup() {
         } catch(e) {}
       });
 
-      // Fallback: if no elements found, search for cart drawer containers with images
       if (items.length === 0) {
         var drawerSels = ['cart-drawer', '[data-cart-drawer]', '.cart-drawer', '#CartDrawer',
           '.mini-cart', '.side-cart', 'cart-notification', '[data-section-type="cart-drawer"]'];
@@ -176,7 +175,6 @@ function showLoginRequiredPopup() {
           drawer = document.querySelector('[class*="cart"][class*="drawer"]') ||
                    document.querySelector('[id*="cart"][id*="drawer"]');
         }
-        // Also check the full /cart page
         if (!drawer && window.location.pathname.includes('/cart')) {
           drawer = document.querySelector('form[action="/cart"]') ||
                    document.querySelector('[data-cart-form]') ||
@@ -190,7 +188,6 @@ function showLoginRequiredPopup() {
             if (w.querySelector('img') && validWrappers.indexOf(w) === -1) validWrappers.push(w);
           });
           if (validWrappers.length > 0) {
-            console.log('[AI Art Studio Cart] Fallback: found', validWrappers.length, 'item wrappers in drawer');
             items = validWrappers;
           }
         }
@@ -199,70 +196,147 @@ function showLoginRequiredPopup() {
       return items;
     }
 
+    function extractVariantId(element) {
+      var vid = element.getAttribute('data-variant-id') ||
+                element.getAttribute('data-id') ||
+                element.getAttribute('data-line-item-id');
+      if (vid) return String(vid);
+      var input = element.querySelector('input[name*="variant"], input[data-variant-id]');
+      if (input) return String(input.getAttribute('data-variant-id') || input.value);
+      var key = element.getAttribute('data-line-item-key') ||
+                element.getAttribute('data-key') ||
+                element.getAttribute('data-cart-item-key');
+      if (key && cartData && cartData.items) {
+        var match = cartData.items.find(function(i) { return i.key === key; });
+        if (match) return String(match.variant_id);
+      }
+      return null;
+    }
+
     function replaceImage(element, mockupUrl) {
       var imgs = element.querySelectorAll('img');
       var replaced = false;
       imgs.forEach(function(img) {
         if (img.dataset.aiMockupApplied === 'true' && img.src === mockupUrl) return;
         if (!img.dataset.originalSrc) img.dataset.originalSrc = img.src;
+
         img.src = mockupUrl;
         img.srcset = '';
         img.dataset.aiMockupApplied = 'true';
         replaced = true;
-        console.log('[AI Art Studio Cart] Replaced image with mockup');
+
+        if (!img.dataset.aiOnerror) {
+          img.dataset.aiOnerror = 'true';
+          img.addEventListener('error', function() {
+            if (img.dataset.aiRetried) return;
+            img.dataset.aiRetried = 'true';
+            console.warn(CL, 'Mockup image failed to load, retrying once:', mockupUrl.substring(0, 80));
+            setTimeout(function() { img.src = mockupUrl; }, 1000);
+          });
+        }
       });
       return replaced;
     }
 
-    function replaceCartImages() {
-      if (isUpdating) return;
-      isUpdating = true;
-      
-      fetchCartData().then(function() {
-        if (!cartData || !cartData.items || !cartData.items.length) {
-          console.log('[AI Art Studio Cart] No cart items');
-          isUpdating = false;
-          return;
+    function doReplace() {
+      if (!cartData || !cartData.items || !cartData.items.length) return 0;
+
+      var hasAnyMockups = cartData.items.some(function(item) { return getMockupUrl(item); });
+      if (!hasAnyMockups) return 0;
+
+      var elements = findCartElements();
+      if (elements.length === 0) return -1;
+
+      var replacedCount = 0;
+
+      // Pass 1: try matching by variant ID or line key
+      var unmatchedElements = [];
+      elements.forEach(function(el) {
+        var vid = extractVariantId(el);
+        if (vid) {
+          var matches = cartData.items.filter(function(item) {
+            return String(item.variant_id) === vid && getMockupUrl(item);
+          });
+          if (matches.length > 0 && replaceImage(el, getMockupUrl(matches[0]))) {
+            replacedCount++;
+            return;
+          }
         }
-        
-        var hasAnyMockups = cartData.items.some(function(item) { return getMockupUrl(item); });
-        if (!hasAnyMockups) {
-          console.log('[AI Art Studio Cart] No mockup URLs in cart');
-          isUpdating = false;
-          return;
-        }
-        
-        var elements = findCartElements();
-        console.log('[AI Art Studio Cart] Found', elements.length, 'cart elements');
-        
-        // Direct position matching since we can't reliably match by variant ID
+        unmatchedElements.push(el);
+      });
+
+      // Pass 2: fallback to position matching for unmatched elements
+      if (replacedCount === 0) {
         cartData.items.forEach(function(item, index) {
           var mockupUrl = getMockupUrl(item);
           if (mockupUrl && elements[index]) {
-            replaceImage(elements[index], mockupUrl);
+            if (replaceImage(elements[index], mockupUrl)) replacedCount++;
           }
         });
-        
-        isUpdating = false;
-      });
+      }
+
+      return replacedCount;
     }
 
-    // Run on page load
-    setTimeout(replaceCartImages, 500);
-    
-    // Watch for DOM changes
-    var observer = new MutationObserver(function(mutations) {
-      var shouldUpdate = mutations.some(function(m) { return m.addedNodes.length > 0; });
-      if (shouldUpdate) setTimeout(replaceCartImages, 300);
+    function replaceCartImages(retryCount) {
+      if (isUpdating) return;
+      isUpdating = true;
+      var maxRetries = (typeof retryCount === 'number') ? retryCount : 5;
+
+      fetchCartData().then(function() {
+        var result = doReplace();
+
+        if (result === -1 && maxRetries > 0) {
+          isUpdating = false;
+          var delays = [300, 600, 1200, 2000, 3000];
+          var delay = delays[5 - maxRetries] || 1000;
+          setTimeout(function() { replaceCartImages(maxRetries - 1); }, delay);
+          return;
+        }
+
+        isUpdating = false;
+      }).catch(function() { isUpdating = false; });
+    }
+
+    function scheduleReplace() {
+      clearTimeout(replaceDebounce);
+      replaceDebounce = setTimeout(function() { replaceCartImages(5); }, 250);
+    }
+
+    // Initial run
+    setTimeout(function() { replaceCartImages(5); }, 500);
+
+    // Watch document.body for cart drawer injection (drawers are often body children)
+    var bodyObserver = new MutationObserver(function(mutations) {
+      var shouldUpdate = false;
+      for (var i = 0; i < mutations.length; i++) {
+        var m = mutations[i];
+        if (m.addedNodes.length > 0) {
+          for (var j = 0; j < m.addedNodes.length; j++) {
+            var node = m.addedNodes[j];
+            if (node.nodeType === 1) {
+              var el = node;
+              var isCart = (el.matches && (
+                el.matches('cart-drawer, [data-cart-drawer], .cart-drawer, [class*="cart"], [id*="cart"]') ||
+                el.querySelector('cart-drawer, [data-cart-drawer], .cart-drawer, [data-cart-item], .cart-item, [class*="cart-item"]')
+              ));
+              if (isCart) { shouldUpdate = true; break; }
+            }
+          }
+        }
+        if (shouldUpdate) break;
+      }
+      if (shouldUpdate) scheduleReplace();
     });
-    
-    // Watch for cart drawers (injected anywhere in the DOM) and cart page containers
-    var container = document.querySelector('[data-cart-drawer], [data-cart], .cart-drawer, .cart, #cart, main') || document.body;
-    observer.observe(container, { childList: true, subtree: true });
-    
-    // Listen for cart events (refreshCartUI dispatches cart:refresh after add-to-cart)
-    document.addEventListener('cart:updated', function() { setTimeout(replaceCartImages, 300); });
-    document.addEventListener('cart:refresh', function() { setTimeout(replaceCartImages, 500); });
+    bodyObserver.observe(document.body, { childList: true, subtree: true });
+
+    document.addEventListener('cart:updated', scheduleReplace);
+    document.addEventListener('cart:refresh', function() {
+      setTimeout(function() { replaceCartImages(5); }, 400);
+    });
+    window.addEventListener('pageshow', function(e) {
+      if (e.persisted) setTimeout(function() { replaceCartImages(5); }, 500);
+    });
   }
   
   // Only run product page logic on product pages
@@ -640,6 +714,8 @@ function showLoginRequiredPopup() {
                   newDrawer.classList.add('active');
                   console.log(B, 'Opened cart-drawer via Section Rendering API');
                 }
+                // Re-trigger cart image replacement after new DOM is injected
+                document.dispatchEvent(new CustomEvent('cart:refresh'));
                 var newNotification = document.querySelector('cart-notification');
                 if (newNotification) {
                   newNotification.classList.add('active');

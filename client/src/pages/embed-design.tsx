@@ -1698,6 +1698,12 @@ export default function EmbedDesign() {
       }
     }
 
+    if (!mockupFullUrl) {
+      console.warn('[Design Studio] No mockup URL available for cart. printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
+    } else {
+      console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 100));
+    }
+
     // Build line item properties for Printify fulfillment
     const properties: Record<string, string> = {
       '_design_id': generatedDesign.id,
@@ -1707,6 +1713,33 @@ export default function EmbedDesign() {
     if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+
+    // Update variant image for checkout display (fire-and-forget, 3s timeout)
+    if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      safeFetch(`${API_BASE}/api/storefront/variant-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop: shopDomain,
+          productId,
+          variantId: normalizedVariant,
+          mockupUrl: mockupFullUrl,
+        }),
+        signal: controller.signal,
+      })
+        .then((res) => {
+          clearTimeout(timeout);
+          if (!res.ok) {
+            console.warn('[Design Studio] Variant image update failed:', res.status);
+          }
+        })
+        .catch((e) => {
+          clearTimeout(timeout);
+          console.warn('[Design Studio] Variant image update failed:', e?.message || e);
+        });
+    }
 
     // Storefront mode: use postMessage to parent (AJAX cart, no navigation)
     if (isStorefront) {

@@ -1,5 +1,9 @@
 import pRetry from "p-retry";
 import sharp from "sharp";
+import crypto from "crypto";
+import { objectStorageClient, ObjectStorageService } from "./replit_integrations/object_storage";
+
+const objectStorage = new ObjectStorageService();
 
 interface MockupRequest {
   blueprintId: number;
@@ -111,6 +115,79 @@ async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
 const MAX_RETRIES = 3;
 
 async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+async function cacheMockupToStorage(printifyUrl: string, label: string): Promise<string | null> {
+  try {
+    const response = await fetch(printifyUrl);
+    if (!response.ok) {
+      console.warn(`[Mockup Cache] Failed to download mockup (${response.status}): ${printifyUrl.substring(0, 80)}`);
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const hash = crypto.createHash("sha256").update(buffer).digest("hex").substring(0, 16);
+    const mockupId = `${hash}_${label}`;
+
+    const privateDir = objectStorage.getPrivateObjectDir();
+    const fullPath = `${privateDir}/mockups/${mockupId}.jpg`;
+    const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
+    const pathParts = pathWithSlash.split("/").filter((p: string) => p.length > 0);
+
+    if (pathParts.length < 2) {
+      console.warn("[Mockup Cache] Invalid object path structure");
+      return null;
+    }
+
+    const bucketName = pathParts[0];
+    const objectName = pathParts.slice(1).join("/");
+    const bucket = objectStorageClient.bucket(bucketName);
+    const file = bucket.file(objectName);
+
+    await file.save(buffer, {
+      contentType: "image/jpeg",
+      metadata: {
+        metadata: {
+          "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" }),
+        },
+      },
+    });
+
+    const cachedPath = `/objects/mockups/${mockupId}.jpg`;
+    console.log(`[Mockup Cache] Cached mockup: ${cachedPath}`);
+    return cachedPath;
+  } catch (error) {
+    console.warn("[Mockup Cache] Failed to cache mockup, using Printify URL as fallback:", error);
+    return null;
+  }
+}
+
+async function cacheMockupImages(
+  mockupData: { urls: string[]; images: MockupImage[] }
+): Promise<{ urls: string[]; images: MockupImage[] }> {
+  const cachedUrls: string[] = [];
+  const cachedImages: MockupImage[] = [];
+
+  const results = await Promise.allSettled(
+    mockupData.images.map((img) => cacheMockupToStorage(img.url, img.label))
+  );
+
+  for (let i = 0; i < mockupData.images.length; i++) {
+    const result = results[i];
+    const original = mockupData.images[i];
+
+    if (result.status === "fulfilled" && result.value) {
+      cachedUrls.push(result.value);
+      cachedImages.push({ url: result.value, label: original.label });
+    } else {
+      cachedUrls.push(original.url);
+      cachedImages.push(original);
+    }
+  }
+
+  return { urls: cachedUrls, images: cachedImages };
+}
 
 async function uploadImageToPrintify(
   imageUrlOrBuffer: string | Buffer,
@@ -420,10 +497,12 @@ export async function generatePrintifyMockup(
       }
     );
 
+    const cached = await cacheMockupImages(mockupData);
+
     return {
       success: true,
-      mockupUrls: mockupData.urls,
-      mockupImages: mockupData.images,
+      mockupUrls: cached.urls,
+      mockupImages: cached.images,
       source: "printify",
     };
   } catch (error) {
