@@ -2060,15 +2060,14 @@ export default function EmbedDesign() {
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    // Suppress body scroll so the iframe has no scrollbar — parent resizes to fit.
-    document.documentElement.style.overflow = 'hidden';
-    document.body.style.overflow = 'hidden';
     // Send resize messages so the parent container grows with our content (no scrollbar).
     const sendHeight = () => {
-      window.parent.postMessage(
-        { type: 'ai-art-studio:resize', height: document.body.scrollHeight },
-        '*'
+      const h = Math.max(
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        document.documentElement.offsetHeight
       );
+      window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
     };
     const observer = new ResizeObserver(sendHeight);
     observer.observe(document.body);
@@ -2163,8 +2162,7 @@ export default function EmbedDesign() {
   const credits = customer?.credits ?? 0;
 
   return (
-    <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}
-         style={(isEmbedded || isStorefront) ? { overflowX: 'hidden' } : undefined}>
+    <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <div className="max-w-2xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-4">
           <h2 className="text-lg font-semibold" data-testid="text-title">

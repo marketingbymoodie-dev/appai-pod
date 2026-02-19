@@ -558,7 +558,7 @@ function showLoginRequiredPopup() {
       <div class="ai-art-studio-embed__wrapper">
         <h2 class="ai-art-studio-embed__heading">Create Your Custom Design</h2>
         <p class="ai-art-studio-embed__description">${config.description || 'Use AI to generate a unique artwork. Describe your vision and our AI will bring it to life.'}</p>
-        <div class="ai-art-studio-embed__studio" style="min-height:400px;height:auto;">
+        <div class="ai-art-studio-embed__studio" style="height:600px;">
           <div class="ai-art-studio-embed__loading">
             <div class="ai-art-studio-embed__spinner"></div>
             <p>Loading design studio...</p>
@@ -933,7 +933,8 @@ function showLoginRequiredPopup() {
 
       // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
-        studioContainer.style.height = data.height + 'px';
+        var newH = Math.max(data.height || 0, 400);
+        studioContainer.style.height = newH + 'px';
         return;
       }
 
@@ -1372,7 +1373,6 @@ function showLoginRequiredPopup() {
 
 .ai-art-studio-embed__studio {
   width: 100%;
-  min-height: 400px;
   border: 1px solid #e5e5e5;
   border-radius: 8px;
   overflow: hidden;
