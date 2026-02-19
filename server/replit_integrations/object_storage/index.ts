@@ -2,6 +2,7 @@ export {
   ObjectStorageService,
   ObjectNotFoundError,
   objectStorageClient,
+  getStorageDir,
 } from "./objectStorage";
 
 export type {

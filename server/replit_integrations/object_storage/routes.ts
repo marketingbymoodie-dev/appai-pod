@@ -1,86 +1,110 @@
 import type { Express } from "express";
-import { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
+import { ObjectStorageService, ObjectNotFoundError, getStorageDir } from "./objectStorage";
+import path from "path";
+
+function contentTypeToExt(contentType: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+  };
+  const base = contentType.split(";")[0].trim().toLowerCase();
+  return map[base] || "bin";
+}
 
 /**
- * Register object storage routes for file uploads.
+ * Register object storage routes.
  *
- * This provides example routes for the presigned URL upload flow:
- * 1. POST /api/uploads/request-url - Get a presigned URL for uploading
- * 2. The client then uploads directly to the presigned URL
+ * Routes:
+ *   POST /api/uploads/upload  — direct file upload (replaces the old presigned-URL flow)
+ *   GET  /objects/:path(*)    — serve stored files
  *
- * IMPORTANT: These are example routes. Customize based on your use case:
- * - Add authentication middleware for protected uploads
- * - Add file metadata storage (save to database after upload)
- * - Add ACL policies for access control
+ * The old POST /api/uploads/request-url is kept as a compatibility shim that
+ * redirects clients to use the new endpoint, returning a 503 with a clear
+ * message rather than silently failing.
  */
 export function registerObjectStorageRoutes(app: Express): void {
   const objectStorageService = new ObjectStorageService();
 
   /**
-   * Request a presigned URL for file upload.
+   * Direct file upload endpoint.
    *
-   * Request body (JSON):
-   * {
-   *   "name": "filename.jpg",
-   *   "size": 12345,
-   *   "contentType": "image/jpeg"
-   * }
+   * Accepts two body formats:
    *
-   * Response:
-   * {
-   *   "uploadURL": "https://storage.googleapis.com/...",
-   *   "objectPath": "/objects/uploads/uuid"
-   * }
+   * 1. JSON  { "dataUrl": "data:image/png;base64,...", "name": "file.png" }
+   * 2. Raw binary body with the correct Content-Type header (e.g. image/png)
    *
-   * IMPORTANT: The client should NOT send the file to this endpoint.
-   * Send JSON metadata only, then upload the file directly to uploadURL.
+   * Response: { "objectPath": "/objects/uploads/uuid.png" }
    */
-  app.post("/api/uploads/request-url", async (req, res) => {
+  app.post("/api/uploads/upload", async (req, res) => {
     try {
-      const { name, size, contentType } = req.body;
+      const bodyContentType = req.headers["content-type"] || "";
+      let buffer: Buffer;
+      let contentType: string;
+      let ext = "bin";
 
-      if (!name) {
-        return res.status(400).json({
-          error: "Missing required field: name",
-        });
+      if (bodyContentType.toLowerCase().includes("application/json")) {
+        const { dataUrl, name } = req.body as { dataUrl?: string; name?: string };
+        if (!dataUrl) {
+          return res.status(400).json({ error: "Missing dataUrl in JSON body" });
+        }
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
+        if (!match) {
+          return res.status(400).json({ error: "Invalid data URL format" });
+        }
+        contentType = match[1];
+        buffer = Buffer.from(match[2], "base64");
+        ext = name ? (name.split(".").pop() || contentTypeToExt(contentType)) : contentTypeToExt(contentType);
+      } else {
+        // Raw binary body
+        buffer = req.body as Buffer;
+        contentType = bodyContentType.split(";")[0].trim() || "application/octet-stream";
+        ext = contentTypeToExt(contentType);
       }
 
-      const uploadURL = await objectStorageService.getObjectEntityUploadURL();
-
-      // Extract object path from the presigned URL for later reference
-      const objectPath = objectStorageService.normalizeObjectEntityPath(uploadURL);
-
-      res.json({
-        uploadURL,
-        objectPath,
-        // Echo back the metadata for client convenience
-        metadata: { name, size, contentType },
-      });
+      const objectPath = await objectStorageService.saveUploadedBuffer(buffer, contentType, ext);
+      res.json({ objectPath });
     } catch (error) {
-      console.error("Error generating upload URL:", error);
-      res.status(500).json({ error: "Failed to generate upload URL" });
+      console.error("Error uploading file:", error);
+      res.status(500).json({ error: "Failed to upload file" });
     }
   });
 
   /**
-   * Serve uploaded objects.
-   *
+   * Legacy compatibility shim.
+   * Old clients that still call /api/uploads/request-url receive a clear 410 Gone
+   * instead of a cryptic 500, prompting them to use the new endpoint.
+   */
+  app.post("/api/uploads/request-url", (_req, res) => {
+    res.status(410).json({
+      error: "This endpoint has been replaced. Use POST /api/uploads/upload instead.",
+    });
+  });
+
+  /**
+   * Serve stored files.
    * GET /objects/:objectPath(*)
-   *
-   * This serves files from object storage. For public files, no auth needed.
-   * For protected files, add authentication middleware and ACL checks.
    */
   app.get("/objects/:objectPath(*)", async (req, res) => {
     try {
+      // Path traversal protection
+      const storageDir = getStorageDir();
+      const relativePath = req.params.objectPath;
+      const resolved = path.resolve(storageDir, relativePath);
+      if (!resolved.startsWith(path.resolve(storageDir))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const objectFile = await objectStorageService.getObjectEntityFile(req.path);
       await objectStorageService.downloadObject(objectFile, res);
     } catch (error) {
-      console.error("Error serving object:", error);
       if (error instanceof ObjectNotFoundError) {
         return res.status(404).json({ error: "Object not found" });
       }
+      console.error("Error serving object:", error);
       return res.status(500).json({ error: "Failed to serve object" });
     }
   });
 }
-

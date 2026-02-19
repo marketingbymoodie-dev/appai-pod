@@ -152,6 +152,26 @@
     return replacedCount;
   }
 
+  // Fast path: use the mockup URL stored in memory at add-to-cart time.
+  // Avoids waiting for /cart.js fetch + 250 ms debounce.
+  function fastReplace() {
+    const m = window.__aiArtRecentMockup;
+    if (!m) return false;
+    const elements = findCartItemElements();
+    if (!elements.length) return false;
+    let hit = false;
+    elements.forEach(el => {
+      const vid = extractVariantId(el);
+      if (!vid || vid === m.variantId) {
+        if (replaceImage(el, m.url)) hit = true;
+      }
+    });
+    if (hit) console.log(CL, 'Fast-replaced cart image from memory');
+    return hit;
+  }
+  // Expose so the bridge in ai-art-embed.liquid can call it after DOM injection
+  window.aiArtFastReplace = fastReplace;
+
   async function replaceCartImages(retriesLeft) {
     if (isUpdating) return;
     isUpdating = true;
@@ -176,6 +196,7 @@
   }
 
   function scheduleReplace() {
+    fastReplace(); // immediate pass — no fetch needed
     clearTimeout(replaceDebounce);
     replaceDebounce = setTimeout(() => replaceCartImages(5), 250);
   }
@@ -206,7 +227,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
 
     document.addEventListener('cart:updated', scheduleReplace);
-    document.addEventListener('cart:refresh', () => setTimeout(() => replaceCartImages(5), 400));
+    document.addEventListener('cart:refresh', () => { fastReplace(); setTimeout(() => replaceCartImages(5), 400); });
 
     window.addEventListener('pageshow', (event) => {
       if (event.persisted) setTimeout(() => replaceCartImages(5), 500);

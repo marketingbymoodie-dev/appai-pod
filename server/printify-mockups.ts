@@ -1,9 +1,9 @@
 import pRetry from "p-retry";
 import sharp from "sharp";
 import crypto from "crypto";
-import { objectStorageClient, ObjectStorageService } from "./replit_integrations/object_storage";
-
-const objectStorage = new ObjectStorageService();
+import fs from "fs";
+import path from "path";
+import { getStorageDir } from "./replit_integrations/object_storage";
 
 interface MockupRequest {
   blueprintId: number;
@@ -129,32 +129,13 @@ async function cacheMockupToStorage(printifyUrl: string, label: string): Promise
 
     const hash = crypto.createHash("sha256").update(buffer).digest("hex").substring(0, 16);
     const mockupId = `${hash}_${label}`;
+    const filename = `${mockupId}.jpg`;
 
-    const privateDir = objectStorage.getPrivateObjectDir();
-    const fullPath = `${privateDir}/mockups/${mockupId}.jpg`;
-    const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
-    const pathParts = pathWithSlash.split("/").filter((p: string) => p.length > 0);
+    const mockupsDir = path.join(getStorageDir(), "mockups");
+    await fs.promises.mkdir(mockupsDir, { recursive: true });
+    await fs.promises.writeFile(path.join(mockupsDir, filename), buffer);
 
-    if (pathParts.length < 2) {
-      console.warn("[Mockup Cache] Invalid object path structure");
-      return null;
-    }
-
-    const bucketName = pathParts[0];
-    const objectName = pathParts.slice(1).join("/");
-    const bucket = objectStorageClient.bucket(bucketName);
-    const file = bucket.file(objectName);
-
-    await file.save(buffer, {
-      contentType: "image/jpeg",
-      metadata: {
-        metadata: {
-          "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" }),
-        },
-      },
-    });
-
-    const cachedPath = `/objects/mockups/${mockupId}.jpg`;
+    const cachedPath = `/objects/mockups/${filename}`;
     console.log(`[Mockup Cache] Cached mockup: ${cachedPath}`);
     return cachedPath;
   } catch (error) {

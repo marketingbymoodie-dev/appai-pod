@@ -298,7 +298,27 @@ function showLoginRequiredPopup() {
       }).catch(function() { isUpdating = false; });
     }
 
+    // Fast path: use mockup URL stored in memory at add-to-cart time (no /cart.js fetch).
+    function fastReplace() {
+      var m = window.__aiArtRecentMockup;
+      if (!m) return false;
+      var elements = findCartElements();
+      if (!elements.length) return false;
+      var hit = false;
+      elements.forEach(function(el) {
+        var vid = extractVariantId(el);
+        if (!vid || vid === m.variantId) {
+          if (replaceImage(el, m.url)) hit = true;
+        }
+      });
+      if (hit) console.log(CL, 'Fast-replaced cart image from memory');
+      return hit;
+    }
+    // Expose so createDesignStudio can call it after Section Rendering API injection
+    window.aiArtFastReplace = fastReplace;
+
     function scheduleReplace() {
+      fastReplace(); // immediate pass — no fetch delay
       clearTimeout(replaceDebounce);
       replaceDebounce = setTimeout(function() { replaceCartImages(5); }, 250);
     }
@@ -332,6 +352,7 @@ function showLoginRequiredPopup() {
 
     document.addEventListener('cart:updated', scheduleReplace);
     document.addEventListener('cart:refresh', function() {
+      fastReplace(); // immediate pass before the delayed full replace
       setTimeout(function() { replaceCartImages(5); }, 400);
     });
     window.addEventListener('pageshow', function(e) {
@@ -376,8 +397,12 @@ function showLoginRequiredPopup() {
       }
       
       console.log('[AI Art Embed] Processing', mockupUrls.length, 'mockups - creating custom gallery');
-      
-      // Find and hide Shopify's native product gallery
+
+      // Hide the placeholder (it was shown while generating)
+      var phEl = document.getElementById('ai-art-placeholder');
+      if (phEl) phEl.style.display = 'none';
+
+      // Ensure the native gallery is hidden (in case placeholder wasn't created)
       var nativeGallerySelectors = [
         '.product__media-wrapper',
         '.product__media-gallery',
@@ -386,52 +411,51 @@ function showLoginRequiredPopup() {
         '.product-gallery',
         '[data-product-media-container]'
       ];
-      
-      var nativeGallery = null;
-      for (var i = 0; i < nativeGallerySelectors.length; i++) {
-        nativeGallery = document.querySelector(nativeGallerySelectors[i]);
-        if (nativeGallery) {
-          console.log('[AI Art Embed] Found native gallery with:', nativeGallerySelectors[i]);
-          nativeGallery.style.display = 'none';
-          break;
+      var nativeGallery = aiArtNativeGallery; // prefer the one already found by createPlaceholderGallery
+      if (!nativeGallery) {
+        for (var i = 0; i < nativeGallerySelectors.length; i++) {
+          nativeGallery = document.querySelector(nativeGallerySelectors[i]);
+          if (nativeGallery) {
+            nativeGallery.style.display = 'none';
+            break;
+          }
         }
       }
-      
+
       // Create or update our custom gallery
       var customGallery = document.getElementById('ai-art-custom-gallery');
       if (!customGallery) {
         customGallery = document.createElement('div');
         customGallery.id = 'ai-art-custom-gallery';
         customGallery.style.cssText = 'width:100%;max-width:600px;margin-bottom:20px;';
-        
+
         // Main image container
         var mainImageContainer = document.createElement('div');
         mainImageContainer.id = 'ai-art-main-image';
-        mainImageContainer.style.cssText = 'width:100%;aspect-ratio:1;background:#f5f5f5;border-radius:8px;overflow:hidden;margin-bottom:12px;';
-        
+        mainImageContainer.style.cssText = 'width:100%;aspect-ratio:1/1;background:#f5f5f5;border-radius:8px;overflow:hidden;margin-bottom:12px;';
+
         var mainImg = document.createElement('img');
         mainImg.id = 'ai-art-main-img';
         mainImg.style.cssText = 'width:100%;height:100%;object-fit:contain;';
         mainImg.alt = 'Your custom design mockup';
         mainImageContainer.appendChild(mainImg);
         customGallery.appendChild(mainImageContainer);
-        
+
         // Thumbnails container
         var thumbsContainer = document.createElement('div');
         thumbsContainer.id = 'ai-art-thumbs';
         thumbsContainer.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start;';
         customGallery.appendChild(thumbsContainer);
-        
-        // Insert before the hidden native gallery or at top of product area
-        if (nativeGallery && nativeGallery.parentNode) {
-          nativeGallery.parentNode.insertBefore(customGallery, nativeGallery);
+
+        // Insert where the placeholder was, or before the hidden native gallery
+        var insertRef = phEl || nativeGallery;
+        if (insertRef && insertRef.parentNode) {
+          insertRef.parentNode.insertBefore(customGallery, insertRef);
         } else {
-          var productArea = document.querySelector('.product') || 
+          var productArea = document.querySelector('.product') ||
                            document.querySelector('[data-product]') ||
                            document.querySelector('main');
-          if (productArea) {
-            productArea.insertBefore(customGallery, productArea.firstChild);
-          }
+          if (productArea) productArea.insertBefore(customGallery, productArea.firstChild);
         }
         console.log('[AI Art Embed] Created custom gallery');
       }
@@ -532,11 +556,16 @@ function showLoginRequiredPopup() {
       <div class="ai-art-studio-embed__wrapper">
         <h2 class="ai-art-studio-embed__heading">Create Your Custom Design</h2>
         <p class="ai-art-studio-embed__description">${config.description || 'Use AI to generate a unique artwork. Describe your vision and our AI will bring it to life.'}</p>
-        <div class="ai-art-studio-embed__studio" style="height: 600px;">
+        <div class="ai-art-studio-embed__studio" style="min-height:400px;height:auto;">
           <div class="ai-art-studio-embed__loading">
             <div class="ai-art-studio-embed__spinner"></div>
             <p>Loading design studio...</p>
           </div>
+        </div>
+        <div id="ai-art-atc-wrapper" style="display:none;margin-top:14px;">
+          <button id="ai-art-atc-btn" disabled class="ai-art-atc-btn">
+            Create your design first
+          </button>
         </div>
       </div>
     `;
@@ -567,7 +596,7 @@ function showLoginRequiredPopup() {
     iframe.src = `${config.appUrl}/embed/design?${params.toString()}`;
     iframe.allow = 'clipboard-write';
     iframe.title = 'AI Art Design Studio';
-    iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
+    iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';
     
     iframe.onload = function() {
       const loading = studioContainer.querySelector('.ai-art-studio-embed__loading');
@@ -705,6 +734,10 @@ function showLoginRequiredPopup() {
                 var parsed = new DOMParser().parseFromString(html, 'text/html');
                 var newContent = parsed.querySelector('[id="' + sectionWrapper.id + '"]');
                 sectionWrapper.innerHTML = newContent ? newContent.innerHTML : html;
+
+                // Apply stored mockup immediately to the freshly-injected DOM
+                // (zero delay, no /cart.js fetch needed)
+                if (typeof window.aiArtFastReplace === 'function') window.aiArtFastReplace();
 
                 // Re-query and open the drawer
                 var newDrawer = document.querySelector('cart-drawer');
@@ -847,6 +880,11 @@ function showLoginRequiredPopup() {
         var cid = data.correlationId || '';
         console.log(B, '>>> ADD_TO_CART cid:', cid, 'variant:', data.variantId);
 
+        // Store mockup URL immediately so fastReplace() can apply it without fetching /cart.js
+        if (data.properties && data.properties['_mockup_url']) {
+          window.__aiArtRecentMockup = { variantId: String(data.variantId), url: data.properties['_mockup_url'] };
+        }
+
         if (!data.variantId) {
           replyToIframe(event, {
             type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
@@ -897,49 +935,157 @@ function showLoginRequiredPopup() {
         return;
       }
 
+      // ===== CART STATE (parent button sync) =====
+      if (data.type === 'AI_ART_STUDIO_CART_STATE') {
+        var atcBtnEl = document.getElementById('ai-art-atc-btn');
+        var atcWrapperEl = document.getElementById('ai-art-atc-wrapper');
+        if (atcBtnEl && atcWrapperEl) {
+          atcWrapperEl.style.display = 'block';
+          // Don't overwrite button text while it shows "Adding…" or "Added ✓"
+          var currentText = atcBtnEl.textContent || '';
+          var isBusy = currentText.indexOf('Adding') !== -1 || currentText.indexOf('Added') !== -1;
+          if (!isBusy) {
+            atcBtnEl.textContent = data.label || 'Add to Cart';
+            atcBtnEl.style.background = '';
+          }
+          atcBtnEl.disabled = !!data.disabled;
+          atcBtnEl.style.opacity = data.disabled ? '0.5' : '1';
+          atcBtnEl.style.cursor = data.disabled ? 'not-allowed' : 'pointer';
+          if (data.payload) {
+            atcBtnEl.dataset.payload = JSON.stringify(data.payload);
+          }
+        }
+        return;
+      }
+
+      // ===== MOCKUP LOADING STATE =====
+      if (data.type === 'AI_ART_STUDIO_MOCKUP_LOADING') {
+        var genOverlay = document.getElementById('ai-art-gen-overlay');
+        if (genOverlay) {
+          genOverlay.style.display = data.loading ? 'flex' : 'none';
+        }
+        return;
+      }
+
       // ===== MOCKUPS =====
       if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
         var mockupUrls = data.mockupUrls;
         if (!mockupUrls || mockupUrls.length === 0) return;
         console.log(B, 'Received mockups:', mockupUrls.length);
 
-        var previewSection = document.getElementById('ai-art-mockup-preview');
-        if (!previewSection) {
-          previewSection = document.createElement('div');
-          previewSection.id = 'ai-art-mockup-preview';
-          previewSection.style.cssText = 'display:block;margin-bottom:2rem;padding:1.5rem;background:#fff;border:1px solid #e5e5e5;border-radius:8px;';
-          previewSection.innerHTML = '<h4 style="font-size:1.25rem;font-weight:600;margin-bottom:1rem;text-align:center;color:#333;">Your Custom Design Preview</h4><div id="ai-art-mockup-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;max-width:800px;margin:0 auto;"></div>';
-          var studioWrapper = container.closest('.ai-art-studio-embed');
-          if (studioWrapper && studioWrapper.parentNode) {
-            studioWrapper.parentNode.insertBefore(previewSection, studioWrapper);
-          } else if (container.parentNode) {
-            container.parentNode.insertBefore(previewSection, container);
-          }
-        }
-
-        var grid = document.getElementById('ai-art-mockup-grid');
-        if (grid) {
-          grid.innerHTML = '';
-          mockupUrls.forEach(function(url) {
-            var item = document.createElement('div');
-            item.style.cssText = 'aspect-ratio:1;overflow:hidden;border-radius:6px;border:1px solid #e5e5e5;background:#fafafa;';
-            var img = document.createElement('img');
-            img.src = url;
-            img.alt = 'Product mockup';
-            img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
-            item.appendChild(img);
-            grid.appendChild(item);
-          });
-        }
-        console.log(B, 'Mockup preview updated');
+        // Mockup preview grid removed — images are already shown in the
+        // custom gallery above (#ai-art-custom-gallery) which replaced the
+        // native product image gallery.
+        console.log(B, 'Mockup gallery updated');
       }
     });
 
     console.log(B, 'Bridge installed successfully.');
-    
+
+    // --- Parent-side Add to Cart button ---
+    var atcBtn = container.querySelector('#ai-art-atc-btn');
+    if (atcBtn) {
+      atcBtn.addEventListener('click', function() {
+        var payloadJson = atcBtn.dataset.payload || '{}';
+        var payload;
+        try { payload = JSON.parse(payloadJson); } catch(e) { payload = {}; }
+        if (!payload.variantId) return;
+
+        atcBtn.textContent = 'Adding to Cart\u2026';
+        atcBtn.disabled = true;
+        atcBtn.style.opacity = '0.7';
+
+        // Store mockup for instant cart drawer replacement
+        var mockupUrl = payload.properties && payload.properties['_mockup_url'];
+        if (mockupUrl) {
+          window.__aiArtRecentMockup = { variantId: String(payload.variantId), url: mockupUrl };
+        }
+
+        addToCart(payload.variantId, payload.quantity || 1, payload.properties || {})
+          .then(function(cart) {
+            // Notify iframe of success so it can show its success state
+            try {
+              iframe.contentWindow.postMessage({
+                type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+                correlationId: payload.correlationId || '',
+                ok: true, success: true,
+                cart: cart, result: cart,
+                _bridgeVersion: BRIDGE_VERSION
+              }, '*');
+            } catch(e) {}
+            atcBtn.textContent = 'Added to Cart \u2713';
+            atcBtn.style.background = '#2d7a2d';
+            atcBtn.disabled = false;
+            atcBtn.style.opacity = '1';
+            refreshCartUI();
+          })
+          .catch(function(err) {
+            try {
+              iframe.contentWindow.postMessage({
+                type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+                correlationId: payload.correlationId || '',
+                ok: false, success: false,
+                error: err.message,
+                _bridgeVersion: BRIDGE_VERSION
+              }, '*');
+            } catch(e) {}
+            atcBtn.textContent = 'Error \u2014 Try Again';
+            atcBtn.style.background = '#c0392b';
+            atcBtn.disabled = false;
+            atcBtn.style.opacity = '1';
+            // Reset button appearance after 3 seconds
+            setTimeout(function() {
+              atcBtn.style.background = '';
+              atcBtn.textContent = 'Add to Cart';
+            }, 3000);
+          });
+      });
+    }
+
     return container;
   }
   
+  var aiArtNativeGallery = null; // reference kept so we can restore it if needed
+
+  function createPlaceholderGallery() {
+    if (document.getElementById('ai-art-placeholder')) return; // already created
+
+    var nativeGallerySelectors = [
+      '.product__media-wrapper',
+      '.product__media-gallery',
+      '.product-single__photos',
+      '.product__images',
+      '.product-gallery',
+      '[data-product-media-container]'
+    ];
+
+    var native = null;
+    for (var gi = 0; gi < nativeGallerySelectors.length; gi++) {
+      native = document.querySelector(nativeGallerySelectors[gi]);
+      if (native) break;
+    }
+    if (!native) return;
+
+    // Hide the native gallery — replaced by our placeholder / custom gallery
+    native.style.display = 'none';
+    native.dataset.aiHidden = 'true';
+    aiArtNativeGallery = native;
+
+    var ph = document.createElement('div');
+    ph.id = 'ai-art-placeholder';
+    ph.style.cssText = 'width:100%;aspect-ratio:1/1;background:#f5f5f5;border-radius:8px;overflow:hidden;margin-bottom:20px;position:relative;';
+
+    // Overlay shown while mockups are generating (hidden initially)
+    var overlay = document.createElement('div');
+    overlay.id = 'ai-art-gen-overlay';
+    overlay.style.cssText = 'display:none;position:absolute;inset:0;background:rgba(255,255,255,0.88);flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:10;';
+    overlay.innerHTML = '<div class="ai-art-spinner"></div><span style="font-size:14px;color:#555;font-weight:500;letter-spacing:0.01em;">Artwork Generating\u2026</span>';
+    ph.appendChild(overlay);
+
+    native.parentNode.insertBefore(ph, native);
+    console.log('[AI Art Embed] Created placeholder gallery');
+  }
+
   function insertStudioAfterProductInfo(studioElement) {
     const insertionPoints = [
       '.product__info-wrapper',
@@ -1108,13 +1254,16 @@ function showLoginRequiredPopup() {
       
       console.log('[AI Art Embed] Creating studio with variant:', variantId);
       const studioElement = createDesignStudio(config);
-      
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-          insertStudioAfterProductInfo(studioElement);
-        });
-      } else {
+
+      const doInsert = () => {
+        createPlaceholderGallery();
         insertStudioAfterProductInfo(studioElement);
+      };
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', doInsert);
+      } else {
+        doInsert();
       }
     };
     
@@ -1174,6 +1323,7 @@ function showLoginRequiredPopup() {
 
 .ai-art-studio-embed__studio {
   width: 100%;
+  min-height: 400px;
   border: 1px solid #e5e5e5;
   border-radius: 8px;
   overflow: hidden;
@@ -1201,5 +1351,40 @@ function showLoginRequiredPopup() {
 
 @keyframes ai-art-embed-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Parent-side Add to Cart button */
+.ai-art-atc-btn {
+  display: block;
+  width: 100%;
+  padding: 14px 20px;
+  background: #000;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s;
+  letter-spacing: 0.01em;
+}
+.ai-art-atc-btn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.ai-art-atc-btn:disabled {
+  cursor: not-allowed;
+}
+
+/* Artwork Generating spinner inside placeholder gallery */
+@keyframes ai-art-spin {
+  to { transform: rotate(360deg); }
+}
+.ai-art-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #ddd;
+  border-top-color: #555;
+  border-radius: 50%;
+  animation: ai-art-spin 0.75s linear infinite;
 }
 </style>

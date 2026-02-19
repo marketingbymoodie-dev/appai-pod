@@ -2,13 +2,15 @@ import { generateImageBase64 } from "./replit_integrations/image/client";
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import sharp from "sharp";
 import { removeBackground } from "@imgly/background-removal-node";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript } from "./shopify";
-import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient } from "./replit_integrations/object_storage";
+import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
   return Uint8Array.from(buf);
@@ -23,36 +25,16 @@ const objectStorage = new ObjectStorageService();
 
 const THUMBNAIL_SIZE = 256; // Max dimension for thumbnails
 
-// Helper function to fetch an image from object storage and convert to base64
+// Helper function to fetch an image from local storage and convert to base64
 async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base64: string; mimeType: string }> {
   // objectPath is like /objects/designs/abc123.png
-  // We need to convert it to the actual bucket path
-  const privateDir = objectStorage.getPrivateObjectDir();
-  
-  // Parse privateDir to get bucket name
-  const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
-  const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
-  
-  if (pathParts.length < 1) {
-    throw new Error("Invalid private directory structure");
-  }
-  
-  const bucketName = pathParts[0];
-  
-  // objectPath is like /objects/designs/abc123.png
-  // The actual object name is .private/designs/abc123.png
-  const objectName = objectPath.replace(/^\/objects\//, ".private/");
-  
-  const bucket = objectStorageClient.bucket(bucketName);
-  const file = bucket.file(objectName);
-  
-  const [buffer] = await file.download();
+  const relativePath = objectPath.replace(/^\/objects\//, "");
+  const localPath = path.join(getStorageDir(), relativePath);
+  const buffer = await fs.promises.readFile(localPath);
   const base64 = buffer.toString("base64");
-  
-  // Determine mime type from extension
-  const extension = objectPath.split(".").pop()?.toLowerCase() || "png";
-  const mimeType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
-  
+  const extension = path.extname(localPath).slice(1).toLowerCase();
+  const mimeType =
+    extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
   return { base64, mimeType };
 }
 
@@ -218,75 +200,44 @@ interface SaveImageOptions {
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, targetDims, colorTier } = options || {};
+  const { isApparel = false, targetDims } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
-  const privateDir = objectStorage.getPrivateObjectDir();
-  
- let buffer: Buffer = Buffer.from(base64Data, "base64");
-  
+
+  let buffer: Buffer = Buffer.from(base64Data, "base64");
+
   // For apparel, remove background using ML-based segmentation
   if (isApparel) {
     console.log("Removing background for apparel image using ML...");
     buffer = (await removeImageBackground(buffer)) as Buffer;
-    // Force PNG for transparency support
     extension = "png";
     actualMimeType = "image/png";
     console.log("Background removal complete - image now has transparency");
-  } else if (targetDims && (targetDims.width !== targetDims.height)) {
-    // Only resize for non-apparel (apparel stays square)
-    const outputFormat = actualMimeType.includes("jpeg") || actualMimeType.includes("jpg") ? 'jpeg' : 'png';
-   buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
-    extension = outputFormat === 'jpeg' ? 'jpg' : 'png';
-    actualMimeType = outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+  } else if (targetDims && targetDims.width !== targetDims.height) {
+    const outputFormat =
+      actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
+        ? "jpeg"
+        : "png";
+    buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
+    extension = outputFormat === "jpeg" ? "jpg" : "png";
+    actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
   }
-  
-  // privateDir is like /bucket-name/.private, we need to parse it correctly
-  const fullPath = `${privateDir}/designs/${imageId}.${extension}`;
-  const thumbPath = `${privateDir}/designs/thumb_${imageId}.jpg`;
-  
-  // Parse the path: first segment is bucket name, rest is object name
-  const pathWithSlash = fullPath.startsWith("/") ? fullPath : `/${fullPath}`;
-  const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
-  
-  if (pathParts.length < 2) {
-    throw new Error("Invalid object path structure");
-  }
-  
-  const bucketName = pathParts[0];
-  const objectName = pathParts.slice(1).join("/");
-  const thumbObjectName = `.private/designs/thumb_${imageId}.jpg`;
+
+  const storageDir = getStorageDir();
+  const designsDir = path.join(storageDir, "designs");
+  await fs.promises.mkdir(designsDir, { recursive: true });
+
+  const filename = `${imageId}.${extension}`;
+  const thumbFilename = `thumb_${imageId}.jpg`;
   const thumbnailBuffer = await generateThumbnail(buffer);
-  
-  const bucket = objectStorageClient.bucket(bucketName);
-  
-  // Save original image
-  const file = bucket.file(objectName);
-  await file.save(buffer, {
-    contentType: actualMimeType,
-    metadata: {
-      metadata: {
-        "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
-      }
-    }
-  });
-  
-  // Save thumbnail
-  const thumbFile = bucket.file(thumbObjectName);
-  await thumbFile.save(thumbnailBuffer, {
-    contentType: "image/jpeg",
-    metadata: {
-      metadata: {
-        "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
-      }
-    }
-  });
-  
-  // Return paths that the /objects/* route expects
+
+  await fs.promises.writeFile(path.join(designsDir, filename), buffer);
+  await fs.promises.writeFile(path.join(designsDir, thumbFilename), thumbnailBuffer);
+
   return {
-    imageUrl: `/objects/designs/${imageId}.${extension}`,
-    thumbnailUrl: `/objects/designs/thumb_${imageId}.jpg`
+    imageUrl: `/objects/designs/${filename}`,
+    thumbnailUrl: `/objects/designs/${thumbFilename}`,
   };
 }
 
@@ -853,13 +804,40 @@ ${textEdgeRestrictions}
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
-      // Generate image using Nano Banana
-           // Generate image using Replicate (NO Gemini)
-      // NOTE: This implementation is text-to-image only. If you need reference-image
-      // (image-to-image) later, we can extend generateImageBase64 to support it.
+      // Resolve reference image to a publicly accessible URL for Replicate
+      let inputImageUrl: string | null = null;
+      if (referenceImage) {
+        try {
+          if (referenceImage.startsWith("/objects/")) {
+            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+            inputImageUrl = `${appUrl}${referenceImage}`;
+          } else if (referenceImage.startsWith("data:")) {
+            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
+            if (match) {
+              const refContentType = match[1];
+              const refBuffer = Buffer.from(match[2], "base64");
+              const refExt = refContentType.includes("png") ? "png" : "jpg";
+              const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
+              const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+              inputImageUrl = `${appUrl}${refObjectPath}`;
+            }
+          } else if (referenceImage.startsWith("http")) {
+            inputImageUrl = referenceImage;
+          }
+          if (inputImageUrl) {
+            console.log("[Generate] Reference image URL:", inputImageUrl.substring(0, 100));
+          }
+        } catch (refErr) {
+          console.warn("[Generate] Could not process reference image, generating without it:", refErr);
+          inputImageUrl = null;
+        }
+      }
+
+      // Generate image using Replicate
       const { mimeType, data } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
+        inputImageUrl,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -1556,56 +1534,48 @@ ${textEdgeRestrictions}
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
-      // Generate image
-      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
-      
+      // Resolve reference image to a publicly accessible URL for Replicate
+      let inputImageUrl: string | null = null;
       if (referenceImage) {
-        let base64Data: string;
-        let refMimeType = "image/png";
-        
-        // Check if referenceImage is an object storage path (starts with /objects/)
-        if (referenceImage.startsWith("/objects/")) {
-          // Fetch from object storage and convert to base64
-          try {
-            const imageData = await fetchImageFromStorageAsBase64(referenceImage);
-            base64Data = imageData.base64;
-            refMimeType = imageData.mimeType;
-          } catch (fetchError) {
-            console.error("Failed to fetch reference image from storage:", fetchError);
-            return res.status(400).json({ error: "Failed to load reference image" });
+        try {
+          if (referenceImage.startsWith("/objects/")) {
+            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+            inputImageUrl = `${appUrl}${referenceImage}`;
+          } else if (referenceImage.startsWith("data:")) {
+            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
+            if (match) {
+              const refContentType = match[1];
+              const refBuffer = Buffer.from(match[2], "base64");
+              const refExt = refContentType.includes("png") ? "png" : "jpg";
+              const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
+              const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+              inputImageUrl = `${appUrl}${refObjectPath}`;
+            }
+          } else if (referenceImage.startsWith("http")) {
+            inputImageUrl = referenceImage;
           }
-        } else {
-          // Assume it's a base64 data URL
-          base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+          if (inputImageUrl) {
+            console.log("[Shopify Generate] Reference image URL:", inputImageUrl.substring(0, 100));
+          }
+        } catch (refErr) {
+          console.warn("[Shopify Generate] Could not process reference image, generating without it:", refErr);
+          inputImageUrl = null;
         }
-        
-        contents[0].parts.unshift({
-          inlineData: {
-            mimeType: refMimeType,
-            data: base64Data,
-          },
-        });
       }
 
-    // Generate image via Replicate
-const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
-  prompt: fullPrompt,
-  aspectRatio: geminiAspectRatio ?? "1:1",
-});
+      // Generate image via Replicate
+      const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
+        prompt: fullPrompt,
+        aspectRatio: geminiAspectRatio ?? "1:1",
+        inputImageUrl,
+      });
 
+      if (!base64Data) {
+        console.error("[Shopify Generate] Replicate returned no image data");
+        return res.status(500).json({ error: "Failed to generate image" });
+      }
 
-// Image already generated via Replicate
-if (!base64Data) {
-  return res.status(500).json({ error: "Failed to generate image" });
-}
-
-// Replicate already returned base64 + mime type
-const mimeType = generatedMimeType || "image/png";
-
-if (!base64Data) {
-  console.error("[Shopify Generate] Replicate returned no image data");
-  return res.status(500).json({ error: "Failed to generate image" });
-}
+      const mimeType = generatedMimeType || "image/png";
 
       
       // Check if this is an apparel product
@@ -4036,37 +4006,39 @@ ${textEdgeRestrictions}
 
       console.log(`[Storefront Generate] shop=${shop} Using aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
-      // Generate image
-      const contents: any[] = [{ role: "user", parts: [{ text: fullPrompt }] }];
-
+      // Resolve reference image to a publicly accessible URL for Replicate
+      let inputImageUrl: string | null = null;
       if (referenceImage) {
-        let base64Data: string;
-        let refMimeType = "image/png";
-
-        if (referenceImage.startsWith("/objects/")) {
-          try {
-            const imageData = await fetchImageFromStorageAsBase64(referenceImage);
-            base64Data = imageData.base64;
-            refMimeType = imageData.mimeType;
-          } catch (fetchError) {
-            console.error("Failed to fetch reference image from storage:", fetchError);
-            return res.status(400).json({ error: "Failed to load reference image" });
+        try {
+          if (referenceImage.startsWith("/objects/")) {
+            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+            inputImageUrl = `${appUrl}${referenceImage}`;
+          } else if (referenceImage.startsWith("data:")) {
+            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
+            if (match) {
+              const refContentType = match[1];
+              const refBuffer = Buffer.from(match[2], "base64");
+              const refExt = refContentType.includes("png") ? "png" : "jpg";
+              const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
+              const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+              inputImageUrl = `${appUrl}${refObjectPath}`;
+            }
+          } else if (referenceImage.startsWith("http")) {
+            inputImageUrl = referenceImage;
           }
-        } else {
-          base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+          if (inputImageUrl) {
+            console.log("[Storefront Generate] Reference image URL:", inputImageUrl.substring(0, 100));
+          }
+        } catch (refErr) {
+          console.warn("[Storefront Generate] Could not process reference image, generating without it:", refErr);
+          inputImageUrl = null;
         }
-
-        contents[0].parts.unshift({
-          inlineData: {
-            mimeType: refMimeType,
-            data: base64Data,
-          },
-        });
       }
 
       const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio ?? "1:1",
+        inputImageUrl,
       });
 
       if (!base64Data) {
@@ -5173,12 +5145,9 @@ ${textEdgeRestrictions}
         return res.json({ migrated: 0, message: "No designs need thumbnail migration" });
       }
 
-      // Get bucket info once
-      const privateDir = objectStorage.getPrivateObjectDir();
-      const pathWithSlash = privateDir.startsWith("/") ? privateDir : `/${privateDir}`;
-      const pathParts = pathWithSlash.split("/").filter(p => p.length > 0);
-      const bucketName = pathParts[0];
-      const bucket = objectStorageClient.bucket(bucketName);
+      const storageDir = getStorageDir();
+      const designsDir = path.join(storageDir, "designs");
+      await fs.promises.mkdir(designsDir, { recursive: true });
 
       let migratedCount = 0;
       const errors: string[] = [];
@@ -5194,7 +5163,7 @@ ${textEdgeRestrictions}
           let newGeneratedImageUrl: string | undefined;
           
           if (imageUrl.startsWith("data:")) {
-            // Base64 image - extract, decode, and migrate to object storage
+            // Base64 image — extract, decode, and migrate to local storage
             const base64Match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/);
             if (!base64Match) {
               errors.push(`Design ${design.id}: Invalid base64 format`);
@@ -5203,45 +5172,27 @@ ${textEdgeRestrictions}
             const imageFormat = base64Match[1];
             const extension = imageFormat === "png" ? "png" : "jpg";
             buffer = Buffer.from(base64Match[2], "base64");
-            
-            // Generate a new ID for both original and thumbnail
             imageId = crypto.randomUUID();
-            
-            // Save original to object storage (migrating from base64)
-            const originalObjectPath = `.private/designs/${imageId}.${extension}`;
-            const originalFile = bucket.file(originalObjectPath);
-            await originalFile.save(buffer, {
-              contentType: `image/${imageFormat}`,
-              metadata: {
-                metadata: {
-                  "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
-                }
-              }
-            });
-            newGeneratedImageUrl = `/objects/designs/${imageId}.${extension}`;
+            const filename = `${imageId}.${extension}`;
+            await fs.promises.writeFile(path.join(designsDir, filename), buffer);
+            newGeneratedImageUrl = `/objects/designs/${filename}`;
             
           } else if (imageUrl.startsWith("/objects/")) {
-            // Object storage URL - extract existing ID from filename
-            const filenameMatch = imageUrl.match(/\/objects\/designs\/([^.]+)\.(png|jpg)$/);
+            // Already in local storage — read the file to generate thumbnail
+            const filenameMatch = imageUrl.match(/\/objects\/designs\/([^.]+\.(png|jpg))$/);
             if (!filenameMatch) {
-              errors.push(`Design ${design.id}: Could not extract ID from URL`);
+              errors.push(`Design ${design.id}: Could not parse filename from URL`);
               continue;
             }
-            imageId = filenameMatch[1];
-            const extension = filenameMatch[2];
-            
-            // Fetch the original image
-            const objectPath = `.private/designs/${imageId}.${extension}`;
-            const file = bucket.file(objectPath);
-            
-            const [exists] = await file.exists();
-            if (!exists) {
-              errors.push(`Design ${design.id}: Source image not found at ${objectPath}`);
+            const filename = filenameMatch[1];
+            imageId = filename.replace(/\.(png|jpg)$/, "");
+            const localPath = path.join(designsDir, filename);
+            try {
+              buffer = await fs.promises.readFile(localPath);
+            } catch {
+              errors.push(`Design ${design.id}: Source image not found at ${localPath}`);
               continue;
             }
-            
-            const [contents] = await file.download();
-            buffer = contents;
             
           } else {
             errors.push(`Design ${design.id}: Unknown image URL format`);
@@ -5250,21 +5201,9 @@ ${textEdgeRestrictions}
 
           // Generate thumbnail
           const thumbnailBuffer = await generateThumbnail(buffer);
-          
-          // Save thumbnail with matching ID pattern
-          const thumbObjectPath = `.private/designs/thumb_${imageId}.jpg`;
-          const thumbFile = bucket.file(thumbObjectPath);
-          
-          await thumbFile.save(thumbnailBuffer, {
-            contentType: "image/jpeg",
-            metadata: {
-              metadata: {
-                "custom:aclPolicy": JSON.stringify({ owner: "system", visibility: "public" })
-              }
-            }
-          });
-          
-          const thumbnailUrl = `/objects/designs/thumb_${imageId}.jpg`;
+          const thumbFilename = `thumb_${imageId}.jpg`;
+          await fs.promises.writeFile(path.join(designsDir, thumbFilename), thumbnailBuffer);
+          const thumbnailUrl = `/objects/designs/${thumbFilename}`;
           
           // Update design with new URLs
           const updateData: { thumbnailImageUrl: string; generatedImageUrl?: string } = { 

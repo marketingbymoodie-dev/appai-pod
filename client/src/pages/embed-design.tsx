@@ -135,32 +135,16 @@ async function ensureHostedUrl(url: string): Promise<string> {
   // Relative path — resolve to absolute
   if (url.startsWith("/")) return API_BASE + url;
 
-  // data: URL — must upload to storage first
+  // data: URL — upload directly to server storage
   if (isDataUrl(url)) {
-    console.log("[EmbedDesign] Converting data URL to hosted URL via upload...");
-    const blob = dataUrlToBlob(url);
-
-    // Step 1: Get presigned upload URL
-    const reqRes = await safeFetch(`${API_BASE}/api/uploads/request-url`, {
+    console.log("[EmbedDesign] Converting data URL to hosted URL via direct upload...");
+    const uploadRes = await safeFetch(`${API_BASE}/api/uploads/upload`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: `design-${Date.now()}.png`,
-        size: blob.size,
-        contentType: blob.type,
-      }),
-    });
-    if (!reqRes.ok) throw new Error("Failed to get upload URL for data URL conversion");
-    const { uploadURL, objectPath } = await reqRes.json();
-
-    // Step 2: Upload blob to storage
-    const uploadRes = await safeFetch(uploadURL, {
-      method: "PUT",
-      headers: { "Content-Type": blob.type },
-      body: blob,
+      body: JSON.stringify({ dataUrl: url, name: `design-${Date.now()}.png` }),
     });
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
-
+    const { objectPath } = await uploadRes.json();
     const hostedUrl = API_BASE + objectPath;
     console.log("[EmbedDesign] Data URL uploaded, hosted URL:", hostedUrl);
     return hostedUrl;
@@ -1007,6 +991,10 @@ export default function EmbedDesign() {
     y: number = 50
   ) => {
     setMockupLoading(true);
+    // Notify parent page so it can show the "Artwork Generating" overlay
+    if (runtimeMode !== 'standalone') {
+      window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
+    }
     // Clamp values to valid ranges
     const clampedX = Math.max(0, Math.min(100, x));
     const clampedY = Math.max(0, Math.min(100, y));
@@ -1086,8 +1074,12 @@ export default function EmbedDesign() {
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
     } finally {
       setMockupLoading(false);
+      // Clear the "Artwork Generating" overlay on the parent page
+      if (runtimeMode !== 'standalone') {
+        window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
+      }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode]);
 
   // Fetch Printify mockups for shared designs once product config is loaded
   useEffect(() => {
@@ -1148,6 +1140,71 @@ export default function EmbedDesign() {
       }
     };
   }, [transform.scale, transform.x, transform.y, productTypeConfig, generatedDesign?.imageUrl, selectedSize, selectedFrameColor, printifyMockups.length, fetchPrintifyMockups]);
+
+  // Sync cart state with the parent page's Add to Cart button (storefront mode only)
+  useEffect(() => {
+    if (!isStorefront || runtimeMode === 'standalone') return;
+
+    const hasMockups = productTypeConfig?.hasPrintifyMockups;
+    const mockupsReady = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    const waitingForMockups = !!(hasMockups && generatedDesign?.imageUrl && mockupLoading && !mockupsReady);
+
+    if (!generatedDesign) {
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_CART_STATE',
+        ready: false,
+        disabled: true,
+        label: 'Create your design first',
+        payload: null,
+      }, '*');
+      return;
+    }
+
+    const variantId = findVariantId();
+    if (!variantId) {
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_CART_STATE',
+        ready: false,
+        disabled: true,
+        label: 'Select options to continue',
+        payload: null,
+      }, '*');
+      return;
+    }
+
+    // Build cart properties (sync — only hosted URLs, no async ensureHostedUrl)
+    const properties: Record<string, string> = {
+      '_design_id': generatedDesign.id || '',
+      'Artwork': 'Custom AI Design',
+    };
+    const artworkUrl = generatedDesign.imageUrl;
+    if (artworkUrl && !artworkUrl.startsWith('data:')) {
+      properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
+    }
+
+    let mockupFullUrl = '';
+    if (printifyMockups.length > 0) {
+      mockupFullUrl = toAbsoluteImageUrl(printifyMockups[selectedMockupIndex] || printifyMockups[0]);
+    } else if (printifyMockupImages.length > 0) {
+      const mu = printifyMockupImages[selectedMockupIndex]?.url || printifyMockupImages[0]?.url;
+      if (mu) mockupFullUrl = toAbsoluteImageUrl(mu);
+    }
+    if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
+    if (selectedSize) properties['Size'] = selectedSize;
+
+    window.parent.postMessage({
+      type: 'AI_ART_STUDIO_CART_STATE',
+      ready: !waitingForMockups,
+      disabled: waitingForMockups || isAddingToCart,
+      waitingForMockups,
+      label: waitingForMockups ? 'Generating preview\u2026' : 'Add to Cart',
+      payload: {
+        variantId: variantId,
+        quantity: 1,
+        properties,
+      },
+    }, '*');
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, printifyMockups, printifyMockupImages, selectedMockupIndex, isAddingToCart, selectedSize, productTypeConfig, bridgeReady]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -1999,23 +2056,22 @@ export default function EmbedDesign() {
   }, [isStorefront, debugBridge]);
 
   useEffect(() => {
-    if (isEmbedded) {
-      const observer = new ResizeObserver((entries) => {
-        for (const entry of entries) {
-          window.parent.postMessage(
-            {
-              type: "ai-art-studio:resize",
-              height: entry.contentRect.height + 40,
-            },
-            "*"
-          );
-        }
-      });
-
-      observer.observe(document.body);
-      return () => observer.disconnect();
-    }
-  }, [isEmbedded]);
+    if (!isEmbedded && !isStorefront) return;
+    // Suppress body scroll so the iframe has no scrollbar — parent resizes to fit.
+    document.documentElement.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    // Send resize messages so the parent container grows with our content (no scrollbar).
+    const sendHeight = () => {
+      window.parent.postMessage(
+        { type: 'ai-art-studio:resize', height: document.body.scrollHeight },
+        '*'
+      );
+    };
+    const observer = new ResizeObserver(sendHeight);
+    observer.observe(document.body);
+    sendHeight(); // send immediately on mount
+    return () => observer.disconnect();
+  }, [isEmbedded, isStorefront]);
 
   // Set initial transform when design is loaded/created
   useEffect(() => {
@@ -2104,7 +2160,8 @@ export default function EmbedDesign() {
   const credits = customer?.credits ?? 0;
 
   return (
-    <div className={`p-4 ${isEmbedded ? "bg-transparent" : "bg-background min-h-screen"}`}>
+    <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}
+         style={(isEmbedded || isStorefront) ? { overflowX: 'hidden' } : undefined}>
       <div className="max-w-2xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-4">
           <h2 className="text-lg font-semibold" data-testid="text-title">
@@ -2494,21 +2551,41 @@ export default function EmbedDesign() {
               />
             )}
 
-            {/* Mockup generation status - shown only in Shopify embed mode */}
-            {isShopify && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
+            {/* Mockup generation status */}
+            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 {mockupLoading ? (
                   <div className="flex items-center justify-center gap-2 py-3 bg-muted/50 rounded-md">
                     <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    <span className="text-sm text-muted-foreground">Rendering product mockups...</span>
+                    <span className="text-sm text-muted-foreground">Generating product preview…</span>
                   </div>
                 ) : mockupError ? (
-                  <div className="flex items-center justify-center gap-2 py-3 bg-destructive/10 rounded-md">
-                    <span className="text-sm text-destructive">Preview unavailable - design ready for cart</span>
+                  <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
+                    <span className="text-sm text-destructive flex-1">Preview unavailable — you can still add to cart</span>
+                    <button
+                      type="button"
+                      className="text-xs text-destructive underline shrink-0"
+                      onClick={() => {
+                        if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                          setMockupError(null);
+                          fetchPrintifyMockups(
+                            toAbsoluteImageUrl(generatedDesign.imageUrl),
+                            productTypeConfig.id,
+                            selectedSize,
+                            selectedFrameColor || 'default',
+                            transform.scale,
+                            50,
+                            50
+                          );
+                        }
+                      }}
+                    >
+                      Retry
+                    </button>
                   </div>
-                ) : printifyMockups.length > 0 ? (
+                ) : printifyMockups.length > 0 || printifyMockupImages.length > 0 ? (
                   <div className="flex items-center justify-center gap-2 py-3 bg-green-500/10 rounded-md">
-                    <span className="text-sm text-green-600">Product images updated above</span>
+                    <span className="text-sm text-green-600">Product preview ready</span>
                   </div>
                 ) : null}
               </div>
@@ -2534,8 +2611,9 @@ export default function EmbedDesign() {
                   </div>
                 )}
                 
-                {/* Shopify Add to Cart - Prominent, styled like native button */}
-                {(isShopify || isStorefront) && (
+                {/* Shopify Add to Cart - shown in admin embed only;
+                    in storefront mode the button lives outside the iframe on the product page */}
+                {isShopify && !isStorefront && (
                   <>
                     {addedToCart ? (
                       <>
@@ -2557,34 +2635,58 @@ export default function EmbedDesign() {
                       </>
                     ) : (
                       <>
-                        <Button
-                          onClick={handleAddToCart}
-                          disabled={isAddingToCart || (isStorefront && !bridgeReady)}
-                          className="w-full h-12 text-base font-medium"
-                          data-testid="button-add-to-cart"
-                        >
-                          {isAddingToCart ? (
-                            <>
-                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                              Adding to Cart...
-                            </>
-                          ) : isStorefront && bridgeError ? (
-                            <>
-                              <ShoppingCart className="w-5 h-5 mr-2" />
-                              Add to Cart (unavailable)
-                            </>
-                          ) : isStorefront && !bridgeReady ? (
-                            <>
-                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                              Connecting to store...
-                            </>
-                          ) : (
-                            <>
-                              <ShoppingCart className="w-5 h-5 mr-2" />
-                              Add to Cart
-                            </>
-                          )}
-                        </Button>
+                        {/* Determine whether the cart button should wait for mockups */}
+                        {(() => {
+                          const hasMockups = productTypeConfig?.hasPrintifyMockups;
+                          const mockupsReady =
+                            printifyMockups.length > 0 ||
+                            printifyMockupImages.length > 0;
+                          const waitingForMockups =
+                            hasMockups &&
+                            !!generatedDesign?.imageUrl &&
+                            mockupLoading &&
+                            !mockupsReady;
+
+                          return (
+                            <Button
+                              onClick={handleAddToCart}
+                              disabled={
+                                isAddingToCart ||
+                                (isStorefront && !bridgeReady) ||
+                                waitingForMockups
+                              }
+                              className="w-full h-12 text-base font-medium"
+                              data-testid="button-add-to-cart"
+                            >
+                              {isAddingToCart ? (
+                                <>
+                                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                  Adding to Cart...
+                                </>
+                              ) : waitingForMockups ? (
+                                <>
+                                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                  Generating preview…
+                                </>
+                              ) : isStorefront && bridgeError ? (
+                                <>
+                                  <ShoppingCart className="w-5 h-5 mr-2" />
+                                  Add to Cart (unavailable)
+                                </>
+                              ) : isStorefront && !bridgeReady ? (
+                                <>
+                                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                  Connecting to store...
+                                </>
+                              ) : (
+                                <>
+                                  <ShoppingCart className="w-5 h-5 mr-2" />
+                                  Add to Cart
+                                </>
+                              )}
+                            </Button>
+                          );
+                        })()}
                         {isStorefront && bridgeError && (
                           <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
                             {bridgeError}
