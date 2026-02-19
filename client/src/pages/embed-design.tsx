@@ -2161,6 +2161,16 @@ export default function EmbedDesign() {
   const isLoggedIn = customer?.isLoggedIn ?? false;
   const credits = customer?.credits ?? 0;
 
+  // Derived values for the ATC button state — computed at render scope to avoid IIFE in JSX
+  const atcHasMockups = productTypeConfig?.hasPrintifyMockups;
+  const atcMockupsReady = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+  const atcWaitingForMockups = !!(
+    atcHasMockups &&
+    generatedDesign?.imageUrl &&
+    mockupLoading &&
+    !atcMockupsReady
+  );
+
   return (
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <div className="max-w-2xl mx-auto space-y-4">
@@ -2636,58 +2646,43 @@ export default function EmbedDesign() {
                       </>
                     ) : (
                       <>
-                        {/* Determine whether the cart button should wait for mockups */}
-                        {(() => {
-                          const hasMockups = productTypeConfig?.hasPrintifyMockups;
-                          const mockupsReady =
-                            printifyMockups.length > 0 ||
-                            printifyMockupImages.length > 0;
-                          const waitingForMockups =
-                            hasMockups &&
-                            !!generatedDesign?.imageUrl &&
-                            mockupLoading &&
-                            !mockupsReady;
-
-                          return (
-                            <Button
-                              onClick={handleAddToCart}
-                              disabled={
-                                isAddingToCart ||
-                                (isStorefront && !bridgeReady) ||
-                                waitingForMockups
-                              }
-                              className="w-full h-12 text-base font-medium"
-                              data-testid="button-add-to-cart"
-                            >
-                              {isAddingToCart ? (
-                                <>
-                                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                  Adding to Cart...
-                                </>
-                              ) : waitingForMockups ? (
-                                <>
-                                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                  Generating preview…
-                                </>
-                              ) : isStorefront && bridgeError ? (
-                                <>
-                                  <ShoppingCart className="w-5 h-5 mr-2" />
-                                  Add to Cart (unavailable)
-                                </>
-                              ) : isStorefront && !bridgeReady ? (
-                                <>
-                                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                  Connecting to store...
-                                </>
-                              ) : (
-                                <>
-                                  <ShoppingCart className="w-5 h-5 mr-2" />
-                                  Add to Cart
-                                </>
-                              )}
-                            </Button>
-                          );
-                        })()}
+                        <Button
+                          onClick={handleAddToCart}
+                          disabled={
+                            isAddingToCart ||
+                            (isStorefront && !bridgeReady) ||
+                            atcWaitingForMockups
+                          }
+                          className="w-full h-12 text-base font-medium"
+                          data-testid="button-add-to-cart"
+                        >
+                          {isAddingToCart ? (
+                            <>
+                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                              Adding to Cart...
+                            </>
+                          ) : atcWaitingForMockups ? (
+                            <>
+                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                              Generating preview…
+                            </>
+                          ) : isStorefront && bridgeError ? (
+                            <>
+                              <ShoppingCart className="w-5 h-5 mr-2" />
+                              Add to Cart (unavailable)
+                            </>
+                          ) : isStorefront && !bridgeReady ? (
+                            <>
+                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                              Connecting to store...
+                            </>
+                          ) : (
+                            <>
+                              <ShoppingCart className="w-5 h-5 mr-2" />
+                              Add to Cart
+                            </>
+                          )}
+                        </Button>
                         {isStorefront && bridgeError && (
                           <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
                             {bridgeError}
