@@ -797,7 +797,7 @@ function showLoginRequiredPopup() {
     // Send BRIDGE_READY every 500ms until the iframe ACKs.
     var bridgeAcked = false;
     var heartbeatN = 0;
-    var MAX_HEARTBEATS = 60; // 30s
+    var MAX_HEARTBEATS = 240; // 120s — Railway cold start can take up to 60s
     var heartbeatTimer = null;
 
     function sendBridgeReady() {
