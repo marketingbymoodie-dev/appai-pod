@@ -320,6 +320,9 @@ export default function EmbedDesign() {
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:321',message:'PROBE_A: component_render_started',data:{isStorefront,runtimeMode},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+  // #endregion
   const debugBridge = searchParams.get("debugBridge") === "1";
   const [transform, setTransform] = useState<ImageTransform>({ scale: 100, x: 50, y: 50 });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1141,6 +1144,15 @@ export default function EmbedDesign() {
     };
   }, [transform.scale, transform.x, transform.y, productTypeConfig, generatedDesign?.imageUrl, selectedSize, selectedFrameColor, printifyMockups.length, fetchPrintifyMockups]);
 
+  // Variants state — must be declared BEFORE the AI_ART_STUDIO_CART_STATE useEffect
+  // that includes `variants` in its dependency array (avoids TDZ ReferenceError in production bundle)
+  const [variants, setVariants] = useState<any[]>([]);
+  const [variantError, setVariantError] = useState<string | null>(null);
+  const [variantsFetched, setVariantsFetched] = useState(false);
+
+  // #region agent log
+  (() => { try { const _v = variants; fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:1147',message:'PROBE_B: variants_accessible_before_useEffect',data:{type:typeof _v,len:Array.isArray(_v)?_v.length:'n/a'},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{}); } catch(e:any) { fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:1147',message:'PROBE_B: variants_TDZ_CONFIRMED',data:{error:e.message},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{}); } })();
+  // #endregion
   // Sync cart state with the parent page's Add to Cart button (storefront mode only)
   useEffect(() => {
     if (!isStorefront || runtimeMode === 'standalone') return;
@@ -1208,6 +1220,9 @@ export default function EmbedDesign() {
       },
     }, '*');
   }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, printifyMockups, printifyMockupImages, selectedMockupIndex, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants]);
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/4f0f05eb-80e6-4ca2-a297-be2dd99fe7b0',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'embed-design.tsx:1216',message:'PROBE_C: passed_useEffect_dep_array',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+  // #endregion
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -1477,10 +1492,6 @@ export default function EmbedDesign() {
       }
     }
   };
-
-  const [variants, setVariants] = useState<any[]>([]);
-  const [variantError, setVariantError] = useState<string | null>(null);
-  const [variantsFetched, setVariantsFetched] = useState(false);
 
   // Parse variants from URL params first
   useEffect(() => {
