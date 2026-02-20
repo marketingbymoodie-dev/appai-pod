@@ -122,29 +122,15 @@ function showLoginRequiredPopup() {
 
   function loadCartScript() {
     var CL = '[AI Art Studio Cart]';
-    var cartData = null;
-    var isUpdating = false;
-    var replaceDebounce = null;
-
-    function fetchCartData() {
-      return fetch('/cart.js', { headers: { 'Accept': 'application/json' } })
-        .then(function(response) {
-          if (!response.ok) throw new Error('Failed to fetch cart');
-          return response.json();
-        })
-        .then(function(data) {
-          cartData = data;
-          return cartData;
-        })
-        .catch(function(error) {
-          console.error(CL, 'Error fetching cart:', error);
-          return null;
-        });
-    }
 
     function getMockupUrl(item) {
       if (!item || !item.properties) return null;
       return item.properties['_mockup_url'] || item.properties['mockup_url'] || null;
+    }
+
+    function getDesignId(item) {
+      if (!item || !item.properties) return '';
+      return item.properties['_design_id'] || '';
     }
 
     function findCartElements() {
@@ -188,118 +174,157 @@ function showLoginRequiredPopup() {
           wrappers.forEach(function(w) {
             if (w.querySelector('img') && validWrappers.indexOf(w) === -1) validWrappers.push(w);
           });
-          if (validWrappers.length > 0) {
-            items = validWrappers;
-          }
+          if (validWrappers.length > 0) items = validWrappers;
         }
       }
 
       return items;
     }
 
-    function extractVariantId(element) {
-      var vid = element.getAttribute('data-variant-id') ||
-                element.getAttribute('data-id') ||
-                element.getAttribute('data-line-item-id');
+    function extractLineItemKey(el) {
+      return el.getAttribute('data-line-item-key') ||
+             el.getAttribute('data-key') ||
+             el.getAttribute('data-cart-item-key') || '';
+    }
+
+    function extractVariantId(el) {
+      var vid = el.getAttribute('data-variant-id') ||
+                el.getAttribute('data-id') ||
+                el.getAttribute('data-line-item-id');
       if (vid) return String(vid);
-      var input = element.querySelector('input[name*="variant"], input[data-variant-id]');
+      var input = el.querySelector('input[name*="variant"], input[data-variant-id]');
       if (input) return String(input.getAttribute('data-variant-id') || input.value);
-      var key = element.getAttribute('data-line-item-key') ||
-                element.getAttribute('data-key') ||
-                element.getAttribute('data-cart-item-key');
-      if (key && cartData && cartData.items) {
-        var match = cartData.items.find(function(i) { return i.key === key; });
-        if (match) return String(match.variant_id);
-      }
-      return null;
+      return '';
     }
 
-    function replaceImage(element, mockupUrl) {
-      var imgs = element.querySelectorAll('img');
-      var replaced = false;
-      imgs.forEach(function(img) {
-        if (img.dataset.aiMockupApplied === 'true' && img.src === mockupUrl) return;
-        if (!img.dataset.originalSrc) img.dataset.originalSrc = img.src;
-
-        img.src = mockupUrl;
-        img.srcset = '';
-        img.dataset.aiMockupApplied = 'true';
-        replaced = true;
-
-        if (!img.dataset.aiOnerror) {
-          img.dataset.aiOnerror = 'true';
-          img.addEventListener('error', function() {
-            if (img.dataset.aiRetried) return;
-            img.dataset.aiRetried = 'true';
-            console.warn(CL, 'Mockup image failed to load, retrying once:', mockupUrl.substring(0, 80));
-            setTimeout(function() { img.src = mockupUrl; }, 1000);
-          });
-        }
-      });
-      return replaced;
+    function extractRowText(el) {
+      var link = el.querySelector('a[href*="/products/"]');
+      var titleEl = link || el.querySelector('.cart-item__name, .cart__product-title, [class*="title"], [class*="name"], h2, h3, h4');
+      var title = titleEl ? (titleEl.textContent || '').trim().toLowerCase() : '';
+      var optionEl = el.querySelector('.cart-item__variant, .cart__meta, [class*="variant"], [class*="option"], dd, .product-option');
+      var options = optionEl ? (optionEl.textContent || '').trim().toLowerCase() : '';
+      return title + '||' + options;
     }
 
-    function doReplace() {
-      if (!cartData || !cartData.items || !cartData.items.length) return 0;
-
-      var hasAnyMockups = cartData.items.some(function(item) { return getMockupUrl(item); });
-      if (!hasAnyMockups) return 0;
-
-      var elements = findCartElements();
-      if (elements.length === 0) return -1;
-
-      var replacedCount = 0;
-
-      // Pass 1: try matching by variant ID or line key
-      var unmatchedElements = [];
-      elements.forEach(function(el) {
-        var vid = extractVariantId(el);
-        if (vid) {
-          var matches = cartData.items.filter(function(item) {
-            return String(item.variant_id) === vid && getMockupUrl(item);
-          });
-          if (matches.length > 0 && replaceImage(el, getMockupUrl(matches[0]))) {
-            replacedCount++;
-            return;
-          }
-        }
-        unmatchedElements.push(el);
-      });
-
-      // Pass 2: fallback to position matching for unmatched elements
-      if (replacedCount === 0) {
-        cartData.items.forEach(function(item, index) {
-          var mockupUrl = getMockupUrl(item);
-          if (mockupUrl && elements[index]) {
-            if (replaceImage(elements[index], mockupUrl)) replacedCount++;
-          }
+    function swapImage(el, mockupUrl, designId, variantId) {
+      var img = el.querySelector('img');
+      if (!img) return false;
+      var bust = designId ? '?v=' + designId : '?v=' + Date.now();
+      var finalUrl = mockupUrl + (mockupUrl.indexOf('?') === -1 ? bust : '&_cb=' + (designId || Date.now()));
+      if (img.dataset.aiMockupApplied === 'true' && img.src === finalUrl) return false;
+      if (!img.dataset.originalSrc) img.dataset.originalSrc = img.src;
+      img.src = finalUrl;
+      img.srcset = '';
+      img.loading = 'eager';
+      img.decoding = 'async';
+      img.dataset.aiMockupApplied = 'true';
+      console.log(CL, 'Swapped cart image for variant_id', variantId, '->', finalUrl.substring(0, 120));
+      if (!img.dataset.aiOnerror) {
+        img.dataset.aiOnerror = 'true';
+        img.addEventListener('error', function() {
+          if (img.dataset.aiRetried) return;
+          img.dataset.aiRetried = 'true';
+          console.warn(CL, 'Mockup load failed, retrying once:', finalUrl.substring(0, 80));
+          setTimeout(function() { img.src = finalUrl; }, 1000);
         });
       }
-
-      return replacedCount;
+      return true;
     }
 
-    function replaceCartImages(retryCount) {
-      if (isUpdating) return;
-      isUpdating = true;
-      var maxRetries = (typeof retryCount === 'number') ? retryCount : 5;
+    function runCartReplace() {
+      console.log(CL, 'Running cart image replacement...');
+      fetch('/cart.js', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function(res) {
+          if (!res.ok) throw new Error('Failed to fetch cart: ' + res.status);
+          return res.json();
+        })
+        .then(function(cart) {
+          if (!cart || !cart.items || !cart.items.length) {
+            console.log(CL, 'Cart empty or no items');
+            return;
+          }
 
-      fetchCartData().then(function() {
-        var result = doReplace();
+          // Build lookup maps from /cart.js data
+          var byKey = {};      // line-item key -> { mockupUrl, designId, variantId }
+          var byVariant = {};  // variant_id -> { mockupUrl, designId }
+          var byText = {};     // "title||options" -> { mockupUrl, designId, variantId }
+          var hasMockups = false;
 
-        if (result === -1 && maxRetries > 0) {
-          isUpdating = false;
-          var delays = [300, 600, 1200, 2000, 3000];
-          var delay = delays[5 - maxRetries] || 1000;
-          setTimeout(function() { replaceCartImages(maxRetries - 1); }, delay);
-          return;
-        }
+          cart.items.forEach(function(item) {
+            var mu = getMockupUrl(item);
+            if (!mu) return;
+            hasMockups = true;
+            var did = getDesignId(item);
+            var vid = String(item.variant_id);
+            var titleText = (item.title || '').toLowerCase();
+            var optionText = (item.variant_title || '').toLowerCase();
+            var textKey = titleText + '||' + optionText;
 
-        isUpdating = false;
-      }).catch(function() { isUpdating = false; });
+            if (item.key) byKey[item.key] = { mockupUrl: mu, designId: did, variantId: vid };
+            byVariant[vid] = { mockupUrl: mu, designId: did, variantId: vid };
+            byText[textKey] = { mockupUrl: mu, designId: did, variantId: vid };
+          });
+
+          if (!hasMockups) {
+            console.log(CL, 'No items with _mockup_url in cart');
+            return;
+          }
+          console.log(CL, 'Mockup map built — byKey:', Object.keys(byKey).length, 'byVariant:', Object.keys(byVariant).length, 'byText:', Object.keys(byText).length);
+
+          var elements = findCartElements();
+          if (elements.length === 0) {
+            console.log(CL, 'No cart line-item DOM rows found');
+            return;
+          }
+          console.log(CL, 'Found', elements.length, 'cart rows in DOM');
+
+          var replacedCount = 0;
+          elements.forEach(function(el) {
+            var match = null;
+
+            // Priority 1: line-item key (most reliable, used by Dawn/Shopify 2.0 themes)
+            var key = extractLineItemKey(el);
+            if (key && byKey[key]) {
+              match = byKey[key];
+            }
+
+            // Priority 2: variant_id from data attribute
+            if (!match) {
+              var vid = extractVariantId(el);
+              if (vid && byVariant[vid]) {
+                match = byVariant[vid];
+              }
+            }
+
+            // Priority 3: line-item key contains variant_id (format: "variant_id:hash")
+            if (!match && key) {
+              var keyVid = key.split(':')[0];
+              if (keyVid && byVariant[keyVid]) {
+                match = byVariant[keyVid];
+              }
+            }
+
+            // Priority 4: match by title + variant options text
+            if (!match) {
+              var rowText = extractRowText(el);
+              if (byText[rowText]) {
+                match = byText[rowText];
+              }
+            }
+
+            if (match) {
+              if (swapImage(el, match.mockupUrl, match.designId, match.variantId)) replacedCount++;
+            }
+          });
+
+          console.log(CL, 'Replaced', replacedCount, 'of', elements.length, 'cart images');
+        })
+        .catch(function(err) {
+          console.error(CL, 'Cart replace error:', err.message || err);
+        });
     }
 
-    // Fast path: use mockup URL stored in memory at add-to-cart time (no /cart.js fetch).
+    // Fast path: use mockup URL stored in memory at add-to-cart time (no /cart.js fetch)
     function fastReplace() {
       var m = window.__aiArtRecentMockup;
       if (!m) return false;
@@ -309,62 +334,35 @@ function showLoginRequiredPopup() {
       elements.forEach(function(el) {
         var vid = extractVariantId(el);
         if (!vid || vid === m.variantId) {
-          if (replaceImage(el, m.url)) hit = true;
+          if (swapImage(el, m.url, m.designId || '', m.variantId)) hit = true;
         }
       });
       if (hit) console.log(CL, 'Fast-replaced cart image from memory');
       return hit;
     }
-    // Expose so createDesignStudio can call it after Section Rendering API injection
     window.aiArtFastReplace = fastReplace;
 
-    function scheduleReplace() {
-      fastReplace(); // immediate pass — no fetch delay
-      clearTimeout(replaceDebounce);
-      replaceDebounce = setTimeout(function() { replaceCartImages(5); }, 250);
+    // Run on DOMContentLoaded, then again at 1s and 3s
+    function scheduleRuns() {
+      runCartReplace();
+      setTimeout(runCartReplace, 1000);
+      setTimeout(runCartReplace, 3000);
     }
 
-    // Initial run
-    setTimeout(function() { replaceCartImages(5); }, 500);
-
-    // Watch document.body for cart drawer injection (drawers are often body children)
-    var bodyObserver = new MutationObserver(function(mutations) {
-      var shouldUpdate = false;
-      for (var i = 0; i < mutations.length; i++) {
-        var m = mutations[i];
-        if (m.addedNodes.length > 0) {
-          for (var j = 0; j < m.addedNodes.length; j++) {
-            var node = m.addedNodes[j];
-            if (node.nodeType === 1) {
-              var el = node;
-              var isCart = (el.matches && (
-                el.matches('cart-drawer, [data-cart-drawer], .cart-drawer, [class*="cart"], [id*="cart"]') ||
-                el.querySelector('cart-drawer, [data-cart-drawer], .cart-drawer, [data-cart-item], .cart-item, [class*="cart-item"]')
-              ));
-              if (isCart) { shouldUpdate = true; break; }
-            }
-          }
-        }
-        if (shouldUpdate) break;
-      }
-      if (shouldUpdate) scheduleReplace();
-    });
-    if (document.body) {
-      bodyObserver.observe(document.body, { childList: true, subtree: true });
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', scheduleRuns);
     } else {
-      console.warn(CL, 'document.body not available yet — deferring MutationObserver');
-      document.addEventListener('DOMContentLoaded', function() {
-        if (document.body) bodyObserver.observe(document.body, { childList: true, subtree: true });
-      });
+      scheduleRuns();
     }
 
-    document.addEventListener('cart:updated', scheduleReplace);
+    // Re-run when Shopify themes signal cart changes
+    document.addEventListener('cart:updated', function() { setTimeout(runCartReplace, 300); });
     document.addEventListener('cart:refresh', function() {
-      fastReplace(); // immediate pass before the delayed full replace
-      setTimeout(function() { replaceCartImages(5); }, 400);
+      fastReplace();
+      setTimeout(runCartReplace, 400);
     });
     window.addEventListener('pageshow', function(e) {
-      if (e.persisted) setTimeout(function() { replaceCartImages(5); }, 500);
+      if (e.persisted) setTimeout(runCartReplace, 500);
     });
   }
   
@@ -919,7 +917,7 @@ function showLoginRequiredPopup() {
 
         // Store mockup URL immediately so fastReplace() can apply it without fetching /cart.js
         if (data.properties && data.properties['_mockup_url']) {
-          window.__aiArtRecentMockup = { variantId: String(data.variantId), url: data.properties['_mockup_url'] };
+          window.__aiArtRecentMockup = { variantId: String(data.variantId), url: data.properties['_mockup_url'], designId: data.properties['_design_id'] || '' };
         }
 
         if (!data.variantId) {
@@ -1036,7 +1034,7 @@ function showLoginRequiredPopup() {
         // Store mockup for instant cart drawer replacement
         var mockupUrl = payload.properties && payload.properties['_mockup_url'];
         if (mockupUrl) {
-          window.__aiArtRecentMockup = { variantId: String(payload.variantId), url: mockupUrl };
+          window.__aiArtRecentMockup = { variantId: String(payload.variantId), url: mockupUrl, designId: (payload.properties && payload.properties['_design_id']) || '' };
         }
 
         addToCart(payload.variantId, payload.quantity || 1, payload.properties || {})
