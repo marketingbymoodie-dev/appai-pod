@@ -694,6 +694,7 @@ function showLoginRequiredPopup() {
       if (!variantId) return Promise.reject(new Error('Missing variantId'));
 
       var body = { items: [{ id: Number(variantId), quantity: quantity || 1, properties: properties || {} }] };
+      console.log(B, '_mockup_url being sent:', properties && properties['_mockup_url'] ? properties['_mockup_url'] : '(none)');
       console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
 
       var controller = new AbortController();

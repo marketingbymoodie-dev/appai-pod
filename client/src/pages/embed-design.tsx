@@ -1151,6 +1151,16 @@ export default function EmbedDesign() {
   const [variantError, setVariantError] = useState<string | null>(null);
   const [variantsFetched, setVariantsFetched] = useState(false);
 
+  const getPreferredMockupUrl = useCallback((): string => {
+    const frontImage = printifyMockupImages.find(img => img.label === 'front');
+    if (frontImage?.url) return toAbsoluteImageUrl(frontImage.url);
+    if (printifyMockups.length > 0) return toAbsoluteImageUrl(printifyMockups[0]);
+    if (printifyMockupImages.length > 0 && printifyMockupImages[0]?.url) {
+      return toAbsoluteImageUrl(printifyMockupImages[0].url);
+    }
+    return '';
+  }, [printifyMockups, printifyMockupImages]);
+
   // Sync cart state with the parent page's Add to Cart button (storefront mode only)
   useEffect(() => {
     if (!isStorefront || runtimeMode === 'standalone') return;
@@ -1195,13 +1205,7 @@ export default function EmbedDesign() {
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
     }
 
-    let mockupFullUrl = '';
-    if (printifyMockups.length > 0) {
-      mockupFullUrl = toAbsoluteImageUrl(printifyMockups[selectedMockupIndex] || printifyMockups[0]);
-    } else if (printifyMockupImages.length > 0) {
-      const mu = printifyMockupImages[selectedMockupIndex]?.url || printifyMockupImages[0]?.url;
-      if (mu) mockupFullUrl = toAbsoluteImageUrl(mu);
-    }
+    const mockupFullUrl = getPreferredMockupUrl();
     if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
     if (selectedSize) properties['Size'] = selectedSize;
 
@@ -1217,7 +1221,7 @@ export default function EmbedDesign() {
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, printifyMockups, printifyMockupImages, selectedMockupIndex, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -1753,21 +1757,11 @@ export default function EmbedDesign() {
       // else: data URL too large for Shopify cart property (255 char limit) — omit
     }
 
-    // Get the rendered mockup URL if available
-    let mockupFullUrl = '';
-    if (printifyMockups.length > 0) {
-      mockupFullUrl = toAbsoluteImageUrl(printifyMockups[selectedMockupIndex] || printifyMockups[0]);
-    } else if (printifyMockupImages.length > 0) {
-      const mockupUrl = printifyMockupImages[selectedMockupIndex]?.url || printifyMockupImages[0]?.url;
-      if (mockupUrl) {
-        mockupFullUrl = toAbsoluteImageUrl(mockupUrl);
-      }
-    }
-
+    const mockupFullUrl = getPreferredMockupUrl();
     if (!mockupFullUrl) {
       console.warn('[Design Studio] No mockup URL available for cart. printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
     } else {
-      console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 100));
+      console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 120));
     }
 
     // Build line item properties for Printify fulfillment
