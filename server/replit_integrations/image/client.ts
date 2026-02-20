@@ -53,12 +53,20 @@ async function fetchJson(url: string, init: RequestInit) {
   }
 
   if (!res.ok) {
+    const requestId = res.headers.get("x-request-id") || json?.id || "unknown";
+    console.error("[Replicate] API error response:", {
+      status: res.status,
+      statusText: res.statusText,
+      requestId,
+      body: JSON.stringify(json).substring(0, 2000),
+      url: url.replace(/\/v1\/predictions\/.*/, "/v1/predictions/[redacted]"),
+    });
     const msg =
       json?.detail ||
       json?.error ||
       json?.message ||
       `HTTP ${res.status} from ${url}`;
-    throw new Error(`Replicate error: ${msg}`);
+    throw new Error(`Replicate error (status=${res.status} reqId=${requestId}): ${msg}`);
   }
   return json;
 }
@@ -148,7 +156,8 @@ export async function generateImageBase64(
   }
 
   console.log("[Replicate] Creating prediction with version:", version);
-  console.log("[Replicate] Input:", JSON.stringify(input, null, 2));
+  console.log("[Replicate] Input aspect_ratio:", input.aspect_ratio, "output_format:", input.output_format, "has_image_input:", !!input.image_input);
+  console.log("[Replicate] Prompt length:", input.prompt?.length, "first 200 chars:", input.prompt?.substring(0, 200));
 
   const created: ReplicatePrediction = await fetchJson(
     "https://api.replicate.com/v1/predictions",
@@ -172,9 +181,14 @@ export async function generateImageBase64(
   for (let i = 0; i < 120; i++) {
     if (prediction.status === "succeeded") break;
     if (prediction.status === "failed" || prediction.status === "canceled") {
-      console.error("[Replicate] Generation failed:", prediction.error);
+      console.error("[Replicate] Generation failed:", {
+        predictionId: prediction.id,
+        status: prediction.status,
+        error: prediction.error,
+        fullPrediction: JSON.stringify(prediction).substring(0, 2000),
+      });
       throw new Error(
-        `Replicate generation ${prediction.status}: ${JSON.stringify(prediction.error) || "Unknown error"}`
+        `Replicate generation ${prediction.status} (id=${prediction.id}): ${JSON.stringify(prediction.error) || "Unknown error"}`
       );
     }
 
