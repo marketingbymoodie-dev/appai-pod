@@ -113,10 +113,69 @@ async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
 }
 
 const MAX_RETRIES = 3;
+const MAX_MOCKUP_VIEWS = 4;
+const PREFERRED_LABELS = ["front", "left", "right", "close-up"];
 
 async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
-async function cacheMockupToStorage(printifyUrl: string, label: string): Promise<string | null> {
+/**
+ * Build a deterministic cache key for a single mockup view.
+ * Includes the design image hash, blueprint, provider, variant, and label
+ * so different designs/products never collide.
+ */
+function buildMockupCacheKey(
+  designImageUrl: string,
+  blueprintId: number,
+  providerId: number,
+  variantId: number,
+  label: string,
+): string {
+  const designHash = crypto.createHash("sha256").update(designImageUrl).digest("hex").substring(0, 12);
+  return `${designHash}_bp${blueprintId}_pr${providerId}_v${variantId}_${label}`;
+}
+
+/**
+ * Check if a cached mockup file exists on disk for the given key.
+ * Returns the served path if it does, null otherwise.
+ */
+function getCachedMockup(cacheKey: string): string | null {
+  const filename = `${cacheKey}.jpg`;
+  const filePath = path.join(getStorageDir(), "mockups", filename);
+  try {
+    fs.accessSync(filePath, fs.constants.F_OK);
+    return `/objects/mockups/${filename}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick up to MAX_MOCKUP_VIEWS images, preferring PREFERRED_LABELS in order.
+ */
+function selectPreferredViews(images: MockupImage[]): MockupImage[] {
+  const selected: MockupImage[] = [];
+  const used = new Set<number>();
+
+  for (const label of PREFERRED_LABELS) {
+    if (selected.length >= MAX_MOCKUP_VIEWS) break;
+    const idx = images.findIndex((img, i) => img.label === label && !used.has(i));
+    if (idx !== -1) {
+      selected.push(images[idx]);
+      used.add(idx);
+    }
+  }
+
+  for (let i = 0; i < images.length && selected.length < MAX_MOCKUP_VIEWS; i++) {
+    if (!used.has(i)) {
+      selected.push(images[i]);
+      used.add(i);
+    }
+  }
+
+  return selected;
+}
+
+async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Promise<string | null> {
   try {
     const response = await fetch(printifyUrl);
     if (!response.ok) {
@@ -127,9 +186,7 @@ async function cacheMockupToStorage(printifyUrl: string, label: string): Promise
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const hash = crypto.createHash("sha256").update(buffer).digest("hex").substring(0, 16);
-    const mockupId = `${hash}_${label}`;
-    const filename = `${mockupId}.jpg`;
+    const filename = `${cacheKey}.jpg`;
 
     const mockupsDir = path.join(getStorageDir(), "mockups");
     await fs.promises.mkdir(mockupsDir, { recursive: true });
@@ -145,13 +202,14 @@ async function cacheMockupToStorage(printifyUrl: string, label: string): Promise
 }
 
 async function cacheMockupImages(
-  mockupData: { urls: string[]; images: MockupImage[] }
+  mockupData: { urls: string[]; images: MockupImage[] },
+  cacheKeys: string[],
 ): Promise<{ urls: string[]; images: MockupImage[] }> {
   const cachedUrls: string[] = [];
   const cachedImages: MockupImage[] = [];
 
   const results = await Promise.allSettled(
-    mockupData.images.map((img) => cacheMockupToStorage(img.url, img.label))
+    mockupData.images.map((img, i) => cacheMockupToStorage(img.url, cacheKeys[i]))
   );
 
   for (let i = 0; i < mockupData.images.length; i++) {
@@ -416,6 +474,29 @@ export async function generatePrintifyMockup(
     };
   }
 
+  // --- Cache-first: check if all preferred views are already cached ---
+  const preferredCacheKeys = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map(
+    (label) => buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, label)
+  );
+  const cachedPaths = preferredCacheKeys.map(getCachedMockup);
+  const allCached = cachedPaths.every((p) => p !== null);
+
+  if (allCached) {
+    console.log(`[Mockup Cache] Full cache hit for ${MAX_MOCKUP_VIEWS} views — skipping Printify`);
+    const urls = cachedPaths as string[];
+    const images = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map((label, i) => ({
+      url: urls[i],
+      label,
+    }));
+    return {
+      success: true,
+      mockupUrls: urls,
+      mockupImages: images,
+      source: "printify",
+    };
+  }
+
+  // --- Cache miss: call Printify ---
   let productId: string | null = null;
 
   try {
@@ -483,7 +564,21 @@ export async function generatePrintifyMockup(
       }
     );
 
-    const cached = await cacheMockupImages(mockupData);
+    // Select up to 4 preferred views
+    const selected = selectPreferredViews(mockupData.images);
+    const selectedData = {
+      urls: selected.map((img) => img.url),
+      images: selected,
+    };
+
+    console.log(`[Mockup Cache] Selected ${selected.length} views:`, selected.map((s) => s.label).join(", "));
+
+    // Build cache keys for the selected views
+    const cacheKeys = selected.map((img) =>
+      buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label)
+    );
+
+    const cached = await cacheMockupImages(selectedData, cacheKeys);
 
     return {
       success: true,
