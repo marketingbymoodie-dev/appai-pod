@@ -134,15 +134,37 @@ function showLoginRequiredPopup() {
     }
 
     function findCartElements() {
-      var selectors = [
+      var items = [];
+      var isCartPage = window.location.pathname.includes('/cart');
+
+      if (isCartPage) {
+        // Strict selectors for the /cart page — no generic fallback
+        var cartPageSelectors = [
+          'tr[data-variant-id]',
+          'tr.cart__row',
+          '.cart-item',
+          '.cart__item'
+        ];
+        cartPageSelectors.forEach(function(sel) {
+          try {
+            document.querySelectorAll(sel).forEach(function(el) {
+              if (items.indexOf(el) === -1) items.push(el);
+            });
+          } catch(e) {}
+        });
+        console.log(CL, 'Cart rows found (strict mode):', items.length);
+        return items;
+      }
+
+      // Drawer context: broad selector list
+      var drawerSelectors = [
         '[data-cart-item]', '.cart-item', '.cart__item', '[class*="cart-item"]',
         'tr[data-variant-id]', 'tr.cart__row', '.line-item', '[data-line-item]',
         '.cart-drawer__item', '.mini-cart__item', '[data-mini-cart-item]',
         '[data-cart-drawer] [data-cart-item]', '.cart-drawer .cart-item',
         'cart-drawer-items [id^="CartDrawer-Item"]'
       ];
-      var items = [];
-      selectors.forEach(function(sel) {
+      drawerSelectors.forEach(function(sel) {
         try {
           document.querySelectorAll(sel).forEach(function(el) {
             if (items.indexOf(el) === -1) items.push(el);
@@ -150,6 +172,7 @@ function showLoginRequiredPopup() {
         } catch(e) {}
       });
 
+      // Drawer fallback: find the drawer container, then pick children with images
       if (items.length === 0) {
         var drawerSels = ['cart-drawer', '[data-cart-drawer]', '.cart-drawer', '#CartDrawer',
           '.mini-cart', '.side-cart', 'cart-notification', '[data-section-type="cart-drawer"]'];
@@ -161,12 +184,6 @@ function showLoginRequiredPopup() {
         if (!drawer) {
           drawer = document.querySelector('[class*="cart"][class*="drawer"]') ||
                    document.querySelector('[id*="cart"][id*="drawer"]');
-        }
-        if (!drawer && window.location.pathname.includes('/cart')) {
-          drawer = document.querySelector('form[action="/cart"]') ||
-                   document.querySelector('[data-cart-form]') ||
-                   document.querySelector('.cart') ||
-                   document.querySelector('main');
         }
         if (drawer) {
           var wrappers = drawer.querySelectorAll('li, [role="row"], [class*="item"]');
@@ -279,21 +296,33 @@ function showLoginRequiredPopup() {
           console.log(CL, 'Found', elements.length, 'cart rows in DOM');
 
           var replacedCount = 0;
-          elements.forEach(function(el) {
+          var debugCart = window.location.pathname.includes('/cart');
+          elements.forEach(function(el, idx) {
             var match = null;
+            var matchPath = 'no-match';
 
-            // Priority 1: line-item key (most reliable, used by Dawn/Shopify 2.0 themes)
             var key = extractLineItemKey(el);
+            var vid = extractVariantId(el);
+
+            if (debugCart) {
+              var rowImg = el.querySelector('img');
+              console.log(CL, '--- Row', idx, '---');
+              console.log(CL, '  text:', (el.innerText || '').replace(/\s+/g, ' ').substring(0, 120));
+              console.log(CL, '  lineItemKey:', key || '(none)');
+              console.log(CL, '  variantId:', vid || '(none)');
+              console.log(CL, '  img.src:', rowImg ? rowImg.src.substring(0, 120) : '(no img)');
+            }
+
+            // Priority 1: line-item key
             if (key && byKey[key]) {
               match = byKey[key];
+              matchPath = 'byKey';
             }
 
             // Priority 2: variant_id from data attribute
-            if (!match) {
-              var vid = extractVariantId(el);
-              if (vid && byVariant[vid]) {
-                match = byVariant[vid];
-              }
+            if (!match && vid && byVariant[vid]) {
+              match = byVariant[vid];
+              matchPath = 'byVariant';
             }
 
             // Priority 3: line-item key contains variant_id (format: "variant_id:hash")
@@ -301,6 +330,7 @@ function showLoginRequiredPopup() {
               var keyVid = key.split(':')[0];
               if (keyVid && byVariant[keyVid]) {
                 match = byVariant[keyVid];
+                matchPath = 'key-split';
               }
             }
 
@@ -309,11 +339,23 @@ function showLoginRequiredPopup() {
               var rowText = extractRowText(el);
               if (byText[rowText]) {
                 match = byText[rowText];
+                matchPath = 'byText';
               }
             }
 
+            if (debugCart) {
+              console.log(CL, '  matchPath:', matchPath, match ? ('-> variant ' + match.variantId) : '');
+            }
+
             if (match) {
-              if (swapImage(el, match.mockupUrl, match.designId, match.variantId)) replacedCount++;
+              var swapped = swapImage(el, match.mockupUrl, match.designId, match.variantId);
+              if (swapped) {
+                replacedCount++;
+              } else if (debugCart) {
+                var dbgImg = el.querySelector('img');
+                var reason = !dbgImg ? 'img missing' : (dbgImg.dataset.aiMockupApplied === 'true' ? 'already applied' : 'unknown');
+                console.log(CL, '  swapImage skipped:', reason);
+              }
             }
           });
 
