@@ -349,7 +349,14 @@ function showLoginRequiredPopup() {
       }
       if (shouldUpdate) scheduleReplace();
     });
-    bodyObserver.observe(document.body, { childList: true, subtree: true });
+    if (document.body) {
+      bodyObserver.observe(document.body, { childList: true, subtree: true });
+    } else {
+      console.warn(CL, 'document.body not available yet — deferring MutationObserver');
+      document.addEventListener('DOMContentLoaded', function() {
+        if (document.body) bodyObserver.observe(document.body, { childList: true, subtree: true });
+      });
+    }
 
     document.addEventListener('cart:updated', scheduleReplace);
     document.addEventListener('cart:refresh', function() {
@@ -1340,7 +1347,13 @@ function showLoginRequiredPopup() {
       const observer = new MutationObserver(() => {
         hideNativeAddToCart();
       });
-      observer.observe(document.body, { childList: true, subtree: true });
+      if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+        });
+      }
     }
     
     const productHandle = window.location.pathname.split('/products/')[1]?.split('?')[0]?.split('#')[0] || '';
