@@ -339,6 +339,11 @@ async function getProductMockups(
     }
 
     const product = await response.json();
+    console.log("PRINTIFY PRODUCT KEYS:", Object.keys(product));
+    console.log("BLUEPRINT ID:", product.blueprint_id);
+    console.log("PRINT PROVIDER ID:", product.print_provider_id);
+    console.log("PRINT AREAS:", JSON.stringify(product.print_areas, null, 2));
+    console.log("PLACEHOLDERS:", JSON.stringify(product.placeholders, null, 2));
     const mockupUrls: string[] = [];
     const mockupImages: MockupImage[] = [];
 
