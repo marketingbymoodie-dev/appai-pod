@@ -705,6 +705,16 @@ function showLoginRequiredPopup() {
           var json;
           try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
           if (!res.ok) throw new Error('Cart add failed: ' + ((json && (json.description || json.message)) || text || 'HTTP ' + res.status));
+
+          // After successful add, fetch full cart state for diagnostics
+          fetch('/cart.js', { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(cart) {
+              var lastItem = cart.items && cart.items.length > 0 ? cart.items[cart.items.length - 1] : null;
+              console.log(B, '/cart.js after add — item_count:', cart.item_count, 'last_item:', lastItem ? { title: lastItem.title, variant_id: lastItem.variant_id, has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url']) } : null);
+            })
+            .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
+
           return json;
         });
       }).catch(function(err) {
@@ -784,12 +794,28 @@ function showLoginRequiredPopup() {
         }, 300);
       }
 
-      // Update cart count badges
-      fetch('/cart.js').then(function(r) { return r.json(); }).then(function(cart) {
+      // Dispatch theme-agnostic events so any theme listening can react
+      document.dispatchEvent(new CustomEvent('cart:updated'));
+
+      // Update cart count badges and verify UI updated
+      fetch('/cart.js', { credentials: 'same-origin' }).then(function(r) { return r.json(); }).then(function(cart) {
         document.querySelectorAll('.cart-count, .cart-count-bubble, [data-cart-count]').forEach(function(el) {
           el.textContent = String(cart.item_count);
           el.style.display = cart.item_count > 0 ? '' : 'none';
         });
+
+        // Fallback: if cart has items but no drawer/notification opened after 2s,
+        // navigate to /cart so the user can see their item
+        if (cart.item_count > 0) {
+          setTimeout(function() {
+            var drawerVisible = document.querySelector('cart-drawer.active, cart-drawer [open], cart-notification.active');
+            var cartPage = window.location.pathname === '/cart';
+            if (!drawerVisible && !cartPage) {
+              console.log(B, 'Cart UI did not open — redirecting to /cart');
+              window.location.href = '/cart';
+            }
+          }, 2000);
+        }
       }).catch(function() {});
     }
 
