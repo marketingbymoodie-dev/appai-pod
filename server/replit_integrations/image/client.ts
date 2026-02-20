@@ -132,29 +132,48 @@ function mapToSupportedAspectRatio(aspectRatio?: string): string {
   return "9:16";
 }
 
+const PROMPT_MAX_LENGTH = 600;
+
 /**
- * Main helper: generate an image via Replicate and return base64 + mimeType.
+ * Strip the verbose canvas-requirements block injected by the route handler and
+ * replace it with a compact version that fits Nano Banana's context window better.
  */
-export async function generateImageBase64(
-  params: GenerateImageParams
-): Promise<{
-  mimeType: string;
-  data: string;
-}> {
-  const token = getReplicateToken();
-  const version = getReplicateModelVersion();
+function compressPrompt(raw: string): string {
+  // Remove everything between the "=== CRITICAL CANVAS REQUIREMENTS" header
+  // and the "=== ARTWORK DESCRIPTION ===" header (or "=== IMAGE CONTENT" as fallback).
+  let compressed = raw.replace(
+    /=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/,
+    ""
+  );
+  // Also strip any leftover section headers
+  compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
+  compressed = compressed.replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|$)/g, "");
 
-  // Nano Banana uses aspect_ratio (no resolution param - that's Pro only)
-  const input: Record<string, any> = {
-    prompt: params.prompt,
-    aspect_ratio: mapToSupportedAspectRatio(params.aspectRatio),
-    output_format: "png",
-  };
+  compressed = compressed.trim();
 
-  if (params.inputImageUrl) {
-    input.image_input = [params.inputImageUrl];
+  // Prepend a short, model-friendly version of the constraints
+  const shortConstraints =
+    "Full-bleed, edge-to-edge, no borders, no blank margins. " +
+    "Keep important elements away from edges (wraparound safe area). ";
+
+  compressed = shortConstraints + compressed;
+
+  // Hard truncate
+  if (compressed.length > PROMPT_MAX_LENGTH) {
+    compressed = compressed.substring(0, PROMPT_MAX_LENGTH);
   }
 
+  return compressed;
+}
+
+/**
+ * Run a single Replicate prediction and return the result.
+ */
+async function runPrediction(
+  token: string,
+  version: string,
+  input: Record<string, any>,
+): Promise<{ mimeType: string; data: string }> {
   console.log("[Replicate] Creating prediction with version:", version);
   console.log("[Replicate] Input aspect_ratio:", input.aspect_ratio, "output_format:", input.output_format, "has_image_input:", !!input.image_input);
   console.log("[Replicate] Prompt length:", input.prompt?.length, "first 200 chars:", input.prompt?.substring(0, 200));
@@ -167,10 +186,7 @@ export async function generateImageBase64(
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        version,
-        input,
-      }),
+      body: JSON.stringify({ version, input }),
     }
   );
 
@@ -198,9 +214,7 @@ export async function generateImageBase64(
       `https://api.replicate.com/v1/predictions/${prediction.id}`,
       {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       }
     );
   }
@@ -214,12 +228,59 @@ export async function generateImageBase64(
   const imageUrl = pickFirstImageUrl(prediction.output);
   if (!imageUrl) {
     console.error("[Replicate] Could not extract image URL from output:", prediction.output);
-    throw new Error(
-      "Replicate succeeded but did not return an image URL in output"
-    );
+    throw new Error("Replicate succeeded but did not return an image URL in output");
   }
 
   console.log("[Replicate] Extracted image URL:", imageUrl.substring(0, 100) + "...");
 
   return await urlToBase64(imageUrl);
+}
+
+/**
+ * Main helper: generate an image via Replicate and return base64 + mimeType.
+ * Retries up to 2 times on failure, cycling through fallback aspect ratios.
+ */
+export async function generateImageBase64(
+  params: GenerateImageParams
+): Promise<{
+  mimeType: string;
+  data: string;
+}> {
+  const token = getReplicateToken();
+  const version = getReplicateModelVersion();
+
+  const compressedPrompt = compressPrompt(params.prompt);
+  const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
+
+  // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4
+  const fallbackRatios = [requestedAspectRatio, "1:1", "3:4"];
+
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < fallbackRatios.length; attempt++) {
+    const aspectRatio = fallbackRatios[attempt];
+
+    if (attempt > 0) {
+      console.log(`[Replicate] Retry #${attempt} — switching aspect_ratio to "${aspectRatio}"`);
+    }
+
+    const input: Record<string, any> = {
+      prompt: compressedPrompt,
+      aspect_ratio: aspectRatio,
+      output_format: "png",
+    };
+
+    if (params.inputImageUrl) {
+      input.image_input = [params.inputImageUrl];
+    }
+
+    try {
+      return await runPrediction(token, version, input);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.error(`[Replicate] Attempt ${attempt + 1}/${fallbackRatios.length} failed:`, lastError.message);
+    }
+  }
+
+  throw lastError || new Error("All Replicate generation attempts failed");
 }
