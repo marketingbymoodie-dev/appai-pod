@@ -4,6 +4,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { getStorageDir } from "./replit_integrations/object_storage";
+import { uploadMockupToSupabase, getSupabasePublicUrl } from "./supabaseMockups";
 
 interface MockupRequest {
   blueprintId: number;
@@ -135,18 +136,24 @@ function buildMockupCacheKey(
 }
 
 /**
- * Check if a cached mockup file exists on disk for the given key.
- * Returns the served path if it does, null otherwise.
+ * Check if a cached mockup exists. Returns Supabase public URL if configured,
+ * otherwise the local served path. Returns null if not cached.
  */
 function getCachedMockup(cacheKey: string): string | null {
   const filename = `${cacheKey}.jpg`;
   const filePath = path.join(getStorageDir(), "mockups", filename);
   try {
     fs.accessSync(filePath, fs.constants.F_OK);
-    return `/objects/mockups/${filename}`;
   } catch {
     return null;
   }
+
+  // File exists locally. Return Supabase CDN URL if available.
+  const parts = cacheKey.split("_");
+  const designId = parts[0] || cacheKey;
+  const viewName = parts.slice(-1)[0] || "front";
+  const supabaseUrl = getSupabasePublicUrl(designId, viewName);
+  return supabaseUrl || `/objects/mockups/${filename}`;
 }
 
 /**
@@ -176,6 +183,10 @@ function selectPreferredViews(images: MockupImage[]): MockupImage[] {
 }
 
 async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Promise<string | null> {
+  const parts = cacheKey.split("_");
+  const designId = parts[0] || cacheKey;
+  const viewName = parts.slice(-1)[0] || "front";
+
   try {
     const response = await fetch(printifyUrl);
     if (!response.ok) {
@@ -185,16 +196,23 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-
     const filename = `${cacheKey}.jpg`;
 
+    // Always write to local disk (keeps getCachedMockup cache-first working)
     const mockupsDir = path.join(getStorageDir(), "mockups");
     await fs.promises.mkdir(mockupsDir, { recursive: true });
     await fs.promises.writeFile(path.join(mockupsDir, filename), buffer);
 
-    const cachedPath = `/objects/mockups/${filename}`;
-    console.log(`[Mockup Cache] Cached mockup: ${cachedPath}`);
-    return cachedPath;
+    // Upload to Supabase for public CDN URL
+    try {
+      const publicUrl = await uploadMockupToSupabase({ buffer, designId, viewName });
+      if (publicUrl) return publicUrl;
+    } catch (err: any) {
+      console.warn(`[Mockup Cache] Supabase upload failed (${designId}/${viewName}): ${err.message || err}`);
+    }
+
+    // Fallback: local served path
+    return `/objects/mockups/${filename}`;
   } catch (error) {
     console.warn("[Mockup Cache] Failed to cache mockup, using Printify URL as fallback:", error);
     return null;
