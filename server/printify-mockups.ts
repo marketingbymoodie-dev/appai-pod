@@ -136,8 +136,9 @@ function buildMockupCacheKey(
 }
 
 /**
- * Check if a cached mockup exists. Returns Supabase public URL if configured,
- * otherwise the local served path. Returns null if not cached.
+ * Check if a cached mockup exists on Supabase (via local disk marker).
+ * Only returns a URL when Supabase is configured — never a Railway /objects/ path.
+ * Returns null on cache miss so the caller re-fetches from Printify.
  */
 function getCachedMockup(cacheKey: string): string | null {
   const filename = `${cacheKey}.jpg`;
@@ -148,12 +149,10 @@ function getCachedMockup(cacheKey: string): string | null {
     return null;
   }
 
-  // File exists locally. Return Supabase CDN URL if available.
   const parts = cacheKey.split("_");
   const designId = parts[0] || cacheKey;
   const viewName = parts.slice(-1)[0] || "front";
-  const supabaseUrl = getSupabasePublicUrl(designId, viewName);
-  return supabaseUrl || `/objects/mockups/${filename}`;
+  return getSupabasePublicUrl(designId, viewName);
 }
 
 /**
@@ -211,10 +210,10 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
       console.warn(`[Mockup Cache] Supabase upload failed (${designId}/${viewName}): ${err.message || err}`);
     }
 
-    // Fallback: local served path
-    return `/objects/mockups/${filename}`;
+    // Supabase unavailable/failed — return null so caller falls back to Printify CDN URL
+    return null;
   } catch (error) {
-    console.warn("[Mockup Cache] Failed to cache mockup, using Printify URL as fallback:", error);
+    console.warn("[Mockup Cache] Download failed, falling back to Printify CDN URL");
     return null;
   }
 }
