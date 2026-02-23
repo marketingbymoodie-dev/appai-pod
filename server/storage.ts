@@ -14,6 +14,7 @@ import {
   designSkuMappings, type DesignSkuMapping, type InsertDesignSkuMapping,
   customizerDesigns, type CustomizerDesign, type InsertCustomizerDesign,
   customizerPages, type CustomizerPage, type InsertCustomizerPage,
+  publishedProducts, type PublishedProduct, type InsertPublishedProduct,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
@@ -126,6 +127,13 @@ export interface IStorage {
   updateCustomizerPage(id: string, updates: Partial<CustomizerPage>): Promise<CustomizerPage | undefined>;
   deleteCustomizerPage(id: string): Promise<void>;
   countCustomizerPages(shop: string): Promise<number>;
+
+  // Published Products (design → native Shopify product)
+  getPublishedProduct(shop: string, designId: string): Promise<PublishedProduct | undefined>;
+  createPublishedProduct(product: InsertPublishedProduct): Promise<PublishedProduct>;
+  updatePublishedProduct(id: string, updates: Partial<PublishedProduct>): Promise<PublishedProduct | undefined>;
+  countCustomerPublishedDesigns(shop: string, customerKey: string): Promise<number>;
+  getOldestCustomerPublishedDesign(shop: string, customerKey: string): Promise<PublishedProduct | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -665,6 +673,59 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .from(customizerPages)
       .where(eq(customizerPages.shop, shop));
     return result?.count ?? 0;
+  }
+
+  // Published Products
+  async getPublishedProduct(shop: string, designId: string): Promise<PublishedProduct | undefined> {
+    const [row] = await db
+      .select()
+      .from(publishedProducts)
+      .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.designId, designId)));
+    return row;
+  }
+
+  async createPublishedProduct(product: InsertPublishedProduct): Promise<PublishedProduct> {
+    const [row] = await db.insert(publishedProducts).values(product).returning();
+    return row;
+  }
+
+  async updatePublishedProduct(id: string, updates: Partial<PublishedProduct>): Promise<PublishedProduct | undefined> {
+    const [row] = await db
+      .update(publishedProducts)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(publishedProducts.id, id))
+      .returning();
+    return row;
+  }
+
+  async countCustomerPublishedDesigns(shop: string, customerKey: string): Promise<number> {
+    const [result] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(publishedProducts)
+      .where(
+        and(
+          eq(publishedProducts.shop, shop),
+          eq(publishedProducts.customerKey, customerKey),
+          eq(publishedProducts.status, "active")
+        )
+      );
+    return result?.count ?? 0;
+  }
+
+  async getOldestCustomerPublishedDesign(shop: string, customerKey: string): Promise<PublishedProduct | undefined> {
+    const [row] = await db
+      .select()
+      .from(publishedProducts)
+      .where(
+        and(
+          eq(publishedProducts.shop, shop),
+          eq(publishedProducts.customerKey, customerKey),
+          eq(publishedProducts.status, "active")
+        )
+      )
+      .orderBy(publishedProducts.createdAt)
+      .limit(1);
+    return row;
   }
 }
 

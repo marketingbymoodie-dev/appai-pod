@@ -8862,26 +8862,31 @@ ${textEdgeRestrictions}
     next();
   }
 
-  /** GET /api/proxy/customizer-pages — returns active pages for this shop */
+  /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
   app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
     const shop: string = (req as any).proxyShop;
     if (!shop) return res.status(400).json({ error: "Missing shop" });
 
-    const allPages = await storage.listCustomizerPages(shop);
-    const activePages = allPages
-      .filter((p) => p.status === "active")
-      .map((p) => ({
-        id: p.id,
-        handle: p.handle,
-        title: p.title,
-        baseVariantId: p.baseVariantId,
-        baseProductTitle: p.baseProductTitle,
-        baseVariantTitle: p.baseVariantTitle,
-        baseProductPrice: p.baseProductPrice,
-        status: p.status,
-      }));
+    const [allPages, installation] = await Promise.all([
+      storage.listCustomizerPages(shop),
+      storage.getShopifyInstallationByShop(shop),
+    ]);
 
-    return res.json({ pages: activePages });
+    const pages = allPages.map((p) => ({
+      id: p.id,
+      handle: p.handle,
+      title: p.title,
+      baseVariantId: p.baseVariantId,
+      baseProductTitle: p.baseProductTitle,
+      baseVariantTitle: p.baseVariantTitle,
+      baseProductPrice: p.baseProductPrice,
+      status: p.status,
+    }));
+
+    // Include fallback URL so embed can redirect disabled-page visitors
+    const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
+
+    return res.json({ pages, fallbackUrl });
   });
 
   /** POST /api/proxy/designs — create a customizer design (async generation) */
@@ -8937,6 +8942,224 @@ ${textEdgeRestrictions}
       mockupUrls: design.mockupUrls,
       errorMessage: design.errorMessage,
     });
+  });
+
+  /**
+   * POST /api/proxy/publish-design
+   *
+   * Creates a dedicated Shopify product for a completed design so that the
+   * cart/checkout thumbnail is a native Shopify product image (no hacks).
+   *
+   * Flow:
+   *  1. Verify proxy HMAC + shop
+   *  2. Load design from DB, verify shop match
+   *  3. Check for existing published product (idempotent)
+   *  4. Enforce 20-design limit per customerKey (archive oldest if exceeded)
+   *  5. Fetch base variant/product info from Shopify Admin API
+   *  6. Create Shopify product (active, not in collections) with mockup images
+   *  7. Save to published_products
+   *  8. Return { shopifyProductId, shopifyVariantId, shopifyProductHandle, designId }
+   */
+  app.post("/api/proxy/publish-design", proxyAuth, async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    if (!shop) return res.status(400).json({ error: "Missing shop" });
+
+    const { designId, customerKey, chosenMockupIndex } = req.body as {
+      designId?: string;
+      customerKey?: string;
+      chosenMockupIndex?: number;
+    };
+
+    if (!designId) return res.status(400).json({ error: "designId is required" });
+
+    // Load design
+    const design = await storage.getCustomizerDesign(designId);
+    if (!design) return res.status(404).json({ error: "Design not found" });
+    if (design.shop !== shop) return res.status(403).json({ error: "Access denied" });
+    if (design.status !== "READY") {
+      return res.status(400).json({ error: "Design is not ready yet. Please wait for generation to complete." });
+    }
+
+    // Idempotency: return existing published product if already done
+    const existing = await storage.getPublishedProduct(shop, designId);
+    if (existing && existing.status === "active") {
+      console.log(`[PublishDesign] Reusing existing product for design ${designId}`);
+      return res.json({
+        designId,
+        shopifyProductId: existing.shopifyProductId,
+        shopifyVariantId: existing.shopifyVariantId,
+        shopifyProductHandle: existing.shopifyProductHandle,
+        reused: true,
+      });
+    }
+
+    // Get Shopify access token
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation || installation.status !== "active") {
+      return res.status(400).json({ error: "Shopify store not connected" });
+    }
+    const accessToken: string = installation.accessToken;
+
+    // Enforce per-customer 20-design limit
+    const MAX_DESIGNS = 20;
+    if (customerKey) {
+      const designCount = await storage.countCustomerPublishedDesigns(shop, customerKey);
+      if (designCount >= MAX_DESIGNS) {
+        // Archive the oldest to make room
+        const oldest = await storage.getOldestCustomerPublishedDesign(shop, customerKey);
+        if (oldest) {
+          await storage.updatePublishedProduct(oldest.id, { status: "archived" });
+          console.log(`[PublishDesign] Archived oldest design ${oldest.designId} for customer ${customerKey}`);
+        }
+      }
+    }
+
+    // Resolve base variant → product info
+    const variantNum = parseInt(design.baseVariantId, 10);
+    if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId on design" });
+
+    const variantResult = await shopifyApiCall(
+      shop,
+      accessToken,
+      `variants/${variantNum}.json?fields=id,product_id,title,price,option1,option2,option3`
+    );
+    if (!variantResult.ok || !variantResult.data?.variant) {
+      return res.status(400).json({ error: `Base variant ${variantNum} not found` });
+    }
+    const baseVariant = variantResult.data.variant;
+
+    const productResult = await shopifyApiCall(
+      shop,
+      accessToken,
+      `products/${baseVariant.product_id}.json?fields=id,title,body_html`
+    );
+    const baseProduct = productResult.data?.product ?? {};
+
+    // Build mockup image list (up to 4, honouring chosenMockupIndex as first)
+    const allMockups: string[] = Array.isArray(design.mockupUrls)
+      ? (design.mockupUrls as string[]).slice(0, 4)
+      : design.mockupUrl
+      ? [design.mockupUrl]
+      : [];
+
+    // Put chosen mockup first
+    const idx = typeof chosenMockupIndex === "number" ? chosenMockupIndex : 0;
+    if (idx > 0 && idx < allMockups.length) {
+      const [chosen] = allMockups.splice(idx, 1);
+      allMockups.unshift(chosen);
+    }
+
+    // Unique product handle: base-handle + design prefix
+    const designPrefix = designId.slice(0, 8);
+    const baseSlug = String(baseProduct.title ?? "custom-product")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 40);
+    const productHandle = `${baseSlug}-${designPrefix}`;
+    const productTitle = `${baseProduct.title ?? "Custom Product"} — ${designPrefix}`;
+
+    // Build images array — use src URL; Shopify will download them
+    const images = allMockups
+      .filter((u) => typeof u === "string" && u.startsWith("https://"))
+      .map((u) => ({ src: u }));
+
+    // Build Shopify product payload
+    const productPayload: Record<string, any> = {
+      title: productTitle,
+      handle: productHandle,
+      body_html: `<p>${design.prompt}</p>`,
+      vendor: "AppAI Custom",
+      product_type: "Custom",
+      status: "active",
+      published: true,   // Must be true for storefront /cart/add.js to accept
+      tags: "appai-generated",
+      images,
+      variants: [
+        {
+          option1: baseVariant.title ?? "Default Title",
+          price: baseVariant.price ?? "0.00",
+          requires_shipping: true,
+          taxable: true,
+          inventory_management: null,
+          fulfillment_service: "manual",
+          inventory_policy: "deny",
+        },
+      ],
+      metafields: [
+        { namespace: "appai", key: "design_id",      value: designId,          type: "single_line_text_field" },
+        { namespace: "appai", key: "base_variant_id", value: design.baseVariantId, type: "single_line_text_field" },
+      ],
+    };
+
+    console.log(`[PublishDesign] Creating Shopify product for design ${designId} on shop ${shop}`);
+
+    const createResult = await shopifyApiCall(shop, accessToken, "products.json", {
+      method: "POST",
+      body: JSON.stringify({ product: productPayload }),
+    });
+
+    if (!createResult.ok || !createResult.data?.product) {
+      console.error(`[PublishDesign] Shopify product creation failed:`, createResult.error);
+      return res.status(500).json({
+        error: `Failed to create Shopify product: ${createResult.error ?? "unknown"}`,
+      });
+    }
+
+    const createdProduct = createResult.data.product;
+    const shopifyProductId = String(createdProduct.id);
+    const shopifyVariantId = String(createdProduct.variants?.[0]?.id ?? "");
+    const shopifyProductHandle: string = createdProduct.handle ?? productHandle;
+
+    if (!shopifyVariantId) {
+      console.error(`[PublishDesign] Created product has no variant:`, createdProduct);
+      return res.status(500).json({ error: "Created product has no purchasable variant" });
+    }
+
+    // Update customerKey on design record
+    if (customerKey && !design.customerKey) {
+      await storage.updateCustomizerDesign(designId, { customerKey });
+    }
+
+    // Save to DB
+    await storage.createPublishedProduct({
+      shop,
+      designId,
+      customerKey: customerKey ?? null,
+      shopifyProductId,
+      shopifyVariantId,
+      shopifyProductHandle,
+      baseVariantId: design.baseVariantId,
+      status: "active",
+    });
+
+    console.log(`[PublishDesign] Done — shopifyVariantId=${shopifyVariantId} for design ${designId}`);
+
+    return res.json({
+      designId,
+      shopifyProductId,
+      shopifyVariantId,
+      shopifyProductHandle,
+      reused: false,
+    });
+  });
+
+  // ── Shop settings (admin-auth'd) ────────────────────────────────────────
+  /** PATCH /api/appai/shop-settings — update per-shop customizer settings */
+  app.patch("/api/appai/shop-settings", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const { customizerHubUrl } = req.body as { customizerHubUrl?: string };
+
+    if (customizerHubUrl !== undefined) {
+      await storage.updateShopifyInstallation(installation.id, {
+        customizerHubUrl: customizerHubUrl || null,
+      } as any);
+    }
+
+    return res.json({ success: true });
   });
 
   return httpServer;

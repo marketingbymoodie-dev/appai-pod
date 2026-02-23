@@ -53,6 +53,8 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   status: text("status").notNull().default("active"),
   installedAt: timestamp("installed_at").defaultNow().notNull(),
   uninstalledAt: timestamp("uninstalled_at"),
+  // Per-shop customizer settings
+  customizerHubUrl: text("customizer_hub_url"), // Fallback redirect URL for disabled customizer pages; defaults to "/"
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
@@ -342,6 +344,7 @@ export const customizerDesigns = pgTable("customizer_designs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   shop: text("shop").notNull(),
   shopifyCustomerId: text("shopify_customer_id"), // optional — set if customer is logged in
+  customerKey: text("customer_key"),              // appai_uid (localStorage) or "shopify:<customerId>"
   baseProductId: text("base_product_id"),         // product type ID (our DB) or Shopify product ID
   baseVariantId: text("base_variant_id").notNull(), // Shopify variant ID for add-to-cart
   baseTitle: text("base_title"),
@@ -363,6 +366,33 @@ export const insertCustomizerDesignSchema = createInsertSchema(customizerDesigns
 });
 export type CustomizerDesign = typeof customizerDesigns.$inferSelect;
 export type InsertCustomizerDesign = z.infer<typeof insertCustomizerDesignSchema>;
+
+// Published Products — maps a customizer design to its dedicated Shopify product.
+// One product per design ensures mockup images are native Shopify product images,
+// giving correct cart/checkout thumbnails without any hacks.
+// The Shopify product is created with status="active", not in any collection, so
+// it is purchasable via direct variant ID but hidden from storefront navigation.
+export const publishedProducts = pgTable("published_products", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shop: text("shop").notNull(),
+  designId: text("design_id").notNull(),           // references customizerDesigns.id
+  customerKey: text("customer_key"),               // same key as customizerDesigns.customerKey
+  shopifyProductId: text("shopify_product_id").notNull(),
+  shopifyVariantId: text("shopify_variant_id").notNull(), // the purchasable variant for /cart/add.js
+  shopifyProductHandle: text("shopify_product_handle"),
+  baseVariantId: text("base_variant_id").notNull(), // the original base variant
+  status: text("status").notNull().default("active"), // active | archived
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertPublishedProductSchema = createInsertSchema(publishedProducts).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type PublishedProduct = typeof publishedProducts.$inferSelect;
+export type InsertPublishedProduct = z.infer<typeof insertPublishedProductSchema>;
 
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {

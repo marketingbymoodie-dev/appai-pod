@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
-  ToggleLeft, ToggleRight, AlertTriangle, Wand2,
+  ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save,
 } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { Merchant } from "@shared/schema";
@@ -72,6 +72,9 @@ export default function AdminCustomizerPages() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
 
+  // Hub URL (fallback for disabled pages)
+  const [hubUrl, setHubUrl] = useState("");
+
   // Form state
   const [formTitle, setFormTitle] = useState("");
   const [formHandle, setFormHandle] = useState("");
@@ -83,6 +86,26 @@ export default function AdminCustomizerPages() {
   const { data: pagesData, isLoading: pagesLoading } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
     enabled: !!merchant,
+    onSuccess: (data: PagesResponse) => {
+      // Initialise hub URL from server if not yet touched
+      if (!hubUrl && (data as any).hubUrl) setHubUrl((data as any).hubUrl);
+    },
+  } as any);
+
+  const hubUrlMutation = useMutation({
+    mutationFn: async (url: string) => {
+      const res = await apiRequest("PATCH", "/api/appai/shop-settings", {
+        customizerHubUrl: url,
+        shopDomain,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Saved", description: "Fallback URL updated." });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
   });
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
@@ -451,9 +474,48 @@ export default function AdminCustomizerPages() {
               <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">3</span>
               <div>
                 <p className="font-medium">Visit the storefront page</p>
-                <p className="text-muted-foreground">The AppAI embed auto-mounts the customizer on <code className="bg-muted px-1 rounded">/pages/your-handle</code> — no theme block or App URL setting needed.</p>
+                <p className="text-muted-foreground">
+                  The AppAI embed auto-mounts the customizer on{" "}
+                  <code className="bg-muted px-1 rounded">/pages/your-handle</code>.
+                  Customers click <em>"Create product &amp; add to cart"</em> — a dedicated Shopify product
+                  is created per design so cart and checkout thumbnails are native.
+                </p>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Hub / Fallback URL */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Disabled Page Fallback</CardTitle>
+            <CardDescription>
+              Where to redirect visitors if a customizer page is disabled. Defaults to /.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex gap-2">
+              <Input
+                placeholder="/collections/custom-products"
+                value={hubUrl}
+                onChange={(e) => setHubUrl(e.target.value)}
+                className="flex-1"
+              />
+              <Button
+                variant="outline"
+                onClick={() => hubUrlMutation.mutate(hubUrl)}
+                disabled={hubUrlMutation.isPending}
+              >
+                {hubUrlMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Use a relative path (e.g. <code className="bg-muted px-1 rounded">/collections/all</code>) or full URL.
+            </p>
           </CardContent>
         </Card>
       </div>
