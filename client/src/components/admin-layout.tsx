@@ -28,7 +28,8 @@ import {
   LogOut,
   Store,
   Image,
-  ShoppingCart
+  ShoppingCart,
+  LayoutTemplate,
 } from "lucide-react";
 import type { Merchant } from "@shared/schema";
 
@@ -38,6 +39,7 @@ interface AdminLayoutProps {
 
 const menuItems = [
   { title: "Dashboard", url: "/admin", icon: BarChart3 },
+  { title: "Customizer Pages", url: "/admin/customizer-pages", icon: LayoutTemplate },
   { title: "Products", url: "/admin/products", icon: Package },
   { title: "Create Product", url: "/admin/create-product", icon: Plus },
   { title: "Styles", url: "/admin/styles", icon: Palette },

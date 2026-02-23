@@ -13,6 +13,7 @@ import {
   sharedDesigns, type SharedDesign, type InsertSharedDesign,
   designSkuMappings, type DesignSkuMapping, type InsertDesignSkuMapping,
   customizerDesigns, type CustomizerDesign, type InsertCustomizerDesign,
+  customizerPages, type CustomizerPage, type InsertCustomizerPage,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
@@ -116,6 +117,15 @@ export interface IStorage {
   createCustomizerDesign(design: InsertCustomizerDesign): Promise<CustomizerDesign>;
   getCustomizerDesign(id: string): Promise<CustomizerDesign | undefined>;
   updateCustomizerDesign(id: string, updates: Partial<CustomizerDesign>): Promise<CustomizerDesign | undefined>;
+
+  // Customizer Pages
+  listCustomizerPages(shop: string): Promise<CustomizerPage[]>;
+  getCustomizerPage(id: string): Promise<CustomizerPage | undefined>;
+  getCustomizerPageByHandle(shop: string, handle: string): Promise<CustomizerPage | undefined>;
+  createCustomizerPage(page: InsertCustomizerPage): Promise<CustomizerPage>;
+  updateCustomizerPage(id: string, updates: Partial<CustomizerPage>): Promise<CustomizerPage | undefined>;
+  deleteCustomizerPage(id: string): Promise<void>;
+  countCustomizerPages(shop: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -607,6 +617,54 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .where(eq(customizerDesigns.id, id))
       .returning();
     return row;
+  }
+
+  // Customizer Pages
+  async listCustomizerPages(shop: string): Promise<CustomizerPage[]> {
+    return db
+      .select()
+      .from(customizerPages)
+      .where(eq(customizerPages.shop, shop))
+      .orderBy(customizerPages.createdAt);
+  }
+
+  async getCustomizerPage(id: string): Promise<CustomizerPage | undefined> {
+    const [row] = await db.select().from(customizerPages).where(eq(customizerPages.id, id));
+    return row;
+  }
+
+  async getCustomizerPageByHandle(shop: string, handle: string): Promise<CustomizerPage | undefined> {
+    const [row] = await db
+      .select()
+      .from(customizerPages)
+      .where(and(eq(customizerPages.shop, shop), eq(customizerPages.handle, handle)));
+    return row;
+  }
+
+  async createCustomizerPage(page: InsertCustomizerPage): Promise<CustomizerPage> {
+    const [row] = await db.insert(customizerPages).values(page).returning();
+    return row;
+  }
+
+  async updateCustomizerPage(id: string, updates: Partial<CustomizerPage>): Promise<CustomizerPage | undefined> {
+    const [row] = await db
+      .update(customizerPages)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(customizerPages.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteCustomizerPage(id: string): Promise<void> {
+    await db.delete(customizerPages).where(eq(customizerPages.id, id));
+  }
+
+  async countCustomizerPages(shop: string): Promise<number> {
+    const [result] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(customizerPages)
+      .where(eq(customizerPages.shop, shop));
+    return result?.count ?? 0;
   }
 }
 

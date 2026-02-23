@@ -307,6 +307,34 @@ export const insertDesignSkuMappingSchema = createInsertSchema(designSkuMappings
 export type DesignSkuMapping = typeof designSkuMappings.$inferSelect;
 export type InsertDesignSkuMapping = z.infer<typeof insertDesignSkuMappingSchema>;
 
+// Customizer Pages — merchant-created pages that auto-mount the customizer via the App Embed.
+// Each page is a real Shopify Page with a predetermined base product/variant.
+// The App Embed script detects the URL handle and mounts the customizer UI automatically.
+export const customizerPages = pgTable("customizer_pages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shop: text("shop").notNull(),
+  shopifyPageId: text("shopify_page_id"),          // Shopify Admin page ID for updates/deletes
+  handle: text("handle").notNull(),                // e.g. "customize-tumbler" → /pages/customize-tumbler
+  title: text("title").notNull(),
+  baseProductId: text("base_product_id"),
+  baseVariantId: text("base_variant_id").notNull(),
+  baseProductTitle: text("base_product_title"),    // cached display title
+  baseVariantTitle: text("base_variant_title"),    // cached variant title (size/color)
+  baseProductPrice: text("base_product_price"),    // cached price string
+  productTypeId: integer("product_type_id"),       // links to our product type for generation
+  status: text("status").notNull().default("active"),  // active | disabled
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCustomizerPageSchema = createInsertSchema(customizerPages).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type CustomizerPage = typeof customizerPages.$inferSelect;
+export type InsertCustomizerPage = z.infer<typeof insertCustomizerPageSchema>;
+
 // Customizer designs — standalone design records created from the /pages/appai-customize page.
 // These are NOT tied to the existing `designs` table (which requires a logged-in customer).
 // Status lifecycle: GENERATING → READY | FAILED

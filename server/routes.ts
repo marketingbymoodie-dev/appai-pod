@@ -9,7 +9,9 @@ import { removeBackground } from "@imgly/background-removal-node";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
-import { registerShopifyRoutes, registerCartScript } from "./shopify";
+import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
+import { getPageLimit, canCreatePage } from "./customizer-plans";
+import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
@@ -8524,6 +8526,418 @@ ${textEdgeRestrictions}
   setInterval(() => {
     runDesignSkuCleanup().catch((e: Error) => console.error("[Design SKU Cleanup] Interval error:", e));
   }, 6 * 60 * 60 * 1000);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CUSTOMIZER PAGES — Admin API (requires Shopify JWT auth)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Helper: resolve authenticated merchant + installation from JWT + shopDomain.
+   * Pattern mirrors existing admin endpoints (e.g. POST /api/shopify/products).
+   */
+  async function resolveInstallation(req: any): Promise<{
+    ok: true; merchant: any; installation: any;
+  } | { ok: false; status: number; error: string }> {
+    const userId = req.user?.claims?.sub;
+    if (!userId) return { ok: false, status: 401, error: "Not authenticated" };
+
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return { ok: false, status: 403, error: "Merchant not found" };
+
+    const shopDomain: string | undefined = req.body?.shopDomain ?? req.query?.shopDomain;
+    if (!shopDomain) {
+      // Fall back to the first active installation for this merchant
+      const installations = await storage.getShopifyInstallationsByMerchant?.(merchant.id) ?? [];
+      const active = installations.find((i: any) => i.status === "active");
+      if (!active) return { ok: false, status: 400, error: "No active Shopify store connected" };
+      if (active.merchantId && active.merchantId !== merchant.id) {
+        return { ok: false, status: 403, error: "Store belongs to another merchant" };
+      }
+      return { ok: true, merchant, installation: active };
+    }
+
+    const installation = await storage.getShopifyInstallationByShop(shopDomain);
+    if (!installation || installation.status !== "active") {
+      return { ok: false, status: 400, error: "Shopify store not connected or not active" };
+    }
+    if (installation.merchantId && installation.merchantId !== merchant.id) {
+      return { ok: false, status: 403, error: "Store belongs to another merchant" };
+    }
+    // Lazily link unlinked installations
+    if (!installation.merchantId) {
+      await storage.updateShopifyInstallation(installation.id, { merchantId: merchant.id });
+    }
+    return { ok: true, merchant, installation };
+  }
+
+  /** GET /api/appai/customizer-pages */
+  app.get("/api/appai/customizer-pages", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const [pages, currentCount] = await Promise.all([
+      storage.listCustomizerPages(shop),
+      storage.countCustomizerPages(shop),
+    ]);
+
+    const planTier: string = merchant.subscriptionTier ?? "free";
+    const limit = getPageLimit(planTier);
+
+    return res.json({ pages, limit, count: currentCount, planTier });
+  });
+
+  /** POST /api/appai/customizer-pages */
+  app.post("/api/appai/customizer-pages", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const { title, handle, baseVariantId } = req.body as {
+      title?: string; handle?: string; baseVariantId?: string;
+    };
+
+    if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
+    if (!handle?.trim()) return res.status(400).json({ error: "Handle is required" });
+    if (!baseVariantId) return res.status(400).json({ error: "baseVariantId is required" });
+
+    // Validate handle format
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(handle)) {
+      return res.status(400).json({ error: "Handle must be lowercase letters, numbers, and hyphens only" });
+    }
+
+    // Uniqueness check
+    const existing = await storage.getCustomizerPageByHandle(shop, handle);
+    if (existing) return res.status(409).json({ error: `Handle "${handle}" is already in use` });
+
+    // Plan limit check
+    const currentCount = await storage.countCustomizerPages(shop);
+    const planTier: string = merchant.subscriptionTier ?? "free";
+    const { allowed, limit } = await canCreatePage(planTier, currentCount);
+    if (!allowed) {
+      return res.status(402).json({
+        error: `Plan limit reached. Your ${planTier} plan allows ${limit} customizer page${limit === 1 ? "" : "s"}. Upgrade to create more.`,
+        limit,
+        currentCount,
+        planTier,
+      });
+    }
+
+    // Resolve variant → product info via Admin API
+    const variantNum = parseInt(String(baseVariantId).replace(/\D/g, ""), 10);
+    if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId" });
+
+    const variantResult = await shopifyApiCall(
+      shop,
+      installation.accessToken,
+      `variants/${variantNum}.json?fields=id,product_id,title,price`,
+    );
+    if (!variantResult.ok || !variantResult.data?.variant) {
+      return res.status(400).json({ error: `Variant ${baseVariantId} not found in this store` });
+    }
+    const variant = variantResult.data.variant;
+
+    const productResult = await shopifyApiCall(
+      shop,
+      installation.accessToken,
+      `products/${variant.product_id}.json?fields=id,title`,
+    );
+    const productTitle: string = productResult.data?.product?.title ?? "";
+
+    // Create Shopify Page
+    const pageBody = await shopifyApiCall(
+      shop,
+      installation.accessToken,
+      "pages.json",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          page: {
+            title: title.trim(),
+            handle: handle.trim(),
+            body_html: "<p>Loading customizer…</p>",
+            published: true,
+          },
+        }),
+      }
+    );
+    if (!pageBody.ok || !pageBody.data?.page?.id) {
+      return res.status(500).json({ error: `Failed to create Shopify page: ${pageBody.error ?? "unknown error"}` });
+    }
+    const shopifyPage = pageBody.data.page;
+
+    // Save DB record
+    const page = await storage.createCustomizerPage({
+      shop,
+      shopifyPageId: String(shopifyPage.id),
+      handle: handle.trim(),
+      title: title.trim(),
+      baseVariantId: String(variantNum),
+      baseProductId: String(variant.product_id),
+      baseProductTitle: productTitle,
+      baseVariantTitle: variant.title ?? "",
+      baseProductPrice: variant.price ?? "",
+      status: "active",
+    });
+
+    return res.status(201).json({
+      page,
+      storefrontUrl: `/pages/${page.handle}`,
+    });
+  });
+
+  /** PATCH /api/appai/customizer-pages/:id */
+  app.patch("/api/appai/customizer-pages/:id", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const dbPage = await storage.getCustomizerPage(req.params.id);
+    if (!dbPage || dbPage.shop !== shop) return res.status(404).json({ error: "Page not found" });
+
+    const updates: Partial<CustomizerPage> = {};
+
+    if (req.body.title !== undefined) {
+      updates.title = String(req.body.title).trim();
+    }
+    if (req.body.status !== undefined) {
+      const s = req.body.status;
+      if (s !== "active" && s !== "disabled") {
+        return res.status(400).json({ error: 'Status must be "active" or "disabled"' });
+      }
+      updates.status = s;
+    }
+    if (req.body.baseVariantId !== undefined) {
+      const variantNum = parseInt(String(req.body.baseVariantId).replace(/\D/g, ""), 10);
+      if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId" });
+      const variantResult = await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `variants/${variantNum}.json?fields=id,product_id,title,price`,
+      );
+      if (!variantResult.ok || !variantResult.data?.variant) {
+        return res.status(400).json({ error: `Variant ${req.body.baseVariantId} not found in this store` });
+      }
+      const v = variantResult.data.variant;
+      updates.baseVariantId = String(variantNum);
+      updates.baseProductId = String(v.product_id);
+      updates.baseVariantTitle = v.title ?? "";
+      updates.baseProductPrice = v.price ?? "";
+    }
+
+    // Sync title to Shopify page if changed
+    if (updates.title && dbPage.shopifyPageId) {
+      await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `pages/${dbPage.shopifyPageId}.json`,
+        { method: "PUT", body: JSON.stringify({ page: { title: updates.title } }) }
+      );
+    }
+
+    const updated = await storage.updateCustomizerPage(dbPage.id, updates);
+    return res.json({ page: updated });
+  });
+
+  /** DELETE /api/appai/customizer-pages/:id */
+  app.delete("/api/appai/customizer-pages/:id", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const dbPage = await storage.getCustomizerPage(req.params.id);
+    if (!dbPage || dbPage.shop !== shop) return res.status(404).json({ error: "Page not found" });
+
+    // Delete Shopify page (best-effort)
+    if (dbPage.shopifyPageId) {
+      await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `pages/${dbPage.shopifyPageId}.json`,
+        { method: "DELETE" }
+      ).catch((e: Error) => console.warn("[Customizer Pages] Could not delete Shopify page:", e.message));
+    }
+
+    await storage.deleteCustomizerPage(dbPage.id);
+    return res.json({ success: true });
+  });
+
+  /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
+  // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
+  app.get("/api/appai/blanks", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    try {
+      const productTypes = await storage.getActiveProductTypes();
+      const blanks = productTypes
+        .filter((pt: any) => pt.shopifyProductId)
+        .map((pt: any) => ({
+          productTypeId: pt.id,
+          productId: pt.shopifyProductId,
+          title: pt.name,
+          imageUrl: pt.mockupImageUrl ?? null,
+        }));
+
+      // Enrich with Shopify variant data for the first active product
+      const enriched: any[] = [];
+      for (const blank of blanks) {
+        if (!blank.productId) continue;
+        const pResult = await shopifyApiCall(
+          shop,
+          installation.accessToken,
+          `products/${blank.productId}.json?fields=id,title,variants,images`,
+        );
+        if (!pResult.ok || !pResult.data?.product) continue;
+        const p = pResult.data.product;
+        enriched.push({
+          ...blank,
+          title: p.title,
+          variants: (p.variants ?? []).map((v: any) => ({
+            id: String(v.id),
+            title: v.title,
+            price: v.price,
+            sku: v.sku,
+          })),
+          imageUrl: p.images?.[0]?.src ?? blank.imageUrl,
+        });
+      }
+      return res.json({ blanks: enriched });
+    } catch (err: any) {
+      console.error("[/api/appai/blanks]", err);
+      return res.status(500).json({ error: "Failed to load blanks" });
+    }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // APP PROXY — Storefront → Backend (HMAC-verified, no CORS issues)
+  //
+  // Shopify rewrites /apps/appai/<path> to /api/proxy/<path>?shop=...&signature=...
+  // We verify the signature then dispatch to the appropriate handler.
+  // Responses must be JSON (or Liquid). We return JSON.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function verifyProxySignature(query: Record<string, string>): boolean {
+    const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET ?? "";
+    if (!SHOPIFY_API_SECRET) return false;
+    const { signature, ...rest } = query;
+    if (!signature) return false;
+    // Sort keys, join as key=value with NO separator between pairs
+    const message = Object.keys(rest)
+      .sort()
+      .map((k) => `${k}=${rest[k]}`)
+      .join("");
+    const computed = crypto
+      .createHmac("sha256", SHOPIFY_API_SECRET)
+      .update(message)
+      .digest("hex");
+    try {
+      return crypto.timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(signature, "hex"));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Middleware that verifies the Shopify App Proxy HMAC and attaches req.proxyShop */
+  function proxyAuth(req: Request, res: Response, next: Function) {
+    const query = req.query as Record<string, string>;
+    if (!verifyProxySignature(query)) {
+      // In dev mode (no secret configured) allow through for local testing
+      if (process.env.NODE_ENV === "production") {
+        return res.status(401).json({ error: "Invalid proxy signature" });
+      }
+    }
+    (req as any).proxyShop = query.shop ?? "";
+    next();
+  }
+
+  /** GET /api/proxy/customizer-pages — returns active pages for this shop */
+  app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    if (!shop) return res.status(400).json({ error: "Missing shop" });
+
+    const allPages = await storage.listCustomizerPages(shop);
+    const activePages = allPages
+      .filter((p) => p.status === "active")
+      .map((p) => ({
+        id: p.id,
+        handle: p.handle,
+        title: p.title,
+        baseVariantId: p.baseVariantId,
+        baseProductTitle: p.baseProductTitle,
+        baseVariantTitle: p.baseVariantTitle,
+        baseProductPrice: p.baseProductPrice,
+        status: p.status,
+      }));
+
+    return res.json({ pages: activePages });
+  });
+
+  /** POST /api/proxy/designs — create a customizer design (async generation) */
+  app.post("/api/proxy/designs", proxyAuth, async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    if (!shop) return res.status(400).json({ error: "Missing shop" });
+
+    const { baseVariantId, prompt, options } = req.body as {
+      baseVariantId?: string;
+      prompt?: string;
+      options?: Record<string, any>;
+    };
+
+    if (!baseVariantId) return res.status(400).json({ error: "baseVariantId is required" });
+    if (!prompt?.trim()) return res.status(400).json({ error: "prompt is required" });
+
+    const { productTypeId, sizeId, colorId, stylePreset, pageHandle } = options ?? {};
+
+    // Proxy to existing design creation logic
+    const appHost = process.env.APP_URL || `http://127.0.0.1:${process.env.PORT ?? 5000}`;
+    const design = await storage.createCustomizerDesign({
+      shop,
+      baseVariantId: String(baseVariantId),
+      prompt: prompt.trim(),
+      options: { productTypeId, sizeId, colorId, stylePreset, pageHandle },
+      status: "GENERATING",
+    });
+
+    // Kick off background generation (same as existing storefront route)
+    runCustomizerGeneration(
+      design.id,
+      { shop, productTypeId, sizeId, colorId, prompt: prompt.trim(), stylePreset },
+      appHost
+    ).catch((e: Error) => console.error("[Proxy Design] Background gen error:", e));
+
+    return res.json({ designId: design.id, status: design.status });
+  });
+
+  /** GET /api/proxy/designs/:id — poll design status */
+  app.get("/api/proxy/designs/:id", proxyAuth, async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    const { id } = req.params;
+
+    const design = await storage.getCustomizerDesign(id);
+    if (!design) return res.status(404).json({ error: "Design not found" });
+    if (design.shop !== shop) return res.status(403).json({ error: "Access denied" });
+
+    return res.json({
+      designId: design.id,
+      status: design.status,
+      artworkUrl: design.artworkUrl,
+      mockupUrl: design.mockupUrl,
+      mockupUrls: design.mockupUrls,
+      errorMessage: design.errorMessage,
+    });
+  });
 
   return httpServer;
 }

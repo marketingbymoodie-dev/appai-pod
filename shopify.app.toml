@@ -10,7 +10,16 @@ automatically_update_urls_on_dev = true
 api_version = "2024-10"
 
 [access_scopes]
-scopes = "read_products,read_themes,write_products,write_themes"
+# write_content required for creating/updating Shopify Pages via Admin API
+scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content"
+
+[app_proxy]
+# Storefront → backend proxy. No CORS, no hardcoded app URLs in theme extension.
+# Storefront calls /apps/appai/* → our backend /api/proxy/*
+# Shopify adds shop, timestamp, signature query params automatically.
+prefix = "apps"
+subpath = "appai"
+url = "https://appai-pod-production.up.railway.app/api/proxy"
 
 [auth]
 redirect_urls = [
