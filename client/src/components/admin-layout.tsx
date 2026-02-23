@@ -1,6 +1,8 @@
+import { useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
+import { isShopifyEmbedded } from "@/lib/shopify";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,13 +58,16 @@ const customerLinks = [
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const { isAuthenticated, isLoading: authLoading, user, logout } = useAuth();
   const [location] = useLocation();
+  const embedded = isShopifyEmbedded();
 
+  // In embedded Shopify Admin the Shopify JWT is the auth — enable regardless of app-level auth
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
-    enabled: isAuthenticated,
+    enabled: isAuthenticated || embedded,
   });
 
-  if (authLoading || merchantLoading) {
+  // Show skeleton while auth or (in embedded mode) merchant data is loading
+  if (authLoading || (embedded && merchantLoading)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Skeleton className="h-32 w-32 rounded-full" />
@@ -70,11 +75,17 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     );
   }
 
-  if (!isAuthenticated) {
+  // Non-embedded: redirect to landing if not logged in via app auth
+  if (!isAuthenticated && !embedded) {
     window.location.href = "/";
-
     return null;
   }
+
+  // Call App Bridge navigate to keep the Shopify Admin URL bar in sync with wouter
+  const handleNavClick = (path: string) => {
+    const shopify = (window as any).shopify;
+    if (shopify?.navigate) shopify.navigate(path);
+  };
 
   const style = {
     "--sidebar-width": "16rem",
@@ -105,7 +116,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                     return (
                       <SidebarMenuItem key={item.title}>
                         <SidebarMenuButton asChild data-active={isActive}>
-                          <Link href={item.url}>
+                          <Link href={item.url} onClick={() => handleNavClick(item.url)}>
                             <item.icon className="h-4 w-4" />
                             <span>{item.title}</span>
                           </Link>
@@ -167,6 +178,27 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           </main>
         </div>
       </div>
+
+      {/* Dev-only debug banner — remove or disable in production */}
+      {import.meta.env.DEV && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            background: "#fef08a",
+            color: "#713f12",
+            fontSize: "11px",
+            padding: "3px 8px",
+            fontFamily: "monospace",
+            zIndex: 9999,
+            borderTop: "1px solid #ca8a04",
+          }}
+        >
+          [AppAI Debug] embedded={String(embedded)} | shop={new URLSearchParams(window.location.search).get("shop") ?? "—"} | host={new URLSearchParams(window.location.search).get("host") ? "present" : "—"} | path={location}
+        </div>
+      )}
     </SidebarProvider>
   );
 }

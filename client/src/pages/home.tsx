@@ -1,15 +1,25 @@
+import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Palette, Image, ShoppingCart, Settings, Sparkles } from "lucide-react";
 import { CreditDisplay } from "@/components/credit-display";
+import { isShopifyEmbedded } from "@/lib/shopify";
 import type { Customer } from "@shared/schema";
 
 export default function Home() {
   const { user, isLoading: authLoading, isAuthenticated } = useAuth();
+  const [, navigate] = useLocation();
+
+  // When loaded inside Shopify Admin iframe, always show merchant admin — never the customer landing page
+  useEffect(() => {
+    if (isShopifyEmbedded()) {
+      navigate("/admin");
+    }
+  }, [navigate]);
 
   const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
     queryKey: ["/api/customer"],
