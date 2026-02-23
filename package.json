@@ -8,7 +8,10 @@
     "build": "tsx script/build.ts && drizzle-kit push",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "ext:install": "npm install --prefix extensions/checkout-ui",
+    "shopify:dev": "npm run ext:install && npx shopify app dev",
+    "shopify:deploy": "npm run ext:install && npx shopify app deploy"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",

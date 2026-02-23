@@ -7,19 +7,24 @@
  *
  * Target: purchase.checkout.cart-line-item.render-after
  *
- * SETUP:
- *   1. Install deps (run once in this directory):
- *        npm install
- *   2. Deploy with the rest of the app:
- *        npx shopify app deploy
+ * ─── IMPORTANT: Extension deps live here, NOT in the repo root ───────────────
+ * The Shopify CLI bundles this extension with its own node_modules scoped to
+ * THIS directory.  The root package.json does NOT provide these modules.
  *
- * Dependencies (see package.json):
- *   @shopify/ui-extensions-react  ^0.50.0
+ * Before running `shopify app dev` or `shopify app deploy` you must have run:
+ *
+ *   cd extensions/checkout-ui && npm install
+ *   OR from the repo root:
+ *   npm run ext:install
+ *
+ * The version of @shopify/ui-extensions-react MUST match the api_version in
+ * shopify.extension.toml (currently 2024-07 → package version 2024.7.0).
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
 import {
   reactExtension,
-  useCartLine,
+  useCartLineTarget,
   BlockStack,
   InlineLayout,
   View,
@@ -34,11 +39,13 @@ export default reactExtension(
 );
 
 function AppAIDesignPreview() {
-  const cartLine = useCartLine();
+  // useCartLineTarget returns the specific line item this extension instance
+  // is rendering for (one instance per cart line in the order summary).
+  const cartLine = useCartLineTarget();
 
   // Line item properties set via /cart/add.js map to `attributes` in the
   // Checkout UI Extension API (they appear as customAttributes in GraphQL).
-  const attrs = cartLine.attributes || [];
+  const attrs = (cartLine && cartLine.attributes) ? cartLine.attributes : [];
 
   const mockupUrl = getAttr(attrs, '_mockup_url');
   const designId  = getAttr(attrs, '_design_id');
