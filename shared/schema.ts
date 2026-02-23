@@ -287,6 +287,26 @@ export const insertSharedDesignSchema = createInsertSchema(sharedDesigns).omit({
 export type SharedDesign = typeof sharedDesigns.$inferSelect;
 export type InsertSharedDesign = z.infer<typeof insertSharedDesignSchema>;
 
+// Shadow SKU mappings — hidden Shopify products created per design for checkout thumbnail determinism
+export const designSkuMappings = pgTable("design_sku_mappings", {
+  id: serial("id").primaryKey(),
+  shopDomain: text("shop_domain").notNull(),
+  sourceVariantId: text("source_variant_id").notNull(),
+  designId: text("design_id").notNull(),
+  mockupUrl: text("mockup_url").notNull(),
+  shadowShopifyProductId: text("shadow_shopify_product_id").notNull(),
+  shadowShopifyVariantId: text("shadow_shopify_variant_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+});
+
+export const insertDesignSkuMappingSchema = createInsertSchema(designSkuMappings).omit({
+  id: true,
+  createdAt: true,
+});
+export type DesignSkuMapping = typeof designSkuMappings.$inferSelect;
+export type InsertDesignSkuMapping = z.infer<typeof insertDesignSkuMappingSchema>;
+
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
   id: serial("id").primaryKey(),

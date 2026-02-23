@@ -249,6 +249,21 @@
 
             console.log('[AI Art Studio] Received mockup URLs:', mockupUrls.length);
 
+            // Store first mockup URL in Cart Guard for upcoming add-to-cart
+            try {
+              if (window.AppAI && window.AppAI.setLatestDesign && mockupUrls[0]) {
+                var prev = (window.AppAI.latest) || {};
+                window.AppAI.setLatestDesign({
+                  _design_id: prev._design_id || data.designId || '',
+                  _mockup_url: mockupUrls[0],
+                  _artwork_url: prev._artwork_url || data.artworkUrl || '',
+                  _shop: shopDomain || '',
+                  _product_id: productId || '',
+                  _app_url: appOrigin || ''
+                });
+              }
+            } catch(_) {}
+
             var previewSection = document.querySelector('.ai-art-mockup-preview');
             if (!previewSection) {
               previewSection = document.createElement('div');
@@ -279,6 +294,20 @@
           }
 
           if (data.type === 'ai-art-studio:add-to-cart') {
+            // Sync Cart Guard so interceptor injects _mockup_url into this fetch
+            try {
+              if (window.AppAI && window.AppAI.setLatestDesign) {
+                window.AppAI.setLatestDesign({
+                  _design_id: data.designId || '',
+                  _mockup_url: data.mockupUrl || (window.AppAI.latest && window.AppAI.latest._mockup_url) || '',
+                  _artwork_url: data.artworkUrl || '',
+                  _shop: shopDomain || '',
+                  _product_id: productId || '',
+                  _app_url: appOrigin || ''
+                });
+              }
+            } catch(_) {}
+
             fetch('/cart/add.js', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

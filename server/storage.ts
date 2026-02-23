@@ -11,6 +11,7 @@ import {
   shopifyInstallations, type ShopifyInstallation, type InsertShopifyInstallation,
   productTypes, type ProductType, type InsertProductType,
   sharedDesigns, type SharedDesign, type InsertSharedDesign,
+  designSkuMappings, type DesignSkuMapping, type InsertDesignSkuMapping,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
@@ -103,6 +104,12 @@ export interface IStorage {
   getSharedDesignByToken(shareToken: string): Promise<SharedDesign | undefined>;
   createSharedDesign(sharedDesign: InsertSharedDesign): Promise<SharedDesign>;
   incrementSharedDesignViewCount(id: string): Promise<void>;
+
+  // Design SKU Mappings (shadow SKUs for checkout thumbnails)
+  getDesignSkuMapping(shopDomain: string, sourceVariantId: string, designId: string): Promise<DesignSkuMapping | undefined>;
+  createDesignSkuMapping(mapping: InsertDesignSkuMapping): Promise<DesignSkuMapping>;
+  getExpiredDesignSkuMappings(before: Date): Promise<DesignSkuMapping[]>;
+  deleteDesignSkuMapping(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -543,6 +550,37 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .update(sharedDesigns)
       .set({ viewCount: sql`${sharedDesigns.viewCount} + 1` })
       .where(eq(sharedDesigns.id, id));
+  }
+
+  // Design SKU Mappings
+  async getDesignSkuMapping(shopDomain: string, sourceVariantId: string, designId: string): Promise<DesignSkuMapping | undefined> {
+    const [row] = await db
+      .select()
+      .from(designSkuMappings)
+      .where(
+        and(
+          eq(designSkuMappings.shopDomain, shopDomain),
+          eq(designSkuMappings.sourceVariantId, sourceVariantId),
+          eq(designSkuMappings.designId, designId)
+        )
+      );
+    return row;
+  }
+
+  async createDesignSkuMapping(mapping: InsertDesignSkuMapping): Promise<DesignSkuMapping> {
+    const [row] = await db.insert(designSkuMappings).values(mapping).returning();
+    return row;
+  }
+
+  async getExpiredDesignSkuMappings(before: Date): Promise<DesignSkuMapping[]> {
+    return db
+      .select()
+      .from(designSkuMappings)
+      .where(lte(designSkuMappings.expiresAt, before));
+  }
+
+  async deleteDesignSkuMapping(id: number): Promise<void> {
+    await db.delete(designSkuMappings).where(eq(designSkuMappings.id, id));
   }
 }
 

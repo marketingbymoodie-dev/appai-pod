@@ -4386,6 +4386,199 @@ ${textEdgeRestrictions}
     }
   });
 
+  // ==================== STOREFRONT DESIGN SKU (SHADOW SKU FOR CHECKOUT) ====================
+  // Creates or reuses a hidden Shopify product+variant with the mockup as its image.
+  // The storefront adds this shadow variant to cart so checkout renders the exact mockup.
+  app.post("/api/storefront/design-sku", async (req: Request, res: Response) => {
+    try {
+      const { shop, sourceVariantId, designId, mockupUrl } = req.body;
+
+      if (!shop || !sourceVariantId || !designId || !mockupUrl) {
+        return res.status(400).json({
+          ok: false,
+          error: "Missing required fields: shop, sourceVariantId, designId, mockupUrl",
+        });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ ok: false, error: "Invalid shop domain format" });
+      }
+
+      if (!mockupUrl.startsWith("https://")) {
+        return res.status(400).json({ ok: false, error: "mockupUrl must be an absolute https URL" });
+      }
+
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ ok: false, error: "Shop not authorized" });
+      }
+
+      const accessToken = installation.accessToken!;
+      const apiBase = `https://${shop}/admin/api/2024-10`;
+
+      // Check for an existing (non-expired) mapping for this design
+      const existing = await storage.getDesignSkuMapping(shop, String(sourceVariantId), String(designId));
+      if (existing && new Date(existing.expiresAt) > new Date()) {
+        return res.json({
+          ok: true,
+          shadowVariantId: existing.shadowShopifyVariantId,
+          shadowProductId: existing.shadowShopifyProductId,
+          mockupUrl: existing.mockupUrl,
+          reused: true,
+        });
+      }
+
+      // Create hidden shadow product on Shopify
+      const productPayload = {
+        product: {
+          title: `AppAI Design ${designId}`,
+          body_html: "",
+          vendor: "AppAI",
+          product_type: "appai-shadow",
+          status: "draft",          // hidden from Online Store
+          published: false,
+          tags: "appai-shadow,appai-cleanup",
+          variants: [
+            {
+              price: "0.00",
+              inventory_management: null,
+              inventory_policy: "continue",
+              requires_shipping: false,
+              taxable: false,
+              sku: `appai-shadow-${designId}`,
+            },
+          ],
+          images: [{ src: mockupUrl, alt: "AppAI custom design mockup" }],
+        },
+      };
+
+      const createRes = await fetch(`${apiBase}/products.json`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Access-Token": accessToken,
+        },
+        body: JSON.stringify(productPayload),
+      });
+
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        console.error("[Design SKU] Product creation failed:", createRes.status, errText);
+        return res.status(createRes.status).json({
+          ok: false,
+          error: "Failed to create shadow product",
+          details: errText.substring(0, 300),
+        });
+      }
+
+      const productData = await createRes.json();
+      const shadowProduct = productData?.product;
+      const shadowVariant = shadowProduct?.variants?.[0];
+
+      if (!shadowProduct?.id || !shadowVariant?.id) {
+        return res.status(500).json({ ok: false, error: "Shopify did not return product/variant ID" });
+      }
+
+      const shadowProductId = String(shadowProduct.id);
+      const shadowVariantId = String(shadowVariant.id);
+
+      // Assign the uploaded image to the variant so checkout uses it as its thumbnail
+      const imageId = shadowProduct?.images?.[0]?.id;
+      if (imageId) {
+        await fetch(`${apiBase}/variants/${shadowVariantId}.json`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": accessToken,
+          },
+          body: JSON.stringify({ variant: { id: Number(shadowVariantId), image_id: imageId } }),
+        }).catch((e: Error) => console.warn("[Design SKU] image_id assignment failed:", e.message));
+      }
+
+      // Persist mapping (7-day TTL)
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await storage.createDesignSkuMapping({
+        shopDomain: shop,
+        sourceVariantId: String(sourceVariantId),
+        designId: String(designId),
+        mockupUrl,
+        shadowShopifyProductId: shadowProductId,
+        shadowShopifyVariantId: shadowVariantId,
+        expiresAt,
+      });
+
+      console.log(`[Design SKU] Created shadow variant ${shadowVariantId} for design ${designId} on ${shop}`);
+
+      return res.json({
+        ok: true,
+        shadowVariantId,
+        shadowProductId,
+        mockupUrl,
+        reused: false,
+      });
+    } catch (error: any) {
+      console.error("[Design SKU] Error:", error);
+      return res.status(500).json({ ok: false, error: error?.message || "Internal server error" });
+    }
+  });
+
+  // ==================== SHADOW SKU CLEANUP ====================
+  // Deletes expired shadow products from Shopify and removes DB mapping rows.
+  // Runs automatically every 6 hours and can be triggered manually via the admin endpoint below.
+  async function runDesignSkuCleanup(): Promise<{ deleted: number; errors: number }> {
+    let deleted = 0;
+    let errors = 0;
+    try {
+      const expired = await storage.getExpiredDesignSkuMappings(new Date());
+      if (expired.length === 0) return { deleted, errors };
+
+      // Group by shop so we can batch-delete per installation
+      const byShop: Record<string, typeof expired> = {};
+      for (const row of expired) {
+        if (!byShop[row.shopDomain]) byShop[row.shopDomain] = [];
+        byShop[row.shopDomain].push(row);
+      }
+
+      for (const shopDomain of Object.keys(byShop)) {
+        const rows = byShop[shopDomain];
+        const installation = await storage.getShopifyInstallationByShop(shopDomain);
+        if (!installation?.accessToken) {
+          errors += rows.length;
+          continue;
+        }
+
+        for (const row of rows) {
+          try {
+            // Delete the shadow product from Shopify (also deletes its variant + images)
+            await fetch(
+              `https://${shopDomain}/admin/api/2024-10/products/${row.shadowShopifyProductId}.json`,
+              {
+                method: "DELETE",
+                headers: { "X-Shopify-Access-Token": installation.accessToken },
+              }
+            );
+            await storage.deleteDesignSkuMapping(row.id);
+            deleted++;
+          } catch (e: any) {
+            console.warn(`[Design SKU Cleanup] Failed for product ${row.shadowShopifyProductId}:`, e.message);
+            errors++;
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("[Design SKU Cleanup] Unexpected error:", e);
+      errors++;
+    }
+    console.log(`[Design SKU Cleanup] Done: deleted=${deleted} errors=${errors}`);
+    return { deleted, errors };
+  }
+
+  // Manual trigger endpoint (ops/testing)
+  app.post("/api/admin/design-sku-cleanup", isAuthenticated, async (_req: any, res: Response) => {
+    const result = await runDesignSkuCleanup();
+    res.json({ ok: true, ...result });
+  });
+
   // Admin endpoints for product types (requires authentication)
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -8084,6 +8277,11 @@ ${textEdgeRestrictions}
       res.status(500).json({ error: "Failed to generate mockup" });
     }
   });
+
+  // Auto-run shadow SKU cleanup every 6 hours
+  setInterval(() => {
+    runDesignSkuCleanup().catch((e: Error) => console.error("[Design SKU Cleanup] Interval error:", e));
+  }, 6 * 60 * 60 * 1000);
 
   return httpServer;
 }
