@@ -1,0 +1,10 @@
+api_version = "2024-07"
+
+[[extensions]]
+type = "ui_extension"
+name = "AppAI Custom Design Preview"
+handle = "appai-checkout-design-preview"
+
+  [[extensions.targeting]]
+    module = "./src/index.jsx"
+    target = "purchase.checkout.cart-line-item.render-after"

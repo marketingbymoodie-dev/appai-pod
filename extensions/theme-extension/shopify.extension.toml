@@ -14,5 +14,9 @@ handle = "ai-art-studio"
     target = "section"
 
   [[extensions.targeting]]
+    module = "./blocks/ai-art-customizer.liquid"
+    target = "section"
+
+  [[extensions.targeting]]
     module = "./blocks/ai-art-embed.liquid"
     target = "body"

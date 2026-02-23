@@ -1,0 +1,12 @@
+{
+  "name": "appai-checkout-design-preview",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AppAI Checkout UI Extension — shows mockup image per custom-design line item.",
+  "scripts": {
+    "build": "shopify extension build"
+  },
+  "dependencies": {
+    "@shopify/ui-extensions-react": "^0.50.0"
+  }
+}

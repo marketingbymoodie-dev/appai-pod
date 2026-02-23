@@ -4386,6 +4386,248 @@ ${textEdgeRestrictions}
     }
   });
 
+  // ==================== STOREFRONT BLANKS ====================
+  // Returns the list of customizable blank products/variants for the customizer page.
+  // Results are cached per shop for 5 minutes.
+  const blanksCache = new Map<string, { data: any[]; expiresAt: number }>();
+
+  app.get("/api/storefront/blanks", async (req: Request, res: Response) => {
+    try {
+      const shop = req.query.shop as string;
+      if (!shop || !/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Valid shop domain required" });
+      }
+
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const cached = blanksCache.get(shop);
+      if (cached && Date.now() < cached.expiresAt) {
+        return res.json({ blanks: cached.data });
+      }
+
+      const allTypes = installation.merchantId
+        ? await storage.getProductTypesByMerchant(installation.merchantId)
+        : await storage.getActiveProductTypes();
+
+      const blanks = allTypes
+        .filter((pt) => pt.isActive && pt.shopifyProductId)
+        .map((pt) => {
+          let variantMap: Record<string, any> = {};
+          let sizes: any[] = [];
+          let frameColors: any[] = [];
+          let primaryMockupImage: string | null = null;
+          try { variantMap = JSON.parse(pt.variantMap as string || "{}"); } catch (_) {}
+          try { sizes = JSON.parse(pt.sizes as string || "[]"); } catch (_) {}
+          try { frameColors = JSON.parse(pt.frameColors as string || "[]"); } catch (_) {}
+          try {
+            const imgs = JSON.parse(pt.baseMockupImages as string || "{}");
+            primaryMockupImage = (Object.values(imgs)[0] as string) || null;
+          } catch (_) {}
+
+          const variants = Object.keys(variantMap)
+            .filter((k) => variantMap[k]?.shopifyVariantId)
+            .map((k) => {
+              const v = variantMap[k];
+              const [sizeId = "", colorId = ""] = k.split(":");
+              const size = sizes.find((s: any) => s.id === sizeId);
+              const color = frameColors.find((c: any) => c.id === colorId);
+              return {
+                key: k,
+                shopifyVariantId: String(v.shopifyVariantId),
+                sizeId,
+                colorId,
+                sizeLabel: size?.name || sizeId,
+                colorLabel: color?.name || colorId,
+                price: v.price || null,
+              };
+            });
+
+          return {
+            productTypeId: pt.id,
+            name: pt.name,
+            description: pt.description || null,
+            shopifyProductId: pt.shopifyProductId,
+            shopifyProductHandle: pt.shopifyProductHandle || null,
+            shopifyProductUrl: pt.shopifyProductUrl || null,
+            aspectRatio: pt.aspectRatio,
+            designerType: pt.designerType,
+            primaryMockupImage,
+            variants,
+            sizes,
+            frameColors,
+          };
+        });
+
+      blanksCache.set(shop, { data: blanks, expiresAt: Date.now() + 5 * 60 * 1000 });
+      return res.json({ blanks });
+    } catch (err: any) {
+      console.error("[Storefront Blanks]", err);
+      return res.status(500).json({ error: "Failed to load blank products" });
+    }
+  });
+
+  // ==================== STOREFRONT CUSTOMIZER DESIGNS ====================
+  // POST: create a new customizer design record, kick off async generation.
+  // GET /:id: poll status; returns artworkUrl + mockupUrls when READY.
+
+  async function runCustomizerGeneration(
+    designId: string,
+    params: { shop: string; productTypeId?: string; sizeId?: string; colorId?: string; prompt: string; stylePreset?: string },
+    appHost: string
+  ) {
+    try {
+      // Step 1 — Generate AI artwork (reuse existing storefront generate endpoint)
+      const genRes = await fetch(`${appHost}/api/storefront/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop: params.shop,
+          prompt: params.prompt,
+          stylePreset: params.stylePreset || "",
+          size: params.sizeId || "12x16",
+          frameColor: params.colorId || "black",
+          productTypeId: params.productTypeId || "",
+        }),
+      });
+      const genData = await genRes.json();
+      if (!genRes.ok || !genData.imageUrl) {
+        await storage.updateCustomizerDesign(designId, {
+          status: "FAILED",
+          errorMessage: genData.error || "Image generation failed",
+        });
+        return;
+      }
+
+      // Step 2 — Generate Printify mockup (reuse existing storefront mockup endpoint)
+      let mockupUrls: string[] = [];
+      let mockupUrl: string = genData.imageUrl;
+
+      if (params.productTypeId) {
+        try {
+          const mockupRes = await fetch(`${appHost}/api/storefront/mockup`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              shop: params.shop,
+              productTypeId: params.productTypeId,
+              designImageUrl: genData.imageUrl,
+              sizeId: params.sizeId,
+              colorId: params.colorId,
+            }),
+          });
+          const mockupData = await mockupRes.json();
+          if (mockupData.mockupUrls?.length) {
+            mockupUrls = mockupData.mockupUrls as string[];
+            mockupUrl = mockupUrls[0];
+          }
+        } catch (mErr) {
+          console.warn("[Customizer] Mockup step failed, using artwork URL:", mErr);
+        }
+      }
+
+      if (mockupUrls.length === 0) mockupUrls = [genData.imageUrl];
+
+      await storage.updateCustomizerDesign(designId, {
+        artworkUrl: genData.imageUrl,
+        mockupUrl,
+        mockupUrls,
+        status: "READY",
+      });
+      console.log(`[Customizer] Design ${designId} READY. mockup=${mockupUrl}`);
+    } catch (err: any) {
+      console.error(`[Customizer] Generation error for ${designId}:`, err);
+      try {
+        await storage.updateCustomizerDesign(designId, {
+          status: "FAILED",
+          errorMessage: err?.message || "Unknown error",
+        });
+      } catch (_) {}
+    }
+  }
+
+  app.post("/api/storefront/customizer/designs", async (req: Request, res: Response) => {
+    try {
+      const { shop, productTypeId, baseVariantId, sizeId, colorId, prompt, stylePreset, shopifyCustomerId } = req.body;
+
+      if (!shop || !/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Valid shop domain required" });
+      }
+      if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+        return res.status(400).json({ error: "prompt is required" });
+      }
+      if (!baseVariantId) {
+        return res.status(400).json({ error: "baseVariantId is required" });
+      }
+
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      let baseTitle: string | undefined;
+      if (productTypeId && installation.merchantId) {
+        const pt = await storage.getProductType(parseInt(productTypeId));
+        if (pt) baseTitle = pt.name;
+      }
+
+      const design = await storage.createCustomizerDesign({
+        shop,
+        shopifyCustomerId: shopifyCustomerId || null,
+        baseVariantId: String(baseVariantId),
+        baseProductId: productTypeId ? String(productTypeId) : null,
+        baseTitle: baseTitle || null,
+        prompt: prompt.trim(),
+        options: { stylePreset, sizeId, colorId, productTypeId },
+        status: "GENERATING",
+      });
+
+      const appHost = process.env.APP_URL || `http://127.0.0.1:${process.env.PORT || 5000}`;
+      runCustomizerGeneration(design.id, { shop, productTypeId, sizeId, colorId, prompt: prompt.trim(), stylePreset }, appHost)
+        .catch((e) => console.error("[Customizer] Background gen error:", e));
+
+      return res.json({ designId: design.id, status: design.status });
+    } catch (err: any) {
+      console.error("[Customizer POST]", err);
+      return res.status(500).json({ error: "Failed to start design generation" });
+    }
+  });
+
+  app.get("/api/storefront/customizer/designs/:id", async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const shop = req.query.shop as string;
+
+      if (!id) return res.status(400).json({ error: "Design ID required" });
+
+      const design = await storage.getCustomizerDesign(id);
+      if (!design) return res.status(404).json({ error: "Design not found" });
+
+      if (shop && design.shop !== shop) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      return res.json({
+        designId: design.id,
+        status: design.status,
+        artworkUrl: design.artworkUrl,
+        mockupUrl: design.mockupUrl,
+        mockupUrls: (design.mockupUrls as string[]) || [],
+        prompt: design.prompt,
+        baseVariantId: design.baseVariantId,
+        baseTitle: design.baseTitle,
+        options: design.options,
+        errorMessage: design.errorMessage,
+        createdAt: design.createdAt,
+      });
+    } catch (err: any) {
+      console.error("[Customizer GET]", err);
+      return res.status(500).json({ error: "Failed to fetch design" });
+    }
+  });
+
   // ==================== STOREFRONT DESIGN SKU (SHADOW SKU FOR CHECKOUT) ====================
   // Creates or reuses a hidden Shopify product+variant with the mockup as its image.
   // The storefront adds this shadow variant to cart so checkout renders the exact mockup.

@@ -307,6 +307,35 @@ export const insertDesignSkuMappingSchema = createInsertSchema(designSkuMappings
 export type DesignSkuMapping = typeof designSkuMappings.$inferSelect;
 export type InsertDesignSkuMapping = z.infer<typeof insertDesignSkuMappingSchema>;
 
+// Customizer designs — standalone design records created from the /pages/appai-customize page.
+// These are NOT tied to the existing `designs` table (which requires a logged-in customer).
+// Status lifecycle: GENERATING → READY | FAILED
+export const customizerDesigns = pgTable("customizer_designs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shop: text("shop").notNull(),
+  shopifyCustomerId: text("shopify_customer_id"), // optional — set if customer is logged in
+  baseProductId: text("base_product_id"),         // product type ID (our DB) or Shopify product ID
+  baseVariantId: text("base_variant_id").notNull(), // Shopify variant ID for add-to-cart
+  baseTitle: text("base_title"),
+  prompt: text("prompt").notNull(),
+  options: json("options"),                        // { stylePreset, sizeId, colorId, productTypeId }
+  artworkUrl: text("artwork_url"),                 // AI-generated print file URL
+  mockupUrl: text("mockup_url"),                   // Primary mockup image URL (shown in cart/checkout)
+  mockupUrls: json("mockup_urls"),                 // All mockup URLs (array of strings)
+  status: text("status").notNull().default("GENERATING"), // GENERATING | READY | FAILED
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCustomizerDesignSchema = createInsertSchema(customizerDesigns).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type CustomizerDesign = typeof customizerDesigns.$inferSelect;
+export type InsertCustomizerDesign = z.infer<typeof insertCustomizerDesignSchema>;
+
 // Credit transactions
 export const creditTransactions = pgTable("credit_transactions", {
   id: serial("id").primaryKey(),

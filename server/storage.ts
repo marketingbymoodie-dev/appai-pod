@@ -12,6 +12,7 @@ import {
   productTypes, type ProductType, type InsertProductType,
   sharedDesigns, type SharedDesign, type InsertSharedDesign,
   designSkuMappings, type DesignSkuMapping, type InsertDesignSkuMapping,
+  customizerDesigns, type CustomizerDesign, type InsertCustomizerDesign,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
@@ -110,6 +111,11 @@ export interface IStorage {
   createDesignSkuMapping(mapping: InsertDesignSkuMapping): Promise<DesignSkuMapping>;
   getExpiredDesignSkuMappings(before: Date): Promise<DesignSkuMapping[]>;
   deleteDesignSkuMapping(id: number): Promise<void>;
+
+  // Customizer Designs (standalone design records from the /pages/appai-customize page)
+  createCustomizerDesign(design: InsertCustomizerDesign): Promise<CustomizerDesign>;
+  getCustomizerDesign(id: string): Promise<CustomizerDesign | undefined>;
+  updateCustomizerDesign(id: string, updates: Partial<CustomizerDesign>): Promise<CustomizerDesign | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -581,6 +587,26 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
 
   async deleteDesignSkuMapping(id: number): Promise<void> {
     await db.delete(designSkuMappings).where(eq(designSkuMappings.id, id));
+  }
+
+  // Customizer Designs
+  async createCustomizerDesign(design: InsertCustomizerDesign): Promise<CustomizerDesign> {
+    const [row] = await db.insert(customizerDesigns).values(design).returning();
+    return row;
+  }
+
+  async getCustomizerDesign(id: string): Promise<CustomizerDesign | undefined> {
+    const [row] = await db.select().from(customizerDesigns).where(eq(customizerDesigns.id, id));
+    return row;
+  }
+
+  async updateCustomizerDesign(id: string, updates: Partial<CustomizerDesign>): Promise<CustomizerDesign | undefined> {
+    const [row] = await db
+      .update(customizerDesigns)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(customizerDesigns.id, id))
+      .returning();
+    return row;
   }
 }
 
