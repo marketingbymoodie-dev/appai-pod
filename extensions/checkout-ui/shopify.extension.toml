@@ -1,6 +1,12 @@
-api_version = "2024-07"
+# Checkout UI extensions use a separate API version track from the Admin/Storefront API.
+# Valid checkout UI versions: 2025-04, 2025-07, 2025-10, 2026-01, 2026-04, unstable.
+# (These differ from the app-level api_version in shopify.app.toml.)
+api_version = "2026-01"
 
 [[extensions]]
+
+uid = "1d9ae044-807d-faeb-4d9c-61a5eebe8fd3bd6f63d1"
+
 type = "ui_extension"
 name = "AppAI Custom Design Preview"
 handle = "appai-checkout-design-preview"
