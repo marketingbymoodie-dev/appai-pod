@@ -20,6 +20,7 @@ import AdminCoupons from "@/pages/admin/coupons";
 import AdminCredits from "@/pages/admin/credits";
 import AdminCreateProduct from "@/pages/admin/create-product";
 import AdminCustomizerPages from "@/pages/admin/customizer-pages";
+import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 
 function Router() {
   return (
@@ -42,6 +43,7 @@ function Router() {
       <Route path="/admin/credits" component={AdminCredits} />
       <Route path="/admin/create-product" component={AdminCreateProduct} />
       <Route path="/admin/customizer-pages" component={AdminCustomizerPages} />
+      <Route path="/admin/plan" component={AdminPlanPicker} />
       <Route path="/admin" component={AdminDashboard} />
 
       {/* Fallback */}

@@ -9,29 +9,37 @@ export function setSessionTokenGetter(getter: () => Promise<string | null>) {
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
-  console.log("[QueryClient] getAuthHeaders called, hasTokenGetter:", !!sessionTokenGetter);
-  if (!sessionTokenGetter) {
-    console.log("[QueryClient] No token getter, returning empty headers");
-    return {};
+  // --- Attempt 1: use the registered getter (set by ShopifyProvider once App Bridge is ready) ---
+  if (sessionTokenGetter) {
+    try {
+      const tokenPromise = sessionTokenGetter();
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), 5000)
+      );
+      const token = await Promise.race([tokenPromise, timeoutPromise]);
+      if (token) return { Authorization: `Bearer ${token}` };
+    } catch (e) {
+      console.error("[QueryClient] sessionTokenGetter failed:", e);
+    }
   }
-  try {
-    console.log("[QueryClient] Calling sessionTokenGetter...");
-    // Add overall timeout for the token getter (5s for faster loading)
-    const tokenPromise = sessionTokenGetter();
-    const timeoutPromise = new Promise<null>((resolve) =>
-      setTimeout(() => {
-        console.warn("[QueryClient] Token getter timed out after 5s");
-        resolve(null);
-      }, 5000)
-    );
-    const token = await Promise.race([tokenPromise, timeoutPromise]);
-    console.log("[QueryClient] getAuthHeaders got token:", token ? "yes" : "no");
-    if (!token) return {};
-    return { Authorization: `Bearer ${token}` };
-  } catch (e) {
-    console.error("[QueryClient] Error getting token:", e);
-    return {};
+
+  // --- Attempt 2: direct fallback — call window.shopify.idToken() when App Bridge is present
+  // but setSessionTokenGetter hasn't been called yet (race on initial render) ---
+  const shopify = (window as any).shopify;
+  if (shopify && typeof shopify.idToken === "function") {
+    try {
+      const tokenPromise = shopify.idToken() as Promise<string | null>;
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), 3000)
+      );
+      const token = await Promise.race([tokenPromise, timeoutPromise]);
+      if (token) return { Authorization: `Bearer ${token}` };
+    } catch (e) {
+      console.error("[QueryClient] window.shopify.idToken() fallback failed:", e);
+    }
   }
+
+  return {};
 }
 
 async function throwIfResNotOk(res: Response) {

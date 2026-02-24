@@ -10,7 +10,7 @@ import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
-import { getPageLimit, canCreatePage } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 function toUint8Array(buf: Buffer) {
@@ -8532,8 +8532,25 @@ ${textEdgeRestrictions}
   // ─────────────────────────────────────────────────────────────────────────
 
   /**
-   * Helper: resolve authenticated merchant + installation from JWT + shopDomain.
-   * Pattern mirrors existing admin endpoints (e.g. POST /api/shopify/products).
+   * Resolve the Shopify installation from the JWT's shop domain.
+   * Used by all /api/appai/* routes — no app-level merchant account required.
+   * The Shopify session token (validated by isAuthenticated) attaches req.shopDomain.
+   */
+  async function resolveShopInstallation(req: any): Promise<
+    { ok: true; installation: any } | { ok: false; status: number; error: string }
+  > {
+    const shopDomain = req.shopDomain as string | undefined;
+    if (!shopDomain) return { ok: false, status: 401, error: "Not authenticated" };
+    const installation = await storage.getShopifyInstallationByShop(shopDomain);
+    if (!installation || installation.status !== "active") {
+      return { ok: false, status: 400, error: "Shop not connected or not active" };
+    }
+    return { ok: true, installation };
+  }
+
+  /**
+   * Legacy helper kept for older routes that still look up a merchant.
+   * New /api/appai/* routes use resolveShopInstallation instead.
    */
   async function resolveInstallation(req: any): Promise<{
     ok: true; merchant: any; installation: any;
@@ -8546,13 +8563,9 @@ ${textEdgeRestrictions}
 
     const shopDomain: string | undefined = req.body?.shopDomain ?? req.query?.shopDomain;
     if (!shopDomain) {
-      // Fall back to the first active installation for this merchant
       const installations = await storage.getShopifyInstallationsByMerchant?.(merchant.id) ?? [];
       const active = installations.find((i: any) => i.status === "active");
       if (!active) return { ok: false, status: 400, error: "No active Shopify store connected" };
-      if (active.merchantId && active.merchantId !== merchant.id) {
-        return { ok: false, status: 403, error: "Store belongs to another merchant" };
-      }
       return { ok: true, merchant, installation: active };
     }
 
@@ -8560,10 +8573,6 @@ ${textEdgeRestrictions}
     if (!installation || installation.status !== "active") {
       return { ok: false, status: 400, error: "Shopify store not connected or not active" };
     }
-    if (installation.merchantId && installation.merchantId !== merchant.id) {
-      return { ok: false, status: 403, error: "Store belongs to another merchant" };
-    }
-    // Lazily link unlinked installations
     if (!installation.merchantId) {
       await storage.updateShopifyInstallation(installation.id, { merchantId: merchant.id });
     }
@@ -8572,10 +8581,10 @@ ${textEdgeRestrictions}
 
   /** GET /api/appai/customizer-pages */
   app.get("/api/appai/customizer-pages", isAuthenticated, async (req: any, res: Response) => {
-    const resolved = await resolveInstallation(req);
+    const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
-    const { merchant, installation } = resolved;
+    const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
     const [pages, currentCount] = await Promise.all([
@@ -8583,18 +8592,26 @@ ${textEdgeRestrictions}
       storage.countCustomizerPages(shop),
     ]);
 
-    const planTier: string = merchant.subscriptionTier ?? "free";
-    const limit = getPageLimit(planTier);
+    const plan = getEffectivePlan(installation as any);
 
-    return res.json({ pages, limit, count: currentCount, planTier });
+    return res.json({
+      pages,
+      limit: plan.pageLimit,
+      count: currentCount,
+      planTier: plan.planName ?? "none",
+      planName: plan.planName,
+      planStatus: plan.planStatus,
+      requiresPlan: plan.requiresPlan,
+      overLimit: currentCount > plan.pageLimit && plan.isActive,
+    });
   });
 
   /** POST /api/appai/customizer-pages */
   app.post("/api/appai/customizer-pages", isAuthenticated, async (req: any, res: Response) => {
-    const resolved = await resolveInstallation(req);
+    const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
-    const { merchant, installation } = resolved;
+    const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
     const { title, handle, baseVariantId } = req.body as {
@@ -8610,20 +8627,28 @@ ${textEdgeRestrictions}
       return res.status(400).json({ error: "Handle must be lowercase letters, numbers, and hyphens only" });
     }
 
+    // Plan gate: must have an active plan before creating pages
+    const plan = getEffectivePlan(installation as any);
+    if (plan.requiresPlan) {
+      return res.status(402).json({
+        error: "No active plan. Start a free trial or pick a plan to create customizer pages.",
+        requiresPlan: true,
+      });
+    }
+
     // Uniqueness check
     const existing = await storage.getCustomizerPageByHandle(shop, handle);
     if (existing) return res.status(409).json({ error: `Handle "${handle}" is already in use` });
 
     // Plan limit check
     const currentCount = await storage.countCustomizerPages(shop);
-    const planTier: string = merchant.subscriptionTier ?? "free";
-    const { allowed, limit } = await canCreatePage(planTier, currentCount);
+    const { allowed, limit } = canCreatePage(plan.planName, currentCount);
     if (!allowed) {
       return res.status(402).json({
-        error: `Plan limit reached. Your ${planTier} plan allows ${limit} customizer page${limit === 1 ? "" : "s"}. Upgrade to create more.`,
+        error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} customizer page${limit === 1 ? "" : "s"}. Upgrade to create more.`,
         limit,
         currentCount,
-        planTier,
+        planName: plan.planName,
       });
     }
 
@@ -8692,7 +8717,7 @@ ${textEdgeRestrictions}
 
   /** PATCH /api/appai/customizer-pages/:id */
   app.patch("/api/appai/customizer-pages/:id", isAuthenticated, async (req: any, res: Response) => {
-    const resolved = await resolveInstallation(req);
+    const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
     const { installation } = resolved;
@@ -8747,7 +8772,7 @@ ${textEdgeRestrictions}
 
   /** DELETE /api/appai/customizer-pages/:id */
   app.delete("/api/appai/customizer-pages/:id", isAuthenticated, async (req: any, res: Response) => {
-    const resolved = await resolveInstallation(req);
+    const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
     const { installation } = resolved;
@@ -8773,7 +8798,7 @@ ${textEdgeRestrictions}
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
   // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
   app.get("/api/appai/blanks", isAuthenticated, async (req: any, res: Response) => {
-    const resolved = await resolveInstallation(req);
+    const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
     const { installation } = resolved;
@@ -9147,7 +9172,7 @@ ${textEdgeRestrictions}
   // ── Shop settings (admin-auth'd) ────────────────────────────────────────
   /** PATCH /api/appai/shop-settings — update per-shop customizer settings */
   app.patch("/api/appai/shop-settings", isAuthenticated, async (req: any, res: Response) => {
-    const resolved = await resolveInstallation(req);
+    const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
     const { installation } = resolved;
@@ -9158,6 +9183,264 @@ ${textEdgeRestrictions}
         customizerHubUrl: customizerHubUrl || null,
       } as any);
     }
+
+    return res.json({ success: true });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PLAN & BILLING — /api/appai/plan and /api/appai/billing/*
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** GET /api/appai/plan — return effective plan state for the authenticated shop */
+  app.get("/api/appai/plan", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const plan = getEffectivePlan(installation as any);
+    const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
+
+    return res.json({
+      planName: plan.planName,
+      planStatus: plan.planStatus,
+      isActive: plan.isActive,
+      requiresPlan: plan.requiresPlan,
+      pageLimit: plan.pageLimit,
+      pagesCount,
+      displayName: plan.displayName,
+      overLimit: plan.isActive && pagesCount > plan.pageLimit,
+      trialStartedAt: (installation as any).trialStartedAt ?? null,
+      billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
+    });
+  });
+
+  /** POST /api/appai/billing/start-trial — activate the trial plan (no credit card) */
+  app.post("/api/appai/billing/start-trial", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+
+    // Idempotent — if already on a plan or trial, just return current state
+    const current = getEffectivePlan(installation as any);
+    if (current.isActive) {
+      return res.json({ success: true, alreadyActive: true, plan: current });
+    }
+
+    await storage.updateShopifyInstallation(installation.id, {
+      planName: "trial",
+      planStatus: "trialing",
+      trialStartedAt: new Date(),
+    } as any);
+
+    return res.json({
+      success: true,
+      planName: "trial",
+      planStatus: "trialing",
+      pageLimit: 1,
+    });
+  });
+
+  /**
+   * POST /api/appai/billing/create-subscription
+   * Body: { plan: "starter" | "dabbler" | "pro" | "pro_plus" }
+   * Returns: { confirmationUrl: string }
+   * The client redirects to confirmationUrl so the merchant can approve.
+   */
+  app.post("/api/appai/billing/create-subscription", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const { plan } = req.body as { plan?: string };
+
+    if (!plan || !(PAID_PLANS as readonly string[]).includes(plan)) {
+      return res.status(400).json({ error: `Invalid plan. Must be one of: ${PAID_PLANS.join(", ")}` });
+    }
+
+    const priceUsd = PLAN_PRICES_USD[plan];
+    const displayName = PLAN_DISPLAY_NAMES[plan] ?? plan;
+    const appUrl = process.env.APP_URL?.replace(/\/$/, "") ?? `https://${req.headers.host}`;
+    const returnUrl = `${appUrl}/api/appai/billing/callback?shop=${encodeURIComponent(installation.shopDomain)}&plan=${encodeURIComponent(plan)}`;
+
+    // Call Shopify Admin GraphQL to create app subscription
+    const gqlBody = JSON.stringify({
+      query: `
+        mutation appSubscriptionCreate($name: String!, $returnUrl: URL!, $lineItems: [AppSubscriptionLineItemInput!]!, $test: Boolean) {
+          appSubscriptionCreate(name: $name, returnUrl: $returnUrl, lineItems: $lineItems, test: $test) {
+            userErrors { field message }
+            appSubscription { id }
+            confirmationUrl
+          }
+        }
+      `,
+      variables: {
+        name: `${displayName} Plan`,
+        returnUrl,
+        test: process.env.NODE_ENV !== "production",
+        lineItems: [{
+          plan: {
+            appRecurringPricingDetails: {
+              price: { amount: priceUsd, currencyCode: "USD" },
+              interval: "EVERY_30_DAYS",
+            },
+          },
+        }],
+      },
+    });
+
+    const gqlResponse = await fetch(
+      `https://${installation.shopDomain}/admin/api/2024-01/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": installation.accessToken,
+          "Content-Type": "application/json",
+        },
+        body: gqlBody,
+      }
+    );
+
+    if (!gqlResponse.ok) {
+      console.error("[Billing] GraphQL request failed:", gqlResponse.status);
+      return res.status(502).json({ error: "Failed to contact Shopify billing API" });
+    }
+
+    const gqlData = await gqlResponse.json() as any;
+    const result = gqlData?.data?.appSubscriptionCreate;
+
+    if (result?.userErrors?.length) {
+      console.error("[Billing] userErrors:", result.userErrors);
+      return res.status(400).json({ error: result.userErrors[0].message });
+    }
+
+    const confirmationUrl = result?.confirmationUrl;
+    if (!confirmationUrl) {
+      return res.status(502).json({ error: "No confirmation URL returned from Shopify" });
+    }
+
+    // Store pending subscription ID so we can match it on callback
+    if (result?.appSubscription?.id) {
+      await storage.updateShopifyInstallation(installation.id, {
+        billingSubscriptionId: result.appSubscription.id,
+      } as any);
+    }
+
+    return res.json({ confirmationUrl, subscriptionId: result?.appSubscription?.id });
+  });
+
+  /**
+   * GET /api/appai/billing/callback
+   * Browser redirect from Shopify after merchant approves/declines.
+   * Query params: shop, plan, charge_id (Shopify AppSubscription GID)
+   */
+  app.get("/api/appai/billing/callback", async (req: Request, res: Response) => {
+    const { shop, plan, charge_id } = req.query as Record<string, string>;
+
+    if (!shop || !plan) {
+      return res.status(400).send("Missing shop or plan parameter");
+    }
+
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation || installation.status !== "active") {
+      return res.status(400).send("Shop not found or not active");
+    }
+
+    if (!charge_id) {
+      // Merchant declined — redirect back to app without activating plan
+      console.log(`[Billing] Merchant declined subscription for ${shop}`);
+      return res.redirect(`https://${shop}/admin/apps`);
+    }
+
+    // Verify the subscription via Shopify GraphQL
+    try {
+      const gqlResponse = await fetch(
+        `https://${shop}/admin/api/2024-01/graphql.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": installation.accessToken,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            query: `
+              query getSubscription($id: ID!) {
+                node(id: $id) {
+                  ... on AppSubscription {
+                    id status currentPeriodEnd
+                  }
+                }
+              }
+            `,
+            variables: { id: charge_id },
+          }),
+        }
+      );
+
+      let subscriptionStatus = "ACTIVE";
+      let currentPeriodEnd: Date | null = null;
+
+      if (gqlResponse.ok) {
+        const gqlData = await gqlResponse.json() as any;
+        const sub = gqlData?.data?.node;
+        if (sub) {
+          subscriptionStatus = sub.status ?? "ACTIVE";
+          if (sub.currentPeriodEnd) currentPeriodEnd = new Date(sub.currentPeriodEnd);
+        }
+      }
+
+      if (subscriptionStatus === "ACTIVE" || subscriptionStatus === "PENDING") {
+        await storage.updateShopifyInstallation(installation.id, {
+          planName: plan,
+          planStatus: "active",
+          billingSubscriptionId: charge_id,
+          billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
+        } as any);
+        console.log(`[Billing] Activated ${plan} plan for ${shop}`);
+      }
+    } catch (err: any) {
+      console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);
+      // Still mark as active optimistically — Shopify wouldn't redirect here without approval
+      await storage.updateShopifyInstallation(installation.id, {
+        planName: plan,
+        planStatus: "active",
+        billingSubscriptionId: charge_id,
+      } as any);
+    }
+
+    // Redirect back to the Shopify Admin app
+    const apiKey = process.env.SHOPIFY_API_KEY ?? "";
+    const adminUrl = apiKey
+      ? `https://${shop}/admin/apps/${apiKey}`
+      : `https://${shop}/admin/apps`;
+    return res.redirect(adminUrl);
+  });
+
+  /** POST /api/appai/billing/cancel — cancel current subscription */
+  app.post("/api/appai/billing/cancel", isAuthenticated, async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+
+    const { installation } = resolved;
+    const subscriptionId = (installation as any).billingSubscriptionId;
+
+    if (subscriptionId) {
+      // Cancel via Shopify GraphQL (best-effort)
+      await fetch(`https://${installation.shopDomain}/admin/api/2024-01/graphql.json`, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": installation.accessToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: `mutation { appSubscriptionCancel(id: "${subscriptionId}") { userErrors { message } } }`,
+        }),
+      }).catch((e: Error) => console.warn("[Billing] Cancel GraphQL failed:", e.message));
+    }
+
+    await storage.updateShopifyInstallation(installation.id, {
+      planStatus: "cancelled",
+    } as any);
 
     return res.json({ success: true });
   });

@@ -55,6 +55,14 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   uninstalledAt: timestamp("uninstalled_at"),
   // Per-shop customizer settings
   customizerHubUrl: text("customizer_hub_url"), // Fallback redirect URL for disabled customizer pages; defaults to "/"
+  // Billing / plan state
+  // planName: trial | starter | dabbler | pro | pro_plus  (null = no plan selected yet)
+  // planStatus: trialing | active | expired | cancelled   (null = no plan)
+  planName: text("plan_name"),
+  planStatus: text("plan_status"),
+  trialStartedAt: timestamp("trial_started_at"),
+  billingSubscriptionId: text("billing_subscription_id"), // Shopify AppSubscription GID
+  billingCurrentPeriodEnd: timestamp("billing_current_period_end"),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
