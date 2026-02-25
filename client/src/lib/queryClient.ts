@@ -1,46 +1,86 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-// Global token getter - set by ShopifyProvider when mounted
-let sessionTokenGetter: (() => Promise<string | null>) | null = null;
+// ─────────────────────────────────────────────────────────────────────────────
+// Session token — Shopify App Bridge v4
+//
+// window.shopify is injected by Shopify's CDN <script> when the app runs
+// inside the Shopify Admin iframe.  We never cache it: idToken() always
+// returns a fresh, short-lived JWT so we call it on every request.
+// ─────────────────────────────────────────────────────────────────────────────
 
-export function setSessionTokenGetter(getter: () => Promise<string | null>) {
-  console.log("[QueryClient] setSessionTokenGetter called");
-  sessionTokenGetter = getter;
+/**
+ * Wait up to `timeoutMs` for window.shopify.idToken to appear, then return
+ * a fresh Shopify session token (JWT).  Returns null if unavailable.
+ */
+async function getSessionToken(timeoutMs = 5000): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+
+  // Inner retry loop — keeps trying every 50 ms until bridge is ready or deadline
+  const attempt = async (): Promise<string | null> => {
+    const shopify = (window as any).shopify;
+
+    if (shopify && typeof shopify.idToken === "function") {
+      try {
+        const token = await Promise.race<string | null>([
+          shopify.idToken() as Promise<string>,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]);
+        if (import.meta.env.DEV) {
+          console.log("[apiFetch] session token obtained:", token ? "✓" : "null");
+        }
+        return token ?? null;
+      } catch (e) {
+        console.error("[apiFetch] idToken() threw:", e);
+        return null;
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      console.warn("[apiFetch] window.shopify not available within timeout");
+      return null;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return attempt();
+  };
+
+  return attempt();
 }
 
-async function getAuthHeaders(): Promise<Record<string, string>> {
-  // --- Attempt 1: use the registered getter (set by ShopifyProvider once App Bridge is ready) ---
-  if (sessionTokenGetter) {
-    try {
-      const tokenPromise = sessionTokenGetter();
-      const timeoutPromise = new Promise<null>((resolve) =>
-        setTimeout(() => resolve(null), 5000)
-      );
-      const token = await Promise.race([tokenPromise, timeoutPromise]);
-      if (token) return { Authorization: `Bearer ${token}` };
-    } catch (e) {
-      console.error("[QueryClient] sessionTokenGetter failed:", e);
-    }
-  }
-
-  // --- Attempt 2: direct fallback — call window.shopify.idToken() when App Bridge is present
-  // but setSessionTokenGetter hasn't been called yet (race on initial render) ---
-  const shopify = (window as any).shopify;
-  if (shopify && typeof shopify.idToken === "function") {
-    try {
-      const tokenPromise = shopify.idToken() as Promise<string | null>;
-      const timeoutPromise = new Promise<null>((resolve) =>
-        setTimeout(() => resolve(null), 3000)
-      );
-      const token = await Promise.race([tokenPromise, timeoutPromise]);
-      if (token) return { Authorization: `Bearer ${token}` };
-    } catch (e) {
-      console.error("[QueryClient] window.shopify.idToken() fallback failed:", e);
-    }
-  }
-
-  return {};
+async function buildAuthHeaders(): Promise<Record<string, string>> {
+  const token = await getSessionToken();
+  if (!token) return {};
+  return { Authorization: `Bearer ${token}` };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// apiFetch — single fetch wrapper used by everything in the admin
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function apiFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const authHeaders = await buildAuthHeaders();
+
+  if (import.meta.env.DEV && typeof input === "string" && input.includes("/api/merchant")) {
+    console.log("[apiFetch] /api/merchant Authorization present:", !!authHeaders.Authorization);
+  }
+
+  const headers = new Headers(init.headers);
+  if (authHeaders.Authorization) {
+    headers.set("Authorization", authHeaders.Authorization);
+  }
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  return fetch(input, { ...init, headers, credentials: "include" });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// apiRequest — used by mutations (method + url + optional JSON body)
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -52,60 +92,37 @@ async function throwIfResNotOk(res: Response) {
 export async function apiRequest(
   method: string,
   url: string,
-  data?: unknown | undefined,
+  data?: unknown,
 ): Promise<Response> {
-  const authHeaders = await getAuthHeaders();
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method,
-    headers: {
-      ...authHeaders,
-      ...(data ? { "Content-Type": "application/json" } : {}),
-    },
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
+    body: data !== undefined ? JSON.stringify(data) : undefined,
   });
-
   await throwIfResNotOk(res);
   return res;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// React Query helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
 type UnauthorizedBehavior = "returnNull" | "throw";
+
 export const getQueryFn: <T>(options: {
   on401: UnauthorizedBehavior;
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
     const url = queryKey[0] as string;
-    console.log("[QueryClient] getQueryFn fetching:", url);
 
-    try {
-      const authHeaders = await getAuthHeaders();
-      console.log("[QueryClient] Making request to:", url, "with auth:", !!authHeaders.Authorization);
+    const res = await apiFetch(url);
 
-      const res = await fetch(url, {
-        credentials: "include",
-        headers: authHeaders,
-      });
-
-      console.log("[QueryClient] Response for", url, "- status:", res.status);
-
-      if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-        console.log("[QueryClient] Got 401, returning null for:", url);
-        return null;
-      }
-
-      await throwIfResNotOk(res);
-      const data = await res.json();
-      console.log("[QueryClient] Success for:", url);
-      return data;
-    } catch (error) {
-      console.error("[QueryClient] Error fetching:", url, error);
-      if (unauthorizedBehavior === "returnNull") {
-        console.log("[QueryClient] Returning null due to error for:", url);
-        return null;
-      }
-      throw error;
+    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
+      return null;
     }
+
+    await throwIfResNotOk(res);
+    return res.json();
   };
 
 export const queryClient = new QueryClient({
@@ -123,10 +140,20 @@ export const queryClient = new QueryClient({
   },
 });
 
-// Invalidate auth-related queries so they refetch with the new token getter
+// Trigger refetch for all auth-gated queries (call after bridge becomes ready)
 export function invalidateAuthQueries() {
-  console.log("[QueryClient] invalidateAuthQueries called");
   queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
   queryClient.invalidateQueries({ queryKey: ["/api/merchant"] });
-  queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/appai/plan"] });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy compatibility — some callers still use setSessionTokenGetter.
+// Keep the export so the compiler doesn't error, but make it a no-op since
+// getSessionToken now reads window.shopify directly.
+// ─────────────────────────────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function setSessionTokenGetter(_getter: () => Promise<string | null>) {
+  // no-op: token is obtained directly from window.shopify.idToken()
 }

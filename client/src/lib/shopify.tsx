@@ -1,170 +1,113 @@
-import { createContext, useContext, useMemo, useState, useEffect, useCallback, ReactNode } from "react";
-import { setSessionTokenGetter, invalidateAuthQueries } from "./queryClient";
+import {
+  createContext, useContext, useEffect, useMemo,
+  useState, ReactNode,
+} from "react";
+import { invalidateAuthQueries } from "./queryClient";
 
-// Check if we're running inside Shopify Admin iframe
-// The shopify global may not be immediately available, so we also check for iframe context
+// ─────────────────────────────────────────────────────────────────────────────
+// isShopifyEmbedded
+//
+// Detects whether the app is running inside the Shopify Admin iframe.
+// Evaluated lazily so it captures window.shopify even if injected late.
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function isShopifyEmbedded(): boolean {
   if (typeof window === "undefined") return false;
 
-  const checks = {
-    hasShopifyGlobal: "shopify" in window,
-    hasShopParam: false,
-    hasEmbeddedParam: false,
-    isInIframe: false,
-    isCrossOriginIframe: false,
-    referrerHasShopify: false,
-  };
+  // window.shopify is injected by Shopify's App Bridge CDN script
+  if ((window as any).shopify) return true;
 
-  // Check URL params
+  // URL params present on first load (before any SPA navigation)
   const params = new URLSearchParams(window.location.search);
-  checks.hasShopParam = params.has("shop");
-  checks.hasEmbeddedParam = params.has("embedded");
+  if (params.has("shop") || params.has("host") || params.has("embedded")) return true;
 
-  // Check iframe context
+  // Cross-origin iframe — accessing window.top throws a SecurityError
   try {
-    checks.isInIframe = window.top !== window.self;
-    if (checks.isInIframe) {
-      checks.referrerHasShopify = document.referrer.includes("shopify.com") ||
-                                   document.referrer.includes("myshopify.com");
+    if (window.top !== window.self) {
+      return (
+        document.referrer.includes("shopify.com") ||
+        document.referrer.includes("myshopify.com") ||
+        true // if we're in any cross-origin iframe assume Shopify
+      );
     }
   } catch {
-    // Cross-origin iframe access error - we're definitely in an iframe
-    checks.isCrossOriginIframe = true;
+    // SecurityError = cross-origin iframe → definitely embedded
+    return true;
   }
 
-  const isEmbedded = checks.hasShopifyGlobal ||
-                      checks.hasShopParam ||
-                      checks.hasEmbeddedParam ||
-                      checks.isCrossOriginIframe ||
-                      (checks.isInIframe && checks.referrerHasShopify);
-
-  console.log("[ShopifyProvider] isShopifyEmbedded checks:", checks, "result:", isEmbedded);
-
-  return isEmbedded;
+  return false;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Context
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface ShopifyContextValue {
   isEmbedded: boolean;
   isReady: boolean;
-  getSessionToken: () => Promise<string | null>;
 }
 
 const ShopifyContext = createContext<ShopifyContextValue>({
   isEmbedded: false,
   isReady: true,
-  getSessionToken: async () => null,
 });
 
 export function useShopify() {
   return useContext(ShopifyContext);
 }
 
-// Provider that uses Shopify App Bridge (global shopify object)
+// ─────────────────────────────────────────────────────────────────────────────
+// ShopifyEmbeddedProvider
+//
+// Waits for window.shopify to be present (Shopify injects it asynchronously
+// via its CDN script), then marks the app as ready and triggers a refetch of
+// all auth-gated queries so they pick up the now-available session token.
+// ─────────────────────────────────────────────────────────────────────────────
+
 function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
-  const [isReady, setIsReady] = useState(false);
-  const [shopifyGlobal, setShopifyGlobal] = useState<any>(null);
+  const [isReady, setIsReady] = useState(() => !!(window as any).shopify);
 
-  // Poll for the shopify global to become available
   useEffect(() => {
-    let attempts = 0;
-    const maxAttempts = 50; // 5 seconds max wait
+    if ((window as any).shopify) {
+      setIsReady(true);
+      // Queries that fired during loading will have returned 401/null.
+      // Invalidate them so they retry now that the bridge is available.
+      invalidateAuthQueries();
+      return;
+    }
 
-    console.log("[ShopifyProvider] Starting to poll for window.shopify...");
-    console.log("[ShopifyProvider] Current window.shopify:", (window as any).shopify);
-    console.log("[ShopifyProvider] window keys with 'shopify':", Object.keys(window).filter(k => k.toLowerCase().includes('shopify')));
+    let cancelled = false;
+    const startMs = Date.now();
+    const maxWaitMs = 8000;
 
-    const checkShopify = () => {
-      const shopify = (window as any).shopify;
-
-      if (attempts % 10 === 0) {
-        console.log("[ShopifyProvider] Poll attempt", attempts, "- shopify:", shopify ? "exists" : "undefined",
-                    "- idToken:", shopify?.idToken ? "exists" : "undefined");
-      }
-
-      if (shopify && typeof shopify.idToken === "function") {
-        console.log("[ShopifyProvider] Shopify global found after", attempts, "attempts");
-        console.log("[ShopifyProvider] shopify object:", shopify);
-        setShopifyGlobal(shopify);
-        return true;
-      }
-
-      attempts++;
-      if (attempts >= maxAttempts) {
-        console.error("[ShopifyProvider] Shopify global not found after", maxAttempts, "attempts");
-        console.error("[ShopifyProvider] Final window.shopify value:", (window as any).shopify);
-        // Still mark as ready but with null shopify - will show landing page
+    const check = () => {
+      if (cancelled) return;
+      if ((window as any).shopify) {
         setIsReady(true);
-        return true;
+        invalidateAuthQueries();
+        return;
       }
-
-      return false;
+      if (Date.now() - startMs > maxWaitMs) {
+        console.warn("[ShopifyProvider] window.shopify not found after 8 s — marking ready anyway");
+        setIsReady(true);
+        return;
+      }
+      setTimeout(check, 100);
     };
 
-    // Check immediately
-    if (checkShopify()) return;
-
-    // Poll every 100ms
-    const interval = setInterval(() => {
-      if (checkShopify()) {
-        clearInterval(interval);
-      }
-    }, 100);
-
-    return () => clearInterval(interval);
+    setTimeout(check, 100);
+    return () => { cancelled = true; };
   }, []);
 
-  // Create token getter that uses the current shopify global
-  const getSessionToken = useCallback(async () => {
-    const shopify = shopifyGlobal || (window as any).shopify;
+  const value = useMemo<ShopifyContextValue>(
+    () => ({ isEmbedded: true, isReady }),
+    [isReady],
+  );
 
-    if (!shopify || typeof shopify.idToken !== "function") {
-      console.error("[ShopifyProvider] Cannot get token - shopify.idToken not available");
-      return null;
-    }
-
-    try {
-      console.log("[ShopifyProvider] Calling shopify.idToken()...");
-      // Add timeout to prevent hanging forever (3s for faster loading)
-      const tokenPromise = shopify.idToken();
-      const timeoutPromise = new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error("idToken() timed out after 3s")), 3000)
-      );
-
-      const token = await Promise.race([tokenPromise, timeoutPromise]);
-      console.log("[ShopifyProvider] Got session token:", token ? "yes" : "no");
-      return token || null;
-    } catch (e) {
-      console.error("[ShopifyProvider] Failed to get session token:", e);
-      return null;
-    }
-  }, [shopifyGlobal]);
-
-  // Set up the token getter when shopify becomes available
-  useEffect(() => {
-    if (shopifyGlobal) {
-      console.log("[ShopifyProvider] Setting up token getter");
-      setSessionTokenGetter(getSessionToken);
-      setIsReady(true);
-      // Invalidate any queries that may have run before the token getter was ready
-      // Use setTimeout to ensure this runs after React Query has initialized
-      setTimeout(() => {
-        console.log("[ShopifyProvider] Invalidating auth queries after token getter setup");
-        invalidateAuthQueries();
-      }, 0);
-    }
-  }, [shopifyGlobal, getSessionToken]);
-
-  const value = useMemo<ShopifyContextValue>(() => ({
-    isEmbedded: true,
-    isReady,
-    getSessionToken,
-  }), [isReady, getSessionToken]);
-
-  // Don't render children until we're ready
   if (!isReady) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-muted-foreground">Loading Shopify...</div>
+        <div className="animate-pulse text-muted-foreground text-sm">Loading…</div>
       </div>
     );
   }
@@ -176,14 +119,15 @@ function ShopifyEmbeddedProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// Non-embedded fallback (for development outside Shopify)
-function NonEmbeddedProvider({ children }: { children: ReactNode }) {
-  const value = useMemo<ShopifyContextValue>(() => ({
-    isEmbedded: false,
-    isReady: true,
-    getSessionToken: async () => null,
-  }), []);
+// ─────────────────────────────────────────────────────────────────────────────
+// NonEmbeddedProvider — development / storefront outside Shopify Admin
+// ─────────────────────────────────────────────────────────────────────────────
 
+function NonEmbeddedProvider({ children }: { children: ReactNode }) {
+  const value = useMemo<ShopifyContextValue>(
+    () => ({ isEmbedded: false, isReady: true }),
+    [],
+  );
   return (
     <ShopifyContext.Provider value={value}>
       {children}
@@ -191,16 +135,20 @@ function NonEmbeddedProvider({ children }: { children: ReactNode }) {
   );
 }
 
-interface ShopifyProviderProps {
-  children: ReactNode;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// ShopifyProvider — root wrapper; decides which provider to use.
+//
+// IMPORTANT: isShopifyEmbedded() is evaluated ONCE per mount via useState so
+// a SPA navigation (which removes ?shop= from the URL) cannot flip us back to
+// NonEmbeddedProvider and lose the bridge context.
+// ─────────────────────────────────────────────────────────────────────────────
 
-export function ShopifyProvider({ children }: ShopifyProviderProps) {
-  // In App Bridge v4, the shopify global is injected by Shopify when embedded
-  // useAppBridge() returns this global or throws if not available
-  if (!isShopifyEmbedded()) {
-    return <NonEmbeddedProvider>{children}</NonEmbeddedProvider>;
+export function ShopifyProvider({ children }: { children: ReactNode }) {
+  // Capture once at mount — never re-evaluate on re-renders / URL changes
+  const [embedded] = useState(() => isShopifyEmbedded());
+
+  if (embedded) {
+    return <ShopifyEmbeddedProvider>{children}</ShopifyEmbeddedProvider>;
   }
-
-  return <ShopifyEmbeddedProvider>{children}</ShopifyEmbeddedProvider>;
+  return <NonEmbeddedProvider>{children}</NonEmbeddedProvider>;
 }
