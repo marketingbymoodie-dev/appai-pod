@@ -217,6 +217,14 @@ app.use((req, res, next) => {
    * Auth must be applied per-route inside routes.ts only.
    */
 
+  // ✅ 0) Run startup migration — ensures missing DB columns exist
+  try {
+    const { runStartupMigrations } = await import("./migrations/startup");
+    await runStartupMigrations();
+  } catch (migrationError) {
+    console.error("[SERVER STARTUP] Startup migration failed — continuing boot:", migrationError);
+  }
+
   // ✅ 1) Register API + server routes FIRST
   await registerRoutes(httpServer, app);
 
@@ -254,18 +262,20 @@ app.use((req, res, next) => {
     });
   });
 
-  // Error handler
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("[SERVER ERROR]", err);
+  // Global error handler — catches errors forwarded by asyncHandler and other middleware.
+  // Must have 4 parameters so Express recognises it as an error handler.
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    console.error("[SERVER ERROR]", err?.stack ?? err);
 
-  if (res.headersSent) {
-    return;
-  }
+    if (res.headersSent) return;
 
-  res.status(err.status || err.statusCode || 500).json({
-    message: err.message || "Internal Server Error",
+    const status = err.status || err.statusCode || 500;
+    const payload: Record<string, any> = { error: "Internal server error" };
+    if (process.env.NODE_ENV !== "production") {
+      payload.details = err.message;
+    }
+    res.status(status).json(payload);
   });
-});
 
 
   // ✅ 3) Vite in dev, static in prod (LAST)

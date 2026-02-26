@@ -1,5 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import type { Express, Request, Response } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
 import fs from "fs";
@@ -24,6 +24,16 @@ function toCleanBuffer(buf: Buffer) {
 }
 
 const objectStorage = new ObjectStorageService();
+
+/**
+ * Wrap an async Express handler so rejected promises are forwarded to next(err)
+ * instead of crashing the process with an unhandled rejection.
+ */
+function asyncHandler(fn: (req: any, res: Response, next: NextFunction) => Promise<any>) {
+  return (req: any, res: Response, next: NextFunction) => {
+    fn(req, res, next).catch(next);
+  };
+}
 
 const THUMBNAIL_SIZE = 256; // Max dimension for thumbnails
 
@@ -2909,7 +2919,7 @@ ${textEdgeRestrictions}
   });
 
   // Get detailed Shopify installations for admin settings
-  app.get("/api/shopify/installations", isAuthenticated, async (req: any, res: Response) => {
+  app.get("/api/shopify/installations", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const shopDomain = req.shopDomain; // From session token verification
@@ -3009,7 +3019,7 @@ ${textEdgeRestrictions}
       console.error("Error fetching Shopify installations:", error);
       res.status(500).json({ error: "Failed to fetch installations", details: error?.message || String(error) });
     }
-  });
+  }));
 
   // Register cart script for a Shopify shop
   app.post("/api/shopify/register-script", isAuthenticated, async (req: any, res: Response) => {
@@ -5480,7 +5490,7 @@ ${textEdgeRestrictions}
   // ==================== MERCHANT ADMIN ENDPOINTS ====================
 
   // Get or create merchant profile
-  app.get("/api/merchant", isAuthenticated, async (req: any, res: Response) => {
+  app.get("/api/merchant", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       console.log("[/api/merchant] Getting merchant for userId:", userId);
@@ -5515,10 +5525,10 @@ ${textEdgeRestrictions}
       console.error("[/api/merchant] Error:", error);
       res.status(500).json({ error: "Failed to fetch merchant", details: error?.message || String(error) });
     }
-  });
+  }));
 
   // Update merchant settings
-  app.put("/api/merchant", isAuthenticated, async (req: any, res: Response) => {
+  app.put("/api/merchant", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       let merchant = await storage.getMerchantByUserId(userId);
@@ -5547,10 +5557,10 @@ ${textEdgeRestrictions}
       console.error("Error updating merchant:", error);
       res.status(500).json({ error: "Failed to update merchant", details: error?.message || String(error) });
     }
-  });
+  }));
 
   // Get merchant generation stats
-  app.get("/api/admin/stats", isAuthenticated, async (req: any, res: Response) => {
+  app.get("/api/admin/stats", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
       const merchant = await storage.getMerchantByUserId(userId);
@@ -5570,7 +5580,7 @@ ${textEdgeRestrictions}
       console.error("Error fetching stats:", error);
       res.status(500).json({ error: "Failed to fetch stats" });
     }
-  });
+  }));
 
   // Migrate existing designs to have thumbnails (and migrate base64 to object storage)
   app.post("/api/admin/migrate-thumbnails", isAuthenticated, async (req: any, res: Response) => {
@@ -8580,7 +8590,7 @@ ${textEdgeRestrictions}
   }
 
   /** GET /api/appai/customizer-pages */
-  app.get("/api/appai/customizer-pages", isAuthenticated, async (req: any, res: Response) => {
+  app.get("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -8604,10 +8614,10 @@ ${textEdgeRestrictions}
       requiresPlan: plan.requiresPlan,
       overLimit: currentCount > plan.pageLimit && plan.isActive,
     });
-  });
+  }));
 
   /** POST /api/appai/customizer-pages */
-  app.post("/api/appai/customizer-pages", isAuthenticated, async (req: any, res: Response) => {
+  app.post("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -8713,10 +8723,10 @@ ${textEdgeRestrictions}
       page,
       storefrontUrl: `/pages/${page.handle}`,
     });
-  });
+  }));
 
   /** PATCH /api/appai/customizer-pages/:id */
-  app.patch("/api/appai/customizer-pages/:id", isAuthenticated, async (req: any, res: Response) => {
+  app.patch("/api/appai/customizer-pages/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -8768,10 +8778,10 @@ ${textEdgeRestrictions}
 
     const updated = await storage.updateCustomizerPage(dbPage.id, updates);
     return res.json({ page: updated });
-  });
+  }));
 
   /** DELETE /api/appai/customizer-pages/:id */
-  app.delete("/api/appai/customizer-pages/:id", isAuthenticated, async (req: any, res: Response) => {
+  app.delete("/api/appai/customizer-pages/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -8793,11 +8803,11 @@ ${textEdgeRestrictions}
 
     await storage.deleteCustomizerPage(dbPage.id);
     return res.json({ success: true });
-  });
+  }));
 
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
   // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
-  app.get("/api/appai/blanks", isAuthenticated, async (req: any, res: Response) => {
+  app.get("/api/appai/blanks", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -8843,7 +8853,7 @@ ${textEdgeRestrictions}
       console.error("[/api/appai/blanks]", err);
       return res.status(500).json({ error: "Failed to load blanks" });
     }
-  });
+  }));
 
   // ─────────────────────────────────────────────────────────────────────────
   // APP PROXY — Storefront → Backend (HMAC-verified, no CORS issues)
@@ -9171,7 +9181,7 @@ ${textEdgeRestrictions}
 
   // ── Shop settings (admin-auth'd) ────────────────────────────────────────
   /** PATCH /api/appai/shop-settings — update per-shop customizer settings */
-  app.patch("/api/appai/shop-settings", isAuthenticated, async (req: any, res: Response) => {
+  app.patch("/api/appai/shop-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -9185,14 +9195,14 @@ ${textEdgeRestrictions}
     }
 
     return res.json({ success: true });
-  });
+  }));
 
   // ─────────────────────────────────────────────────────────────────────────
   // PLAN & BILLING — /api/appai/plan and /api/appai/billing/*
   // ─────────────────────────────────────────────────────────────────────────
 
   /** GET /api/appai/plan — return effective plan state for the authenticated shop */
-  app.get("/api/appai/plan", isAuthenticated, async (req: any, res: Response) => {
+  app.get("/api/appai/plan", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -9212,10 +9222,10 @@ ${textEdgeRestrictions}
       trialStartedAt: (installation as any).trialStartedAt ?? null,
       billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
     });
-  });
+  }));
 
   /** POST /api/appai/billing/start-trial — activate the trial plan (no credit card) */
-  app.post("/api/appai/billing/start-trial", isAuthenticated, async (req: any, res: Response) => {
+  app.post("/api/appai/billing/start-trial", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -9239,7 +9249,7 @@ ${textEdgeRestrictions}
       planStatus: "trialing",
       pageLimit: 1,
     });
-  });
+  }));
 
   /**
    * POST /api/appai/billing/create-subscription
@@ -9247,7 +9257,7 @@ ${textEdgeRestrictions}
    * Returns: { confirmationUrl: string }
    * The client redirects to confirmationUrl so the merchant can approve.
    */
-  app.post("/api/appai/billing/create-subscription", isAuthenticated, async (req: any, res: Response) => {
+  app.post("/api/appai/billing/create-subscription", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -9327,14 +9337,14 @@ ${textEdgeRestrictions}
     }
 
     return res.json({ confirmationUrl, subscriptionId: result?.appSubscription?.id });
-  });
+  }));
 
   /**
    * GET /api/appai/billing/callback
    * Browser redirect from Shopify after merchant approves/declines.
    * Query params: shop, plan, charge_id (Shopify AppSubscription GID)
    */
-  app.get("/api/appai/billing/callback", async (req: Request, res: Response) => {
+  app.get("/api/appai/billing/callback", asyncHandler(async (req: Request, res: Response) => {
     const { shop, plan, charge_id } = req.query as Record<string, string>;
 
     if (!shop || !plan) {
@@ -9414,10 +9424,10 @@ ${textEdgeRestrictions}
       ? `https://${shop}/admin/apps/${apiKey}`
       : `https://${shop}/admin/apps`;
     return res.redirect(adminUrl);
-  });
+  }));
 
   /** POST /api/appai/billing/cancel — cancel current subscription */
-  app.post("/api/appai/billing/cancel", isAuthenticated, async (req: any, res: Response) => {
+  app.post("/api/appai/billing/cancel", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
 
@@ -9443,7 +9453,7 @@ ${textEdgeRestrictions}
     } as any);
 
     return res.json({ success: true });
-  });
+  }));
 
   return httpServer;
 }
