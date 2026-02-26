@@ -2,8 +2,7 @@ import { useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
-import { isShopifyEmbedded } from "@/lib/shopify";
-import { getShopifyParams } from "@/lib/shopify-bridge";
+import { isShopifyEmbedded, getShopifyParams } from "@/lib/shopify";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {

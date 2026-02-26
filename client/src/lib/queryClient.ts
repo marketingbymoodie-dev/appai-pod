@@ -1,43 +1,27 @@
+/**
+ * API client for all /api/* requests.
+ *
+ * Auth strategy:
+ *   In embedded Shopify Admin, the App Bridge v4 CDN script (app-bridge.js)
+ *   monkey-patches window.fetch to automatically inject an OIDC session token
+ *   in the Authorization header on every same-origin request.
+ *   We do NOT need to do anything special — just call fetch() normally.
+ *
+ *   In non-embedded mode (customer storefront, dev), cookie-based auth is
+ *   used via credentials: "include".
+ */
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-import { getShopifySessionToken } from "./shopify-bridge";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auth headers
-//
-// Uses App Bridge v3 getSessionToken(app) — postMessage to the Shopify Admin
-// parent frame.  Works regardless of URL params after SPA navigation.
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function buildAuthHeaders(): Promise<Record<string, string>> {
-  const token = await getShopifySessionToken();
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// apiFetch — single authenticated fetch wrapper for all /api/* calls
+// apiFetch — single fetch wrapper for all /api/* calls.
+// App Bridge v4 patches window.fetch, so Authorization is injected for us.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function apiFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> {
-  const authHeaders = await buildAuthHeaders();
-
-  if (import.meta.env.DEV) {
-    const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/api/merchant")) {
-      console.log(
-        "[apiFetch] /api/merchant — Authorization present:",
-        !!authHeaders.Authorization,
-      );
-    }
-  }
-
   const headers = new Headers(init.headers);
-  if (authHeaders.Authorization) {
-    headers.set("Authorization", authHeaders.Authorization);
-  }
   if (init.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -46,7 +30,7 @@ export async function apiFetch(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// apiRequest — convenience wrapper for mutations (method + url + JSON body)
+// apiRequest — convenience wrapper for mutations
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function throwIfResNotOk(res: Response) {
@@ -106,7 +90,7 @@ export const queryClient = new QueryClient({
   },
 });
 
-// Invalidate auth-gated queries (called when App Bridge becomes available)
+// Invalidate auth-gated queries (called once App Bridge patches fetch)
 export function invalidateAuthQueries() {
   queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
   queryClient.invalidateQueries({ queryKey: ["/api/merchant"] });
@@ -114,8 +98,8 @@ export function invalidateAuthQueries() {
   queryClient.invalidateQueries({ queryKey: ["/api/appai/plan"] });
 }
 
-// Legacy no-op — token acquisition no longer uses a registered getter
+// Legacy no-op kept so existing imports compile without changes
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function setSessionTokenGetter(_getter: () => Promise<string | null>) {
-  // no-op: token is obtained directly via getShopifySessionToken()
+  // no-op: App Bridge v4 patches fetch automatically
 }
