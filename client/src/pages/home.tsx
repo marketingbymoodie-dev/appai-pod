@@ -14,10 +14,18 @@ export default function Home() {
   const { user, isLoading: authLoading, isAuthenticated } = useAuth();
   const [, navigate] = useLocation();
 
-  // When loaded inside Shopify Admin iframe, always show merchant admin — never the customer landing page
+  // When loaded inside Shopify Admin iframe, always show merchant admin — never the customer landing page.
+  // Preserve ?host= and ?shop= so App Bridge CDN script (app-bridge.js) can still read them if it loads later.
   useEffect(() => {
     if (isShopifyEmbedded()) {
-      navigate("/admin");
+      const params = new URLSearchParams(window.location.search);
+      const host = params.get("host");
+      const shop = params.get("shop");
+      const qs = new URLSearchParams();
+      if (host) qs.set("host", host);
+      if (shop) qs.set("shop", shop);
+      const dest = `/admin${qs.toString() ? `?${qs.toString()}` : ""}`;
+      navigate(dest);
     }
   }, [navigate]);
 

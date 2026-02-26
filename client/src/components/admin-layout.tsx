@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
 import { isShopifyEmbedded } from "@/lib/shopify";
+import { getShopifyParams } from "@/lib/shopify-bridge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -198,7 +199,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             borderTop: "1px solid #ca8a04",
           }}
         >
-          [AppAI Debug] embedded={String(embedded)} | shop={new URLSearchParams(window.location.search).get("shop") ?? "—"} | host={new URLSearchParams(window.location.search).get("host") ? "present" : "—"} | path={location}
+          {(() => { const p = getShopifyParams(); return `[AppAI Debug] embedded=${String(embedded)} | shop=${p.shop ?? "—"} | host=${p.host ? "present" : "—"} | path=${location}`; })()}
         </div>
       )}
     </SidebarProvider>
