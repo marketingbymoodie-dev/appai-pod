@@ -165,15 +165,20 @@ export default function AdminCustomizerPages() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
+      if (!id) throw new Error("Missing page ID");
       const res = await apiRequest("DELETE", `/api/appai/customizer-pages/${id}`, undefined);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
       setDeleteTarget(null);
-      toast({ title: "Page deleted" });
+      toast({ title: "Page deleted", description: "The customizer page has been removed." });
     },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: any) => {
+      const msg = err?.message ?? "Unknown error";
+      console.error("[delete customizer-page]", msg);
+      toast({ title: "Delete failed", description: msg, variant: "destructive" });
+    },
   });
 
   function resetForm() {
@@ -604,7 +609,7 @@ export default function AdminCustomizerPages() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              onClick={() => deleteTarget?.id && deleteMutation.mutate(deleteTarget.id)}
               disabled={deleteMutation.isPending}
             >
               {deleteMutation.isPending ? (

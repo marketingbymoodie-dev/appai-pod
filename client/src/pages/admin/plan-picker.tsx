@@ -108,9 +108,15 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
   const subscriptionMutation = useMutation({
     mutationFn: (plan: string) =>
       apiRequest("POST", "/api/appai/billing/create-subscription", { plan }).then(r => r.json()),
-    onSuccess: (data: { confirmationUrl?: string }) => {
+    onSuccess: (data: { confirmationUrl?: string; activated?: boolean }) => {
       setLoadingPlan(null);
-      if (data.confirmationUrl) {
+      if (data.activated) {
+        // Owner bypass: plan was activated directly without Shopify billing
+        queryClient.invalidateQueries({ queryKey: ["/api/appai/plan"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+        toast({ title: "Plan activated!", description: "Your plan has been set." });
+        onActivated?.();
+      } else if (data.confirmationUrl) {
         // Redirect the full window to Shopify billing confirmation
         window.top ? (window.top.location.href = data.confirmationUrl) : (window.location.href = data.confirmationUrl);
       }

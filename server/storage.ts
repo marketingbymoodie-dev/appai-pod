@@ -122,6 +122,7 @@ export interface IStorage {
   // Customizer Pages
   listCustomizerPages(shop: string): Promise<CustomizerPage[]>;
   getCustomizerPage(id: string): Promise<CustomizerPage | undefined>;
+  getCustomizerPageForShop(id: string, shop: string): Promise<CustomizerPage | undefined>;
   getCustomizerPageByHandle(shop: string, handle: string): Promise<CustomizerPage | undefined>;
   createCustomizerPage(page: InsertCustomizerPage): Promise<CustomizerPage>;
   updateCustomizerPage(id: string, updates: Partial<CustomizerPage>): Promise<CustomizerPage | undefined>;
@@ -638,6 +639,14 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
 
   async getCustomizerPage(id: string): Promise<CustomizerPage | undefined> {
     const [row] = await db.select().from(customizerPages).where(eq(customizerPages.id, id));
+    return row;
+  }
+
+  async getCustomizerPageForShop(id: string, shop: string): Promise<CustomizerPage | undefined> {
+    const [row] = await db
+      .select()
+      .from(customizerPages)
+      .where(and(eq(customizerPages.id, id), eq(customizerPages.shop, shop)));
     return row;
   }
 

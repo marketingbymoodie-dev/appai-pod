@@ -8634,7 +8634,7 @@ ${textEdgeRestrictions}
       storage.countCustomizerPages(shop),
     ]);
 
-    const plan = getEffectivePlan(installation as any);
+    const plan = getEffectivePlan(installation as any, shop);
 
     return res.json({
       pages,
@@ -8670,7 +8670,7 @@ ${textEdgeRestrictions}
     }
 
     // Plan gate: must have an active plan before creating pages
-    const plan = getEffectivePlan(installation as any);
+    const plan = getEffectivePlan(installation as any, shop);
     if (plan.requiresPlan) {
       return res.status(402).json({
         error: "No active plan. Start a free trial or pick a plan to create customizer pages.",
@@ -8775,8 +8775,11 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
-    const dbPage = await storage.getCustomizerPage(req.params.id);
-    if (!dbPage || dbPage.shop !== shop) return res.status(404).json({ error: "Page not found" });
+    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
+    if (!dbPage) {
+      console.warn(`[PATCH customizer-page] NOT_FOUND or SHOP_MISMATCH id=${req.params.id} shop=${shop}`);
+      return res.status(404).json({ error: "Page not found" });
+    }
 
     const updates: Partial<CustomizerPage> = {};
 
@@ -8830,8 +8833,17 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
-    const dbPage = await storage.getCustomizerPage(req.params.id);
-    if (!dbPage || dbPage.shop !== shop) return res.status(404).json({ error: "Page not found" });
+    console.log(`[DELETE customizer-page] id=${req.params.id} shop=${shop}`);
+    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
+    if (!dbPage) {
+      const anyPage = await storage.getCustomizerPage(req.params.id);
+      if (anyPage) {
+        console.warn(`[DELETE customizer-page] SHOP_MISMATCH id=${req.params.id} stored="${anyPage.shop}" request="${shop}"`);
+      } else {
+        console.warn(`[DELETE customizer-page] NOT_FOUND id=${req.params.id} shop=${shop}`);
+      }
+      return res.status(404).json({ error: "Page not found" });
+    }
 
     // Delete Shopify page (best-effort)
     if (dbPage.shopifyPageId) {
@@ -9312,7 +9324,7 @@ ${textEdgeRestrictions}
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
-    const plan = getEffectivePlan(installation as any);
+    const plan = getEffectivePlan(installation as any, installation.shopDomain);
     const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
 
     return res.json({
@@ -9337,7 +9349,7 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
 
     // Idempotent — if already on a plan or trial, just return current state
-    const current = getEffectivePlan(installation as any);
+    const current = getEffectivePlan(installation as any, installation.shopDomain);
     if (current.isActive) {
       return res.json({ success: true, alreadyActive: true, plan: current });
     }
@@ -9367,10 +9379,22 @@ ${textEdgeRestrictions}
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
+    const shop: string = installation.shopDomain;
     const { plan } = req.body as { plan?: string };
 
     if (!plan || !(PAID_PLANS as readonly string[]).includes(plan)) {
       return res.status(400).json({ error: `Invalid plan. Must be one of: ${PAID_PLANS.join(", ")}` });
+    }
+
+    // Owner bypass: skip Shopify Billing API entirely and write plan directly to DB
+    const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
+    if (ownerShop && shop.toLowerCase() === ownerShop) {
+      console.log(`[billing] Owner bypass: setting plan=${plan} for ${shop} without Shopify billing`);
+      await storage.updateShopifyInstallation(installation.id, {
+        planName: plan,
+        planStatus: "active",
+      });
+      return res.json({ activated: true, plan });
     }
 
     const priceUsd = PLAN_PRICES_USD[plan];
