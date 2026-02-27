@@ -4,7 +4,7 @@ import { storage } from "./storage";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const SHOPIFY_SCOPES = "read_products,write_products,read_themes,write_themes,read_script_tags,write_script_tags";
+const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content";
 
 export async function registerCartScript(shop: string, accessToken: string): Promise<void> {
   const appUrl = getAppUrl();
@@ -182,6 +182,8 @@ export async function shopifyApiCall(
 }
 
 export function registerShopifyRoutes(app: Express): void {
+  console.log(`[shopify] OAuth scopes configured: ${SHOPIFY_SCOPES}`);
+
   if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
     console.log("Shopify OAuth disabled - SHOPIFY_API_KEY/SECRET not configured");
     
