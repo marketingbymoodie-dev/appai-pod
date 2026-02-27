@@ -645,6 +645,14 @@
     var handle = getCurrentHandle();
     if (!handle) return;
 
+    // Check BEFORE any async work — ai-art-embed.liquid sets this flag synchronously
+    // as soon as it detects a /pages/:handle URL, so this guard runs in the same
+    // tick as DOMContentLoaded and prevents any unnecessary fetch.
+    if (window.__APPAI_CUSTOMIZER_HANDLED) {
+      console.log('[AppAI Embed] Already handled by embed block, skipping custom renderer.');
+      return;
+    }
+
     var config = await getCustomizerConfig();
     var pages = config.pages || [];
     var fallbackUrl = config.fallbackUrl || '/';
@@ -664,9 +672,9 @@
       return;
     }
 
-    // If ai-art-embed.liquid already handled this page (iframe renderer), skip the custom renderer
+    // Re-check after the async config fetch in case the flag was set while we were waiting
     if (window.__APPAI_CUSTOMIZER_HANDLED) {
-      console.log('[AppAI Embed] Generator already handled by embed block, skipping custom renderer.');
+      console.log('[AppAI Embed] Embed block took over during config fetch, skipping custom renderer.');
       return;
     }
 

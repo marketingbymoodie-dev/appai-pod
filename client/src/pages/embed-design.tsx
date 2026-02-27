@@ -490,7 +490,7 @@ export default function EmbedDesign() {
      * - Uses completed flag to prevent race conditions
      * - Properly cleans up all resources
      */
-    const fetchWithTimeout = async (url: string, timeout = 30000): Promise<Response> => {
+    const fetchWithTimeout = async (url: string, timeout = 12000): Promise<Response> => {
       // SAFETY: All URLs MUST be absolute. If a relative URL slips through, fix it but warn loudly.
       let fullUrl: string;
       if (url.startsWith('http')) {
@@ -661,17 +661,22 @@ export default function EmbedDesign() {
       const myshopifyDomain = getMyShopifyDomain();
       console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);
 
-      // Step 1: Resolve productTypeId — always try resolver when we have a product handle.
-      // The theme block metafield may contain a stale ID (e.g. "34" when real ID is "2").
-      // The server designer endpoint also has fallback, but resolving upfront avoids spurious 404 logs.
+      // Step 1: Resolve productTypeId — only call the resolver when we don't already
+      // have a valid (non-zero) productTypeId.  When the config supplies a real ID
+      // (e.g. from the customizer-page proxy endpoint) we skip this call entirely,
+      // preventing the 30s timeout chain that caused /pages/:handle to hang.
       let resolvedProductTypeId = productTypeId;
       let resolveSource = "url_param";
 
-      if (productHandle && myshopifyDomain) {
-        console.log('[EmbedDesign] Attempting to resolve productTypeId from handle:', productHandle, '(current:', productTypeId, ')');
+      const hasValidProductTypeId = productTypeId && productTypeId !== "0" && parseInt(productTypeId, 10) > 0;
+
+      if (!hasValidProductTypeId && productHandle && myshopifyDomain) {
+        console.log('[EmbedDesign] productTypeId is 0/missing — attempting resolver with handle:', productHandle);
         try {
+          // Short timeout (8s) and single retry for the resolver — it is non-fatal.
           const resolveRes = await fetchWithRetry(
-            `${API_BASE}/api/storefront/resolve-product-type?shop=${encodeURIComponent(myshopifyDomain)}&handle=${encodeURIComponent(productHandle)}&${cacheBuster}`
+            `${API_BASE}/api/storefront/resolve-product-type?shop=${encodeURIComponent(myshopifyDomain)}&handle=${encodeURIComponent(productHandle)}&${cacheBuster}`,
+            1  // 1 retry = 2 total attempts max
           );
           if (resolveRes.ok) {
             const resolved = await resolveRes.json();
@@ -680,14 +685,13 @@ export default function EmbedDesign() {
             console.log('[EmbedDesign] Resolved productTypeId:', resolvedProductTypeId, 'via:', resolveSource);
           } else {
             const errorData = await resolveRes.json().catch(() => ({}));
-            console.warn('[EmbedDesign] Resolver returned error (non-fatal, designer endpoint has fallback):', errorData);
-            // Do NOT early-return here — the designer endpoint has its own robust fallback chain.
-            // It will resolve stale IDs by handle, displayName, or smallest-available-ID.
+            console.warn('[EmbedDesign] Resolver returned error (non-fatal):', errorData);
           }
         } catch (err) {
           console.warn('[EmbedDesign] Resolver failed (non-fatal):', err);
-          // Continue with original productTypeId — designer endpoint will attempt fallback
         }
+      } else if (hasValidProductTypeId) {
+        console.log('[EmbedDesign] Skipping resolver — valid productTypeId provided:', productTypeId);
       }
 
       // Step 2: Fetch config and designer data

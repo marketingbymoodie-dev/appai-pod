@@ -3695,7 +3695,7 @@ ${textEdgeRestrictions}
   });
 
   // Resolve product type ID from shop + product handle
-  app.get("/api/storefront/resolve-product-type", async (req: Request, res: Response) => {
+  app.get("/api/storefront/resolve-product-type", asyncHandler(async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
     const handle = req.query.handle as string;
     const startTime = Date.now();
@@ -3707,104 +3707,104 @@ ${textEdgeRestrictions}
       return res.status(400).json({ error: "Missing handle parameter" });
     }
 
+    // 5-second server-side timeout: if DB lookups take too long, return 503
+    // so the client doesn't hang for 30s waiting for a response.
+    const TIMEOUT_MS = 5000;
+    let timedOut = false;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => {
+        timedOut = true;
+        reject(new Error("resolve-product-type server timeout"));
+      }, TIMEOUT_MS)
+    );
+
     try {
-      // Resolve merchant
-      let merchant = await storage.getMerchantByShop(shop);
-      let merchantSource = "direct";
+      await Promise.race([timeoutPromise, (async () => {
+        // Resolve merchant
+        let merchant = await storage.getMerchantByShop(shop);
 
-      if (!merchant) {
-        const installation = await storage.getShopifyInstallationByShop(shop);
-        if (installation && installation.merchantId) {
-          merchant = await storage.getMerchant(installation.merchantId);
-          merchantSource = "installation";
+        if (!merchant) {
+          const installation = await storage.getShopifyInstallationByShop(shop);
+          if (installation && installation.merchantId) {
+            merchant = await storage.getMerchant(installation.merchantId);
+          }
         }
-      }
 
-      if (!merchant) {
-        console.log(`[resolve-product-type] shop=${shop} handle=${handle} error=merchant_not_found ms=${Date.now() - startTime}`);
-        return res.status(404).json({
-          error: "Shop not found",
-          shop,
-          handle
-        });
-      }
+        if (!merchant) {
+          console.log(`[resolve-product-type] shop=${shop} handle=${handle} error=merchant_not_found ms=${Date.now() - startTime}`);
+          res.status(404).json({ error: "Shop not found", shop, handle });
+          return;
+        }
 
-      // Get all product types for this merchant
-      const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
+        // Get all product types for this merchant
+        const merchantProductTypes = await storage.getProductTypesByMerchant(merchant.id);
 
-      // Try to match by shopifyProductHandle
-      let matchedProductType = merchantProductTypes.find(
-        pt => pt.shopifyProductHandle?.toLowerCase() === handle.toLowerCase()
-      );
-      let reason = "matched_by_shopify_handle";
+        // Try to match by shopifyProductHandle
+        let matchedProductType = merchantProductTypes.find(
+          (pt: any) => pt.shopifyProductHandle?.toLowerCase() === handle.toLowerCase()
+        );
+        let reason = "matched_by_shopify_handle";
 
-      // If no exact match, try fuzzy match by name containing handle keywords
-      if (!matchedProductType) {
-        const handleWords = handle.toLowerCase().replace(/-/g, ' ').split(' ').filter(w => w.length > 2);
-        matchedProductType = merchantProductTypes.find(pt => {
-          const ptNameLower = pt.name.toLowerCase();
-          // Check if product type name contains key words from handle
-          return handleWords.some(word => ptNameLower.includes(word));
-        });
+        if (!matchedProductType) {
+          const handleWords = handle.toLowerCase().replace(/-/g, ' ').split(' ').filter((w: string) => w.length > 2);
+          matchedProductType = merchantProductTypes.find((pt: any) => {
+            const ptNameLower = pt.name.toLowerCase();
+            return handleWords.some((word: string) => ptNameLower.includes(word));
+          });
+          if (matchedProductType) reason = "fuzzy_matched_by_name";
+        }
+
+        if (!matchedProductType) {
+          const handleLower = handle.toLowerCase();
+          if (handleLower.includes('tumbler') || handleLower.includes('mug') || handleLower.includes('cup')) {
+            matchedProductType = merchantProductTypes.find((pt: any) => pt.designerType === 'mug');
+            if (matchedProductType) reason = "matched_by_designer_type_mug";
+          } else if (handleLower.includes('frame') || handleLower.includes('poster') || handleLower.includes('print') || handleLower.includes('art')) {
+            matchedProductType = merchantProductTypes.find((pt: any) => pt.designerType === 'framed-print');
+            if (matchedProductType) reason = "matched_by_designer_type_framed_print";
+          } else if (handleLower.includes('shirt') || handleLower.includes('tee') || handleLower.includes('hoodie')) {
+            matchedProductType = merchantProductTypes.find((pt: any) => pt.designerType === 'apparel');
+            if (matchedProductType) reason = "matched_by_designer_type_apparel";
+          } else if (handleLower.includes('pillow') || handleLower.includes('cushion')) {
+            matchedProductType = merchantProductTypes.find((pt: any) => pt.designerType === 'pillow');
+            if (matchedProductType) reason = "matched_by_designer_type_pillow";
+          }
+        }
+
+        const ms = Date.now() - startTime;
+
         if (matchedProductType) {
-          reason = "fuzzy_matched_by_name";
+          console.log(`[resolve-product-type] shop=${shop} handle=${handle} resolved=${matchedProductType.id} reason=${reason} ms=${ms}`);
+          res.json({
+            productTypeId: matchedProductType.id,
+            productTypeName: matchedProductType.name,
+            designerType: matchedProductType.designerType,
+            reason, shop, handle, merchantId: merchant.id
+          });
+        } else {
+          console.log(`[resolve-product-type] shop=${shop} handle=${handle} error=no_match ms=${ms}`);
+          res.status(404).json({
+            error: "No matching product type found",
+            shop, handle, merchantId: merchant.id,
+            availableProductTypes: merchantProductTypes.map((pt: any) => ({
+              id: pt.id, name: pt.name, designerType: pt.designerType,
+              shopifyProductHandle: pt.shopifyProductHandle || null
+            })),
+            hint: "Set shopifyProductHandle on the product type or use data attribute in storefront"
+          });
         }
-      }
-
-      // If still no match, check for common product type mappings
-      if (!matchedProductType) {
-        // Map common handle patterns to designerType
-        const handleLower = handle.toLowerCase();
-        if (handleLower.includes('tumbler') || handleLower.includes('mug') || handleLower.includes('cup')) {
-          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'mug');
-          if (matchedProductType) reason = "matched_by_designer_type_mug";
-        } else if (handleLower.includes('frame') || handleLower.includes('poster') || handleLower.includes('print') || handleLower.includes('art')) {
-          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'framed-print');
-          if (matchedProductType) reason = "matched_by_designer_type_framed_print";
-        } else if (handleLower.includes('shirt') || handleLower.includes('tee') || handleLower.includes('hoodie')) {
-          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'apparel');
-          if (matchedProductType) reason = "matched_by_designer_type_apparel";
-        } else if (handleLower.includes('pillow') || handleLower.includes('cushion')) {
-          matchedProductType = merchantProductTypes.find(pt => pt.designerType === 'pillow');
-          if (matchedProductType) reason = "matched_by_designer_type_pillow";
-        }
-      }
-
+      })()]);
+    } catch (error: any) {
       const ms = Date.now() - startTime;
-
-      if (matchedProductType) {
-        console.log(`[resolve-product-type] shop=${shop} handle=${handle} resolved=${matchedProductType.id} reason=${reason} ms=${ms}`);
-        return res.json({
-          productTypeId: matchedProductType.id,
-          productTypeName: matchedProductType.name,
-          designerType: matchedProductType.designerType,
-          reason,
-          shop,
-          handle,
-          merchantId: merchant.id
-        });
+      if (timedOut) {
+        console.warn(`[resolve-product-type] TIMEOUT shop=${shop} handle=${handle} ms=${ms}`);
+        if (!res.headersSent) res.status(503).json({ error: "Resolver timed out", shop, handle });
+      } else {
+        console.error(`[resolve-product-type] Error shop=${shop} handle=${handle} ms=${ms}:`, error?.message ?? error);
+        if (!res.headersSent) res.status(500).json({ error: "Failed to resolve product type" });
       }
-
-      // No match found
-      console.log(`[resolve-product-type] shop=${shop} handle=${handle} error=no_match ms=${ms}`);
-      return res.status(404).json({
-        error: "No matching product type found",
-        shop,
-        handle,
-        merchantId: merchant.id,
-        availableProductTypes: merchantProductTypes.map(pt => ({
-          id: pt.id,
-          name: pt.name,
-          designerType: pt.designerType,
-          shopifyProductHandle: pt.shopifyProductHandle || null
-        })),
-        hint: "Set shopifyProductHandle on the product type or use data attribute in storefront"
-      });
-    } catch (error) {
-      console.error("[resolve-product-type] Error:", error);
-      res.status(500).json({ error: "Failed to resolve product type" });
     }
-  });
+  }));
 
   // ==================== STOREFRONT GENERATE (NO SESSION TOKEN) ====================
   // Used by storefront embeds where App Bridge session tokens are not available.
@@ -8634,6 +8634,54 @@ ${textEdgeRestrictions}
       storage.countCustomizerPages(shop),
     ]);
 
+    // Backfill any pages that are missing baseProductHandle or productTypeId.
+    // These were created before we started storing those fields.
+    // Runs in the background — we await all, but individual failures are swallowed.
+    const backfillResults = await Promise.allSettled(
+      pages
+        .filter((p) => p.baseVariantId && (!(p as any).baseProductHandle || !p.productTypeId))
+        .map(async (p) => {
+          try {
+            const varRes = await shopifyApiCall(
+              shop, installation.accessToken,
+              `variants/${p.baseVariantId}.json?fields=id,product_id`
+            );
+            if (!varRes.ok || !varRes.data?.variant?.product_id) return;
+            const productId = String(varRes.data.variant.product_id);
+
+            const prodRes = await shopifyApiCall(
+              shop, installation.accessToken,
+              `products/${productId}.json?fields=id,handle`
+            );
+            const productHandle: string = prodRes.data?.product?.handle ?? "";
+
+            const allTypes = await storage.getActiveProductTypes();
+            const matchedType = allTypes.find(
+              (pt: any) => String(pt.shopifyProductId) === productId
+            );
+
+            const updates: any = {};
+            if (!(p as any).baseProductHandle && productHandle) {
+              updates.baseProductHandle = productHandle;
+            }
+            if (!p.productTypeId && matchedType?.id) {
+              updates.productTypeId = matchedType.id;
+            }
+            if (Object.keys(updates).length > 0) {
+              await storage.updateCustomizerPage(p.id, updates);
+              console.log(`[backfill] Updated page ${p.id} (${p.handle}):`, updates);
+              // Mutate the in-memory object so the response is already up-to-date
+              Object.assign(p, updates);
+            }
+          } catch (e: any) {
+            console.warn(`[backfill] Could not backfill page ${p.id}:`, e?.message ?? e);
+          }
+        })
+    );
+    if (backfillResults.some((r) => r.status === "rejected")) {
+      console.warn("[backfill] Some backfill tasks rejected unexpectedly");
+    }
+
     const plan = getEffectivePlan(installation as any, shop);
 
     return res.json({
@@ -8991,9 +9039,8 @@ ${textEdgeRestrictions}
     const handle = (req.query.handle as string) || "";
     if (!shop || !handle) return res.status(400).json({ error: "Missing shop or handle" });
 
-    const pages = await storage.listCustomizerPages(shop);
-    const page = pages.find((p) => p.handle === handle && p.status === "active");
-    if (!page) return res.status(404).json({ error: "Customizer page not found" });
+    const page = await storage.getCustomizerPageByHandle(shop, handle);
+    if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
     return res.json({
       id: page.id,
