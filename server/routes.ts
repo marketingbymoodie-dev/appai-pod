@@ -8956,6 +8956,66 @@ ${textEdgeRestrictions}
     return res.json({ pages, fallbackUrl });
   });
 
+  /** Rewrites local /objects/... storage paths to go through the App Proxy so storefront can load them */
+  function rewriteStoragePath(url: string | null | undefined): string | null {
+    if (!url) return null;
+    if (url.startsWith("/objects/")) return `/apps/appai${url}`;
+    return url;
+  }
+
+  /** GET /api/proxy/customizer-page — single page config by handle, for storefront embed */
+  app.get("/api/proxy/customizer-page", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    const handle = (req.query.handle as string) || "";
+    if (!shop || !handle) return res.status(400).json({ error: "Missing shop or handle" });
+
+    const pages = await storage.listCustomizerPages(shop);
+    const page = pages.find((p) => p.handle === handle && p.status === "active");
+    if (!page) return res.status(404).json({ error: "Customizer page not found" });
+
+    return res.json({
+      id: page.id,
+      handle: page.handle,
+      title: page.title,
+      baseVariantId: page.baseVariantId,
+      baseProductId: page.baseProductId ?? null,
+      baseProductTitle: page.baseProductTitle ?? null,
+      baseVariantTitle: page.baseVariantTitle ?? null,
+      baseProductPrice: page.baseProductPrice ?? null,
+      productTypeId: page.productTypeId ?? null,
+      appUrl: process.env.APP_URL || "https://appai-pod-production.up.railway.app",
+    });
+  }));
+
+  /**
+   * GET /api/proxy/objects/designs/:filename
+   * Serves design/mockup images through the App Proxy so storefront JS can load
+   * them without CORS issues (Shopify rewrites /apps/appai/objects/designs/… here).
+   */
+  app.get("/api/proxy/objects/designs/:filename", proxyAuth, (req: Request, res: Response) => {
+    const { filename } = req.params;
+    // Block path traversal
+    if (!filename || filename.includes("/") || filename.includes("..")) {
+      return res.status(400).json({ error: "Invalid filename" });
+    }
+    const storageDir = process.env.STORAGE_DIR || "./local-storage";
+    const filePath = path.resolve(storageDir, "designs", filename);
+    const allowedDir = path.resolve(storageDir, "designs");
+    if (!filePath.startsWith(allowedDir)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Not found" });
+
+    const ext = path.extname(filename).slice(1).toLowerCase();
+    const ct =
+      ext === "png" ? "image/png" :
+      ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
+      "application/octet-stream";
+    res.setHeader("Content-Type", ct);
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    fs.createReadStream(filePath).pipe(res);
+  });
+
   /** POST /api/proxy/designs — create a customizer design (async generation) */
   app.post("/api/proxy/designs", proxyAuth, async (req: Request, res: Response) => {
     const shop: string = (req as any).proxyShop;
@@ -9004,9 +9064,11 @@ ${textEdgeRestrictions}
     return res.json({
       designId: design.id,
       status: design.status,
-      artworkUrl: design.artworkUrl,
-      mockupUrl: design.mockupUrl,
-      mockupUrls: design.mockupUrls,
+      artworkUrl: rewriteStoragePath(design.artworkUrl as string | null),
+      mockupUrl: rewriteStoragePath(design.mockupUrl as string | null),
+      mockupUrls: Array.isArray(design.mockupUrls)
+        ? (design.mockupUrls as string[]).map((u) => rewriteStoragePath(u) ?? u)
+        : design.mockupUrls,
       errorMessage: design.errorMessage,
     });
   });

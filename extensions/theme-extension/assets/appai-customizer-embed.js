@@ -664,6 +664,12 @@
       return;
     }
 
+    // If ai-art-embed.liquid already handled this page (iframe renderer), skip the custom renderer
+    if (window.__APPAI_CUSTOMIZER_HANDLED) {
+      console.log('[AppAI Embed] Generator already handled by embed block, skipping custom renderer.');
+      return;
+    }
+
     mountCustomizer(page);
   }
 

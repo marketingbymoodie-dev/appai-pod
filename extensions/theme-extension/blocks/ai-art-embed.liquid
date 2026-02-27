@@ -114,7 +114,13 @@ function showLoginRequiredPopup() {
                       window.location.pathname.includes('/products_preview');
   
   if (!isProductPage) {
-    console.log('[AI Art Embed] Not a product page, skipping product logic. Path:', window.location.pathname);
+    var _cpMatch = window.location.pathname.match(/^\/pages\/([^/?#]+)/);
+    if (_cpMatch) {
+      console.log('[AI Art Embed] Customizer page detected, handle:', _cpMatch[1]);
+      initCustomizerPage(_cpMatch[1]);
+    } else {
+      console.log('[AI Art Embed] Not a product or customizer page. Path:', window.location.pathname);
+    }
     return;
   }
   console.log('[AI Art Embed] On product page, continuing...');
@@ -1258,6 +1264,72 @@ function showLoginRequiredPopup() {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
+  }
+
+  /**
+   * initCustomizerPage — called when the embed detects /pages/:handle.
+   * Fetches the admin-configured page record via App Proxy, then renders
+   * the same /embed/design iframe used on product pages (unified renderer).
+   */
+  function initCustomizerPage(handle) {
+    fetch('/apps/appai/customizer-page?handle=' + encodeURIComponent(handle), { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(config) {
+        if (!config) return; // not a registered/active customizer page — exit silently
+
+        // Login gate mirrors the product page gate above
+        if (!customerId) {
+          console.log('[AI Art Embed] Customizer page: no customer logged in, showing login popup.');
+          showLoginRequiredPopup();
+          return;
+        }
+
+        // Signal appai-customizer-embed.js to skip its own renderer for this page
+        window.__APPAI_CUSTOMIZER_HANDLED = true;
+
+        // Find the page's main content area
+        var mount = document.querySelector('#MainContent') ||
+                    document.querySelector('main[role="main"]') ||
+                    document.querySelector('main') ||
+                    document.body;
+
+        // Hide theme's generic page text (title, body copy)
+        ['#MainContent > .page-width', 'main .page', '.page__content',
+         '.shopify-section--rich-text', 'h1.page-title', 'h1.title'].forEach(function(sel) {
+          document.querySelectorAll(sel).forEach(function(el) { el.style.display = 'none'; });
+        });
+
+        var shopDomain = (window.Shopify && window.Shopify.shop) || '';
+
+        var studioEl = createDesignStudio({
+          appUrl:          config.appUrl,
+          shopDomain:      shopDomain,
+          productTypeId:   config.productTypeId ? String(config.productTypeId) : '0',
+          productId:       config.baseProductId || '',
+          productHandle:   handle,
+          productTitle:    config.baseProductTitle || config.title,
+          displayName:     config.title,
+          description:     '',
+          selectedVariant: config.baseVariantId,
+          hideAddToCart:   false,
+          enabled:         true,
+        });
+
+        mount.insertBefore(studioEl, mount.firstChild);
+
+        // Product spec strip below the generator
+        if (config.baseProductTitle || config.baseVariantTitle) {
+          var specs = document.createElement('div');
+          specs.style.cssText = 'margin:16px auto;max-width:640px;padding:12px 16px;' +
+            'border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;';
+          specs.innerHTML =
+            (config.baseProductTitle ? '<p style="font-weight:600;margin:0 0 4px;">' + config.baseProductTitle + '</p>' : '') +
+            (config.baseVariantTitle ? '<p style="color:#6b7280;margin:0 0 4px;font-size:13px;">' + config.baseVariantTitle + '</p>' : '') +
+            (config.baseProductPrice ? '<p style="font-weight:600;margin:0;">$' + parseFloat(config.baseProductPrice).toFixed(2) + '</p>' : '');
+          mount.appendChild(specs);
+        }
+      })
+      .catch(function(e) { console.warn('[AI Art Embed] initCustomizerPage error:', e); });
   }
 })();
 </script>
