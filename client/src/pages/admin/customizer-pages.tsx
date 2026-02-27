@@ -15,7 +15,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -294,10 +294,10 @@ export default function AdminCustomizerPages() {
                     </p>
                   </div>
                   <div>
-                    <Label>Base Product / Variant</Label>
+                    <Label>Product &amp; Default Variant</Label>
                     {blanksLoading ? (
                       <Skeleton className="h-10 w-full mt-1" />
-                    ) : allVariants.length === 0 ? (
+                    ) : (blanksData?.blanks ?? []).length === 0 ? (
                       <p className="text-sm text-destructive mt-1">
                         No blank products found. Add products tagged{" "}
                         <code className="bg-muted px-1 rounded">appai-blank</code> in Shopify.
@@ -308,14 +308,22 @@ export default function AdminCustomizerPages() {
                           <SelectValue placeholder="Select a product variant…" />
                         </SelectTrigger>
                         <SelectContent>
-                          {allVariants.map((v) => (
-                            <SelectItem key={v.variantId} value={v.variantId}>
-                              {v.label}
-                            </SelectItem>
+                          {(blanksData?.blanks ?? []).map((blank) => (
+                            <SelectGroup key={blank.productId}>
+                              <SelectLabel>{blank.title}</SelectLabel>
+                              {(blank.variants ?? []).map((v) => (
+                                <SelectItem key={v.id} value={v.id}>
+                                  {v.title} (${v.price})
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
                           ))}
                         </SelectContent>
                       </Select>
                     )}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      All variants will be available to customers. This sets the default.
+                    </p>
                   </div>
                   <Button
                     className="w-full"

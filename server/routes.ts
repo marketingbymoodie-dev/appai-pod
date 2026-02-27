@@ -8711,9 +8711,17 @@ ${textEdgeRestrictions}
     const productResult = await shopifyApiCall(
       shop,
       installation.accessToken,
-      `products/${variant.product_id}.json?fields=id,title`,
+      `products/${variant.product_id}.json?fields=id,title,handle`,
     );
     const productTitle: string = productResult.data?.product?.title ?? "";
+    const productHandle: string = productResult.data?.product?.handle ?? "";
+
+    // Resolve productTypeId by matching the Shopify product ID against our productTypes table
+    const productTypes = await storage.getActiveProductTypes();
+    const matchedType = productTypes.find(
+      (pt: any) => String(pt.shopifyProductId) === String(variant.product_id)
+    );
+    const resolvedProductTypeId: number | null = matchedType?.id ?? null;
 
     // Create Shopify Page
     const pageBody = await shopifyApiCall(
@@ -8745,9 +8753,11 @@ ${textEdgeRestrictions}
       title: title.trim(),
       baseVariantId: String(variantNum),
       baseProductId: String(variant.product_id),
+      baseProductHandle: productHandle,
       baseProductTitle: productTitle,
       baseVariantTitle: variant.title ?? "",
       baseProductPrice: variant.price ?? "",
+      productTypeId: resolvedProductTypeId,
       status: "active",
     });
 
@@ -8979,6 +8989,7 @@ ${textEdgeRestrictions}
       title: page.title,
       baseVariantId: page.baseVariantId,
       baseProductId: page.baseProductId ?? null,
+      baseProductHandle: (page as any).baseProductHandle ?? null,
       baseProductTitle: page.baseProductTitle ?? null,
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: page.baseProductPrice ?? null,

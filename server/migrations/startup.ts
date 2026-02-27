@@ -19,6 +19,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "trial_started_at",            type: "TIMESTAMP" },
   { table: "shopify_installations", column: "billing_subscription_id",     type: "TEXT" },
   { table: "shopify_installations", column: "billing_current_period_end",  type: "TIMESTAMP" },
+  { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

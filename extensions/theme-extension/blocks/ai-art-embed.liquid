@@ -116,6 +116,8 @@ function showLoginRequiredPopup() {
   if (!isProductPage) {
     var _cpMatch = window.location.pathname.match(/^\/pages\/([^/?#]+)/);
     if (_cpMatch) {
+      // Set flag synchronously NOW so appai-customizer-embed.js can never race with us
+      window.__APPAI_CUSTOMIZER_HANDLED = true;
       console.log('[AI Art Embed] Customizer page detected, handle:', _cpMatch[1]);
       initCustomizerPage(_cpMatch[1]);
     } else {
@@ -1270,12 +1272,23 @@ function showLoginRequiredPopup() {
    * initCustomizerPage — called when the embed detects /pages/:handle.
    * Fetches the admin-configured page record via App Proxy, then renders
    * the same /embed/design iframe used on product pages (unified renderer).
+   *
+   * The __APPAI_CUSTOMIZER_HANDLED flag is set SYNCHRONOUSLY before this
+   * function is called, so appai-customizer-embed.js can never race with us.
+   * If the config fetch fails (404 = not a customizer page), we release the flag.
    */
   function initCustomizerPage(handle) {
     fetch('/apps/appai/customizer-page?handle=' + encodeURIComponent(handle), { credentials: 'same-origin' })
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(config) {
-        if (!config) return; // not a registered/active customizer page — exit silently
+        if (!config) {
+          // Not a registered/active customizer page — release the flag so the
+          // theme renders its normal page content and appai-customizer-embed.js
+          // can handle disabled-page redirects if needed.
+          window.__APPAI_CUSTOMIZER_HANDLED = false;
+          console.log('[AI Art Embed] /pages/' + handle + ' is not a customizer page, releasing lock.');
+          return;
+        }
 
         // Login gate mirrors the product page gate above
         if (!customerId) {
@@ -1283,9 +1296,6 @@ function showLoginRequiredPopup() {
           showLoginRequiredPopup();
           return;
         }
-
-        // Signal appai-customizer-embed.js to skip its own renderer for this page
-        window.__APPAI_CUSTOMIZER_HANDLED = true;
 
         // Find the page's main content area
         var mount = document.querySelector('#MainContent') ||
@@ -1306,7 +1316,10 @@ function showLoginRequiredPopup() {
           shopDomain:      shopDomain,
           productTypeId:   config.productTypeId ? String(config.productTypeId) : '0',
           productId:       config.baseProductId || '',
-          productHandle:   handle,
+          // KEY FIX: use the Shopify product handle, not the customizer page handle.
+          // This lets embed-design.tsx load all variants of the product and call
+          // resolve-product-type with a handle it can actually match.
+          productHandle:   config.baseProductHandle || handle,
           productTitle:    config.baseProductTitle || config.title,
           displayName:     config.title,
           description:     '',
@@ -1329,7 +1342,11 @@ function showLoginRequiredPopup() {
           mount.appendChild(specs);
         }
       })
-      .catch(function(e) { console.warn('[AI Art Embed] initCustomizerPage error:', e); });
+      .catch(function(e) {
+        // Release flag on network/parse errors so the page doesn't stay blank
+        window.__APPAI_CUSTOMIZER_HANDLED = false;
+        console.warn('[AI Art Embed] initCustomizerPage error:', e);
+      });
   }
 })();
 </script>
