@@ -8704,13 +8704,13 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId } = req.body as {
-      title?: string; handle?: string; baseVariantId?: string;
+    const { title, handle, baseVariantId, baseProductId } = req.body as {
+      title?: string; handle?: string; baseVariantId?: string; baseProductId?: string;
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
     if (!handle?.trim()) return res.status(400).json({ error: "Handle is required" });
-    if (!baseVariantId) return res.status(400).json({ error: "baseVariantId is required" });
+    if (!baseVariantId && !baseProductId) return res.status(400).json({ error: "baseProductId is required" });
 
     // Validate handle format
     if (!/^[a-z0-9][a-z0-9-]*$/.test(handle)) {
@@ -8742,27 +8742,57 @@ ${textEdgeRestrictions}
       });
     }
 
-    // Resolve variant → product info via Admin API
-    const variantNum = parseInt(String(baseVariantId).replace(/\D/g, ""), 10);
-    if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId" });
+    // Resolve variant + product info via Admin API.
+    // New flow: merchant selects a product → fetch product and use its first variant.
+    // Legacy flow: merchant sends baseVariantId directly → look up variant then product.
+    let variant: any;
+    let productTitle: string;
+    let productHandle: string;
 
-    const variantResult = await shopifyApiCall(
-      shop,
-      installation.accessToken,
-      `variants/${variantNum}.json?fields=id,product_id,title,price`,
-    );
-    if (!variantResult.ok || !variantResult.data?.variant) {
-      return res.status(400).json({ error: `Variant ${baseVariantId} not found in this store` });
+    if (baseProductId && !baseVariantId) {
+      // New product-level flow
+      const productNum = parseInt(String(baseProductId).replace(/\D/g, ""), 10);
+      if (!productNum) return res.status(400).json({ error: "Invalid baseProductId" });
+
+      const prodResult = await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `products/${productNum}.json?fields=id,title,handle,variants`,
+      );
+      if (!prodResult.ok || !prodResult.data?.product) {
+        return res.status(400).json({ error: `Product ${baseProductId} not found in this store` });
+      }
+      const product = prodResult.data.product;
+      const firstVariant = product.variants?.[0];
+      if (!firstVariant) {
+        return res.status(400).json({ error: `Product ${baseProductId} has no variants` });
+      }
+      variant = firstVariant;
+      productTitle = product.title ?? "";
+      productHandle = product.handle ?? "";
+    } else {
+      // Legacy variant-level flow (backward compat)
+      const variantNum = parseInt(String(baseVariantId).replace(/\D/g, ""), 10);
+      if (!variantNum) return res.status(400).json({ error: "Invalid baseVariantId" });
+
+      const variantResult = await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `variants/${variantNum}.json?fields=id,product_id,title,price`,
+      );
+      if (!variantResult.ok || !variantResult.data?.variant) {
+        return res.status(400).json({ error: `Variant ${baseVariantId} not found in this store` });
+      }
+      variant = variantResult.data.variant;
+
+      const productResult = await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `products/${variant.product_id}.json?fields=id,title,handle`,
+      );
+      productTitle = productResult.data?.product?.title ?? "";
+      productHandle = productResult.data?.product?.handle ?? "";
     }
-    const variant = variantResult.data.variant;
-
-    const productResult = await shopifyApiCall(
-      shop,
-      installation.accessToken,
-      `products/${variant.product_id}.json?fields=id,title,handle`,
-    );
-    const productTitle: string = productResult.data?.product?.title ?? "";
-    const productHandle: string = productResult.data?.product?.handle ?? "";
 
     // Resolve productTypeId by matching the Shopify product ID against our productTypes table
     const productTypes = await storage.getActiveProductTypes();
@@ -8799,7 +8829,7 @@ ${textEdgeRestrictions}
       shopifyPageId: String(shopifyPage.id),
       handle: handle.trim(),
       title: title.trim(),
-      baseVariantId: String(variantNum),
+      baseVariantId: String(variant.id),
       baseProductId: String(variant.product_id),
       baseProductHandle: productHandle,
       baseProductTitle: productTitle,

@@ -15,7 +15,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -92,7 +92,7 @@ export default function AdminCustomizerPages() {
   // Form state
   const [formTitle, setFormTitle] = useState("");
   const [formHandle, setFormHandle] = useState("");
-  const [formVariantId, setFormVariantId] = useState("");
+  const [formProductId, setFormProductId] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
 
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
@@ -138,7 +138,7 @@ export default function AdminCustomizerPages() {
   const shopDomain = pagesData?.pages?.[0]?.shop ?? "";
 
   const createMutation = useMutation({
-    mutationFn: async (body: { title: string; handle: string; baseVariantId: string }) => {
+    mutationFn: async (body: { title: string; handle: string; baseProductId: string }) => {
       const res = await apiRequest("POST", "/api/appai/customizer-pages", body);
       return res.json();
     },
@@ -184,7 +184,7 @@ export default function AdminCustomizerPages() {
   function resetForm() {
     setFormTitle("");
     setFormHandle("");
-    setFormVariantId("");
+    setFormProductId("");
     setHandleTouched(false);
   }
 
@@ -194,8 +194,8 @@ export default function AdminCustomizerPages() {
   }
 
   function handleSubmitCreate() {
-    if (!formTitle.trim() || !formHandle.trim() || !formVariantId) return;
-    createMutation.mutate({ title: formTitle, handle: formHandle, baseVariantId: formVariantId });
+    if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
+    createMutation.mutate({ title: formTitle, handle: formHandle, baseProductId: formProductId });
   }
 
   const pages = pagesData?.pages ?? [];
@@ -299,7 +299,7 @@ export default function AdminCustomizerPages() {
                     </p>
                   </div>
                   <div>
-                    <Label>Product &amp; Default Variant</Label>
+                    <Label>Product</Label>
                     {blanksLoading ? (
                       <Skeleton className="h-10 w-full mt-1" />
                     ) : (blanksData?.blanks ?? []).length === 0 ? (
@@ -308,32 +308,27 @@ export default function AdminCustomizerPages() {
                         <code className="bg-muted px-1 rounded">appai-blank</code> in Shopify.
                       </p>
                     ) : (
-                      <Select value={formVariantId} onValueChange={setFormVariantId}>
+                      <Select value={formProductId} onValueChange={setFormProductId}>
                         <SelectTrigger className="mt-1">
-                          <SelectValue placeholder="Select a product variant…" />
+                          <SelectValue placeholder="Select a product…" />
                         </SelectTrigger>
                         <SelectContent>
                           {(blanksData?.blanks ?? []).map((blank) => (
-                            <SelectGroup key={blank.productId}>
-                              <SelectLabel>{blank.title}</SelectLabel>
-                              {(blank.variants ?? []).map((v) => (
-                                <SelectItem key={v.id} value={v.id}>
-                                  {v.title} (${v.price})
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
+                            <SelectItem key={blank.productId} value={blank.productId}>
+                              {blank.title}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     )}
                     <p className="text-xs text-muted-foreground mt-1">
-                      All variants will be available to customers. This sets the default.
+                      All variants will be available to customers on the storefront.
                     </p>
                   </div>
                   <Button
                     className="w-full"
                     onClick={handleSubmitCreate}
-                    disabled={!formTitle.trim() || !formHandle.trim() || !formVariantId || createMutation.isPending}
+                    disabled={!formTitle.trim() || !formHandle.trim() || !formProductId || createMutation.isPending}
                   >
                     {createMutation.isPending ? (
                       <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating…</>
