@@ -8545,16 +8545,48 @@ ${textEdgeRestrictions}
    * Resolve the Shopify installation from the JWT's shop domain.
    * Used by all /api/appai/* routes — no app-level merchant account required.
    * The Shopify session token (validated by isAuthenticated) attaches req.shopDomain.
+   *
+   * Error codes returned to client:
+   *   NOT_AUTHENTICATED  — no shop in JWT
+   *   SHOP_NOT_CONNECTED — no installation row found
+   *   REAUTH_REQUIRED    — installation exists but token is invalid (needs OAuth re-install)
+   *   SHOP_NOT_ACTIVE    — installation exists but is inactive/uninstalled
    */
   async function resolveShopInstallation(req: any): Promise<
-    { ok: true; installation: any } | { ok: false; status: number; error: string }
+    | { ok: true; installation: any }
+    | { ok: false; status: number; error: string; reinstallUrl?: string }
   > {
-    const shopDomain = req.shopDomain as string | undefined;
-    if (!shopDomain) return { ok: false, status: 401, error: "Not authenticated" };
-    const installation = await storage.getShopifyInstallationByShop(shopDomain);
-    if (!installation || installation.status !== "active") {
-      return { ok: false, status: 400, error: "Shop not connected or not active" };
+    const rawDomain = req.shopDomain as string | undefined;
+    if (!rawDomain) {
+      console.log("[resolver] NOT_AUTHENTICATED — no shopDomain on request");
+      return { ok: false, status: 401, error: "NOT_AUTHENTICATED" };
     }
+
+    // Normalize: strip any protocol prefix, lowercase
+    const shopDomain = rawDomain.toLowerCase().replace(/^https?:\/\//, "");
+
+    const installation = await storage.getShopifyInstallationByShop(shopDomain);
+
+    if (!installation) {
+      console.log(`[resolver] SHOP_NOT_CONNECTED: ${shopDomain}`);
+      return { ok: false, status: 400, error: "SHOP_NOT_CONNECTED" };
+    }
+
+    if (installation.status === "token_invalid") {
+      console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain}`);
+      return {
+        ok: false,
+        status: 401,
+        error: "REAUTH_REQUIRED",
+        reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`,
+      };
+    }
+
+    if (installation.status !== "active") {
+      console.log(`[resolver] SHOP_NOT_ACTIVE: ${shopDomain} (status=${installation.status})`);
+      return { ok: false, status: 403, error: "SHOP_NOT_ACTIVE" };
+    }
+
     return { ok: true, installation };
   }
 
@@ -8592,7 +8624,7 @@ ${textEdgeRestrictions}
   /** GET /api/appai/customizer-pages */
   app.get("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
@@ -8619,7 +8651,7 @@ ${textEdgeRestrictions}
   /** POST /api/appai/customizer-pages */
   app.post("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
@@ -8728,7 +8760,7 @@ ${textEdgeRestrictions}
   /** PATCH /api/appai/customizer-pages/:id */
   app.patch("/api/appai/customizer-pages/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
@@ -8783,7 +8815,7 @@ ${textEdgeRestrictions}
   /** DELETE /api/appai/customizer-pages/:id */
   app.delete("/api/appai/customizer-pages/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
@@ -8809,7 +8841,7 @@ ${textEdgeRestrictions}
   // Note: storefront uses /api/proxy/blanks; this endpoint is for the admin picker
   app.get("/api/appai/blanks", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
@@ -9183,7 +9215,7 @@ ${textEdgeRestrictions}
   /** PATCH /api/appai/shop-settings — update per-shop customizer settings */
   app.patch("/api/appai/shop-settings", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const { customizerHubUrl } = req.body as { customizerHubUrl?: string };
@@ -9204,7 +9236,7 @@ ${textEdgeRestrictions}
   /** GET /api/appai/plan — return effective plan state for the authenticated shop */
   app.get("/api/appai/plan", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const plan = getEffectivePlan(installation as any);
@@ -9227,7 +9259,7 @@ ${textEdgeRestrictions}
   /** POST /api/appai/billing/start-trial — activate the trial plan (no credit card) */
   app.post("/api/appai/billing/start-trial", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
 
@@ -9259,7 +9291,7 @@ ${textEdgeRestrictions}
    */
   app.post("/api/appai/billing/create-subscription", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const { plan } = req.body as { plan?: string };
@@ -9429,7 +9461,7 @@ ${textEdgeRestrictions}
   /** POST /api/appai/billing/cancel — cancel current subscription */
   app.post("/api/appai/billing/cancel", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
     const subscriptionId = (installation as any).billingSubscriptionId;

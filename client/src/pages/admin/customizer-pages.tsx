@@ -95,9 +95,25 @@ export default function AdminCustomizerPages() {
   const [formVariantId, setFormVariantId] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
 
-  const { data: pagesData, isLoading: pagesLoading } = useQuery<PagesResponse>({
+  const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
   });
+
+  // Parse REAUTH_REQUIRED from query errors so we can show a reconnect banner
+  const reauthData = (() => {
+    if (!pagesError) return null;
+    try {
+      // throwIfResNotOk formats the error as: "401: <json body>"
+      const raw = (pagesError as Error).message ?? "";
+      const jsonStart = raw.indexOf("{");
+      if (jsonStart === -1) return null;
+      const parsed = JSON.parse(raw.slice(jsonStart));
+      if (parsed?.error === "REAUTH_REQUIRED") return parsed as { error: string; reinstallUrl: string };
+    } catch {
+      // not a parseable JSON error — ignore
+    }
+    return null;
+  })();
 
   // Initialise hub URL from server response
   const hubUrlFromServer = (pagesData as any)?.hubUrl;
@@ -197,6 +213,27 @@ export default function AdminCustomizerPages() {
         label: `${b.title} — ${v.title} ($${v.price})`,
       }))
   );
+
+  if (reauthData) {
+    return (
+      <AdminLayout>
+        <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4 text-center px-4">
+          <AlertTriangle className="h-12 w-12 text-yellow-500" />
+          <h2 className="text-xl font-semibold">Shopify connection needs to be refreshed</h2>
+          <p className="text-muted-foreground max-w-sm">
+            Your app's Shopify access token has expired or been revoked. Click below to reconnect
+            your store — this only takes a moment.
+          </p>
+          <Button
+            size="lg"
+            onClick={() => window.open(reauthData.reinstallUrl, "_top")}
+          >
+            Reconnect Shopify
+          </Button>
+        </div>
+      </AdminLayout>
+    );
+  }
 
   return (
     <AdminLayout>

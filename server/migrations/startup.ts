@@ -2,31 +2,131 @@
  * Production-safe startup migration fallback.
  *
  * drizzle-kit push is the primary migration mechanism (runs during build).
- * This file is a safety net that ensures critical columns exist even if
- * drizzle-kit push was skipped or partially failed during deploy.
+ * This file is a safety net that ensures:
+ *   1. All required columns exist on existing tables (ADD COLUMN IF NOT EXISTS)
+ *   2. All required tables exist (CREATE TABLE IF NOT EXISTS)
  *
- * Every statement uses ADD COLUMN IF NOT EXISTS, so it is fully idempotent.
+ * Every statement is fully idempotent and safe to run on every boot.
  */
 import { pool } from "../db";
 
-const MIGRATIONS: { table: string; column: string; type: string }[] = [
-  // shopify_installations — customizer + billing columns
-  { table: "shopify_installations", column: "customizer_hub_url", type: "TEXT" },
-  { table: "shopify_installations", column: "plan_name", type: "TEXT" },
-  { table: "shopify_installations", column: "plan_status", type: "TEXT" },
-  { table: "shopify_installations", column: "trial_started_at", type: "TIMESTAMP" },
-  { table: "shopify_installations", column: "billing_subscription_id", type: "TEXT" },
-  { table: "shopify_installations", column: "billing_current_period_end", type: "TIMESTAMP" },
+// ── Column additions ──────────────────────────────────────────────────────────
+
+const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
+  { table: "shopify_installations", column: "customizer_hub_url",          type: "TEXT" },
+  { table: "shopify_installations", column: "plan_name",                   type: "TEXT" },
+  { table: "shopify_installations", column: "plan_status",                 type: "TEXT" },
+  { table: "shopify_installations", column: "trial_started_at",            type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "billing_subscription_id",     type: "TEXT" },
+  { table: "shopify_installations", column: "billing_current_period_end",  type: "TIMESTAMP" },
 ];
+
+// ── Table creation ─────────────────────────────────────────────────────────────
+// SQL matches shared/schema.ts exactly.
+
+const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "design_sku_mappings",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "design_sku_mappings" (
+        "id"                         SERIAL PRIMARY KEY,
+        "shop_domain"                TEXT NOT NULL,
+        "source_variant_id"          TEXT NOT NULL,
+        "design_id"                  TEXT NOT NULL,
+        "mockup_url"                 TEXT NOT NULL,
+        "shadow_shopify_product_id"  TEXT NOT NULL,
+        "shadow_shopify_variant_id"  TEXT NOT NULL,
+        "created_at"                 TIMESTAMP DEFAULT NOW() NOT NULL,
+        "expires_at"                 TIMESTAMP NOT NULL
+      )
+    `,
+  },
+  {
+    name: "customizer_pages",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "customizer_pages" (
+        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop"                TEXT NOT NULL,
+        "shopify_page_id"     TEXT,
+        "handle"              TEXT NOT NULL,
+        "title"               TEXT NOT NULL,
+        "base_product_id"     TEXT,
+        "base_variant_id"     TEXT NOT NULL,
+        "base_product_title"  TEXT,
+        "base_variant_title"  TEXT,
+        "base_product_price"  TEXT,
+        "product_type_id"     INTEGER,
+        "status"              TEXT NOT NULL DEFAULT 'active',
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "customizer_designs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "customizer_designs" (
+        "id"                   VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop"                 TEXT NOT NULL,
+        "shopify_customer_id"  TEXT,
+        "customer_key"         TEXT,
+        "base_product_id"      TEXT,
+        "base_variant_id"      TEXT NOT NULL,
+        "base_title"           TEXT,
+        "prompt"               TEXT NOT NULL,
+        "options"              JSON,
+        "artwork_url"          TEXT,
+        "mockup_url"           TEXT,
+        "mockup_urls"          JSON,
+        "status"               TEXT NOT NULL DEFAULT 'GENERATING',
+        "error_message"        TEXT,
+        "created_at"           TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"           TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "published_products",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "published_products" (
+        "id"                       VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop"                     TEXT NOT NULL,
+        "design_id"                TEXT NOT NULL,
+        "customer_key"             TEXT,
+        "shopify_product_id"       TEXT NOT NULL,
+        "shopify_variant_id"       TEXT NOT NULL,
+        "shopify_product_handle"   TEXT,
+        "base_variant_id"          TEXT NOT NULL,
+        "status"                   TEXT NOT NULL DEFAULT 'active',
+        "created_at"               TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"               TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+];
+
+// ── Main entry point ──────────────────────────────────────────────────────────
 
 export async function runStartupMigrations(): Promise<void> {
   const tag = "[startup-migration]";
-  console.log(`${tag} Running idempotent column checks (${MIGRATIONS.length} statements)…`);
+  console.log(`${tag} Running idempotent schema checks…`);
 
   let applied = 0;
-  let errors = 0;
+  let errors  = 0;
 
-  for (const m of MIGRATIONS) {
+  // 1) Create tables
+  for (const m of TABLE_MIGRATIONS) {
+    try {
+      await pool.query(m.sql);
+      applied++;
+    } catch (err: any) {
+      errors++;
+      console.error(`${tag} FAILED creating table ${m.name}: ${err.message ?? err}`);
+    }
+  }
+
+  // 2) Add columns
+  for (const m of COLUMN_MIGRATIONS) {
     try {
       await pool.query(
         `ALTER TABLE "${m.table}" ADD COLUMN IF NOT EXISTS "${m.column}" ${m.type}`
@@ -34,13 +134,13 @@ export async function runStartupMigrations(): Promise<void> {
       applied++;
     } catch (err: any) {
       errors++;
-      console.error(`${tag} FAILED: ${m.table}.${m.column} — ${err.message ?? err}`);
+      console.error(`${tag} FAILED adding column ${m.table}.${m.column}: ${err.message ?? err}`);
     }
   }
 
-  console.log(`${tag} Done. applied=${applied} errors=${errors}`);
-
+  const total = TABLE_MIGRATIONS.length + COLUMN_MIGRATIONS.length;
+  console.log(`${tag} Done. total=${total} applied=${applied} errors=${errors}`);
   if (errors > 0) {
-    console.error(`${tag} WARNING: ${errors} migration(s) failed — some routes may not work correctly.`);
+    console.error(`${tag} WARNING: ${errors} statement(s) failed — some routes may be degraded.`);
   }
 }
