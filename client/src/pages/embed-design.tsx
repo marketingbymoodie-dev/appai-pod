@@ -176,16 +176,30 @@ function normalizeVariantId(raw: string | number): string {
  *
  * App Bridge intercepts fetch() to inject session tokens via postMessage to the
  * Shopify admin parent. In STOREFRONT mode there is no admin parent, so the
- * token handshake hangs forever and every fetch() silently blocks until our
- * 30 s timeout fires.
+ * token handshake hangs forever and every fetch() silently blocks.
  *
- * We saved the real browser fetch as window.__nativeFetch in index.html
- * (before the App Bridge script tag), so we can always call the real one.
+ * Resolution order:
+ *   1. window.__nativeFetch (saved in index.html before App Bridge loads)
+ *   2. Native fetch extracted from a disposable hidden iframe (guaranteed unpatched)
+ *   3. window.fetch as a last resort
  */
-const safeFetch: typeof fetch =
-  typeof window !== 'undefined' && (window as any).__nativeFetch
-    ? (window as any).__nativeFetch
-    : fetch;
+const safeFetch: typeof fetch = (() => {
+  if (typeof window === 'undefined') return fetch;
+  if ((window as any).__nativeFetch) return (window as any).__nativeFetch;
+  try {
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    document.documentElement.appendChild(iframe);
+    const nativeFn = iframe.contentWindow!.fetch.bind(iframe.contentWindow!);
+    document.documentElement.removeChild(iframe);
+    (window as any).__nativeFetch = nativeFn;
+    console.warn('[safeFetch] Extracted native fetch via hidden iframe (App Bridge bypass)');
+    return nativeFn;
+  } catch (e) {
+    console.warn('[safeFetch] Could not extract native fetch from iframe, using window.fetch', e);
+    return fetch;
+  }
+})();
 
 /**
  * Module-scoped timeout wrapper for use outside of useEffect closures (e.g. useMutation).
@@ -1347,28 +1361,31 @@ export default function EmbedDesign() {
 
       // ── Storefront uses async job model (POST → jobId, then poll status) ──
       if (isStorefront) {
+        // Hard-timeout race helper — guarantees the returned promise settles even
+        // if the underlying fetch ignores AbortController (e.g. App Bridge wrapper).
+        const raceTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+          Promise.race([
+            promise,
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+            ),
+          ]);
+
         // Phase 1: submit job — backend returns { jobId } in < 1s
-        const controller = new AbortController();
-        const submitTimer = setTimeout(() => controller.abort(), 15_000);
-        let jobData: any;
-        try {
-          const jobRes = await safeFetch(endpoint, {
+        const jobRes = await raceTimeout(
+          safeFetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
-            signal: controller.signal,
-          });
-          clearTimeout(submitTimer);
-          jobData = await jobRes.json();
-          if (!jobRes.ok) {
-            if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
-            else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
-            throw new Error(jobData.error || "Failed to start generation");
-          }
-        } catch (err: any) {
-          clearTimeout(submitTimer);
-          if (err.name === 'AbortError') throw new Error('Generation request timed out (15s). Please try again.');
-          throw err;
+          }),
+          15_000,
+          'POST /generate',
+        );
+        const jobData = await jobRes.json();
+        if (!jobRes.ok) {
+          if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
+          else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
+          throw new Error(jobData.error || "Failed to start generation");
         }
 
         const { jobId } = jobData;
@@ -1377,6 +1394,7 @@ export default function EmbedDesign() {
 
         // Phase 2: poll GET /generate/status every 2s, max 5 minutes
         const shop = payload.shop || new URLSearchParams(window.location.search).get('shop') || '';
+        if (!shop) throw new Error('Shop domain is required for generation. Please reload the page.');
         const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}`;
         const deadline = Date.now() + 5 * 60 * 1000;
         let consecutiveErrors = 0;
@@ -1384,10 +1402,11 @@ export default function EmbedDesign() {
         while (Date.now() < deadline) {
           await new Promise<void>(r => setTimeout(r, 2000));
           try {
-            const pollAbort = new AbortController();
-            const pollTimer = setTimeout(() => pollAbort.abort(), 10_000);
-            const statusRes = await safeFetch(statusUrl, { signal: pollAbort.signal });
-            clearTimeout(pollTimer);
+            const statusRes = await raceTimeout(
+              safeFetch(statusUrl),
+              10_000,
+              'GET /generate/status',
+            );
             if (!statusRes.ok) {
               console.warn('[EmbedDesign] Status poll HTTP error', statusRes.status);
               consecutiveErrors++;
@@ -1397,16 +1416,16 @@ export default function EmbedDesign() {
             consecutiveErrors = 0;
             const status = await statusRes.json();
             console.log('[EmbedDesign] Job status:', status.status, jobId);
-            if (status.status === 'complete') return status;
+            if (status.status === 'complete') {
+              const abs = (u?: string) => u && u.startsWith('/') ? `${API_BASE}${u}` : u;
+              return { ...status, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
+            }
             if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
           } catch (pollErr: any) {
-            if (pollErr.name === 'AbortError') {
-              console.warn('[EmbedDesign] Status poll timed out — retrying');
-              consecutiveErrors++;
-              if (consecutiveErrors > 5) throw new Error('Status polling timed out repeatedly');
-              continue;
-            }
-            throw pollErr;
+            consecutiveErrors++;
+            console.warn('[EmbedDesign] Poll error:', pollErr.message, `(${consecutiveErrors}/5)`);
+            if (consecutiveErrors > 5) throw new Error(`Status polling failed: ${pollErr.message}`);
+            // Keep polling on transient errors
           }
         }
         throw new Error('Generation timed out after 5 minutes');
