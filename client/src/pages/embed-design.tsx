@@ -490,7 +490,7 @@ export default function EmbedDesign() {
      * - Uses completed flag to prevent race conditions
      * - Properly cleans up all resources
      */
-    const fetchWithTimeout = async (url: string, timeout = 12000): Promise<Response> => {
+    const fetchWithTimeout = async (url: string, timeout = 30000): Promise<Response> => {
       // SAFETY: All URLs MUST be absolute. If a relative URL slips through, fix it but warn loudly.
       let fullUrl: string;
       if (url.startsWith('http')) {

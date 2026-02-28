@@ -1293,18 +1293,40 @@ function showLoginRequiredPopup() {
    * function is called, so appai-customizer-embed.js can never race with us.
    * If the config fetch fails (404 = not a customizer page), we release the flag.
    */
+  /**
+   * State machine for customizer pages:
+   *   BOOT → CONFIG_LOADING → CONFIG_LOADED → MOUNTED
+   *                        → ERROR (404 or network failure)
+   *
+   * Only one customizer instance can ever mount — the global guards
+   * (__APPAI_CUSTOMIZER_INIT__ + __APPAI_CUSTOMIZER_HANDLED) ensure this.
+   */
   function initCustomizerPage(handle) {
+    console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
+
     fetch('/apps/appai/customizer-page?handle=' + encodeURIComponent(handle), { credentials: 'same-origin' })
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(config) {
         if (!config) {
-          // Not a registered/active customizer page — release the flag so the
-          // theme renders its normal page content and appai-customizer-embed.js
-          // can handle disabled-page redirects if needed.
-          window.__APPAI_CUSTOMIZER_HANDLED = false;
-          console.log('[AI Art Embed] /pages/' + handle + ' is not a customizer page, releasing lock.');
+          // STATE=ERROR — not a registered/active customizer page.
+          // Show a clear message instead of silently releasing the flag.
+          console.log('[AI Art Embed] STATE=ERROR /pages/' + handle + ' is not a customizer page (404).');
+          var mount = document.querySelector('#MainContent') ||
+                      document.querySelector('main[role="main"]') ||
+                      document.querySelector('main') ||
+                      document.body;
+          var notice = document.createElement('div');
+          notice.style.cssText = 'max-width:640px;margin:40px auto;padding:24px;text-align:center;' +
+            'font-family:system-ui,sans-serif;color:#6b7280;';
+          notice.innerHTML = '<p style="font-size:16px;margin:0;">This customizer page is not configured yet.</p>' +
+            '<p style="font-size:13px;margin:8px 0 0;">Please check the admin panel to activate it.</p>';
+          mount.insertBefore(notice, mount.firstChild);
           return;
         }
+
+        console.log('[AI Art Embed] STATE=CONFIG_LOADED handle=' + handle +
+          ' productTypeId=' + config.productTypeId +
+          ' hasDesignerConfig=' + !!config.designerConfig);
 
         // Login gate mirrors the product page gate above
         if (!customerId) {
@@ -1313,7 +1335,6 @@ function showLoginRequiredPopup() {
           return;
         }
 
-        // Find the page's main content area
         var mount = document.querySelector('#MainContent') ||
                     document.querySelector('main[role="main"]') ||
                     document.querySelector('main') ||
@@ -1332,7 +1353,6 @@ function showLoginRequiredPopup() {
           shopDomain:           shopDomain,
           productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
           productId:            config.baseProductId || '',
-          // Use the Shopify product handle, not the customizer page handle.
           productHandle:        config.baseProductHandle || handle,
           productTitle:         config.baseProductTitle || config.title,
           displayName:          config.title,
@@ -1340,11 +1360,11 @@ function showLoginRequiredPopup() {
           selectedVariant:      config.baseVariantId,
           hideAddToCart:        false,
           enabled:              true,
-          // Pass full designer config so the iframe never calls /product-types/:id/designer.
           inlineDesignerConfig: config.designerConfig || null,
         });
 
         mount.insertBefore(studioEl, mount.firstChild);
+        console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
 
         // Product spec strip below the generator
         if (config.baseProductTitle || config.baseVariantTitle) {
@@ -1359,9 +1379,16 @@ function showLoginRequiredPopup() {
         }
       })
       .catch(function(e) {
-        // Release flag on network/parse errors so the page doesn't stay blank
-        window.__APPAI_CUSTOMIZER_HANDLED = false;
-        console.warn('[AI Art Embed] initCustomizerPage error:', e);
+        // STATE=ERROR — network or parse failure.  Show error instead of blank page.
+        console.error('[AI Art Embed] STATE=ERROR initCustomizerPage failed:', e);
+        var mount = document.querySelector('#MainContent') ||
+                    document.querySelector('main') ||
+                    document.body;
+        var notice = document.createElement('div');
+        notice.style.cssText = 'max-width:640px;margin:40px auto;padding:24px;text-align:center;' +
+          'font-family:system-ui,sans-serif;color:#991b1b;background:#fee2e2;border-radius:8px;';
+        notice.innerHTML = '<p style="font-size:15px;margin:0;">Failed to load customizer. Please refresh the page.</p>';
+        mount.insertBefore(notice, mount.firstChild);
       });
   }
 })();

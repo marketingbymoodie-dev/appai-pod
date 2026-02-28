@@ -645,11 +645,12 @@
     var handle = getCurrentHandle();
     if (!handle) return;
 
-    // Check BEFORE any async work — ai-art-embed.liquid sets this flag synchronously
-    // as soon as it detects a /pages/:handle URL, so this guard runs in the same
-    // tick as DOMContentLoaded and prevents any unnecessary fetch.
-    if (window.__APPAI_CUSTOMIZER_HANDLED) {
-      console.log('[AppAI Embed] Already handled by embed block, skipping custom renderer.');
+    // Hard guard: if the primary embed (ai-art-embed.liquid) already initialised,
+    // this legacy renderer must never mount — prevents double-UI on all /pages/*.
+    if (window.__APPAI_CUSTOMIZER_INIT__ || window.__APPAI_CUSTOMIZER_HANDLED) {
+      console.log('[AppAI Embed] Primary embed already active (__INIT__=' +
+        !!window.__APPAI_CUSTOMIZER_INIT__ + ', __HANDLED__=' +
+        !!window.__APPAI_CUSTOMIZER_HANDLED + '), skipping legacy renderer.');
       return;
     }
 
@@ -663,18 +664,17 @@
       if (pages[i].handle === handle) { page = pages[i]; break; }
     }
 
-    if (!page) return; // Not a customizer page — let the theme render normally
+    if (!page) return;
 
     if (page.status !== 'active') {
-      // Disabled page → redirect to fallback hub URL
       console.log('[AppAI Embed] Customizer page "' + handle + '" is disabled. Redirecting to ' + fallbackUrl);
       window.location.replace(fallbackUrl);
       return;
     }
 
-    // Re-check after the async config fetch in case the flag was set while we were waiting
-    if (window.__APPAI_CUSTOMIZER_HANDLED) {
-      console.log('[AppAI Embed] Embed block took over during config fetch, skipping custom renderer.');
+    // Re-check after async work — the primary embed may have activated in the meantime.
+    if (window.__APPAI_CUSTOMIZER_INIT__ || window.__APPAI_CUSTOMIZER_HANDLED) {
+      console.log('[AppAI Embed] Primary embed took over during config fetch, skipping legacy renderer.');
       return;
     }
 
