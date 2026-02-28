@@ -15,6 +15,7 @@ import {
   customizerDesigns, type CustomizerDesign, type InsertCustomizerDesign,
   customizerPages, type CustomizerPage, type InsertCustomizerPage,
   publishedProducts, type PublishedProduct, type InsertPublishedProduct,
+  generationJobs, type GenerationJob, type InsertGenerationJob,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
@@ -135,6 +136,11 @@ export interface IStorage {
   updatePublishedProduct(id: string, updates: Partial<PublishedProduct>): Promise<PublishedProduct | undefined>;
   countCustomerPublishedDesigns(shop: string, customerKey: string): Promise<number>;
   getOldestCustomerPublishedDesign(shop: string, customerKey: string): Promise<PublishedProduct | undefined>;
+
+  // Generation Jobs (async storefront artwork generation)
+  createGenerationJob(job: InsertGenerationJob): Promise<GenerationJob>;
+  getGenerationJob(id: string): Promise<GenerationJob | undefined>;
+  updateGenerationJob(id: string, updates: Partial<GenerationJob>): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -735,6 +741,24 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .orderBy(publishedProducts.createdAt)
       .limit(1);
     return row;
+  }
+
+  // Generation Jobs
+  async createGenerationJob(job: InsertGenerationJob): Promise<GenerationJob> {
+    const [row] = await db.insert(generationJobs).values(job).returning();
+    return row;
+  }
+
+  async getGenerationJob(id: string): Promise<GenerationJob | undefined> {
+    const [row] = await db.select().from(generationJobs).where(eq(generationJobs.id, id));
+    return row;
+  }
+
+  async updateGenerationJob(id: string, updates: Partial<GenerationJob>): Promise<void> {
+    await db
+      .update(generationJobs)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(generationJobs.id, id));
   }
 }
 

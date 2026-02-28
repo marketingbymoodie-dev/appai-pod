@@ -346,6 +346,30 @@ export const insertCustomizerPageSchema = createInsertSchema(customizerPages).om
 export type CustomizerPage = typeof customizerPages.$inferSelect;
 export type InsertCustomizerPage = z.infer<typeof insertCustomizerPageSchema>;
 
+// Generation jobs — async job records for storefront artwork generation.
+// POST /api/storefront/generate creates a job and returns immediately.
+// GET /api/storefront/generate/status polls for completion.
+export const generationJobs = pgTable("generation_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shop: text("shop").notNull(),
+  status: text("status").notNull().default("pending"), // pending | running | complete | failed
+  prompt: text("prompt").notNull(),
+  stylePreset: text("style_preset"),
+  size: text("size"),
+  frameColor: text("frame_color"),
+  productTypeId: text("product_type_id"),
+  referenceImageUrl: text("reference_image_url"),
+  designImageUrl: text("design_image_url"),
+  thumbnailUrl: text("thumbnail_url"),
+  designId: text("design_id"),
+  errorMessage: text("error_message"),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type GenerationJob = typeof generationJobs.$inferSelect;
+export type InsertGenerationJob = typeof generationJobs.$inferInsert;
+
 // Customizer designs — standalone design records created from the /pages/appai-customize page.
 // These are NOT tied to the existing `designs` table (which requires a logged-in customer).
 // Status lifecycle: GENERATING → READY | FAILED

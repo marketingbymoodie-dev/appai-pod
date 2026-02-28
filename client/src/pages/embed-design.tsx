@@ -283,16 +283,20 @@ export default function EmbedDesign() {
   const shopifyApiPrefix = `${API_BASE}/api/shopify`;
   const endpointBase = isStorefront ? storefrontApiPrefix : isShopify ? shopifyApiPrefix : `${API_BASE}/api`;
 
-  console.log('[EmbedDesign] === INITIALIZATION ===');
-  console.log('[EmbedDesign] Full URL:', window.location.href);
-  console.log('[EmbedDesign] Runtime mode:', runtimeMode);
-  console.log('[EmbedDesign] Endpoints: generate=%s/generate, mockup=%s/mockup', endpointBase, endpointBase);
-  console.log('[EmbedDesign] productTypeId from URL:', searchParams.get("productTypeId"), '(using:', productTypeId, ')');
-  console.log('[EmbedDesign] shop from URL:', searchParams.get("shop"));
-  console.log('[EmbedDesign] isStorefront:', isStorefront, 'requiresSessionToken:', requiresSessionToken);
-  if (isStorefront && requiresSessionToken) {
-    console.error('[EmbedDesign] BUG: isStorefront=true but requiresSessionToken=true — this should never happen');
-  }
+  // Log once on mount only (not on every render)
+  useEffect(() => {
+    console.log('[EmbedDesign] === INITIALIZATION ===');
+    console.log('[EmbedDesign] Full URL:', window.location.href);
+    console.log('[EmbedDesign] Runtime mode:', runtimeMode);
+    console.log('[EmbedDesign] Endpoints: generate=%s/generate, mockup=%s/mockup', endpointBase, endpointBase);
+    console.log('[EmbedDesign] productTypeId from URL:', searchParams.get("productTypeId"), '(using:', productTypeId, ')');
+    console.log('[EmbedDesign] shop from URL:', searchParams.get("shop"));
+    console.log('[EmbedDesign] isStorefront:', isStorefront, 'requiresSessionToken:', requiresSessionToken);
+    if (isStorefront && requiresSessionToken) {
+      console.error('[EmbedDesign] BUG: isStorefront=true but requiresSessionToken=true — this should never happen');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Get productHandle from URL params, or extract from referrer if not provided
   const getProductHandle = (): string => {
@@ -1325,7 +1329,46 @@ export default function EmbedDesign() {
           ? `${API_BASE}/api/shopify/generate`
           : `${API_BASE}/api/generate`;
       console.log('[EmbedDesign] Generating design via:', endpoint, '(mode:', runtimeMode, ')');
-      // Use fetchWithTimeoutSimple (module-scope) so the generate mutation always resolves.
+
+      // ── Storefront uses async job model (POST → jobId, then poll status) ──
+      if (isStorefront) {
+        // Phase 1: submit job (fast, < 1s)
+        const jobRes = await fetchWithTimeoutSimple(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }, 30000);
+        const jobData = await jobRes.json();
+        if (!jobRes.ok) {
+          if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
+          else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
+          throw new Error(jobData.error || "Failed to start generation");
+        }
+        const { jobId } = jobData;
+        if (!jobId) throw new Error("Server did not return a jobId");
+
+        // Phase 2: poll GET /generate/status every 2s, max 5 minutes
+        const shop = payload.shop || new URLSearchParams(window.location.search).get('shop') || '';
+        const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}`;
+        const deadline = Date.now() + 5 * 60 * 1000;
+
+        while (Date.now() < deadline) {
+          await new Promise<void>(r => setTimeout(r, 2000));
+          const statusRes = await safeFetch(statusUrl);
+          if (!statusRes.ok) {
+            console.warn('[EmbedDesign] Status poll HTTP error', statusRes.status);
+            continue;
+          }
+          const status = await statusRes.json();
+          console.log('[EmbedDesign] Job status:', status.status, jobId);
+          if (status.status === 'complete') return status;
+          if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
+          // pending | running → keep polling
+        }
+        throw new Error('Generation timed out after 5 minutes');
+      }
+
+      // ── Non-storefront: synchronous request (unchanged) ──
       const response = await fetchWithTimeoutSimple(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2498,6 +2541,19 @@ export default function EmbedDesign() {
                     </select>
                   </div>
                 )}
+
+                {/* Selected variant price display */}
+                {isStorefront && shopifyVariants.length > 0 && (() => {
+                  const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
+                  const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
+                  if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
+                  return (
+                    <div className="flex items-center justify-between py-1">
+                      <span className="text-sm text-muted-foreground">Price</span>
+                      <span className="text-lg font-semibold">${parseFloat(selected.price).toFixed(2)}</span>
+                    </div>
+                  );
+                })()}
 
                 {/* Size Selection - Required */}
                 {printSizes.length > 0 && (

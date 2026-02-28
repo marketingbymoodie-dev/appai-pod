@@ -88,6 +88,29 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "generation_jobs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "generation_jobs" (
+        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop"                TEXT NOT NULL,
+        "status"              TEXT NOT NULL DEFAULT 'pending',
+        "prompt"              TEXT NOT NULL,
+        "style_preset"        TEXT,
+        "size"                TEXT,
+        "frame_color"         TEXT,
+        "product_type_id"     TEXT,
+        "reference_image_url" TEXT,
+        "design_image_url"    TEXT,
+        "thumbnail_url"       TEXT,
+        "design_id"           TEXT,
+        "error_message"       TEXT,
+        "expires_at"          TIMESTAMP NOT NULL,
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "published_products",
     sql: `
       CREATE TABLE IF NOT EXISTS "published_products" (

@@ -4010,7 +4010,7 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Look up style preset and get its promptSuffix
+      // Look up style preset and get its promptSuffix (fast DB lookup — synchronous)
       let stylePromptPrefix = "";
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
@@ -4026,8 +4026,7 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Load product type config — use centralized resolver so stale/invalid IDs
-      // fall back to a valid product type instead of silently proceeding with null.
+      // Load product type config (fast DB lookup — synchronous)
       let productType: any = null;
       if (productTypeId && installation.merchantId) {
         const resolved = await resolveStorefrontProductType(
@@ -4038,10 +4037,7 @@ ${textEdgeRestrictions}
         if ("productType" in resolved) {
           productType = resolved.productType;
         }
-        // If resolver returned an error (merchant has zero product types),
-        // productType stays null — generation still works with default sizes.
       } else if (productTypeId) {
-        // No merchantId on installation — direct lookup fallback
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
@@ -4101,12 +4097,11 @@ ${textEdgeRestrictions}
         sizeConfig = PRINT_SIZES[0];
       }
 
-      // Apply style prompt prefix if available
+      // Build full prompt with shape/orientation requirements (synchronous)
       let fullPrompt = stylePromptPrefix
         ? `${stylePromptPrefix} ${prompt}`
         : prompt;
 
-      // Build shape-specific safe zone instructions
       const printShape = productType?.printShape || "rectangle";
       const bleedMargin = productType?.bleedMarginPercent || 5;
       const safeZonePercent = 100 - (bleedMargin * 2);
@@ -4131,7 +4126,6 @@ RECTANGULAR PRINT AREA:
 - Maintain a ${bleedMargin}% margin from edges for bleed`;
       }
 
-      // Determine aspect ratio and orientation
       const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
       const aspectRatioValue = arW / arH;
       let orientationDescription: string;
@@ -4172,64 +4166,19 @@ ${textEdgeRestrictions}
 `;
 
       const geminiAspectRatio = mapToGeminiAspectRatioStorefront(sizeConfig.aspectRatio);
-      const constraintsFirst = sizingRequirements;
-      const styleAndContent = fullPrompt;
-      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
 
-      console.log(`[Storefront Generate] shop=${shop} Using aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
+      // Capture appUrl from request before responding (used for reference image resolution in worker)
+      const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
 
-      // Resolve reference image to a publicly accessible URL for Replicate
-      let inputImageUrl: string | null = null;
-      if (referenceImage) {
-        try {
-          if (referenceImage.startsWith("/objects/")) {
-            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            inputImageUrl = `${appUrl}${referenceImage}`;
-          } else if (referenceImage.startsWith("data:")) {
-            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
-            if (match) {
-              const refContentType = match[1];
-              const refBuffer = Buffer.from(match[2], "base64");
-              const refExt = refContentType.includes("png") ? "png" : "jpg";
-              const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
-              const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-              inputImageUrl = `${appUrl}${refObjectPath}`;
-            }
-          } else if (referenceImage.startsWith("http")) {
-            inputImageUrl = referenceImage;
-          }
-          if (inputImageUrl) {
-            console.log("[Storefront Generate] Reference image URL:", inputImageUrl.substring(0, 100));
-          }
-        } catch (refErr) {
-          console.warn("[Storefront Generate] Could not process reference image, generating without it:", refErr);
-          inputImageUrl = null;
-        }
-      }
-
-      const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
-        prompt: fullPrompt,
-        aspectRatio: geminiAspectRatio ?? "1:1",
-        inputImageUrl,
-      });
-
-      if (!base64Data) {
-        return res.status(500).json({ error: "Failed to generate image" });
-      }
-
-      const mimeType = generatedMimeType || "image/png";
-
-      // Check if this is an apparel product
+      // Determine apparel status for image dimensions (synchronous)
       let isApparel = productType?.designerType === "apparel";
-
       if (!isApparel && stylePreset) {
         const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
         if (hardcodedStyle && hardcodedStyle.category === "apparel") {
           isApparel = true;
         }
       }
-
-      // Get target dimensions for resizing - skip for apparel (keep square)
       let targetDims: TargetDimensions | undefined;
       if (!isApparel) {
         const genWidth = (sizeConfig as any).genWidth || 1024;
@@ -4237,48 +4186,160 @@ ${textEdgeRestrictions}
         targetDims = { width: genWidth, height: genHeight };
       }
 
-      // Save image to object storage (retry once, then fall back to data URL)
-      let imageUrl: string;
-      let thumbnailUrl: string | undefined;
-      try {
-        const result = await saveImageToStorage(base64Data, mimeType, {
-          isApparel,
-          targetDims,
-        });
-        imageUrl = result.imageUrl;
-        thumbnailUrl = result.thumbnailUrl;
-      } catch (storageError) {
-        console.warn("[Storefront Generate] Storage save failed, retrying once:", storageError);
-        try {
-          const result = await saveImageToStorage(base64Data, mimeType, {
-            isApparel,
-            targetDims,
-          });
-          imageUrl = result.imageUrl;
-          thumbnailUrl = result.thumbnailUrl;
-        } catch (retryError) {
-          // Fall back to data URL so the user still sees their generated image.
-          // The client's ensureHostedUrl() will upload data URLs to storage
-          // before sending them to the mockup endpoint.
-          console.error("[Storefront Generate] Storage save failed on retry, falling back to data URL:", retryError);
-          imageUrl = `data:${mimeType};base64,${base64Data}`;
-        }
-      }
-
-      const designId = `storefront-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-      console.log(`[Storefront Generate] shop=${shop} designId=${designId} success`);
-
-      res.json({
-        imageUrl,
-        thumbnailUrl,
-        designId,
+      // ── Create job record and return immediately ──────────────────────────────
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min TTL
+      const job = await storage.createGenerationJob({
+        shop,
+        status: "pending",
         prompt,
-        creditsRemaining: 0,
+        stylePreset: stylePreset ?? null,
+        size: size ?? null,
+        frameColor: frameColor ?? null,
+        productTypeId: productTypeId ? String(productTypeId) : null,
+        referenceImageUrl: null, // populated in worker if referenceImage is provided
+        expiresAt,
       });
+      const jobId = job.id;
+
+      console.log(`[Storefront Generate] shop=${shop} jobId=${jobId} created — starting background worker`);
+
+      // ── Background worker: AI call + storage save ─────────────────────────────
+      // Fire-and-forget; never awaited. Railway keeps the process alive.
+      (async () => {
+        try {
+          await storage.updateGenerationJob(jobId, { status: "running" });
+
+          // Resolve reference image to a publicly accessible URL
+          let inputImageUrl: string | null = null;
+          if (referenceImage) {
+            try {
+              if (referenceImage.startsWith("/objects/")) {
+                inputImageUrl = `${appUrl}${referenceImage}`;
+              } else if (referenceImage.startsWith("data:")) {
+                const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
+                if (match) {
+                  const refContentType = match[1];
+                  const refBuffer = Buffer.from(match[2], "base64");
+                  const refExt = refContentType.includes("png") ? "png" : "jpg";
+                  const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
+                  inputImageUrl = `${appUrl}${refObjectPath}`;
+                }
+              } else if (referenceImage.startsWith("http")) {
+                inputImageUrl = referenceImage;
+              }
+              if (inputImageUrl) {
+                await storage.updateGenerationJob(jobId, { referenceImageUrl: inputImageUrl });
+              }
+            } catch (refErr) {
+              console.warn(`[Storefront Generate] [${jobId}] Could not process reference image, continuing without it:`, refErr);
+              inputImageUrl = null;
+            }
+          }
+
+          // Call AI image generation
+          const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
+            prompt: fullPrompt,
+            aspectRatio: geminiAspectRatio ?? "1:1",
+            inputImageUrl,
+          });
+
+          if (!base64Data) {
+            await storage.updateGenerationJob(jobId, { status: "failed", errorMessage: "AI model returned no image data" });
+            return;
+          }
+
+          const mimeType = generatedMimeType || "image/png";
+
+          // Save image to object storage (retry once, then fall back to data URL)
+          let imageUrl: string;
+          let thumbnailUrl: string | undefined;
+          try {
+            const result = await saveImageToStorage(base64Data, mimeType, { isApparel, targetDims });
+            imageUrl = result.imageUrl;
+            thumbnailUrl = result.thumbnailUrl;
+          } catch (storageError) {
+            console.warn(`[Storefront Generate] [${jobId}] Storage save failed, retrying once:`, storageError);
+            try {
+              const result = await saveImageToStorage(base64Data, mimeType, { isApparel, targetDims });
+              imageUrl = result.imageUrl;
+              thumbnailUrl = result.thumbnailUrl;
+            } catch (retryError) {
+              console.error(`[Storefront Generate] [${jobId}] Storage save failed on retry, using data URL:`, retryError);
+              imageUrl = `data:${mimeType};base64,${base64Data}`;
+            }
+          }
+
+          const designId = `storefront-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+          await storage.updateGenerationJob(jobId, {
+            status: "complete",
+            designImageUrl: imageUrl,
+            thumbnailUrl: thumbnailUrl ?? null,
+            designId,
+          });
+
+          console.log(`[Storefront Generate] [${jobId}] complete — designId=${designId}`);
+        } catch (workerErr: any) {
+          console.error(`[Storefront Generate] [${jobId}] worker error:`, workerErr);
+          await storage.updateGenerationJob(jobId, {
+            status: "failed",
+            errorMessage: workerErr.message ?? "Unknown generation error",
+          }).catch(() => {});
+        }
+      })();
+
+      // Return jobId immediately — client will poll /generate/status
+      return res.json({ jobId });
     } catch (error) {
       console.error("[Storefront Generate] Error:", error);
-      res.status(500).json({ error: "Failed to generate artwork" });
+      res.status(500).json({ error: "Failed to start generation" });
+    }
+  });
+
+  // ==================== STOREFRONT GENERATE STATUS ====================
+  // Poll this endpoint after POST /api/storefront/generate returns { jobId }.
+  app.get("/api/storefront/generate/status", async (req: Request, res: Response) => {
+    try {
+      const { jobId, shop } = req.query as { jobId?: string; shop?: string };
+
+      if (!jobId || !shop) {
+        return res.status(400).json({ error: "jobId and shop are required" });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      // Verify shop is installed
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      if (job.status === "complete") {
+        return res.json({
+          status: "complete",
+          imageUrl: job.designImageUrl,
+          thumbnailUrl: job.thumbnailUrl,
+          designId: job.designId,
+          creditsRemaining: 0,
+        });
+      }
+
+      if (job.status === "failed") {
+        return res.json({ status: "failed", error: job.errorMessage ?? "Generation failed" });
+      }
+
+      // pending or running
+      return res.json({ status: job.status });
+    } catch (error) {
+      console.error("[Storefront Generate Status] Error:", error);
+      res.status(500).json({ error: "Failed to fetch job status" });
     }
   });
 
