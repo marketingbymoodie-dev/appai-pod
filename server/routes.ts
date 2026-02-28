@@ -3259,6 +3259,102 @@ ${textEdgeRestrictions}
     return { productType: resolved, resolvedFrom };
   }
 
+  /**
+   * Pure CPU function: given a product type row, build the designer config object.
+   * Extracted so we can call it from the fast path (direct ID lookup) and the
+   * full fallback path (merchant lookup chain) without duplicating 100 lines of code.
+   */
+  function buildDesignerConfig(
+    productTypeToUse: any,
+    requestedId: number,
+    resolvedFrom?: string
+  ): Record<string, any> {
+    const sizes = typeof productTypeToUse.sizes === "string"
+      ? JSON.parse(productTypeToUse.sizes)
+      : productTypeToUse.sizes || [];
+    const frameColors = typeof productTypeToUse.frameColors === "string"
+      ? JSON.parse(productTypeToUse.frameColors)
+      : productTypeToUse.frameColors || [];
+
+    const [aspectW, aspectH] = (productTypeToUse.aspectRatio || "1:1").split(":").map(Number);
+    const aspectRatio = aspectW / aspectH;
+
+    const maxDimension = 1024;
+    let canvasWidth: number, canvasHeight: number;
+    if (aspectRatio >= 1) {
+      canvasWidth = maxDimension;
+      canvasHeight = Math.round(maxDimension / aspectRatio);
+    } else {
+      canvasHeight = maxDimension;
+      canvasWidth = Math.round(maxDimension * aspectRatio);
+    }
+
+    const bleedMarginPercent = productTypeToUse.bleedMarginPercent || 5;
+    const safeZoneMargin = Math.round(Math.min(canvasWidth, canvasHeight) * (bleedMarginPercent / 100));
+    const sizeType = (productTypeToUse as any).sizeType || "dimensional";
+
+    const baseMockupImages = typeof productTypeToUse.baseMockupImages === "string"
+      ? JSON.parse(productTypeToUse.baseMockupImages)
+      : productTypeToUse.baseMockupImages || {};
+
+    const variantMap = typeof productTypeToUse.variantMap === "string"
+      ? JSON.parse(productTypeToUse.variantMap)
+      : productTypeToUse.variantMap || {};
+
+    const config: Record<string, any> = {
+      id: productTypeToUse.id,
+      name: productTypeToUse.name,
+      description: productTypeToUse.description,
+      printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      aspectRatio: productTypeToUse.aspectRatio,
+      printShape: productTypeToUse.printShape || "rectangle",
+      printAreaWidth: productTypeToUse.printAreaWidth,
+      printAreaHeight: productTypeToUse.printAreaHeight,
+      bleedMarginPercent,
+      designerType: productTypeToUse.designerType || "generic",
+      sizeType,
+      hasPrintifyMockups: productTypeToUse.hasPrintifyMockups || false,
+      baseMockupImages,
+      primaryMockupIndex: productTypeToUse.primaryMockupIndex || 0,
+      doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
+      sizes: sizes.map((s: any) => {
+        let sizeAspectRatio = s.aspectRatio || productTypeToUse.aspectRatio;
+        if (sizeType === "dimensional" && s.width && s.height) {
+          const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
+          const divisor = gcd(s.width, s.height);
+          sizeAspectRatio = `${s.width / divisor}:${s.height / divisor}`;
+        }
+        return {
+          id: s.id,
+          name: s.name,
+          width: s.width || 0,
+          height: s.height || 0,
+          aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
+        };
+      }),
+      frameColors: frameColors.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        hex: c.hex,
+      })),
+      canvasConfig: {
+        maxDimension,
+        width: canvasWidth,
+        height: canvasHeight,
+        safeZoneMargin,
+      },
+      variantMap,
+    };
+
+    if (resolvedFrom) {
+      config.resolvedProductTypeId = productTypeToUse.id;
+      config.requestedProductTypeId = requestedId;
+      config.resolutionReason = resolvedFrom;
+    }
+
+    return config;
+  }
+
   // Storefront-safe designer endpoint (no auth required, validates via shop param)
   app.get("/api/storefront/product-types/:id/designer", async (req: Request, res: Response) => {
     const requestId = crypto.randomBytes(4).toString("hex");
@@ -3365,7 +3461,30 @@ ${textEdgeRestrictions}
         });
       }
 
-      // 3️⃣ MERCHANT LOOKUP - getMerchantByShop
+      // ⚡ FAST PATH: When productTypeId > 0, load the product type directly by ID.
+      // This skips the expensive merchant lookup chain entirely and typically returns
+      // in <50ms vs potentially 5s+ for the merchant chain when no merchant row exists.
+      if (id > 0) {
+        console.log(`[SF-DESIGNER ${requestId}] FAST PATH: attempting direct lookup for id=${id}`);
+        const fastPt = await withTimeout(
+          storage.getProductType(id),
+          4000,
+          "getProductType_fast_path"
+        );
+        if (fastPt) {
+          const totalMs = Date.now() - startTime;
+          console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${fastPt.name}" ms=${totalMs}`);
+          if (killSwitchTimeout) clearTimeout(killSwitchTimeout);
+          responded = true;
+          res.set("Cache-Control", "no-cache, no-store, must-revalidate");
+          res.set("Pragma", "no-cache");
+          res.set("Expires", "0");
+          return res.json(buildDesignerConfig(fastPt, id));
+        }
+        console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
+      }
+
+      // 3️⃣ MERCHANT LOOKUP - getMerchantByShop (fallback when id is 0 or not found)
       console.log(`[SF-DESIGNER ${requestId}] [STEP 1] Before getMerchantByShop(${shop})`);
       const merchantStart = Date.now();
       let merchant = await withTimeout(
@@ -3497,94 +3616,10 @@ ${textEdgeRestrictions}
       console.log(`[SF-DESIGNER ${requestId}] Using product type: ${productTypeToUse.name} (id=${productTypeToUse.id}, merchantId: ${productTypeToUse.merchantId})`);
 
 
-      // 5️⃣ BUILD CONFIG (CPU-bound, should be fast)
+      // 5️⃣ BUILD CONFIG using shared helper
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
-
-      const sizes = typeof productTypeToUse.sizes === 'string'
-        ? JSON.parse(productTypeToUse.sizes)
-        : productTypeToUse.sizes || [];
-      const frameColors = typeof productTypeToUse.frameColors === 'string'
-        ? JSON.parse(productTypeToUse.frameColors)
-        : productTypeToUse.frameColors || [];
-
-      const [aspectW, aspectH] = (productTypeToUse.aspectRatio || "1:1").split(":").map(Number);
-      const aspectRatio = aspectW / aspectH;
-
-      const maxDimension = 1024;
-      let canvasWidth: number, canvasHeight: number;
-      if (aspectRatio >= 1) {
-        canvasWidth = maxDimension;
-        canvasHeight = Math.round(maxDimension / aspectRatio);
-      } else {
-        canvasHeight = maxDimension;
-        canvasWidth = Math.round(maxDimension * aspectRatio);
-      }
-
-      const bleedMarginPercent = productTypeToUse.bleedMarginPercent || 5;
-      const safeZoneMargin = Math.round(Math.min(canvasWidth, canvasHeight) * (bleedMarginPercent / 100));
-      const sizeType = (productTypeToUse as any).sizeType || "dimensional";
-
-      const baseMockupImages = typeof productTypeToUse.baseMockupImages === 'string'
-        ? JSON.parse(productTypeToUse.baseMockupImages)
-        : productTypeToUse.baseMockupImages || {};
-
-      const variantMap = typeof productTypeToUse.variantMap === 'string'
-        ? JSON.parse(productTypeToUse.variantMap)
-        : productTypeToUse.variantMap || {};
-
-      const designerConfig: Record<string, any> = {
-        id: productTypeToUse.id,
-        name: productTypeToUse.name,
-        description: productTypeToUse.description,
-        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
-        aspectRatio: productTypeToUse.aspectRatio,
-        printShape: productTypeToUse.printShape || "rectangle",
-        printAreaWidth: productTypeToUse.printAreaWidth,
-        printAreaHeight: productTypeToUse.printAreaHeight,
-        bleedMarginPercent,
-        designerType: productTypeToUse.designerType || "generic",
-        sizeType,
-        hasPrintifyMockups: productTypeToUse.hasPrintifyMockups || false,
-        baseMockupImages,
-        primaryMockupIndex: productTypeToUse.primaryMockupIndex || 0,
-        doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
-        sizes: sizes.map((s: any) => {
-          let sizeAspectRatio = s.aspectRatio || productTypeToUse.aspectRatio;
-          if (sizeType === "dimensional" && s.width && s.height) {
-            const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
-            const divisor = gcd(s.width, s.height);
-            sizeAspectRatio = `${s.width / divisor}:${s.height / divisor}`;
-          }
-          return {
-            id: s.id,
-            name: s.name,
-            width: s.width || 0,
-            height: s.height || 0,
-            aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
-          };
-        }),
-        frameColors: frameColors.map((c: any) => ({
-          id: c.id,
-          name: c.name,
-          hex: c.hex,
-        })),
-        canvasConfig: {
-          maxDimension,
-          width: canvasWidth,
-          height: canvasHeight,
-          safeZoneMargin,
-        },
-        variantMap,
-      };
-
-      // Include fallback info if we resolved to a different product type
-      if (resolvedFrom) {
-        designerConfig.resolvedProductTypeId = productTypeToUse.id;
-        designerConfig.requestedProductTypeId = id;
-        designerConfig.resolutionReason = resolvedFrom;
-      }
-
+      const designerConfig = buildDesignerConfig(productTypeToUse, id, resolvedFrom);
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
