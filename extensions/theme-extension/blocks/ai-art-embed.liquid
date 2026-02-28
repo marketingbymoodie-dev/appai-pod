@@ -32,59 +32,6 @@
 {% endcomment %}
 <script src="{{ 'appai-customizer-embed.js' | asset_url }}" defer></script>
 <script>
-function showLoginRequiredPopup() {
-  const overlay = document.createElement("div");
-  overlay.style.cssText = `
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,.55);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 999999;
-  `;
-
-  const card = document.createElement("div");
-  card.style.cssText = `
-    width: min(520px, 92vw);
-    background: #fff;
-    border-radius: 16px;
-    padding: 18px;
-    box-shadow: 0 12px 40px rgba(0,0,0,.25);
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  `;
-
-  card.innerHTML = `
-    <div style="font-size:18px;font-weight:700;margin-bottom:8px;">
-      Log in to generate artwork
-    </div>
-    <div style="font-size:14px;line-height:1.45;color:#333;margin-bottom:12px;">
-      We require login so your artwork is automatically saved to your gallery,
-      generation limits are applied fairly, and purchase credits can be refunded.
-    </div>
-    <div style="display:flex;gap:10px;justify-content:flex-end;">
-      <button id="appai-close" style="
-        border:1px solid #ddd;
-        background:#fff;
-        padding:10px 14px;
-        border-radius:10px;
-        cursor:pointer;
-      ">Not now</button>
-      <a href="/account/login" style="
-        background:#111;
-        color:#fff;
-        text-decoration:none;
-        padding:10px 14px;
-        border-radius:10px;
-      ">Log in</a>
-    </div>
-  `;
-
-  overlay.appendChild(card);
-  document.body.appendChild(overlay);
-
-  overlay.querySelector("#appai-close")?.addEventListener("click", () => {
-    overlay.remove();
-  });
-}
-
 (function () {
   'use strict';
 
@@ -138,19 +85,25 @@ function showLoginRequiredPopup() {
     
     // Handle mockup updates from Railway app origin
     if (event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
-      // Security: only accept from Railway origins
-      if (event.origin.indexOf('railway.app') === -1) {
-        console.log('[AI Art Embed] Ignoring mockups from non-Railway origin:', event.origin);
+      // Security: only accept from Railway or localhost origins
+      var isRailway = event.origin.indexOf('railway.app') !== -1;
+      var isLocalhost = event.origin.indexOf('localhost') !== -1 || event.origin.indexOf('127.0.0.1') !== -1;
+      if (!isRailway && !isLocalhost) {
+        console.log('[AI Art Embed] Ignoring mockups from untrusted origin:', event.origin);
         return;
       }
       
       var mockupUrls = event.data.mockupUrls;
+      console.log('[AI Art Embed] MOCKUPS received — count:', mockupUrls ? mockupUrls.length : 0, 'origin:', event.origin);
       if (!mockupUrls || mockupUrls.length === 0) {
         console.log('[AI Art Embed] No mockup URLs in message');
         return;
       }
       
-      console.log('[AI Art Embed] Processing', mockupUrls.length, 'mockups - creating custom gallery');
+      // Persist to sessionStorage so page refresh doesn't lose them
+      try { sessionStorage.setItem('appai_mockups', JSON.stringify(mockupUrls)); } catch(e) {}
+      
+      console.log('[AI Art Embed] Processing', mockupUrls.length, 'mockups — URLs:', mockupUrls.map(function(u) { return u.substring(0, 80); }));
 
       // Hide the placeholder (it was shown while generating)
       var phEl = document.getElementById('ai-art-placeholder');
@@ -892,12 +845,7 @@ function showLoginRequiredPopup() {
       if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
         var mockupUrls = data.mockupUrls;
         if (!mockupUrls || mockupUrls.length === 0) return;
-        console.log(B, 'Received mockups:', mockupUrls.length);
-
-        // Mockup preview grid removed — images are already shown in the
-        // custom gallery above (#ai-art-custom-gallery) which replaced the
-        // native product image gallery.
-        console.log(B, 'Mockup gallery updated');
+        console.log(B, 'Bridge MOCKUPS received:', mockupUrls.length, 'urls — handled by global listener gallery');
       }
     });
 

@@ -1209,16 +1209,22 @@ export default function EmbedDesign() {
       const result = await response.json();
       
       if (result.success && result.mockupUrls?.length > 0) {
-        setPrintifyMockups(result.mockupUrls);
+        const absUrls = result.mockupUrls.map(toAbsoluteImageUrl);
+        setPrintifyMockups(absUrls);
         setSelectedMockupIndex(0);
-        // Send mockups to parent Shopify page
-        sendMockupsToParent(result.mockupUrls);
+        sendMockupsToParent(absUrls);
+        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs (absolute)');
       } else if (!result.success) {
         throw new Error(result.message || "Mockup generation returned unsuccessful");
       }
       if (result.success && result.mockupImages?.length > 0) {
-        setPrintifyMockupImages(result.mockupImages);
+        const absImages = result.mockupImages.map((img: { url: string; label: string }) => ({
+          ...img,
+          url: toAbsoluteImageUrl(img.url),
+        }));
+        setPrintifyMockupImages(absImages);
         setSelectedMockupIndex(0);
+        console.log('[Mockups] Stored', absImages.length, 'mockup images (absolute)');
       }
     } catch (error) {
       console.error("Failed to generate Printify mockups:", error);
@@ -1442,7 +1448,7 @@ export default function EmbedDesign() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           }),
-          30_000,
+          60_000,
           'POST /generate',
         );
         const jobData = await jobRes.json();
@@ -1451,8 +1457,10 @@ export default function EmbedDesign() {
             setFreeLimitReached(true);
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
           }
-          if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
-          else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
+          if (!isStorefront) {
+            if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
+            else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
+          }
           throw new Error(jobData.error || "Failed to start generation");
         }
         setFreeLimitReached(false);
@@ -1473,7 +1481,7 @@ export default function EmbedDesign() {
           try {
             const statusRes = await raceTimeout(
               safeFetch(statusUrl),
-              10_000,
+              15_000,
               'GET /generate/status',
             );
             if (!statusRes.ok) {
@@ -2558,8 +2566,8 @@ export default function EmbedDesign() {
           </Card>
         )}
 
-        {/* Only show login errors for non-Shopify mode */}
-        {!isShopify && loginError && (
+        {/* Only show login errors for standalone (non-Shopify, non-storefront) mode */}
+        {!isShopify && !isStorefront && loginError && (
           <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
             <CardContent className="py-3">
               <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error">
