@@ -320,7 +320,10 @@ function showLoginRequiredPopup() {
     // If the merchant added the "AI Art Design Studio" app block to this
     // page template, its container already exists in the DOM.  Mount the
     // iframe there and skip creating a second auto-embed container.
-    var existingBlock = document.querySelector('.ai-art-studio-block [id^="ai-art-studio-container-"]');
+    var existingBlock =
+      document.querySelector('.ai-art-studio-block [id^="ai-art-studio-container-"]') ||
+      document.querySelector('[data-block-handle="ai-art-studio"] .ai-art-studio__container') ||
+      document.querySelector('[data-block-handle="ai-art-studio"]');
     var container, studioContainer;
 
     if (existingBlock) {
@@ -1366,6 +1369,13 @@ function showLoginRequiredPopup() {
         ['#MainContent > .page-width', 'main .page', '.page__content',
          '.shopify-section--rich-text', 'h1.page-title', 'h1.title'].forEach(function(sel) {
           document.querySelectorAll(sel).forEach(function(el) { el.style.display = 'none'; });
+        });
+
+        // Hide the page's body_html rendered by the theme (e.g. stale "Loading customizer..." text
+        // that was set as the page body before we switched to empty body_html).
+        document.querySelectorAll('.page-content, .rte, article .rte, .page__body').forEach(function(el) {
+          if (el.closest('.ai-art-studio-embed') || el.closest('.ai-art-studio-block')) return;
+          el.style.display = 'none';
         });
 
         var shopDomain = (window.Shopify && window.Shopify.shop) || '';
