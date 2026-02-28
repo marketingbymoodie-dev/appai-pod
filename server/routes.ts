@@ -292,6 +292,131 @@ async function fetchWithRetry(
   throw lastError || new Error('Max retries exceeded');
 }
 
+/** Shopify Admin GraphQL helper — supports selecting API version (menus need 2024-07+) */
+async function shopifyGraphQL(
+  shop: string,
+  accessToken: string,
+  query: string,
+  variables: Record<string, any> = {},
+  apiVersion = "2024-07",
+): Promise<any> {
+  const res = await fetch(`https://${shop}/admin/api/${apiVersion}/graphql.json`, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": accessToken,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`Shopify GraphQL HTTP ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+/**
+ * Ensures a navigation menu item pointing to /pages/<pageHandle> exists.
+ * Targets the "main-menu" by default. Idempotent — skips if already present.
+ * Uses Shopify GraphQL API 2024-07+ (menu APIs not available in 2024-01).
+ */
+async function ensureNavigationLink(
+  shop: string,
+  accessToken: string,
+  pageHandle: string,
+  label = "Customizer",
+): Promise<{ added: boolean; warning?: string }> {
+  const targetUrl = `/pages/${pageHandle}`;
+
+  try {
+    // Step 1: Query for main-menu
+    const queryRes = await shopifyGraphQL(shop, accessToken, `
+      query GetMainMenu {
+        menu(handle: "main-menu") {
+          id
+          title
+          items {
+            id
+            title
+            url
+          }
+        }
+      }
+    `);
+
+    const menu = queryRes?.data?.menu;
+
+    // Step 2: If menu exists, check for existing link
+    if (menu?.id) {
+      const alreadyExists = (menu.items ?? []).some(
+        (item: any) => item.url === targetUrl || item.url?.endsWith(targetUrl),
+      );
+      if (alreadyExists) {
+        console.log(`[nav] Link to ${targetUrl} already exists in main-menu`);
+        return { added: false };
+      }
+
+      // Step 3: Append new item using menuUpdate
+      // menuUpdate replaces ALL items, so we must include the existing items too
+      const existingItems = (menu.items ?? []).map((item: any) => ({
+        title: item.title,
+        type: "HTTP",
+        url: item.url,
+      }));
+      const newItems = [
+        ...existingItems,
+        { title: label, type: "HTTP", url: targetUrl },
+      ];
+
+      const updateRes = await shopifyGraphQL(shop, accessToken, `
+        mutation UpdateMenu($id: ID!, $items: [MenuItemCreateInput!]!) {
+          menuUpdate(id: $id, items: $items) {
+            menu { id }
+            userErrors { field message }
+          }
+        }
+      `, { id: menu.id, items: newItems });
+
+      const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
+      if (userErrors.length > 0) {
+        const msg = userErrors.map((e: any) => e.message).join("; ");
+        console.warn(`[nav] menuUpdate userErrors: ${msg}`);
+        return { added: false, warning: msg };
+      }
+
+      console.log(`[nav] Added "${label}" link to main-menu for ${shop}`);
+      return { added: true };
+    }
+
+    // Step 4: main-menu not found — create it
+    const createRes = await shopifyGraphQL(shop, accessToken, `
+      mutation CreateMenu($title: String!, $handle: String!, $items: [MenuItemCreateInput!]!) {
+        menuCreate(title: $title, handle: $handle, items: $items) {
+          menu { id }
+          userErrors { field message }
+        }
+      }
+    `, {
+      title: "Main menu",
+      handle: "main-menu",
+      items: [{ title: label, type: "HTTP", url: targetUrl }],
+    });
+
+    const createErrors = createRes?.data?.menuCreate?.userErrors ?? [];
+    if (createErrors.length > 0) {
+      const msg = createErrors.map((e: any) => e.message).join("; ");
+      console.warn(`[nav] menuCreate userErrors: ${msg}`);
+      return { added: false, warning: msg };
+    }
+
+    console.log(`[nav] Created main-menu with "${label}" link for ${shop}`);
+    return { added: true };
+  } catch (err: any) {
+    console.warn(`[nav] ensureNavigationLink failed for ${shop}: ${err.message}`);
+    return { added: false, warning: err.message };
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -8739,8 +8864,12 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId } = req.body as {
-      title?: string; handle?: string; baseVariantId?: string; baseProductId?: string;
+    const { title, handle, baseVariantId, baseProductId, variantPrices } = req.body as {
+      title?: string;
+      handle?: string;
+      baseVariantId?: string;
+      baseProductId?: string;
+      variantPrices?: Record<string, string>;
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
@@ -8836,6 +8965,61 @@ ${textEdgeRestrictions}
     );
     const resolvedProductTypeId: number | null = matchedType?.id ?? null;
 
+    // ── Write variant prices to Shopify ──────────────────────────────────────
+    if (variantPrices && typeof variantPrices === "object") {
+      const priceEntries = Object.entries(variantPrices);
+      if (priceEntries.length > 0) {
+        // Validate all prices before writing any
+        for (const [vid, price] of priceEntries) {
+          const num = parseFloat(String(price));
+          if (isNaN(num) || num <= 0) {
+            return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+          }
+        }
+        // Write prices to Shopify
+        for (const [vid, price] of priceEntries) {
+          const variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
+          if (!variantNum) continue;
+          const formatted = parseFloat(String(price)).toFixed(2);
+          const priceResult = await shopifyApiCall(shop, installation.accessToken, `variants/${variantNum}.json`, {
+            method: "PUT",
+            body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+          });
+          if (!priceResult.ok) {
+            console.warn(`[customizer-pages] Failed to update price for variant ${vid}: ${priceResult.error}`);
+          }
+          // If this variant is the one we're using as the base, update local record
+          if (String(variantNum) === String(variant.id)) {
+            variant = { ...variant, price: formatted };
+          }
+        }
+      }
+    }
+
+    // ── Publish product to Online Store ───────────────────────────────────────
+    // Set status: active and published: true (Online Store channel only via published_scope: web)
+    {
+      const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
+      if (productIdNum) {
+        const publishResult = await shopifyApiCall(shop, installation.accessToken, `products/${productIdNum}.json`, {
+          method: "PUT",
+          body: JSON.stringify({
+            product: {
+              id: productIdNum,
+              status: "active",
+              published: true,
+              published_scope: "web",
+            },
+          }),
+        });
+        if (!publishResult.ok) {
+          console.warn(`[customizer-pages] Failed to publish product ${productIdNum}: ${publishResult.error}`);
+        } else {
+          console.log(`[customizer-pages] Published product ${productIdNum} to Online Store for shop ${shop}`);
+        }
+      }
+    }
+
     // Create Shopify Page
     const pageBody = await shopifyApiCall(
       shop,
@@ -8874,9 +9058,20 @@ ${textEdgeRestrictions}
       status: "active",
     });
 
+    // ── Add navigation menu link ──────────────────────────────────────────────
+    let navWarning: string | null = null;
+    try {
+      const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), "Customizer");
+      if (navResult.warning) navWarning = navResult.warning;
+    } catch (navErr: any) {
+      navWarning = navErr.message ?? "Navigation link could not be added";
+      console.warn(`[customizer-pages] Nav link step failed: ${navWarning}`);
+    }
+
     return res.status(201).json({
       page,
       storefrontUrl: `/pages/${page.handle}`,
+      navWarning,
     });
   }));
 

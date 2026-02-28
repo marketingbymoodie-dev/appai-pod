@@ -187,6 +187,32 @@ const safeFetch: typeof fetch =
     ? (window as any).__nativeFetch
     : fetch;
 
+/**
+ * Module-scoped timeout wrapper for use outside of useEffect closures (e.g. useMutation).
+ * Does not depend on any closure state; safe to call anywhere in the component.
+ */
+async function fetchWithTimeoutSimple(
+  url: string,
+  options: RequestInit = {},
+  timeout = 30000,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await safeFetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const body = await res.text().catch(() => res.statusText);
+      throw new Error(`HTTP ${res.status}: ${body}`);
+    }
+    return res;
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new Error(`Request timed out after ${timeout}ms`);
+    throw err;
+  }
+}
+
 console.log('[EmbedDesign] API Base URL:', API_BASE);
 console.log('[EmbedDesign] Using native fetch bypass:', !!(typeof window !== 'undefined' && (window as any).__nativeFetch));
 console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
@@ -1299,8 +1325,8 @@ export default function EmbedDesign() {
           ? `${API_BASE}/api/shopify/generate`
           : `${API_BASE}/api/generate`;
       console.log('[EmbedDesign] Generating design via:', endpoint, '(mode:', runtimeMode, ')');
-      // Use fetchWithTimeout so the generate mutation always resolves (no infinite spinner).
-      const response = await fetchWithTimeout(endpoint, {
+      // Use fetchWithTimeoutSimple (module-scope) so the generate mutation always resolves.
+      const response = await fetchWithTimeoutSimple(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

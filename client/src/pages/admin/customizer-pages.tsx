@@ -24,6 +24,7 @@ import {
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
+  CheckCircle2, ChevronRight, DollarSign,
 } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import PlanPicker from "./plan-picker";
@@ -95,6 +96,12 @@ export default function AdminCustomizerPages() {
   const [formProductId, setFormProductId] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
 
+  // Wizard state
+  const [formStep, setFormStep] = useState<1 | 2 | 3 | 4>(1);
+  const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
+  const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
+  const [createdPageResult, setCreatedPageResult] = useState<any>(null);
+
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
   });
@@ -138,18 +145,19 @@ export default function AdminCustomizerPages() {
   const shopDomain = pagesData?.pages?.[0]?.shop ?? "";
 
   const createMutation = useMutation({
-    mutationFn: async (body: { title: string; handle: string; baseProductId: string }) => {
+    mutationFn: async (body: {
+      title: string;
+      handle: string;
+      baseProductId: string;
+      variantPrices: Record<string, string>;
+    }) => {
       const res = await apiRequest("POST", "/api/appai/customizer-pages", body);
       return res.json();
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
-      setCreateOpen(false);
-      resetForm();
-      toast({
-        title: "Customizer page created",
-        description: `Visit /pages/${data.page?.handle} on your storefront to test it.`,
-      });
+      setCreatedPageResult(data);
+      setFormStep(4);
     },
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
@@ -186,6 +194,10 @@ export default function AdminCustomizerPages() {
     setFormHandle("");
     setFormProductId("");
     setHandleTouched(false);
+    setFormStep(1);
+    setVariantPrices({});
+    setPriceErrors({});
+    setCreatedPageResult(null);
   }
 
   function handleTitleChange(val: string) {
@@ -193,9 +205,47 @@ export default function AdminCustomizerPages() {
     if (!handleTouched) setFormHandle(slugify(val));
   }
 
-  function handleSubmitCreate() {
+  /** Derive variants for the currently-selected product (Step 2 pricing) */
+  const selectedBlank = (blanksData?.blanks ?? []).find((b) => b.productId === formProductId);
+  const selectedVariants: BlankVariant[] = selectedBlank?.variants ?? [];
+
+  /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
+  function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
-    createMutation.mutate({ title: formTitle, handle: formHandle, baseProductId: formProductId });
+    const prefilled: Record<string, string> = {};
+    for (const v of selectedVariants) {
+      prefilled[v.id] = variantPrices[v.id] ?? (v.price && v.price !== "0.00" ? v.price : "");
+    }
+    setVariantPrices(prefilled);
+    setPriceErrors({});
+    setFormStep(2);
+  }
+
+  /** Validate prices in Step 2; advance to Step 3 (confirm) */
+  function advanceToStep3() {
+    const errs: Record<string, string> = {};
+    for (const v of selectedVariants) {
+      const val = variantPrices[v.id] ?? "";
+      const num = parseFloat(val);
+      if (!val.trim() || isNaN(num) || num <= 0) {
+        errs[v.id] = "Required — enter a price greater than $0.00";
+      }
+    }
+    if (Object.keys(errs).length > 0) {
+      setPriceErrors(errs);
+      return;
+    }
+    setPriceErrors({});
+    setFormStep(3);
+  }
+
+  function handleSubmitCreate() {
+    createMutation.mutate({
+      title: formTitle,
+      handle: formHandle,
+      baseProductId: formProductId,
+      variantPrices,
+    });
   }
 
   const pages = pagesData?.pages ?? [];
@@ -209,15 +259,6 @@ export default function AdminCustomizerPages() {
 
   const activePagesCount = pages.filter((p) => p.status === "active").length;
   const overLimitActiveCount = Math.max(0, activePagesCount - limit);
-
-  // All variants flat list for picker
-  const allVariants: Array<{ variantId: string; label: string }> = (blanksData?.blanks ?? []).flatMap(
-    (b) =>
-      (b.variants ?? []).map((v) => ({
-        variantId: v.id,
-        label: `${b.title} — ${v.title} ($${v.price})`,
-      }))
-  );
 
   if (reauthData) {
     return (
@@ -264,79 +305,258 @@ export default function AdminCustomizerPages() {
                   Create Page
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md">
+              <DialogContent className="max-w-lg">
                 <DialogHeader>
-                  <DialogTitle>Create Customizer Page</DialogTitle>
+                  <DialogTitle>
+                    {formStep === 4 ? "Page Created!" : "Create Customizer Page"}
+                  </DialogTitle>
+                  {formStep < 4 && (
+                    <div className="flex items-center gap-1.5 pt-1">
+                      {([1, 2, 3] as const).map((s) => (
+                        <div key={s} className="flex items-center gap-1.5">
+                          <div className={`w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center ${
+                            formStep === s
+                              ? "bg-primary text-primary-foreground"
+                              : formStep > s
+                              ? "bg-primary/20 text-primary"
+                              : "bg-muted text-muted-foreground"
+                          }`}>{s}</div>
+                          <span className={`text-xs ${formStep === s ? "text-foreground font-medium" : "text-muted-foreground"}`}>
+                            {s === 1 ? "Page info" : s === 2 ? "Pricing" : "Confirm"}
+                          </span>
+                          {s < 3 && <ChevronRight className="h-3 w-3 text-muted-foreground" />}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </DialogHeader>
-                <div className="space-y-4 pt-2">
-                  <div>
-                    <Label>Page Title</Label>
-                    <Input
-                      placeholder="Customize Your Tumbler"
-                      value={formTitle}
-                      onChange={(e) => handleTitleChange(e.target.value)}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label>URL Handle</Label>
-                    <div className="flex items-center mt-1">
-                      <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
-                        /pages/
-                      </span>
+
+                {/* ── STEP 1: Page info ── */}
+                {formStep === 1 && (
+                  <div className="space-y-4 pt-2">
+                    <div>
+                      <Label>Page Title</Label>
                       <Input
-                        placeholder="customize-tumbler"
-                        value={formHandle}
-                        onChange={(e) => {
-                          setHandleTouched(true);
-                          setFormHandle(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
-                        }}
-                        className="rounded-l-none"
+                        placeholder="Customize Your Tumbler"
+                        value={formTitle}
+                        onChange={(e) => handleTitleChange(e.target.value)}
+                        className="mt-1"
                       />
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Storefront URL: /pages/{formHandle || "…"}
-                    </p>
-                  </div>
-                  <div>
-                    <Label>Product</Label>
-                    {blanksLoading ? (
-                      <Skeleton className="h-10 w-full mt-1" />
-                    ) : (blanksData?.blanks ?? []).length === 0 ? (
-                      <p className="text-sm text-destructive mt-1">
-                        No blank products found. Add products tagged{" "}
-                        <code className="bg-muted px-1 rounded">appai-blank</code> in Shopify.
+                    <div>
+                      <Label>URL Handle</Label>
+                      <div className="flex items-center mt-1">
+                        <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
+                          /pages/
+                        </span>
+                        <Input
+                          placeholder="customize-tumbler"
+                          value={formHandle}
+                          onChange={(e) => {
+                            setHandleTouched(true);
+                            setFormHandle(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+                          }}
+                          className="rounded-l-none"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Storefront URL: /pages/{formHandle || "…"}
                       </p>
-                    ) : (
-                      <Select value={formProductId} onValueChange={setFormProductId}>
-                        <SelectTrigger className="mt-1">
-                          <SelectValue placeholder="Select a product…" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(blanksData?.blanks ?? []).map((blank) => (
-                            <SelectItem key={blank.productId} value={blank.productId}>
-                              {blank.title}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    )}
-                    <p className="text-xs text-muted-foreground mt-1">
-                      All variants will be available to customers on the storefront.
-                    </p>
+                    </div>
+                    <div>
+                      <Label>Product</Label>
+                      {blanksLoading ? (
+                        <Skeleton className="h-10 w-full mt-1" />
+                      ) : (blanksData?.blanks ?? []).length === 0 ? (
+                        <p className="text-sm text-destructive mt-1">
+                          No blank products found. Add products tagged{" "}
+                          <code className="bg-muted px-1 rounded">appai-blank</code> in Shopify.
+                        </p>
+                      ) : (
+                        <Select value={formProductId} onValueChange={setFormProductId}>
+                          <SelectTrigger className="mt-1">
+                            <SelectValue placeholder="Select a product…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(blanksData?.blanks ?? []).map((blank) => (
+                              <SelectItem key={blank.productId} value={blank.productId}>
+                                {blank.title}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-1">
+                        All variants will be available to customers on the storefront.
+                      </p>
+                    </div>
+                    <Button
+                      className="w-full"
+                      onClick={advanceToStep2}
+                      disabled={!formTitle.trim() || !formHandle.trim() || !formProductId}
+                    >
+                      Next: Set Pricing
+                      <ChevronRight className="h-4 w-4 ml-2" />
+                    </Button>
                   </div>
-                  <Button
-                    className="w-full"
-                    onClick={handleSubmitCreate}
-                    disabled={!formTitle.trim() || !formHandle.trim() || !formProductId || createMutation.isPending}
-                  >
-                    {createMutation.isPending ? (
-                      <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating…</>
-                    ) : (
-                      <><Wand2 className="h-4 w-4 mr-2" /> Create Page</>
+                )}
+
+                {/* ── STEP 2: Pricing ── */}
+                {formStep === 2 && (
+                  <div className="space-y-4 pt-2">
+                    <p className="text-sm text-muted-foreground">
+                      Set a price for each variant. These are written directly to your Shopify product.
+                      You can change them anytime in <strong>Shopify Products</strong> — we won't override them.
+                    </p>
+                    <div className="space-y-3">
+                      {selectedVariants.map((v) => (
+                        <div key={v.id}>
+                          <Label className="flex items-center gap-1">
+                            <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
+                            {v.title}
+                          </Label>
+                          <div className="flex items-center mt-1">
+                            <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
+                              $
+                            </span>
+                            <Input
+                              type="number"
+                              min="0.01"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={variantPrices[v.id] ?? ""}
+                              onChange={(e) => {
+                                setVariantPrices((prev) => ({ ...prev, [v.id]: e.target.value }));
+                                if (priceErrors[v.id]) setPriceErrors((prev) => { const n = { ...prev }; delete n[v.id]; return n; });
+                              }}
+                              className={`rounded-l-none ${priceErrors[v.id] ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                            />
+                          </div>
+                          {priceErrors[v.id] && (
+                            <p className="text-xs text-destructive mt-1">{priceErrors[v.id]}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(1)}>
+                        Back
+                      </Button>
+                      <Button className="flex-1" onClick={advanceToStep3}>
+                        Review & Create
+                        <ChevronRight className="h-4 w-4 ml-2" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── STEP 3: Confirm ── */}
+                {formStep === 3 && (
+                  <div className="space-y-4 pt-2">
+                    <div className="rounded-lg border bg-muted/30 p-4 space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Page title</span>
+                        <span className="font-medium">{formTitle}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">URL</span>
+                        <span className="font-mono">/pages/{formHandle}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Product</span>
+                        <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
+                      </div>
+                      <div className="border-t pt-2 mt-1 space-y-1">
+                        <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
+                        {selectedVariants.map((v) => (
+                          <div key={v.id} className="flex justify-between">
+                            <span>{v.title}</span>
+                            <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      This will publish the product to your Online Store and add a "Customizer" link to your main navigation menu.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(2)} disabled={createMutation.isPending}>
+                        Back
+                      </Button>
+                      <Button className="flex-1" onClick={handleSubmitCreate} disabled={createMutation.isPending}>
+                        {createMutation.isPending ? (
+                          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating…</>
+                        ) : (
+                          <><Wand2 className="h-4 w-4 mr-2" /> Create Page</>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── STEP 4: Success ── */}
+                {formStep === 4 && (
+                  <div className="space-y-5 pt-2">
+                    <div className="flex flex-col items-center text-center gap-3 py-4">
+                      <CheckCircle2 className="h-14 w-14 text-green-500" />
+                      <div>
+                        <p className="text-lg font-semibold">Your customizer page is live!</p>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          Pricing has been saved to Shopify. The product is now published on your Online Store.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Button
+                        className="w-full"
+                        variant="outline"
+                        asChild
+                      >
+                        <a
+                          href={`https://${createdPageResult?.page?.shop ?? shopDomain}/pages/${createdPageResult?.page?.handle ?? formHandle}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          Open customizer page
+                        </a>
+                      </Button>
+                      {createdPageResult?.page?.baseProductId && (
+                        <Button className="w-full" variant="outline" asChild>
+                          <a
+                            href={`https://${createdPageResult?.page?.shop ?? shopDomain}/admin/products/${createdPageResult.page.baseProductId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <ExternalLink className="h-4 w-4 mr-2" />
+                            Open product in Shopify
+                          </a>
+                        </Button>
+                      )}
+                      <Button className="w-full" variant="outline" asChild>
+                        <a
+                          href={`https://${createdPageResult?.page?.shop ?? shopDomain}/admin/menus`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          Edit menu link
+                        </a>
+                      </Button>
+                    </div>
+                    <p className="text-xs text-center text-muted-foreground">
+                      To update pricing in the future, edit the product directly in Shopify Products.
+                    </p>
+                    {createdPageResult?.navWarning && (
+                      <p className="text-xs text-amber-600 text-center">
+                        Note: Could not auto-add nav link — please add it manually in Shopify Navigation.
+                      </p>
                     )}
-                  </Button>
-                </div>
+                    <Button className="w-full" onClick={() => { setCreateOpen(false); resetForm(); }}>
+                      Done
+                    </Button>
+                  </div>
+                )}
               </DialogContent>
             </Dialog>
           )}

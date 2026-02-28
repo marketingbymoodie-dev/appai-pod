@@ -4,7 +4,7 @@ import { storage } from "./storage";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content";
+const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,read_online_store_navigation,write_online_store_navigation";
 
 export async function registerCartScript(shop: string, accessToken: string): Promise<void> {
   const appUrl = getAppUrl();
