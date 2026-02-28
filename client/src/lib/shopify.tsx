@@ -33,12 +33,14 @@ if (_initialShop) sessionStorage.setItem("shopify_shop", _initialShop);
 export function isShopifyEmbedded(): boolean {
   if (typeof window === "undefined") return false;
 
-  // Storefront embed runs in a cross-origin iframe with ?shop= in the URL, but
-  // it is NOT a Shopify Admin embed.  When storefront=true is present, the app
-  // must NOT initialise App Bridge or attempt an admin redirect.
-  if (new URLSearchParams(window.location.search).get("storefront") === "true") {
-    return false;
-  }
+  const path = window.location.pathname;
+  const params = new URLSearchParams(window.location.search);
+
+  // Path-based: /s/* is storefront — NEVER embedded admin
+  if (path.startsWith('/s/')) return false;
+
+  // Legacy query-param guard: storefront=true is NOT admin embedded
+  if (params.get("storefront") === "true") return false;
 
   // window.shopify is injected by the app-bridge.js CDN script when embedded
   if ((window as any).shopify) return true;
@@ -46,8 +48,8 @@ export function isShopifyEmbedded(): boolean {
   // URL params present on initial load (before SPA navigation)
   if (
     sessionStorage.getItem("shopify_host") ||
-    new URLSearchParams(window.location.search).has("shop") ||
-    new URLSearchParams(window.location.search).has("host")
+    params.has("shop") ||
+    params.has("host")
   ) {
     return true;
   }

@@ -262,6 +262,19 @@ app.use((req, res, next) => {
     });
   });
 
+  // Legacy redirect: /embed/design?storefront=true → /s/designer (preserving params)
+  app.get("/embed/design", (req: Request, res: Response, next: NextFunction) => {
+    const params = new URLSearchParams(req.query as Record<string, string>);
+    if (params.get("storefront") === "true") {
+      params.delete("storefront");
+      const qs = params.toString();
+      const target = `/s/designer${qs ? '?' + qs : ''}`;
+      console.log(`[Legacy redirect] /embed/design?storefront=true → ${target}`);
+      return res.redirect(302, target);
+    }
+    next();
+  });
+
   // Global error handler — catches errors forwarded by asyncHandler and other middleware.
   // Must have 4 parameters so Express recognises it as an error handler.
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

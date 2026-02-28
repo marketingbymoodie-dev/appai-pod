@@ -35,6 +35,9 @@ function Router() {
       <Route path="/orders" component={OrdersPage} />
       <Route path="/embed/design" component={EmbedDesign} />
 
+      {/* Storefront designer — dedicated path, never initializes App Bridge */}
+      <Route path="/s/designer" component={EmbedDesign} />
+
       {/* Admin */}
       <Route path="/admin/settings" component={AdminSettings} />
       <Route path="/admin/products" component={AdminProducts} />

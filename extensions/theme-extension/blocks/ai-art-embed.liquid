@@ -301,7 +301,6 @@
     }
     
     const params = new URLSearchParams();
-    params.set('storefront', 'true');  // Storefront mode — no App Bridge, no admin redirect
     params.set('shop', config.shopDomain);
     params.set('productTypeId', config.productTypeId);
     params.set('productId', config.productId);
@@ -332,7 +331,7 @@
     }
     
     const iframe = document.createElement('iframe');
-    iframe.src = `${config.appUrl}/embed/design?${params.toString()}`;
+    iframe.src = `${config.appUrl}/s/designer?${params.toString()}`;
     iframe.allow = 'clipboard-write';
     iframe.title = 'AI Art Design Studio';
     iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';

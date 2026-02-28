@@ -256,23 +256,16 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
 type RuntimeMode = 'storefront' | 'admin-embedded' | 'standalone';
 
 function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
-  const isStorefront = params.get("storefront") === "true";
-  const isEmbedded = params.get("embedded") === "true";
-  const isShopify = params.get("shopify") === "true";
+  const path = window.location.pathname;
 
-  // Storefront mode: explicitly set via storefront=true
-  // This mode does NOT use session tokens - all APIs are public
-  if (isStorefront) {
-    return 'storefront';
-  }
+  // Path-based detection (preferred — no query param ambiguity)
+  if (path.startsWith('/s/')) return 'storefront';
+  if (path.startsWith('/admin/') || path === '/admin') return 'admin-embedded';
 
-  // Admin embedded mode: embedded=true with shopify=true
-  // This mode requires App Bridge and session tokens
-  if (isEmbedded && isShopify) {
-    return 'admin-embedded';
-  }
+  // Legacy query-param fallback for /embed/design URLs
+  if (params.get("storefront") === "true") return 'storefront';
+  if (params.get("embedded") === "true" && params.get("shopify") === "true") return 'admin-embedded';
 
-  // Standalone mode: direct access without Shopify context
   return 'standalone';
 }
 
