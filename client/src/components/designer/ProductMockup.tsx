@@ -20,6 +20,7 @@ interface ProductMockupProps {
     maxDimension: number;
   };
   showSafeZone?: boolean;
+  blankImageUrl?: string | null;
 }
 
 export function ProductMockup({
@@ -34,6 +35,7 @@ export function ProductMockup({
   designerType = "generic",
   canvasConfig,
   showSafeZone = false,
+  blankImageUrl,
 }: ProductMockupProps) {
   // Debug: log to window to ensure we can see it
   if (typeof window !== 'undefined') {
@@ -240,6 +242,19 @@ export function ProductMockup({
           data-testid="img-generated"
           onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
           onError={(e) => console.error("[ProductMockup] Image failed to load:", e)}
+        />
+      );
+    }
+
+    if (blankImageUrl) {
+      return (
+        <img
+          src={blankImageUrl}
+          alt="Product blank"
+          className="absolute inset-0 w-full h-full object-contain"
+          style={{ pointerEvents: "none", opacity: 0.85 }}
+          draggable={false}
+          data-testid="img-blank"
         />
       );
     }

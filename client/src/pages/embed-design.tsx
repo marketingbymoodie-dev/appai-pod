@@ -47,6 +47,7 @@ interface ProductTypeConfig {
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
   hasPrintifyMockups?: boolean;
+  baseMockupImages?: Record<string, string>;
 }
 
 /**
@@ -677,6 +678,7 @@ export default function EmbedDesign() {
             sizes: dc.sizes || [],
             frameColors: dc.frameColors || [],
             hasPrintifyMockups: dc.hasPrintifyMockups || false,
+            baseMockupImages: dc.baseMockupImages || undefined,
           });
           if (dc.frameColors?.length > 0) {
             setSelectedFrameColor(dc.frameColors[0].id);
@@ -801,6 +803,7 @@ export default function EmbedDesign() {
             sizes: designerConfig.sizes || [],
             frameColors: designerConfig.frameColors || [],
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
+            baseMockupImages: designerConfig.baseMockupImages || undefined,
           });
 
           if (designerConfig.frameColors?.length > 0) {
@@ -2591,6 +2594,7 @@ export default function EmbedDesign() {
                   designerType={productTypeConfig?.designerType || "generic"}
                   printShape={productTypeConfig?.printShape || "rectangle"}
                   canvasConfig={productTypeConfig?.canvasConfig}
+                  blankImageUrl={productTypeConfig?.baseMockupImages?.front || null}
                 />
               </div>
             </div>

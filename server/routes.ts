@@ -8847,7 +8847,7 @@ ${textEdgeRestrictions}
           page: {
             title: title.trim(),
             handle: handle.trim(),
-            body_html: "<p>Loading customizer…</p>",
+            body_html: "",
             published: true,
           },
         }),
