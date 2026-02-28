@@ -141,6 +141,8 @@ export interface IStorage {
   createGenerationJob(job: InsertGenerationJob): Promise<GenerationJob>;
   getGenerationJob(id: string): Promise<GenerationJob | undefined>;
   updateGenerationJob(id: string, updates: Partial<GenerationJob>): Promise<void>;
+  countSessionGenerations(shop: string, sessionId: string): Promise<number>;
+  mergeSessionToCustomer(shop: string, sessionId: string, customerId: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -759,6 +761,32 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .update(generationJobs)
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(generationJobs.id, id));
+  }
+
+  async countSessionGenerations(shop: string, sessionId: string): Promise<number> {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(generationJobs)
+      .where(
+        and(
+          eq(generationJobs.shop, shop),
+          eq(generationJobs.sessionId, sessionId),
+        )
+      );
+    return row?.count ?? 0;
+  }
+
+  async mergeSessionToCustomer(shop: string, sessionId: string, customerId: string): Promise<number> {
+    const result = await db
+      .update(generationJobs)
+      .set({ customerId, sessionId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(generationJobs.shop, shop),
+          eq(generationJobs.sessionId, sessionId),
+        )
+      );
+    return result.rowCount ?? 0;
   }
 }
 

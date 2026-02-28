@@ -20,6 +20,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "billing_subscription_id",     type: "TEXT" },
   { table: "shopify_installations", column: "billing_current_period_end",  type: "TIMESTAMP" },
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
+  { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
+  { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
@@ -93,6 +95,8 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       CREATE TABLE IF NOT EXISTS "generation_jobs" (
         "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
         "shop"                TEXT NOT NULL,
+        "session_id"          TEXT,
+        "customer_id"         TEXT,
         "status"              TEXT NOT NULL DEFAULT 'pending',
         "prompt"              TEXT NOT NULL,
         "style_preset"        TEXT,

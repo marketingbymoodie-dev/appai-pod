@@ -3971,7 +3971,7 @@ ${textEdgeRestrictions}
   // Validates shop domain + active installation instead of session token.
   app.post("/api/storefront/generate", async (req: Request, res: Response) => {
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -3986,6 +3986,20 @@ ${textEdgeRestrictions}
       const installation = await storage.getShopifyInstallationByShop(shop);
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      // Anonymous session free-generation limit (10 per session)
+      const FREE_GENERATION_LIMIT = 10;
+      if (sessionId && !customerId) {
+        const count = await storage.countSessionGenerations(shop, sessionId);
+        if (count >= FREE_GENERATION_LIMIT) {
+          return res.status(403).json({
+            error: "FREE_LIMIT_REACHED",
+            message: "You've used all 10 free generations. Create an account to continue.",
+            generationsUsed: count,
+            limit: FREE_GENERATION_LIMIT,
+          });
+        }
       }
 
       // Rate limiting per shop (shared with admin endpoint)
@@ -4190,6 +4204,8 @@ ${textEdgeRestrictions}
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min TTL
       const job = await storage.createGenerationJob({
         shop,
+        sessionId: sessionId ?? null,
+        customerId: customerId ?? null,
         status: "pending",
         prompt,
         stylePreset: stylePreset ?? null,
@@ -4340,6 +4356,75 @@ ${textEdgeRestrictions}
     } catch (error) {
       console.error("[Storefront Generate Status] Error:", error);
       res.status(500).json({ error: "Failed to fetch job status" });
+    }
+  });
+
+  // ==================== STOREFRONT MERGE SESSION ====================
+  // After a customer logs in on the storefront, merge their anonymous
+  // generations into their account so designs are not lost.
+  app.post("/api/storefront/merge-session", async (req: Request, res: Response) => {
+    try {
+      const { sessionId, customerId, shop } = req.body;
+
+      if (!sessionId || !customerId || !shop) {
+        return res.status(400).json({ error: "sessionId, customerId, and shop are required" });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const merged = await storage.mergeSessionToCustomer(shop, sessionId, customerId);
+      console.log(`[Storefront Merge] shop=${shop} session=${sessionId} customer=${customerId} merged=${merged}`);
+
+      return res.json({ merged });
+    } catch (error) {
+      console.error("[Storefront Merge Session] Error:", error);
+      res.status(500).json({ error: "Failed to merge session" });
+    }
+  });
+
+  // ==================== STOREFRONT SAVE DESIGN ====================
+  // Persists a generation to a customer's account. Requires customerId.
+  app.post("/api/storefront/save-design", async (req: Request, res: Response) => {
+    try {
+      const { jobId, customerId, shop } = req.body;
+
+      if (!jobId || !shop) {
+        return res.status(400).json({ error: "jobId and shop are required" });
+      }
+      if (!customerId) {
+        return res.status(401).json({ error: "LOGIN_REQUIRED", message: "Please log in to save designs." });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain format" });
+      }
+
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Design not found" });
+      }
+
+      await storage.updateGenerationJob(jobId, {
+        customerId,
+        sessionId: null,
+      });
+
+      return res.json({ saved: true, jobId });
+    } catch (error) {
+      console.error("[Storefront Save Design] Error:", error);
+      res.status(500).json({ error: "Failed to save design" });
     }
   });
 

@@ -98,20 +98,9 @@ function showLoginRequiredPopup() {
 
   console.log('[AI Art Embed] Script starting...');
 
-  // --- LOGIN GATE (required to generate art) ---
- const customerId = {% if customer %}{{ customer.id | json }}{% else %}null{% endif %}; // always valid JS
-
-
-  const isProductPageGate =
-    window.location.pathname.includes('/products/') ||
-    window.location.pathname.includes('/products_preview');
-
-  if (isProductPageGate && !customerId) {
-    console.log('[AI Art Embed] No customer logged in -> showing login popup and stopping.');
-    showLoginRequiredPopup();
-    return; // ⛔ stop everything below
-  }
-  // --- END LOGIN GATE ---
+  // Customer ID is available if the customer is logged in on the storefront.
+  // Anonymous generation is allowed — login is only required for saving designs.
+  const customerId = {% if customer %}{{ customer.id | json }}{% else %}null{% endif %};
 
 
 
@@ -377,6 +366,10 @@ function showLoginRequiredPopup() {
       } catch (e) {
         console.warn('[AI Art Embed] Could not serialise inlineDesignerConfig:', e);
       }
+    }
+    
+    if (customerId) {
+      params.set('customerId', String(customerId));
     }
     
     const urlParams = new URLSearchParams(window.location.search);
@@ -1410,13 +1403,6 @@ function showLoginRequiredPopup() {
         console.log('[AI Art Embed] STATE=CONFIG_LOADED handle=' + handle +
           ' productTypeId=' + config.productTypeId +
           ' hasDesignerConfig=' + !!config.designerConfig);
-
-        // Login gate mirrors the product page gate above
-        if (!customerId) {
-          console.log('[AI Art Embed] Customizer page: no customer logged in, showing login popup.');
-          showLoginRequiredPopup();
-          return;
-        }
 
         var mount = document.querySelector('#MainContent') ||
                     document.querySelector('main[role="main"]') ||

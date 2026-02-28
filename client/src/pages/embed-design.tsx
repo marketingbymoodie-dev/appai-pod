@@ -293,6 +293,41 @@ export default function EmbedDesign() {
   const requiresSessionToken = runtimeMode === 'admin-embedded';
   const usesPublicStorefrontApi = runtimeMode === 'storefront';
 
+  // Anonymous session ID for storefront free-generation tracking.
+  // Persisted in localStorage so it survives page refreshes.
+  const [anonSessionId] = useState(() => {
+    if (!isStorefront) return '';
+    const key = 'appai_session';
+    let id = localStorage.getItem(key);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(key, id);
+    }
+    return id;
+  });
+
+  // Merge anonymous session into customer account when customer is logged in.
+  // Fire once on mount; backend is idempotent so re-merging is safe.
+  const mergeSessionRan = useRef(false);
+  useEffect(() => {
+    const custId = searchParams.get("customerId") || '';
+    if (!isStorefront || !anonSessionId || !custId || mergeSessionRan.current) return;
+    mergeSessionRan.current = true;
+
+    const shop = searchParams.get("shop") || '';
+    if (!shop) return;
+
+    safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: anonSessionId, customerId: custId, shop }),
+    }).then(r => {
+      if (r.ok) console.log('[EmbedDesign] Session merged into customer', custId);
+      else console.warn('[EmbedDesign] merge-session failed:', r.status);
+    }).catch(e => console.warn('[EmbedDesign] merge-session error:', e));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const productTypeId = searchParams.get("productTypeId") || "1";
   const productId = searchParams.get("productId") || "";
 
@@ -458,6 +493,7 @@ export default function EmbedDesign() {
   const [customer, setCustomer] = useState<CustomerInfo | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [freeLimitReached, setFreeLimitReached] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
@@ -1353,6 +1389,7 @@ export default function EmbedDesign() {
       shop?: string;
       sessionToken?: string;
       productTypeId?: string;
+      sessionId?: string;
     }) => {
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/generate`
@@ -1385,10 +1422,15 @@ export default function EmbedDesign() {
         );
         const jobData = await jobRes.json();
         if (!jobRes.ok) {
+          if (jobData.error === 'FREE_LIMIT_REACHED') {
+            setFreeLimitReached(true);
+            throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
+          }
           if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
           else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
           throw new Error(jobData.error || "Failed to start generation");
         }
+        setFreeLimitReached(false);
 
         const { jobId } = jobData;
         if (!jobId) throw new Error("Server did not return a jobId");
@@ -1570,6 +1612,7 @@ export default function EmbedDesign() {
       shop: (isShopify || isStorefront) ? shopDomain : undefined,
       sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
       productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
+      sessionId: isStorefront ? anonSessionId : undefined,
     });
     setDesignSource("ai");
   };
@@ -2456,8 +2499,8 @@ export default function EmbedDesign() {
           <h2 className="text-lg font-semibold" data-testid="text-title">
             Create Your Design
           </h2>
-          {/* Only show login/credits info for non-Shopify mode */}
-          {!isShopify && (
+          {/* Login / credits info — hidden for Shopify admin and storefront anonymous mode */}
+          {!isShopify && !isStorefront && (
             isLoggedIn ? (
               <span className="text-sm text-muted-foreground" data-testid="text-credits">
                 {credits} credits
@@ -2470,6 +2513,17 @@ export default function EmbedDesign() {
             )
           )}
         </div>
+
+        {/* Free generation limit reached — prompt to create account */}
+        {freeLimitReached && (
+          <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
+            <CardContent className="py-3">
+              <p className="text-orange-700 dark:text-orange-300 text-sm font-medium">
+                You've used all 10 free generations. Create an account to continue designing!
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Only show login errors for non-Shopify mode */}
         {!isShopify && loginError && (
@@ -2681,7 +2735,7 @@ export default function EmbedDesign() {
                     }
                     handleGenerate();
                   }}
-                  disabled={!prompt.trim() || generateMutation.isPending || (!isShopify && (!isLoggedIn || credits <= 0))}
+                  disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
                   className="w-full"
                   data-testid="button-generate"
                 >
@@ -3006,7 +3060,7 @@ export default function EmbedDesign() {
                       }
                       handleGenerate();
                     }}
-                    disabled={generateMutation.isPending || (!isShopify && credits <= 0)}
+                    disabled={generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && credits <= 0)}
                     className="flex-1"
                     data-testid="button-regenerate"
                   >

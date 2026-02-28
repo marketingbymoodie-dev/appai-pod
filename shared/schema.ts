@@ -352,6 +352,8 @@ export type InsertCustomizerPage = z.infer<typeof insertCustomizerPageSchema>;
 export const generationJobs = pgTable("generation_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   shop: text("shop").notNull(),
+  sessionId: text("session_id"),
+  customerId: text("customer_id"),
   status: text("status").notNull().default("pending"), // pending | running | complete | failed
   prompt: text("prompt").notNull(),
   stylePreset: text("style_preset"),
