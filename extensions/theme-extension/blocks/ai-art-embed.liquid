@@ -271,8 +271,9 @@ function showLoginRequiredPopup() {
     }
   });
   
-  // Skip if already initialized
-  if (document.getElementById('ai-art-studio-auto-embed')) {
+  // Skip if already initialized (either auto-embed or mounted into app block)
+  if (document.getElementById('ai-art-studio-auto-embed') ||
+      document.querySelector('[data-embed-handled="true"]')) {
     console.log('[AI Art Embed] Already initialized, skipping');
     return;
   }
@@ -315,29 +316,44 @@ function showLoginRequiredPopup() {
   }
   
   function createDesignStudio(config) {
-    const container = document.createElement('div');
-    container.className = 'ai-art-studio-embed';
-    container.id = 'ai-art-studio-auto-embed';
-    
-    container.innerHTML = `
-      <div class="ai-art-studio-embed__wrapper">
-        <h2 class="ai-art-studio-embed__heading">Create Your Custom Design</h2>
-        <p class="ai-art-studio-embed__description">${config.description || 'Use AI to generate a unique artwork. Describe your vision and our AI will bring it to life.'}</p>
-        <div class="ai-art-studio-embed__studio" style="height:600px;">
-          <div class="ai-art-studio-embed__loading">
-            <div class="ai-art-studio-embed__spinner"></div>
-            <p>Loading design studio...</p>
+    // ── Single-mount logic ──────────────────────────────────────────────
+    // If the merchant added the "AI Art Design Studio" app block to this
+    // page template, its container already exists in the DOM.  Mount the
+    // iframe there and skip creating a second auto-embed container.
+    var existingBlock = document.querySelector('.ai-art-studio-block [id^="ai-art-studio-container-"]');
+    var container, studioContainer;
+
+    if (existingBlock) {
+      console.log('[AI Art Embed] Found existing app block container, mounting into it.');
+      // Clear the block's "Loading design studio…" placeholder
+      existingBlock.innerHTML = '';
+      studioContainer = existingBlock;
+      container = existingBlock.closest('.ai-art-studio-block') || existingBlock;
+      // Mark it so the block's own inline script doesn't also create an iframe
+      existingBlock.setAttribute('data-embed-handled', 'true');
+    } else {
+      container = document.createElement('div');
+      container.className = 'ai-art-studio-embed';
+      container.id = 'ai-art-studio-auto-embed';
+      container.innerHTML = `
+        <div class="ai-art-studio-embed__wrapper">
+          <h2 class="ai-art-studio-embed__heading">Create Your Custom Design</h2>
+          <p class="ai-art-studio-embed__description">${config.description || 'Use AI to generate a unique artwork. Describe your vision and our AI will bring it to life.'}</p>
+          <div class="ai-art-studio-embed__studio" style="height:600px;">
+            <div class="ai-art-studio-embed__loading">
+              <div class="ai-art-studio-embed__spinner"></div>
+              <p>Loading design studio...</p>
+            </div>
+          </div>
+          <div id="ai-art-atc-wrapper" style="display:none;margin-top:14px;">
+            <button id="ai-art-atc-btn" disabled class="ai-art-atc-btn">
+              Create your design first
+            </button>
           </div>
         </div>
-        <div id="ai-art-atc-wrapper" style="display:none;margin-top:14px;">
-          <button id="ai-art-atc-btn" disabled class="ai-art-atc-btn">
-            Create your design first
-          </button>
-        </div>
-      </div>
-    `;
-    
-    const studioContainer = container.querySelector('.ai-art-studio-embed__studio');
+      `;
+      studioContainer = container.querySelector('.ai-art-studio-embed__studio');
+    }
     
     const params = new URLSearchParams();
     params.set('storefront', 'true');  // IMPORTANT: Use storefront=true, NOT embedded=true
@@ -940,7 +956,9 @@ function showLoginRequiredPopup() {
       });
     }
 
-    return container;
+    // Return null if we mounted into an existing block (it's already in the DOM).
+    // Callers must check for null and skip DOM insertion.
+    return existingBlock ? null : container;
   }
   
   var aiArtNativeGallery = null; // reference kept so we can restore it if needed
@@ -1086,7 +1104,8 @@ function showLoginRequiredPopup() {
       return;
     }
     
-    if (document.getElementById('ai-art-studio-auto-embed')) {
+    if (document.getElementById('ai-art-studio-auto-embed') ||
+        document.querySelector('[data-embed-handled="true"]')) {
       return;
     }
     
@@ -1246,15 +1265,18 @@ function showLoginRequiredPopup() {
       console.log('[AI Art Embed] Creating studio with variant:', variantId);
       const studioElement = createDesignStudio(config);
 
-      const doInsert = () => {
-        createPlaceholderGallery();
-        insertStudioAfterProductInfo(studioElement);
-      };
+      // null means the iframe was mounted into an existing theme app block — no insertion needed.
+      if (studioElement) {
+        const doInsert = () => {
+          createPlaceholderGallery();
+          insertStudioAfterProductInfo(studioElement);
+        };
 
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', doInsert);
-      } else {
-        doInsert();
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', doInsert);
+        } else {
+          doInsert();
+        }
       }
     };
     
@@ -1363,7 +1385,10 @@ function showLoginRequiredPopup() {
           inlineDesignerConfig: config.designerConfig || null,
         });
 
-        mount.insertBefore(studioEl, mount.firstChild);
+        // null means the iframe was mounted into an existing theme app block.
+        if (studioEl) {
+          mount.insertBefore(studioEl, mount.firstChild);
+        }
         console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
 
         // Product spec strip below the generator

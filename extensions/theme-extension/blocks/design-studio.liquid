@@ -146,6 +146,13 @@
       }
 
       containers.forEach(function(container) {
+        // If the main embed script (ai-art-embed.liquid) is present, it will
+        // mount the iframe into this container.  Skip to avoid duplicates.
+        if (window.__APPAI_CUSTOMIZER_INIT__ || container.getAttribute('data-embed-handled') === 'true') {
+          console.log('[AI Art Studio] Embed script will handle this container, skipping.');
+          return;
+        }
+
         var rawAppUrl = container.dataset.appUrl;
         var appOrigin = normalizeBaseUrl(rawAppUrl);
 
