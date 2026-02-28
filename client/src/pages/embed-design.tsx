@@ -657,6 +657,43 @@ export default function EmbedDesign() {
         console.log(`${logPrefix} loadConfig skipped - already cancelled`);
         return;
       }
+
+      // ⚡ INLINE CONFIG FAST PATH: When the parent embed passes designerConfig directly
+      // via the inlineDesignerConfig URL param, skip ALL /api/storefront/product-types/* calls.
+      // This is the primary path for /pages/:handle customizer pages.
+      const inlineParam = searchParams.get('inlineDesignerConfig');
+      if (inlineParam) {
+        try {
+          const dc = JSON.parse(inlineParam);
+          console.log(`${logPrefix} INLINE CONFIG: using inlineDesignerConfig, skipping designer fetch. id=${dc.id} name="${dc.name}"`);
+          setProductTypeConfig({
+            id: dc.id,
+            name: dc.name,
+            description: dc.description || null,
+            aspectRatio: dc.aspectRatio,
+            designerType: dc.designerType,
+            printShape: dc.printShape,
+            canvasConfig: dc.canvasConfig,
+            sizes: dc.sizes || [],
+            frameColors: dc.frameColors || [],
+            hasPrintifyMockups: dc.hasPrintifyMockups || false,
+          });
+          if (dc.frameColors?.length > 0) {
+            setSelectedFrameColor(dc.frameColors[0].id);
+          }
+          setProductTypeError(null);
+          // Still fetch style presets — lightweight, non-blocking
+          fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`)
+            .then(r => r.json())
+            .then(c => { if (!isCancelled && c.stylePresets) setStylePresets(c.stylePresets); })
+            .catch(() => {});
+          if (!isCancelled) setConfigLoading(false);
+          return;
+        } catch (e) {
+          console.warn(`${logPrefix} Failed to parse inlineDesignerConfig, falling back to fetch:`, e);
+        }
+      }
+
       const cacheBuster = `_t=${Date.now()}`;
       const myshopifyDomain = getMyShopifyDomain();
       console.log('[EmbedDesign] Loading config - productTypeId:', productTypeId, 'productHandle:', productHandle, 'shop:', myshopifyDomain);

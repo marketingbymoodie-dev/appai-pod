@@ -9107,6 +9107,20 @@ ${textEdgeRestrictions}
     const page = await storage.getCustomizerPageByHandle(shop, handle);
     if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
+    // Embed the full designer config so the iframe never needs to call
+    // /api/storefront/product-types/:id/designer (eliminates the timeout).
+    let designerConfig = null;
+    if (page.productTypeId) {
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (pt) {
+          designerConfig = buildDesignerConfig(pt, page.productTypeId);
+        }
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
+      }
+    }
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -9119,6 +9133,7 @@ ${textEdgeRestrictions}
       baseProductPrice: page.baseProductPrice ?? null,
       productTypeId: page.productTypeId ?? null,
       appUrl: process.env.APP_URL || "https://appai-pod-production.up.railway.app",
+      designerConfig,
     });
   }));
 

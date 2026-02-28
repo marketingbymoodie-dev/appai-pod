@@ -88,6 +88,14 @@ function showLoginRequiredPopup() {
 (function () {
   'use strict';
 
+  // Global init guard — prevents the script from running more than once if the
+  // liquid block is included in multiple theme sections.
+  if (window.__APPAI_CUSTOMIZER_INIT__) {
+    console.log('[AI Art Embed] Already initialised, skipping duplicate run.');
+    return;
+  }
+  window.__APPAI_CUSTOMIZER_INIT__ = true;
+
   console.log('[AI Art Embed] Script starting...');
 
   // --- LOGIN GATE (required to generate art) ---
@@ -343,6 +351,14 @@ function showLoginRequiredPopup() {
     params.set('showPresets', 'true');
     if (config.selectedVariant) {
       params.set('selectedVariant', config.selectedVariant);
+    }
+    // Inline designer config — when present, the iframe skips the /product-types/:id/designer call entirely.
+    if (config.inlineDesignerConfig) {
+      try {
+        params.set('inlineDesignerConfig', JSON.stringify(config.inlineDesignerConfig));
+      } catch (e) {
+        console.warn('[AI Art Embed] Could not serialise inlineDesignerConfig:', e);
+      }
     }
     
     const urlParams = new URLSearchParams(window.location.search);
@@ -1312,20 +1328,20 @@ function showLoginRequiredPopup() {
         var shopDomain = (window.Shopify && window.Shopify.shop) || '';
 
         var studioEl = createDesignStudio({
-          appUrl:          config.appUrl,
-          shopDomain:      shopDomain,
-          productTypeId:   config.productTypeId ? String(config.productTypeId) : '0',
-          productId:       config.baseProductId || '',
-          // KEY FIX: use the Shopify product handle, not the customizer page handle.
-          // This lets embed-design.tsx load all variants of the product and call
-          // resolve-product-type with a handle it can actually match.
-          productHandle:   config.baseProductHandle || handle,
-          productTitle:    config.baseProductTitle || config.title,
-          displayName:     config.title,
-          description:     '',
-          selectedVariant: config.baseVariantId,
-          hideAddToCart:   false,
-          enabled:         true,
+          appUrl:               config.appUrl,
+          shopDomain:           shopDomain,
+          productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
+          productId:            config.baseProductId || '',
+          // Use the Shopify product handle, not the customizer page handle.
+          productHandle:        config.baseProductHandle || handle,
+          productTitle:         config.baseProductTitle || config.title,
+          displayName:          config.title,
+          description:          '',
+          selectedVariant:      config.baseVariantId,
+          hideAddToCart:        false,
+          enabled:              true,
+          // Pass full designer config so the iframe never calls /product-types/:id/designer.
+          inlineDesignerConfig: config.designerConfig || null,
         });
 
         mount.insertBefore(studioEl, mount.firstChild);
