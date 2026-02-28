@@ -1254,6 +1254,31 @@ export default function EmbedDesign() {
     }
   }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, transform, fetchPrintifyMockups]);
 
+  // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
+  // This handles the case where React state batching causes config to arrive after the mutation settles.
+  useEffect(() => {
+    if (
+      !isStorefront ||
+      !generatedDesign?.imageUrl ||
+      !productTypeConfig?.hasPrintifyMockups ||
+      !selectedSize ||
+      printifyMockups.length > 0 ||
+      printifyMockupImages.length > 0 ||
+      mockupLoading
+    ) return;
+
+    console.log('[Mockups] Fallback trigger: config loaded after generation');
+    fetchPrintifyMockups(
+      toAbsoluteImageUrl(generatedDesign.imageUrl),
+      productTypeConfig.id,
+      selectedSize,
+      selectedFrameColor || 'default',
+      transform.scale,
+      transform.x,
+      transform.y
+    );
+  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, transform, fetchPrintifyMockups]);
+
   // Debounced regeneration of Printify mockups when transform changes
   useEffect(() => {
     // Only regenerate if we already have mockups and user is adjusting placement
@@ -1528,8 +1553,16 @@ export default function EmbedDesign() {
       // Clear any existing mockups and fetch new Printify composite mockups
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
-      if (productTypeConfig?.hasPrintifyMockups && imageUrl && selectedSize) {
-        fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+      const shouldFetchMockups = !!(productTypeConfig?.hasPrintifyMockups) && !!imageUrl && !!selectedSize;
+      console.log('[Mockups] onSuccess check:', {
+        hasPrintifyMockups: productTypeConfig?.hasPrintifyMockups,
+        imageUrl: imageUrl?.substring(0, 80),
+        selectedSize,
+        willFetch: shouldFetchMockups,
+      });
+      if (shouldFetchMockups) {
+        console.log('[Mockups] Triggering mockup generation');
+        fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig!.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
     },
     onError: (err: any) => {
