@@ -178,27 +178,42 @@ function normalizeVariantId(raw: string | number): string {
  * Shopify admin parent. In STOREFRONT mode there is no admin parent, so the
  * token handshake hangs forever and every fetch() silently blocks.
  *
- * Resolution order:
- *   1. window.__nativeFetch (saved in index.html before App Bridge loads)
- *   2. Native fetch extracted from a disposable hidden iframe (guaranteed unpatched)
- *   3. window.fetch as a last resort
+ * The hidden iframe must stay in the DOM — removing it kills the browsing context
+ * and makes the extracted fetch silently hang (the original bug).
  */
 const safeFetch: typeof fetch = (() => {
   if (typeof window === 'undefined') return fetch;
-  if ((window as any).__nativeFetch) return (window as any).__nativeFetch;
-  try {
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    document.documentElement.appendChild(iframe);
-    const nativeFn = iframe.contentWindow!.fetch.bind(iframe.contentWindow!);
-    document.documentElement.removeChild(iframe);
-    (window as any).__nativeFetch = nativeFn;
-    console.warn('[safeFetch] Extracted native fetch via hidden iframe (App Bridge bypass)');
-    return nativeFn;
-  } catch (e) {
-    console.warn('[safeFetch] Could not extract native fetch from iframe, using window.fetch', e);
-    return fetch;
+
+  // 1. Pre-saved native fetch (set in index.html before App Bridge loads)
+  if ((window as any).__nativeFetch) {
+    console.log('[safeFetch] Using pre-saved __nativeFetch');
+    return (window as any).__nativeFetch;
   }
+
+  // 2. If we're on a /s/* path (storefront), or storefront=true, we MUST bypass
+  //    App Bridge. Create a persistent hidden iframe and keep it alive.
+  const isStorefrontPath = window.location.pathname.startsWith('/s/') ||
+    new URLSearchParams(window.location.search).get('storefront') === 'true';
+
+  if (isStorefrontPath) {
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = 'display:none!important;width:0;height:0;border:0;position:absolute;';
+      iframe.setAttribute('aria-hidden', 'true');
+      document.documentElement.appendChild(iframe);
+      // DO NOT remove the iframe — keeping it alive is critical
+      const nativeFn = iframe.contentWindow!.fetch.bind(iframe.contentWindow!);
+      (window as any).__nativeFetch = nativeFn;
+      (window as any).__nativeFetchIframe = iframe; // prevent GC
+      console.log('[safeFetch] Storefront: extracted native fetch from persistent hidden iframe');
+      return nativeFn;
+    } catch (e) {
+      console.warn('[safeFetch] Storefront: iframe extraction failed, falling back to window.fetch', e);
+    }
+  }
+
+  // 3. Non-storefront or fallback: use window.fetch (App Bridge is expected)
+  return fetch;
 })();
 
 /**
@@ -1424,8 +1439,6 @@ export default function EmbedDesign() {
 
       // ── Storefront uses async job model (POST → jobId, then poll status) ──
       if (isStorefront) {
-        // Hard-timeout race helper — guarantees the returned promise settles even
-        // if the underlying fetch ignores AbortController (e.g. App Bridge wrapper).
         const raceTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
           Promise.race([
             promise,
@@ -1434,16 +1447,22 @@ export default function EmbedDesign() {
             ),
           ]);
 
-        // Phase 1: submit job — backend returns { jobId } in < 1s
-        const jobRes = await raceTimeout(
-          safeFetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          }),
-          60_000,
-          'POST /generate',
+        // Phase 1: submit job
+        const fetchImpl = (window as any).__nativeFetch ? '__nativeFetch' : 'window.fetch';
+        console.log('[SF UI] about to POST', endpoint, { bodyKeys: Object.keys(payload), shop: payload.shop, runtimeMode, fetchImpl, ts: Date.now() });
+        const postStart = Date.now();
+        const fetchPromise = safeFetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        console.log('[SF UI] safeFetch returned promise in', Date.now() - postStart, 'ms (not yet resolved)');
+        fetchPromise.then(
+          () => console.log('[SF UI] POST resolved in', Date.now() - postStart, 'ms'),
+          (e: any) => console.warn('[SF UI] POST rejected in', Date.now() - postStart, 'ms:', e?.message),
         );
+        const jobRes = await raceTimeout(fetchPromise, 60_000, 'POST /generate');
+        console.log('[SF UI] POST complete — status', jobRes.status, 'in', Date.now() - postStart, 'ms');
         const jobData = await jobRes.json();
         if (!jobRes.ok) {
           if (jobData.error === 'FREE_LIMIT_REACHED') {
