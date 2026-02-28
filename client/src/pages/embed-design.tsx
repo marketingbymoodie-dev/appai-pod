@@ -213,13 +213,16 @@ async function fetchWithTimeoutSimple(
   }
 }
 
+// Module-level singleton guard — prevents re-initialization if the module is
+// evaluated more than once or if React StrictMode double-mounts the component.
+let __embedInstanceActive = false;
+
 console.log('[EmbedDesign] API Base URL:', API_BASE);
 console.log('[EmbedDesign] Using native fetch bypass:', !!(typeof window !== 'undefined' && (window as any).__nativeFetch));
-console.log('[EmbedDesign] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : 'undefined');
 
-// DIAGNOSTIC: Quick sanity check on module load using safeFetch
-if (typeof window !== 'undefined') {
-  console.log('[EmbedDesign] === QUICK DIAGNOSTIC ===');
+// DIAGNOSTIC: Quick sanity check on module load using safeFetch (runs once)
+if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
+  (window as any).__APP_AI_EMBED_PINGED__ = true;
   const pingUrl = `${API_BASE}/api/storefront/ping`;
   const start = Date.now();
   safeFetch(pingUrl)
@@ -283,8 +286,18 @@ export default function EmbedDesign() {
   const shopifyApiPrefix = `${API_BASE}/api/shopify`;
   const endpointBase = isStorefront ? storefrontApiPrefix : isShopify ? shopifyApiPrefix : `${API_BASE}/api`;
 
-  // Log once on mount only (not on every render)
+  // Singleton guard — prevents the heavy init work from running if a second
+  // instance of this component mounts (e.g. StrictMode double-mount or stale iframe).
+  const isDuplicate = useRef(false);
   useEffect(() => {
+    if (__embedInstanceActive) {
+      isDuplicate.current = true;
+      console.warn('[EmbedDesign] Duplicate mount detected — skipping init');
+      return;
+    }
+    __embedInstanceActive = true;
+    isDuplicate.current = false;
+
     console.log('[EmbedDesign] === INITIALIZATION ===');
     console.log('[EmbedDesign] Full URL:', window.location.href);
     console.log('[EmbedDesign] Runtime mode:', runtimeMode);
@@ -295,6 +308,8 @@ export default function EmbedDesign() {
     if (isStorefront && requiresSessionToken) {
       console.error('[EmbedDesign] BUG: isStorefront=true but requiresSessionToken=true — this should never happen');
     }
+
+    return () => { __embedInstanceActive = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
@@ -1332,38 +1347,67 @@ export default function EmbedDesign() {
 
       // ── Storefront uses async job model (POST → jobId, then poll status) ──
       if (isStorefront) {
-        // Phase 1: submit job (fast, < 1s)
-        const jobRes = await fetchWithTimeoutSimple(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }, 30000);
-        const jobData = await jobRes.json();
-        if (!jobRes.ok) {
-          if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
-          else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
-          throw new Error(jobData.error || "Failed to start generation");
+        // Phase 1: submit job — backend returns { jobId } in < 1s
+        const controller = new AbortController();
+        const submitTimer = setTimeout(() => controller.abort(), 15_000);
+        let jobData: any;
+        try {
+          const jobRes = await safeFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          clearTimeout(submitTimer);
+          jobData = await jobRes.json();
+          if (!jobRes.ok) {
+            if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
+            else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
+            throw new Error(jobData.error || "Failed to start generation");
+          }
+        } catch (err: any) {
+          clearTimeout(submitTimer);
+          if (err.name === 'AbortError') throw new Error('Generation request timed out (15s). Please try again.');
+          throw err;
         }
+
         const { jobId } = jobData;
         if (!jobId) throw new Error("Server did not return a jobId");
+        console.log('[EmbedDesign] Job submitted:', jobId, '— polling for completion');
 
         // Phase 2: poll GET /generate/status every 2s, max 5 minutes
         const shop = payload.shop || new URLSearchParams(window.location.search).get('shop') || '';
         const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}`;
         const deadline = Date.now() + 5 * 60 * 1000;
+        let consecutiveErrors = 0;
 
         while (Date.now() < deadline) {
           await new Promise<void>(r => setTimeout(r, 2000));
-          const statusRes = await safeFetch(statusUrl);
-          if (!statusRes.ok) {
-            console.warn('[EmbedDesign] Status poll HTTP error', statusRes.status);
-            continue;
+          try {
+            const pollAbort = new AbortController();
+            const pollTimer = setTimeout(() => pollAbort.abort(), 10_000);
+            const statusRes = await safeFetch(statusUrl, { signal: pollAbort.signal });
+            clearTimeout(pollTimer);
+            if (!statusRes.ok) {
+              console.warn('[EmbedDesign] Status poll HTTP error', statusRes.status);
+              consecutiveErrors++;
+              if (consecutiveErrors > 5) throw new Error(`Status polling failed ${consecutiveErrors} times`);
+              continue;
+            }
+            consecutiveErrors = 0;
+            const status = await statusRes.json();
+            console.log('[EmbedDesign] Job status:', status.status, jobId);
+            if (status.status === 'complete') return status;
+            if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
+          } catch (pollErr: any) {
+            if (pollErr.name === 'AbortError') {
+              console.warn('[EmbedDesign] Status poll timed out — retrying');
+              consecutiveErrors++;
+              if (consecutiveErrors > 5) throw new Error('Status polling timed out repeatedly');
+              continue;
+            }
+            throw pollErr;
           }
-          const status = await statusRes.json();
-          console.log('[EmbedDesign] Job status:', status.status, jobId);
-          if (status.status === 'complete') return status;
-          if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
-          // pending | running → keep polling
         }
         throw new Error('Generation timed out after 5 minutes');
       }
