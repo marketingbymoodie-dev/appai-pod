@@ -1425,6 +1425,12 @@ export default function EmbedDesign() {
         fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
     },
+    onError: (err: any) => {
+      console.error('[EmbedDesign] Generation error:', err?.message ?? err);
+      // React Query already sets isPending=false on rejection, stopping the spinner.
+      // Clear any stale login error so it doesn't block the next attempt.
+      setLoginError(null);
+    },
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1479,6 +1485,16 @@ export default function EmbedDesign() {
         reader.readAsDataURL(referenceImage);
       });
     }
+
+    console.log('[Generate] clicked', {
+      prompt: fullPrompt.substring(0, 80),
+      selectedSize,
+      selectedFrameColor,
+      shopifyVariantId,
+      productTypeId: productTypeConfig?.id ?? productTypeId,
+      isStorefront,
+      shop: (isShopify || isStorefront) ? shopDomain : undefined,
+    });
 
     generateMutation.mutate({
       prompt: fullPrompt,
@@ -2302,6 +2318,41 @@ export default function EmbedDesign() {
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
 
+  // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
+  // Runs whenever size, frame color, or the variants list changes.
+  // This drives the price display and the overrideVariantId used for add-to-cart.
+  useEffect(() => {
+    if (!isStorefront || shopifyVariants.length === 0) return;
+
+    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? '';
+    const frameName = frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? '';
+
+    // 1. Try to match variant title containing both size name and frame name
+    let match = shopifyVariants.find(v => {
+      const t = v.title.toLowerCase();
+      const hasSize = !sizeName || t.includes(sizeName.toLowerCase());
+      const hasFrame = !frameName || frameColorObjects.length === 0
+        || t.includes(frameName.toLowerCase());
+      return hasSize && hasFrame;
+    });
+
+    // 2. Fallback: match size only (frame color may not be a variant axis in Shopify)
+    if (!match && sizeName) {
+      match = shopifyVariants.find(v =>
+        v.title.toLowerCase().includes(sizeName.toLowerCase())
+      );
+    }
+
+    // 3. Fallback: first variant
+    if (!match) match = shopifyVariants[0];
+
+    if (match) {
+      setShopifyVariantId(match.id);
+      setOverrideVariantId(match.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
+
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
@@ -2513,34 +2564,6 @@ export default function EmbedDesign() {
                     className="min-h-[80px]"
                   />
                 </div>
-
-                {/* Shopify variant selector — shown on customizer pages when parent delivers
-                    variants via postMessage.  Selecting a variant updates overrideVariantId
-                    so the correct Shopify variant is used for add-to-cart. */}
-                {isStorefront && shopifyVariants.length > 1 && (
-                  <div className="space-y-2">
-                    <Label htmlFor="appai-shopify-variant">
-                      {shopifyVariants[0]?.title && shopifyVariants[0].title.toLowerCase() !== 'default title'
-                        ? 'Size'
-                        : 'Option'}
-                    </Label>
-                    <select
-                      id="appai-shopify-variant"
-                      className="w-full border rounded-md px-3 py-2 text-sm bg-background"
-                      value={shopifyVariantId || shopifyVariants[0]?.id || ''}
-                      onChange={(e) => {
-                        setShopifyVariantId(e.target.value);
-                        setOverrideVariantId(e.target.value);
-                      }}
-                    >
-                      {shopifyVariants.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.title} &mdash; ${parseFloat(v.price).toFixed(2)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
 
                 {/* Selected variant price display */}
                 {isStorefront && shopifyVariants.length > 0 && (() => {
