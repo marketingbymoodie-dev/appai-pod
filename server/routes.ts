@@ -3970,20 +3970,36 @@ ${textEdgeRestrictions}
   // Used by storefront embeds where App Bridge session tokens are not available.
   // Validates shop domain + active installation instead of session token.
   app.post("/api/storefront/generate", async (req: Request, res: Response) => {
+    const P = "[SF GEN]";
+    const t0 = Date.now();
+
+    function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+      return Promise.race([
+        promise,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+        ),
+      ]);
+    }
+
     try {
       const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId } = req.body;
+      console.log(P, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId });
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
       }
 
-      // Validate shop domain format
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).json({ error: "Invalid shop domain format" });
       }
 
-      // Verify shop is installed (this is the auth check for storefront mode)
-      const installation = await storage.getShopifyInstallationByShop(shop);
+      // Verify shop is installed
+      let t1 = Date.now();
+      const installation = await withTimeout(
+        storage.getShopifyInstallationByShop(shop), 5000, "getShopifyInstallationByShop"
+      );
+      console.log(P, `installation lookup ok in ${Date.now() - t1}ms`);
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
       }
@@ -3991,7 +4007,11 @@ ${textEdgeRestrictions}
       // Anonymous session free-generation limit (10 per session)
       const FREE_GENERATION_LIMIT = 10;
       if (sessionId && !customerId) {
-        const count = await storage.countSessionGenerations(shop, sessionId);
+        t1 = Date.now();
+        const count = await withTimeout(
+          storage.countSessionGenerations(shop, sessionId), 5000, "countSessionGenerations"
+        );
+        console.log(P, `session generation count=${count} ok in ${Date.now() - t1}ms`);
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
             error: "FREE_LIMIT_REACHED",
@@ -4024,10 +4044,14 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
-      // Look up style preset and get its promptSuffix (fast DB lookup — synchronous)
+      // Look up style preset
       let stylePromptPrefix = "";
       if (stylePreset && installation.merchantId) {
-        const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
+        t1 = Date.now();
+        const dbStyles = await withTimeout(
+          storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
+        );
+        console.log(P, `style presets lookup ok in ${Date.now() - t1}ms`);
         const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
@@ -4040,19 +4064,24 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Load product type config (fast DB lookup — synchronous)
+      // Load product type config
       let productType: any = null;
       if (productTypeId && installation.merchantId) {
-        const resolved = await resolveStorefrontProductType(
-          parseInt(productTypeId),
-          installation.merchantId,
-          "[Storefront Generate]"
+        t1 = Date.now();
+        const resolved = await withTimeout(
+          resolveStorefrontProductType(parseInt(productTypeId), installation.merchantId, "[Storefront Generate]"),
+          5000, "resolveStorefrontProductType"
         );
+        console.log(P, `product type resolve ok in ${Date.now() - t1}ms`);
         if ("productType" in resolved) {
           productType = resolved.productType;
         }
       } else if (productTypeId) {
-        productType = await storage.getProductType(parseInt(productTypeId));
+        t1 = Date.now();
+        productType = await withTimeout(
+          storage.getProductType(parseInt(productTypeId)), 5000, "getProductType"
+        );
+        console.log(P, `product type lookup ok in ${Date.now() - t1}ms`);
       }
 
       // Helper function to calculate generation dimensions from aspect ratio
@@ -4202,7 +4231,8 @@ ${textEdgeRestrictions}
 
       // ── Create job record and return immediately ──────────────────────────────
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min TTL
-      const job = await storage.createGenerationJob({
+      t1 = Date.now();
+      const job = await withTimeout(storage.createGenerationJob({
         shop,
         sessionId: sessionId ?? null,
         customerId: customerId ?? null,
@@ -4212,12 +4242,11 @@ ${textEdgeRestrictions}
         size: size ?? null,
         frameColor: frameColor ?? null,
         productTypeId: productTypeId ? String(productTypeId) : null,
-        referenceImageUrl: null, // populated in worker if referenceImage is provided
+        referenceImageUrl: null,
         expiresAt,
-      });
+      }), 8000, "createGenerationJob");
       const jobId = job.id;
-
-      console.log(`[Storefront Generate] shop=${shop} jobId=${jobId} created — starting background worker`);
+      console.log(P, `created jobId=${jobId} in ${Date.now() - t1}ms (total pre-response ${Date.now() - t0}ms)`);
 
       // ── Background worker: AI call + storage save ─────────────────────────────
       // Fire-and-forget; never awaited. Railway keeps the process alive.
@@ -4305,10 +4334,15 @@ ${textEdgeRestrictions}
       })();
 
       // Return jobId immediately — client will poll /generate/status
+      console.log(P, `responding jobId=${jobId} — total ${Date.now() - t0}ms`);
       return res.json({ jobId });
-    } catch (error) {
-      console.error("[Storefront Generate] Error:", error);
-      res.status(500).json({ error: "Failed to start generation" });
+    } catch (error: any) {
+      const isTimeout = error?.message?.includes("timed out after");
+      const status = isTimeout ? 503 : 500;
+      console.error(P, `Error (${Date.now() - t0}ms):`, error?.message ?? error);
+      res.status(status).json({
+        error: isTimeout ? error.message : "Failed to start generation",
+      });
     }
   });
 
