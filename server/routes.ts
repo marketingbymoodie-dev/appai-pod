@@ -9121,6 +9121,30 @@ ${textEdgeRestrictions}
       }
     }
 
+    // Fetch all variants for the base product so the storefront can render a
+    // variant selector with prices before the customer generates artwork.
+    let variants: Array<{ id: string; title: string; price: string }> = [];
+    if (page.baseProductId) {
+      try {
+        const installation = await storage.getShopifyInstallationByShop(shop);
+        if (installation?.accessToken) {
+          const prodResult = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${page.baseProductId}.json?fields=id,variants`
+          );
+          const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
+          variants = rawVariants.map((v: any) => ({
+            id: String(v.id),
+            title: v.title || "",
+            price: v.price || "0.00",
+          }));
+        }
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
+      }
+    }
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -9134,6 +9158,7 @@ ${textEdgeRestrictions}
       productTypeId: page.productTypeId ?? null,
       appUrl: process.env.APP_URL || "https://appai-pod-production.up.railway.app",
       designerConfig,
+      variants,
     });
   }));
 

@@ -1195,6 +1195,10 @@ export default function EmbedDesign() {
   const [variantError, setVariantError] = useState<string | null>(null);
   const [variantsFetched, setVariantsFetched] = useState(false);
 
+  // Variant selected by the storefront parent via AI_ART_STUDIO_VARIANT_CHANGE postMessage.
+  // Takes precedence over selectedVariantParam so the customer's dropdown choice is honoured.
+  const [overrideVariantId, setOverrideVariantId] = useState<string | null>(null);
+
   const getPreferredMockupUrl = useCallback((): string => {
     const frontImage = printifyMockupImages.find(img => img.label === 'front');
     if (frontImage?.url) return toAbsoluteImageUrl(frontImage.url);
@@ -1613,7 +1617,13 @@ export default function EmbedDesign() {
                 'variants:', variants.length, 'selectedSize:', selectedSize, 
                 'selectedFrameColor:', selectedFrameColor, 'hasColors:', frameColorObjects.length > 0);
 
-    // First priority: use selectedVariantParam if provided (most reliable from theme)
+    // Highest priority: variant chosen by storefront dropdown via postMessage
+    if (overrideVariantId) {
+      console.log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
+      return overrideVariantId;
+    }
+
+    // Second priority: use selectedVariantParam if provided (most reliable from theme)
     if (selectedVariantParam) {
       console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
       return selectedVariantParam;
@@ -2047,6 +2057,13 @@ export default function EmbedDesign() {
           _bridgeVersion: '1.0.0',
           pingTimestamp: event.data.timestamp,
         }, '*');
+      }
+
+      // Variant selected by the storefront variant dropdown
+      if (type === "AI_ART_STUDIO_VARIANT_CHANGE" && event.data.variantId) {
+        const vid = String(event.data.variantId);
+        console.log('[Design Studio] VARIANT_CHANGE from parent, variantId=', vid);
+        setOverrideVariantId(vid);
       }
     };
 

@@ -963,7 +963,33 @@ function showLoginRequiredPopup() {
     // Callers must check for null and skip DOM insertion.
     return existingBlock ? null : container;
   }
-  
+
+  /**
+   * Belt-and-suspenders cleanup: if old cached code (design-studio.liquid's
+   * inline script that we gutted) still runs from Shopify CDN and creates a
+   * second iframe, remove it so only one generator is ever visible.
+   * Called after every mount, regardless of path.
+   */
+  function cleanupDuplicateGenerators() {
+    var autoEmbed  = document.getElementById('ai-art-studio-auto-embed');
+    var blockIframe = document.querySelector('.ai-art-studio-block iframe[title="AI Art Design Studio"]');
+
+    if (autoEmbed && blockIframe) {
+      // Block placement wins — remove the auto-embed duplicate
+      autoEmbed.remove();
+      console.log('[AI Art Embed] cleanupDuplicateGenerators: removed duplicate auto-embed');
+    }
+
+    // Remove extra iframes inside any block container (old cached code may add one)
+    document.querySelectorAll('[id^="ai-art-studio-container-"]').forEach(function(c) {
+      var iframes = c.querySelectorAll('iframe');
+      for (var i = 1; i < iframes.length; i++) {
+        iframes[i].remove();
+        console.log('[AI Art Embed] cleanupDuplicateGenerators: removed extra iframe from block container');
+      }
+    });
+  }
+
   var aiArtNativeGallery = null; // reference kept so we can restore it if needed
 
   function createPlaceholderGallery() {
@@ -1273,6 +1299,7 @@ function showLoginRequiredPopup() {
         const doInsert = () => {
           createPlaceholderGallery();
           insertStudioAfterProductInfo(studioElement);
+          cleanupDuplicateGenerators();
         };
 
         if (document.readyState === 'loading') {
@@ -1280,6 +1307,9 @@ function showLoginRequiredPopup() {
         } else {
           doInsert();
         }
+      } else {
+        // Mounted into block — still run cleanup in case old cached code fires later
+        setTimeout(cleanupDuplicateGenerators, 500);
       }
     };
     
@@ -1401,8 +1431,54 @@ function showLoginRequiredPopup() {
         }
         console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
 
-        // Product spec strip below the generator
-        if (config.baseProductTitle || config.baseVariantTitle) {
+        // Remove any duplicate generators that old cached block scripts may have created
+        cleanupDuplicateGenerators();
+        // Run again after a short delay to catch iframes that load asynchronously
+        setTimeout(cleanupDuplicateGenerators, 1500);
+
+        // Variant selector with prices (shown above the generator)
+        if (config.variants && config.variants.length > 0) {
+          var selectorDiv = document.createElement('div');
+          selectorDiv.style.cssText = 'margin:16px auto;max-width:640px;padding:12px 16px;' +
+            'border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;';
+
+          var label = document.createElement('label');
+          label.textContent = (config.baseProductTitle || 'Select option') + ':';
+          label.style.cssText = 'display:block;font-weight:600;margin:0 0 8px;font-size:14px;';
+          selectorDiv.appendChild(label);
+
+          var select = document.createElement('select');
+          select.id = 'appai-variant-select';
+          select.style.cssText = 'width:100%;padding:8px 12px;border:1px solid #d1d5db;' +
+            'border-radius:6px;font-size:14px;background:#fff;cursor:pointer;';
+          config.variants.forEach(function(v) {
+            var opt = document.createElement('option');
+            opt.value = v.id;
+            opt.textContent = v.title + ' \u2014 $' + parseFloat(v.price).toFixed(2);
+            if (String(v.id) === String(config.baseVariantId)) opt.selected = true;
+            select.appendChild(opt);
+          });
+          selectorDiv.appendChild(select);
+
+          // Insert ABOVE the generator
+          var insertRef = studioEl || mount.firstChild;
+          mount.insertBefore(selectorDiv, insertRef);
+
+          // On change, notify the iframe so it uses the correct variant
+          select.addEventListener('change', function() {
+            var iframe = document.querySelector(
+              '#ai-art-studio-auto-embed iframe, .ai-art-studio__container iframe'
+            );
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                type: 'AI_ART_STUDIO_VARIANT_CHANGE',
+                variantId: select.value
+              }, '*');
+              console.log('[AI Art Embed] Sent VARIANT_CHANGE variantId=' + select.value);
+            }
+          });
+        } else if (config.baseProductTitle || config.baseVariantTitle) {
+          // Fallback: static spec strip when no variant list available
           var specs = document.createElement('div');
           specs.style.cssText = 'margin:16px auto;max-width:640px;padding:12px 16px;' +
             'border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;';
