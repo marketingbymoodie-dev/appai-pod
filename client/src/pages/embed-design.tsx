@@ -223,7 +223,7 @@ const safeFetch: typeof fetch = (() => {
 async function fetchWithTimeoutSimple(
   url: string,
   options: RequestInit = {},
-  timeout = 30000,
+  timeout = 90000,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -237,7 +237,7 @@ async function fetchWithTimeoutSimple(
     return res;
   } catch (err: any) {
     clearTimeout(timer);
-    if (err.name === 'AbortError') throw new Error(`Request timed out after ${timeout}ms`);
+    if (err.name === 'AbortError') throw new Error(`Request to ${url.substring(0, 80)} timed out after ${timeout}ms`);
     throw err;
   }
 }
@@ -596,7 +596,7 @@ export default function EmbedDesign() {
      * - Uses completed flag to prevent race conditions
      * - Properly cleans up all resources
      */
-    const fetchWithTimeout = async (url: string, timeout = 30000): Promise<Response> => {
+    const fetchWithTimeout = async (url: string, timeout = 60000): Promise<Response> => {
       // SAFETY: All URLs MUST be absolute. If a relative URL slips through, fix it but warn loudly.
       let fullUrl: string;
       if (url.startsWith('http')) {
@@ -638,9 +638,9 @@ export default function EmbedDesign() {
           timeoutId = setTimeout(() => {
             if (!completed) {
               completed = true;
-              console.error(`${logPrefix} TIMEOUT after ${timeout}ms - aborting fetch`);
-              requestAbort.abort(); // Abort the fetch so it doesn't keep running
-              reject(new Error(`Request timed out after ${timeout}ms`));
+              console.error(`${logPrefix} TIMEOUT after ${timeout}ms - aborting fetch for ${fullUrl.substring(0, 100)}`);
+              requestAbort.abort();
+              reject(new Error(`Request to ${fullUrl.substring(0, 80)} timed out after ${timeout}ms`));
             }
           }, timeout);
 
