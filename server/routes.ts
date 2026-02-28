@@ -9145,6 +9145,21 @@ ${textEdgeRestrictions}
       }
     }
 
+    // Fetch style presets so the storefront iframe doesn't need a separate
+    // /api/config round-trip (which can fail/timeout in CORS-restricted envs).
+    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string }> = [];
+    try {
+      const dbStyles = await storage.getAllActiveStylePresets();
+      stylePresets = dbStyles.map((s: any) => ({
+        id: s.id.toString(),
+        name: s.name,
+        promptSuffix: s.promptPrefix,
+        category: s.category || "all",
+      }));
+    } catch (e) {
+      console.warn(`[proxy/customizer-page] Failed to load stylePresets:`, e);
+    }
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -9159,6 +9174,7 @@ ${textEdgeRestrictions}
       appUrl: process.env.APP_URL || "https://appai-pod-production.up.railway.app",
       designerConfig,
       variants,
+      stylePresets,
     });
   }));
 

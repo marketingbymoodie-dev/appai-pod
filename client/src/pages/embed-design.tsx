@@ -1038,6 +1038,12 @@ export default function EmbedDesign() {
     x: number = 50,
     y: number = 50
   ) => {
+    // Guard: never call the mockup endpoint without a real design image.
+    if (!designImageUrl) {
+      console.warn('[EmbedDesign] fetchPrintifyMockups called without designImageUrl — skipping');
+      return;
+    }
+
     setMockupLoading(true);
     // Notify parent page so it can show the "Artwork Generating" overlay
     if (runtimeMode !== 'standalone') {
@@ -1199,6 +1205,11 @@ export default function EmbedDesign() {
   // Takes precedence over selectedVariantParam so the customer's dropdown choice is honoured.
   const [overrideVariantId, setOverrideVariantId] = useState<string | null>(null);
 
+  // Shopify variants with prices delivered from the embed parent via BRIDGE_ACK postMessage.
+  // Used to render a variant selector inside the generator on customizer pages.
+  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>([]);
+  const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
+
   const getPreferredMockupUrl = useCallback((): string => {
     const frontImage = printifyMockupImages.find(img => img.label === 'front');
     if (frontImage?.url) return toAbsoluteImageUrl(frontImage.url);
@@ -1269,7 +1280,7 @@ export default function EmbedDesign() {
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -1288,11 +1299,12 @@ export default function EmbedDesign() {
           ? `${API_BASE}/api/shopify/generate`
           : `${API_BASE}/api/generate`;
       console.log('[EmbedDesign] Generating design via:', endpoint, '(mode:', runtimeMode, ')');
-      const response = await safeFetch(endpoint, {
+      // Use fetchWithTimeout so the generate mutation always resolves (no infinite spinner).
+      const response = await fetchWithTimeout(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
+      }, 90000);
       const data = await response.json();
       if (!response.ok) {
         if (data.requiresLogin) {
@@ -2065,6 +2077,26 @@ export default function EmbedDesign() {
         console.log('[Design Studio] VARIANT_CHANGE from parent, variantId=', vid);
         setOverrideVariantId(vid);
       }
+
+      // Shopify variants with prices pushed by parent after bridge handshake
+      if (type === "AI_ART_STUDIO_SHOPIFY_VARIANTS" && Array.isArray(event.data.variants)) {
+        console.log('[Design Studio] SHOPIFY_VARIANTS received:', event.data.variants.length, 'variants');
+        setShopifyVariants(event.data.variants);
+        const base = event.data.baseVariantId ? String(event.data.baseVariantId) : null;
+        if (base) {
+          setShopifyVariantId(base);
+          setOverrideVariantId(base);
+        } else if (event.data.variants.length > 0) {
+          setShopifyVariantId(String(event.data.variants[0].id));
+          setOverrideVariantId(String(event.data.variants[0].id));
+        }
+      }
+
+      // Style presets pushed by parent after bridge handshake (avoids /api/config round-trip)
+      if (type === "AI_ART_STUDIO_STYLE_PRESETS" && Array.isArray(event.data.stylePresets)) {
+        console.log('[Design Studio] STYLE_PRESETS received:', event.data.stylePresets.length, 'presets');
+        setStylePresets(event.data.stylePresets);
+      }
     };
 
     window.addEventListener("message", handleMessage);
@@ -2412,6 +2444,34 @@ export default function EmbedDesign() {
                     className="min-h-[80px]"
                   />
                 </div>
+
+                {/* Shopify variant selector — shown on customizer pages when parent delivers
+                    variants via postMessage.  Selecting a variant updates overrideVariantId
+                    so the correct Shopify variant is used for add-to-cart. */}
+                {isStorefront && shopifyVariants.length > 1 && (
+                  <div className="space-y-2">
+                    <Label htmlFor="appai-shopify-variant">
+                      {shopifyVariants[0]?.title && shopifyVariants[0].title.toLowerCase() !== 'default title'
+                        ? 'Size'
+                        : 'Option'}
+                    </Label>
+                    <select
+                      id="appai-shopify-variant"
+                      className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                      value={shopifyVariantId || shopifyVariants[0]?.id || ''}
+                      onChange={(e) => {
+                        setShopifyVariantId(e.target.value);
+                        setOverrideVariantId(e.target.value);
+                      }}
+                    >
+                      {shopifyVariants.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          {v.title} &mdash; ${parseFloat(v.price).toFixed(2)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 {/* Size Selection - Required */}
                 {printSizes.length > 0 && (

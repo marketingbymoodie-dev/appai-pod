@@ -719,6 +719,35 @@ function showLoginRequiredPopup() {
         bridgeAcked = true;
         if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         console.log(B, 'Handshake COMPLETE. parent:', BRIDGE_VERSION, 'iframe:', data._bridgeVersion, 'after', heartbeatN, 'heartbeats');
+
+        // Push Shopify variants (with prices) into the iframe so the generator
+        // can render a variant selector internally.
+        if (config.shopifyVariants && config.shopifyVariants.length > 0) {
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
+              variants: config.shopifyVariants,
+              baseVariantId: config.selectedVariant || null,
+            }, appOrigin || '*');
+            console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
+          } catch(e) {
+            console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
+          }
+        }
+
+        // Push style presets so the generator doesn't need to call /api/config.
+        if (config.stylePresets && config.stylePresets.length > 0) {
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_STUDIO_STYLE_PRESETS',
+              stylePresets: config.stylePresets,
+            }, appOrigin || '*');
+            console.log(B, 'Sent STYLE_PRESETS to iframe:', config.stylePresets.length, 'presets');
+          } catch(e) {
+            console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
+          }
+        }
+
         return;
       }
 
@@ -1423,6 +1452,11 @@ function showLoginRequiredPopup() {
           hideAddToCart:        false,
           enabled:              true,
           inlineDesignerConfig: config.designerConfig || null,
+          // Shopify variants with prices and style presets — pushed into the
+          // iframe via postMessage in the BRIDGE_ACK handler so the generator
+          // can render them internally (no external dropdown needed).
+          shopifyVariants:      config.variants || [],
+          stylePresets:         config.stylePresets || [],
         });
 
         // null means the iframe was mounted into an existing theme app block.
@@ -1436,58 +1470,10 @@ function showLoginRequiredPopup() {
         // Run again after a short delay to catch iframes that load asynchronously
         setTimeout(cleanupDuplicateGenerators, 1500);
 
-        // Variant selector with prices (shown above the generator)
-        if (config.variants && config.variants.length > 0) {
-          var selectorDiv = document.createElement('div');
-          selectorDiv.style.cssText = 'margin:16px auto;max-width:640px;padding:12px 16px;' +
-            'border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;';
-
-          var label = document.createElement('label');
-          label.textContent = (config.baseProductTitle || 'Select option') + ':';
-          label.style.cssText = 'display:block;font-weight:600;margin:0 0 8px;font-size:14px;';
-          selectorDiv.appendChild(label);
-
-          var select = document.createElement('select');
-          select.id = 'appai-variant-select';
-          select.style.cssText = 'width:100%;padding:8px 12px;border:1px solid #d1d5db;' +
-            'border-radius:6px;font-size:14px;background:#fff;cursor:pointer;';
-          config.variants.forEach(function(v) {
-            var opt = document.createElement('option');
-            opt.value = v.id;
-            opt.textContent = v.title + ' \u2014 $' + parseFloat(v.price).toFixed(2);
-            if (String(v.id) === String(config.baseVariantId)) opt.selected = true;
-            select.appendChild(opt);
-          });
-          selectorDiv.appendChild(select);
-
-          // Insert ABOVE the generator
-          var insertRef = studioEl || mount.firstChild;
-          mount.insertBefore(selectorDiv, insertRef);
-
-          // On change, notify the iframe so it uses the correct variant
-          select.addEventListener('change', function() {
-            var iframe = document.querySelector(
-              '#ai-art-studio-auto-embed iframe, .ai-art-studio__container iframe'
-            );
-            if (iframe && iframe.contentWindow) {
-              iframe.contentWindow.postMessage({
-                type: 'AI_ART_STUDIO_VARIANT_CHANGE',
-                variantId: select.value
-              }, '*');
-              console.log('[AI Art Embed] Sent VARIANT_CHANGE variantId=' + select.value);
-            }
-          });
-        } else if (config.baseProductTitle || config.baseVariantTitle) {
-          // Fallback: static spec strip when no variant list available
-          var specs = document.createElement('div');
-          specs.style.cssText = 'margin:16px auto;max-width:640px;padding:12px 16px;' +
-            'border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;';
-          specs.innerHTML =
-            (config.baseProductTitle ? '<p style="font-weight:600;margin:0 0 4px;">' + config.baseProductTitle + '</p>' : '') +
-            (config.baseVariantTitle ? '<p style="color:#6b7280;margin:0 0 4px;font-size:13px;">' + config.baseVariantTitle + '</p>' : '') +
-            (config.baseProductPrice ? '<p style="font-weight:600;margin:0;">$' + parseFloat(config.baseProductPrice).toFixed(2) + '</p>' : '');
-          mount.appendChild(specs);
-        }
+        // Variant selector and style presets are now rendered INSIDE the
+        // generator iframe (via AI_ART_STUDIO_SHOPIFY_VARIANTS and
+        // AI_ART_STUDIO_STYLE_PRESETS postMessages sent in the BRIDGE_ACK
+        // handler).  No external DOM is needed here.
       })
       .catch(function(e) {
         // STATE=ERROR — network or parse failure.  Show error instead of blank page.
