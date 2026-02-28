@@ -13,21 +13,12 @@
 {% assign app_url = block.settings.app_url | default: '' %}
 {% assign shop_domain = shop.permanent_domain %}
 
-{% comment %} Pass config to JS via a data attribute on the root element {% endcomment %}
-<div
-  id="appai-customizer-root"
-  data-shop="{{ shop_domain | escape }}"
-  data-app-url="{{ app_url | escape }}"
-  data-customer-id="{% if customer %}{{ customer.id }}{% endif %}"
-  data-design-id="{{ request.query | default: '' }}"
-  style="font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;"
-></div>
-
 {% comment %}
-  Design ID from query param ?design_id=... is read by JS via URLSearchParams
-  (Liquid doesn't expose query params directly in all themes, so JS handles it).
+  This block has been superseded by the App Embed (ai-art-embed.liquid).
+  The embed handles all customizer page rendering automatically via handle detection.
+  Keeping this block for backward compatibility — it renders nothing.
 {% endcomment %}
-
+<div id="appai-customizer-root" style="display:none;"></div>
 <script src="{{ 'appai-customizer.js' | asset_url }}" defer></script>
 
 {% schema %}
