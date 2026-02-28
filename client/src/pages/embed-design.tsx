@@ -283,9 +283,11 @@ export default function EmbedDesign() {
   const runtimeMode = detectRuntimeMode(searchParams);
 
   // Legacy params - kept for backwards compatibility
+  // Storefront mode must override embedded Shopify mode: when both
+  // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = searchParams.get("embedded") === "true";
-  const isShopify = searchParams.get("shopify") === "true";
   const isStorefront = runtimeMode === 'storefront';
+  const isShopify = !isStorefront && searchParams.get("shopify") === "true";
 
   // Key behavioral flags based on runtime mode
   const requiresSessionToken = runtimeMode === 'admin-embedded';

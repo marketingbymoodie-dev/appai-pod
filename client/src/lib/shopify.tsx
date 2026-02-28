@@ -33,6 +33,13 @@ if (_initialShop) sessionStorage.setItem("shopify_shop", _initialShop);
 export function isShopifyEmbedded(): boolean {
   if (typeof window === "undefined") return false;
 
+  // Storefront embed runs in a cross-origin iframe with ?shop= in the URL, but
+  // it is NOT a Shopify Admin embed.  When storefront=true is present, the app
+  // must NOT initialise App Bridge or attempt an admin redirect.
+  if (new URLSearchParams(window.location.search).get("storefront") === "true") {
+    return false;
+  }
+
   // window.shopify is injected by the app-bridge.js CDN script when embedded
   if ((window as any).shopify) return true;
 

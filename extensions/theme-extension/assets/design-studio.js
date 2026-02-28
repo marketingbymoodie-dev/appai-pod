@@ -34,8 +34,7 @@
     const sharedDesignId = urlParams.get('sharedDesignId');
     
     const params = new URLSearchParams();
-    params.set('embedded', 'true');
-    params.set('shopify', 'true');
+    params.set('storefront', 'true');
     params.set('shop', shopDomain);
     params.set('productTypeId', productTypeId);
     params.set('productId', productId);
