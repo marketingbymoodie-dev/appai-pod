@@ -1442,7 +1442,7 @@ export default function EmbedDesign() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           }),
-          15_000,
+          30_000,
           'POST /generate',
         );
         const jobData = await jobRes.json();
@@ -2919,7 +2919,8 @@ export default function EmbedDesign() {
               <div className="absolute inset-0">
                 <ProductMockup
                   imageUrl={generatedDesign?.imageUrl}
-                  isLoading={generateMutation.isPending}
+                  mockupUrl={isStorefront ? (getPreferredMockupUrl() || null) : null}
+                  isLoading={generateMutation.isPending || (isStorefront && mockupLoading && !getPreferredMockupUrl())}
                   selectedSize={selectedSizeConfig}
                   selectedFrameColor={selectedFrameColorConfig}
                   transform={transform}

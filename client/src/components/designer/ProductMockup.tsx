@@ -5,6 +5,9 @@ import { SafeZoneMask } from "./SafeZoneMask";
 
 interface ProductMockupProps {
   imageUrl?: string | null;
+  /** Composite mockup URL (e.g. Printify). When provided in storefront mode,
+   *  this is shown instead of the raw artwork overlaid on a blank. */
+  mockupUrl?: string | null;
   isLoading?: boolean;
   selectedSize?: PrintSize | null;
   selectedFrameColor?: FrameColor | null;
@@ -25,6 +28,7 @@ interface ProductMockupProps {
 
 export function ProductMockup({
   imageUrl,
+  mockupUrl,
   isLoading = false,
   selectedSize,
   selectedFrameColor,
@@ -37,6 +41,9 @@ export function ProductMockup({
   showSafeZone = false,
   blankImageUrl,
 }: ProductMockupProps) {
+  // When a composite mockup URL is available (e.g. Printify mockup after generation),
+  // display it as a full-bleed image instead of the raw artwork overlaid on a blank.
+  const displayUrl = mockupUrl ?? imageUrl;
   // Debug: log to window to ensure we can see it
   if (typeof window !== 'undefined') {
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
@@ -227,11 +234,29 @@ export function ProductMockup({
       );
     }
 
-    if (imageUrl) {
-      console.log("[ProductMockup] Rendering image with URL:", imageUrl, "scale:", transform.scale);
+    // When a composite mockup URL exists, render it as a full-bleed product photo.
+    // This replaces the raw-artwork-on-blank view with the actual Printify mockup.
+    if (mockupUrl) {
+      console.log("[ProductMockup] Rendering composite mockup URL:", mockupUrl.substring(0, 80));
       return (
         <img
-          src={imageUrl}
+          src={mockupUrl}
+          alt="Product mockup"
+          className="absolute inset-0 w-full h-full object-contain"
+          style={{ pointerEvents: "none" }}
+          draggable={false}
+          data-testid="img-mockup"
+          onLoad={() => console.log("[ProductMockup] Mockup loaded successfully")}
+          onError={(e) => console.error("[ProductMockup] Mockup failed to load:", e)}
+        />
+      );
+    }
+
+    if (displayUrl) {
+      console.log("[ProductMockup] Rendering image with URL:", displayUrl, "scale:", transform.scale);
+      return (
+        <img
+          src={displayUrl}
           alt="Generated artwork"
           className="absolute inset-0 w-full h-full object-cover"
           style={{
@@ -283,7 +308,7 @@ export function ProductMockup({
   return (
     <div
       className={`relative bg-muted rounded-md w-full h-full ${
-        imageUrl && enableDrag ? "cursor-move select-none" : ""
+        displayUrl && enableDrag && !mockupUrl ? "cursor-move select-none" : ""
       }`}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
