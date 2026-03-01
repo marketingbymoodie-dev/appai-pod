@@ -341,18 +341,15 @@ app.use((req, res, next) => {
   // ────────────────────────────────────────────────────────────
   // Proxy-aware SPA HTML route
   //
-  // When a request arrives via the App Proxy (req.isProxied=true)
-  // for /s/designer, we serve index.html with:
-  //   1. Absolute Railway URLs for all JS/CSS assets
-  //      (browser is on Shopify origin; relative /assets/ would 404)
-  //   2. An injected script that sets window.__APPAI_API_BASE__="/apps/appai"
-  //      so all API calls go through the proxy (same Shopify origin)
+  // When proxied (req.isProxied=true), serve index.html with:
+  //   - All asset URLs rewritten to /apps/appai/assets/... so they
+  //     load through the Shopify App Proxy (same origin, no CORS)
+  //   - window.__APPAI_API_BASE__="/apps/appai" injected
   // Non-proxied requests fall through to Vite (dev) or serveStatic (prod).
   // ────────────────────────────────────────────────────────────
   app.get("/s/designer", (req: Request, res: Response, next: NextFunction) => {
-    if (!(req as any).isProxied) return next(); // normal request — let Vite/static handle it
+    if (!(req as any).isProxied) return next();
 
-    // Find the built index.html
     const candidateA = path.resolve(__dirname, "public", "index.html");
     const candidateB = path.resolve(__dirname, "../public", "index.html");
     const indexPath = fs.existsSync(candidateA) ? candidateA
@@ -364,18 +361,34 @@ app.use((req, res, next) => {
       return res.status(503).send("App is starting up. Please try again in a moment.");
     }
 
+    const PROXY_BASE = "/apps/appai";
     let html = fs.readFileSync(indexPath, "utf-8");
 
-    // Asset paths stay relative — Shopify App Proxy serves them via /apps/appai/assets/*
+    // Rewrite any absolute Railway asset URLs to proxy path
+    html = html.replace(
+      /https:\/\/appai-pod-production\.up\.railway\.app\/assets\//g,
+      `${PROXY_BASE}/assets/`
+    );
 
-    // Inject API_BASE override BEFORE the first <script> so it's available
-    // when the React bundle initialises.
-    const injection = `<script>window.__APPAI_API_BASE__="/apps/appai";</script>`;
+    // Rewrite relative /assets/ refs in src="" and href="" to proxy path
+    html = html.replace(
+      /((?:src|href)=")\/assets\//g,
+      `$1${PROXY_BASE}/assets/`
+    );
+
+    // Rewrite favicon
+    html = html.replace(
+      /((?:src|href)=")\/favicon/g,
+      `$1${PROXY_BASE}/favicon`
+    );
+
+    // Inject API_BASE before first <script>
+    const injection = `<script>window.__APPAI_API_BASE__="${PROXY_BASE}";</script>`;
     html = html.replace("<head>", `<head>\n  ${injection}`);
 
-    console.log(`[APP PROXY HTML] Serving index.html with Railway asset URLs + API_BASE=/apps/appai`);
+    console.log(`[APP PROXY HTML] Serving index.html — assets via ${PROXY_BASE}, API_BASE=${PROXY_BASE}`);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("X-Frame-Options", "ALLOWALL"); // Shopify sets framing; clear ours
+    res.setHeader("X-Frame-Options", "ALLOWALL");
     res.send(html);
   });
 
