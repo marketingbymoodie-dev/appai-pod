@@ -10,7 +10,7 @@ import { createServer } from "http";
 // ============================================================
 // STARTUP BANNER - Identify deployed version
 // ============================================================
-const BUILD_ID = "2026-02-19-sf-diagnostics-v1";
+const BUILD_ID = "2026-02-19-cors-fix-v1";
 const GIT_COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "unknown";
 console.log("=".repeat(60));
 console.log("[SERVER STARTUP] Build ID:", BUILD_ID);
@@ -41,65 +41,43 @@ app.use((req, res, next) => {
 });
 
 // ============================================================
-// GLOBAL API CORS - Allow all origins for /api routes
+// GLOBAL API CORS — single authoritative handler for all /api routes.
+// Rules:
+//   - Echo the request Origin (never wildcard when credentials matter)
+//   - Vary: Origin so CDN/proxies cache per-origin
+//   - Credentials: false  (storefront is public; admin uses session tokens, not cookies)
+//   - X-Req-Id allowed so storefront correlation IDs pass through
 // ============================================================
 app.use("/api", (req, res, next) => {
   const origin = req.headers.origin;
+
   if (origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
   }
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+  // No origin header = same-origin or non-browser request; no ACAO needed.
 
-  if (req.method === "OPTIONS") {
-    console.log(`[GLOBAL API CORS] OPTIONS preflight for ${req.originalUrl} from ${origin}`);
-    return res.sendStatus(204);
-  }
-  next();
-});
-
-// ============================================================
-// STEP 2: STOREFRONT PROBE - Log all /api/storefront requests
-// ============================================================
-app.use("/api/storefront", (req, res, next) => {
-  console.log(`[STOREFRONT PROBE] ${req.method} ${req.originalUrl}`);
-  next();
-});
-
-// ============================================================
-// STEP 4: EXPLICIT CORS FOR STOREFRONT - Before any other middleware
-// ============================================================
-app.use("/api/storefront", (req, res, next) => {
-  const origin = req.headers.origin;
-  console.log(`[STOREFRONT CORS] origin=${origin} method=${req.method} url=${req.originalUrl}`);
-
-  // Always allow - either echo origin or use wildcard
-  // This is safe because storefront endpoints are public by design
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-  } else {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-  }
-
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Req-Id");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Credentials", "false");
   res.setHeader("Access-Control-Max-Age", "86400");
 
-  // Correlation ID: use client-provided header or generate one
+  if (req.method === "OPTIONS") {
+    console.log(`[CORS] OPTIONS ${req.originalUrl} origin=${origin ?? 'none'}`);
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+// ============================================================
+// STOREFRONT PROBE + correlation ID — runs after CORS, before routes
+// ============================================================
+app.use("/api/storefront", (req, res, next) => {
   const reqId = (req.headers["x-req-id"] as string) || `srv-${Date.now().toString(36)}`;
   (req as any).reqId = reqId;
   res.setHeader("X-Req-Id", reqId);
-
-  if (req.method === "OPTIONS") {
-    console.log(`[STOREFRONT CORS] OPTIONS ${req.originalUrl} origin=${origin}`);
-    return res.sendStatus(204);
-  }
-
-  console.log(`[SF] ${req.method} ${req.originalUrl} reqId=${reqId} origin=${origin ?? 'none'}`);
+  console.log(`[SF] ${req.method} ${req.originalUrl} reqId=${reqId} origin=${req.headers.origin ?? 'none'}`);
   next();
 });
 
