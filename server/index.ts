@@ -3,6 +3,8 @@ import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import path from "path";
+import fs from "fs";
+import crypto from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -10,7 +12,8 @@ import { createServer } from "http";
 // ============================================================
 // STARTUP BANNER - Identify deployed version
 // ============================================================
-const BUILD_ID = "2026-02-19-cors-fix-v1";
+const BUILD_ID = "2026-02-19-app-proxy-v1";
+const RAILWAY_URL = "https://appai-pod-production.up.railway.app";
 const GIT_COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "unknown";
 console.log("=".repeat(60));
 console.log("[SERVER STARTUP] Build ID:", BUILD_ID);
@@ -30,6 +33,55 @@ app.get("/edge-test", (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET");
   res.json({ ok: true, edge: "reached", ts: Date.now() });
+});
+
+// ============================================================
+// APP PROXY URL REWRITER — must be FIRST middleware so all
+// subsequent route handlers see the real path.
+//
+// Shopify App Proxy rewrites:
+//   storefront: /apps/appai/<path>
+//   → Railway:  /api/proxy/<path>?shop=...&timestamp=...&signature=...
+//
+// This middleware strips /api/proxy so existing handlers match:
+//   /api/proxy/api/storefront/generate → /api/storefront/generate
+//   /api/proxy/api/config              → /api/config
+//   /api/proxy/s/designer              → /s/designer (handled specially below)
+// ============================================================
+function verifyShopifyProxyHmac(query: Record<string, string>): boolean {
+  const secret = process.env.SHOPIFY_API_SECRET ?? "";
+  if (!secret) return false;
+  const { signature, ...rest } = query;
+  if (!signature) return false;
+  const message = Object.keys(rest).sort().map(k => `${k}=${rest[k]}`).join("");
+  const computed = crypto.createHmac("sha256", secret).update(message).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(signature, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+app.use((req, res, next) => {
+  if (!req.url.startsWith("/api/proxy/")) return next();
+
+  // Verify Shopify HMAC — reject in production if invalid
+  const query = req.query as Record<string, string>;
+  const valid = verifyShopifyProxyHmac(query);
+  if (!valid) {
+    if (process.env.NODE_ENV === "production" && process.env.SHOPIFY_API_SECRET) {
+      console.warn(`[APP PROXY] Invalid signature from ${req.ip} for ${req.url}`);
+      return res.status(401).json({ error: "Invalid proxy signature" });
+    }
+    console.warn(`[APP PROXY] Signature check skipped (no secret or dev mode) for ${req.url}`);
+  }
+
+  const original = req.url;
+  // Strip /api/proxy prefix, keeping query string intact
+  req.url = req.url.replace(/^\/api\/proxy/, "");
+  (req as any).isProxied = true;
+  console.log(`[APP PROXY] ${req.method} ${original} → ${req.url} shop=${query.shop ?? "?"}`);
+  next();
 });
 
 // ============================================================
@@ -274,6 +326,50 @@ app.use((req, res, next) => {
     res.status(status).json(payload);
   });
 
+
+  // ────────────────────────────────────────────────────────────
+  // Proxy-aware SPA HTML route
+  //
+  // When a request arrives via the App Proxy (req.isProxied=true)
+  // for /s/designer, we serve index.html with:
+  //   1. Absolute Railway URLs for all JS/CSS assets
+  //      (browser is on Shopify origin; relative /assets/ would 404)
+  //   2. An injected script that sets window.__APPAI_API_BASE__="/apps/appai"
+  //      so all API calls go through the proxy (same Shopify origin)
+  // Non-proxied requests fall through to Vite (dev) or serveStatic (prod).
+  // ────────────────────────────────────────────────────────────
+  app.get("/s/designer", (req: Request, res: Response, next: NextFunction) => {
+    if (!(req as any).isProxied) return next(); // normal request — let Vite/static handle it
+
+    // Find the built index.html
+    const candidateA = path.resolve(__dirname, "public", "index.html");
+    const candidateB = path.resolve(__dirname, "../public", "index.html");
+    const indexPath = fs.existsSync(candidateA) ? candidateA
+                    : fs.existsSync(candidateB) ? candidateB
+                    : null;
+
+    if (!indexPath) {
+      console.error("[APP PROXY HTML] index.html not found — checked:", candidateA, candidateB);
+      return res.status(503).send("App is starting up. Please try again in a moment.");
+    }
+
+    let html = fs.readFileSync(indexPath, "utf-8");
+
+    // Rewrite relative asset paths to absolute Railway URLs so the browser
+    // (on Shopify origin) can load them without going through the proxy.
+    html = html.replace(/(src|href)="\/assets\//g, `$1="${RAILWAY_URL}/assets/`);
+    html = html.replace(/(src|href)="\/favicon/g, `$1="${RAILWAY_URL}/favicon`);
+
+    // Inject API_BASE override BEFORE the first <script> so it's available
+    // when the React bundle initialises.
+    const injection = `<script>window.__APPAI_API_BASE__="/apps/appai";</script>`;
+    html = html.replace("<head>", `<head>\n  ${injection}`);
+
+    console.log(`[APP PROXY HTML] Serving index.html with Railway asset URLs + API_BASE=/apps/appai`);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("X-Frame-Options", "ALLOWALL"); // Shopify sets framing; clear ours
+    res.send(html);
+  });
 
   // ✅ 3) Vite in dev, static in prod (LAST)
   if (process.env.NODE_ENV === "production") {

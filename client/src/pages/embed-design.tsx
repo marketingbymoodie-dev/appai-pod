@@ -52,37 +52,49 @@ interface ProductTypeConfig {
 
 /**
  * Get the API base URL for the embed.
+ *
  * Priority:
- * 1. window.__APPAI_API_BASE__ (global override)
- * 2. data-appai-api-base attribute on script
- * 3. window.location.origin (iframe origin = Railway)
- * 4. Fallback to production Railway URL
+ * 1. window.__APPAI_API_BASE__ (injected by server for App Proxy context)
+ * 2. data-appai-api-base attribute on script tag
+ * 3. App Proxy path detection: /apps/appai/* → API_BASE = "/apps/appai"
+ * 4. Same-origin Railway (iframe loaded directly from Railway) → ""
+ * 5. Hard-coded Railway fallback
+ *
+ * App Proxy flow:
+ *   iframe src = https://{shop}/apps/appai/s/designer
+ *   window.__APPAI_API_BASE__ injected = "/apps/appai"
+ *   API calls: /apps/appai/api/storefront/generate  (same Shopify origin, no CORS)
+ *   Shopify proxies → https://railway.app/api/storefront/generate
  */
 function getApiBase(): string {
-  // Check global override
-  if (typeof window !== 'undefined' && (window as any).__APPAI_API_BASE__) {
+  if (typeof window === 'undefined') return '';
+
+  // 1. Server-injected override (set in proxied index.html)
+  if ((window as any).__APPAI_API_BASE__ !== undefined) {
     return (window as any).__APPAI_API_BASE__;
   }
 
-  // Check data attribute
+  // 2. Script data attribute
   if (typeof document !== 'undefined') {
     const script = document.querySelector('script[data-appai-api-base]');
     if (script) {
       const base = script.getAttribute('data-appai-api-base');
-      if (base) return base;
+      if (base !== null) return base;
     }
   }
 
-  // Use current origin (for iframe loaded from Railway)
-  if (typeof window !== 'undefined' && window.location.origin) {
-    // Only use origin if it looks like our Railway app
-    const origin = window.location.origin;
-    if (origin.includes('railway.app') || origin.includes('localhost') || origin.includes('127.0.0.1')) {
-      return origin;
-    }
+  // 3. Running inside App Proxy: path starts with /apps/appai/
+  if (window.location.pathname.startsWith('/apps/appai/')) {
+    return '/apps/appai';
   }
 
-  // Fallback to production Railway URL
+  // 4. Running directly on Railway (same origin — empty base works)
+  const origin = window.location.origin;
+  if (origin.includes('railway.app') || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+    return '';
+  }
+
+  // 5. Fallback
   return 'https://appai-pod-production.up.railway.app';
 }
 
@@ -255,7 +267,7 @@ async function fetchWithTimeoutSimple(
 // evaluated more than once or if React StrictMode double-mounts the component.
 let __embedInstanceActive = false;
 
-console.log('[EmbedDesign] API Base URL:', API_BASE);
+console.log('[EmbedDesign] API Base URL:', API_BASE, '| path:', typeof window !== 'undefined' ? window.location.pathname : 'ssr');
 console.log('[EmbedDesign] safeFetch: direct window.fetch (credentials omit, mode cors)');
 
 // DIAGNOSTIC: Quick sanity check on module load using safeFetch (runs once)
@@ -282,8 +294,13 @@ type RuntimeMode = 'storefront' | 'admin-embedded' | 'standalone';
 function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   const path = window.location.pathname;
 
-  // Path-based detection (preferred — no query param ambiguity)
+  // App Proxy path: /apps/appai/s/designer (iframe on Shopify domain via proxy)
+  if (path.startsWith('/apps/appai/s/')) return 'storefront';
+
+  // Direct Railway path: /s/designer
   if (path.startsWith('/s/')) return 'storefront';
+
+  // Admin embedded
   if (path.startsWith('/admin/') || path === '/admin') return 'admin-embedded';
 
   // Legacy query-param fallback for /embed/design URLs
@@ -1456,17 +1473,17 @@ export default function EmbedDesign() {
             ),
           ]);
 
-        // Phase 1: submit job — bare window.fetch, no wrappers
-        console.log("DIRECT FETCH CALL");
-        const jobRes = await window.fetch("/api/storefront/generate", {
+        // Phase 1: submit job
+        const reqId = crypto.randomUUID();
+        console.log('[SF UI] POST', endpoint, { reqId, shop: payload.shop, runtimeMode, apiBase: API_BASE, ts: Date.now() });
+        const postStart = Date.now();
+        const fetchPromise = safeFetch(endpoint, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Req-Id": "direct-test",
-          },
+          headers: { "Content-Type": "application/json", "X-Req-Id": reqId },
           body: JSON.stringify(payload),
         });
-        console.log("DIRECT FETCH RESOLVED", jobRes.status);
+        const jobRes = await raceTimeout(fetchPromise, 60_000, 'POST /generate');
+        console.log('[SF UI] POST complete — status', jobRes.status, 'in', Date.now() - postStart, 'ms');
         const jobData = await jobRes.json();
         if (!jobRes.ok) {
           if (jobData.error === 'FREE_LIMIT_REACHED') {
