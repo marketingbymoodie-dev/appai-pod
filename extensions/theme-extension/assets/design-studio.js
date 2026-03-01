@@ -136,7 +136,7 @@
             type: 'ai-art-studio:cart-updated',
             success: true,
             cart: result
-          }, appUrl);
+          }, iframeOrigin || '*');
           
           document.dispatchEvent(new CustomEvent('cart:refresh'));
           
@@ -153,7 +153,7 @@
             type: 'ai-art-studio:cart-updated',
             success: false,
             error: error.message
-          }, appUrl);
+          }, iframeOrigin || '*');
         });
       }
 

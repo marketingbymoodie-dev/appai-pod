@@ -354,14 +354,23 @@
     var B = '[AI Art Bridge]'; // log prefix
     console.log(B, 'Installing bridge', BRIDGE_VERSION, 'appUrl:', config.appUrl);
 
-    // --- Strict origin allowlist ---
+    // --- Compute iframe's effective origin ---
+    // In App Proxy mode iframe.src is relative (/apps/appai/s/designer?...),
+    // so new URL(iframe.src) resolves against page origin → Shopify domain.
+    // In direct-Railway mode iframe.src is absolute → Railway origin.
+    var iframeOrigin = '';
+    try { iframeOrigin = new URL(iframe.src, window.location.href).origin; } catch(e) {}
+
     var appOrigin = '';
     try { appOrigin = new URL(config.appUrl).origin; } catch(e) {}
+
+    // --- Strict origin allowlist ---
     var ALLOWED_ORIGINS = [
+      iframeOrigin,
       appOrigin,
-      'https://appai-pod-production.up.railway.app'
-    ].filter(Boolean);
-    console.log(B, 'Allowed origins:', ALLOWED_ORIGINS);
+      window.location.origin
+    ].filter(function(v, i, a) { return v && a.indexOf(v) === i; });
+    console.log(B, 'Allowed origins:', ALLOWED_ORIGINS, 'iframeOrigin:', iframeOrigin);
 
     // --- Origin validation ---
     function isFromOurIframe(event) {
@@ -395,11 +404,11 @@
       var targets = [];
       // Prefer event.source + event.origin (spec-correct)
       if (eventOrNull && eventOrNull.source) {
-        var replyOrigin = isAllowedOrigin(eventOrNull.origin) ? eventOrNull.origin : (appOrigin || '*');
+        var replyOrigin = isAllowedOrigin(eventOrNull.origin) ? eventOrNull.origin : (iframeOrigin || '*');
         targets.push({ target: eventOrNull.source, origin: replyOrigin, label: 'event.source' });
       }
-      // Fallback: iframe.contentWindow + appOrigin
-      targets.push({ target: iframe.contentWindow, origin: appOrigin || '*', label: 'iframe.cw' });
+      // Fallback: iframe.contentWindow + iframeOrigin (matches iframe's actual origin)
+      targets.push({ target: iframe.contentWindow, origin: iframeOrigin || '*', label: 'iframe.cw' });
 
       for (var i = 0; i < targets.length; i++) {
         try {
@@ -674,7 +683,7 @@
               type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
               variants: config.shopifyVariants,
               baseVariantId: config.selectedVariant || null,
-            }, appOrigin || '*');
+            }, iframeOrigin || '*');
             console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
           } catch(e) {
             console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
@@ -687,7 +696,7 @@
             iframe.contentWindow.postMessage({
               type: 'AI_ART_STUDIO_STYLE_PRESETS',
               stylePresets: config.stylePresets,
-            }, appOrigin || '*');
+            }, iframeOrigin || '*');
             console.log(B, 'Sent STYLE_PRESETS to iframe:', config.stylePresets.length, 'presets');
           } catch(e) {
             console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
