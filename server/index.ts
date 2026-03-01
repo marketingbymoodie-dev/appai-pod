@@ -12,8 +12,7 @@ import { createServer } from "http";
 // ============================================================
 // STARTUP BANNER - Identify deployed version
 // ============================================================
-const BUILD_ID = "2026-02-19-app-proxy-v1";
-const RAILWAY_URL = "https://appai-pod-production.up.railway.app";
+const BUILD_ID = "2026-02-19-app-proxy-v2";
 const GIT_COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "unknown";
 console.log("=".repeat(60));
 console.log("[SERVER STARTUP] Build ID:", BUILD_ID);
@@ -367,10 +366,7 @@ app.use((req, res, next) => {
 
     let html = fs.readFileSync(indexPath, "utf-8");
 
-    // Rewrite relative asset paths to absolute Railway URLs so the browser
-    // (on Shopify origin) can load them without going through the proxy.
-    html = html.replace(/(src|href)="\/assets\//g, `$1="${RAILWAY_URL}/assets/`);
-    html = html.replace(/(src|href)="\/favicon/g, `$1="${RAILWAY_URL}/favicon`);
+    // Asset paths stay relative — Shopify App Proxy serves them via /apps/appai/assets/*
 
     // Inject API_BASE override BEFORE the first <script> so it's available
     // when the React bundle initialises.
