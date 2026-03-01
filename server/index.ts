@@ -10,7 +10,7 @@ import { createServer } from "http";
 // ============================================================
 // STARTUP BANNER - Identify deployed version
 // ============================================================
-const BUILD_ID = "2025-02-13-storefront-e2e-v3";
+const BUILD_ID = "2026-02-19-sf-diagnostics-v1";
 const GIT_COMMIT = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT_SHA || "unknown";
 console.log("=".repeat(60));
 console.log("[SERVER STARTUP] Build ID:", BUILD_ID);
@@ -85,15 +85,21 @@ app.use("/api/storefront", (req, res, next) => {
   }
 
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Req-Id");
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Max-Age", "86400");
 
+  // Correlation ID: use client-provided header or generate one
+  const reqId = (req.headers["x-req-id"] as string) || `srv-${Date.now().toString(36)}`;
+  (req as any).reqId = reqId;
+  res.setHeader("X-Req-Id", reqId);
+
   if (req.method === "OPTIONS") {
-    console.log(`[STOREFRONT CORS] Handling OPTIONS preflight for ${req.originalUrl}`);
+    console.log(`[STOREFRONT CORS] OPTIONS ${req.originalUrl} origin=${origin}`);
     return res.sendStatus(204);
   }
 
+  console.log(`[SF] ${req.method} ${req.originalUrl} reqId=${reqId} origin=${origin ?? 'none'}`);
   next();
 });
 

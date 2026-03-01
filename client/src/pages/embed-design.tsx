@@ -181,39 +181,73 @@ function normalizeVariantId(raw: string | number): string {
  * The hidden iframe must stay in the DOM — removing it kills the browsing context
  * and makes the extracted fetch silently hang (the original bug).
  */
+/**
+ * Get a native (unpatched) fetch reference for storefront use.
+ * Returns null if not on storefront or extraction fails.
+ */
+function _getIframeFetch(): typeof fetch | null {
+  if (typeof window === 'undefined') return null;
+  if ((window as any).__nativeFetch) return (window as any).__nativeFetch;
+  try {
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'display:none!important;width:0;height:0;border:0;position:absolute;';
+    iframe.setAttribute('aria-hidden', 'true');
+    document.documentElement.appendChild(iframe);
+    const fn = iframe.contentWindow!.fetch.bind(iframe.contentWindow!);
+    (window as any).__nativeFetch = fn;
+    (window as any).__nativeFetchIframe = iframe;
+    console.log('[safeFetch] Extracted native fetch from persistent hidden iframe');
+    return fn;
+  } catch (e) {
+    console.warn('[safeFetch] iframe extraction failed:', e);
+    return null;
+  }
+}
+
+const _isStorefrontPage = typeof window !== 'undefined' && (
+  window.location.pathname.startsWith('/s/') ||
+  new URLSearchParams(window.location.search).get('storefront') === 'true'
+);
+const _iframeFetch = _isStorefrontPage ? _getIframeFetch() : null;
+
+/**
+ * Storefront-safe fetch with automatic fallback.
+ * Tries iframe-native fetch first; if it doesn't resolve within 3s,
+ * races against window.fetch so requests never silently hang.
+ */
 const safeFetch: typeof fetch = (() => {
   if (typeof window === 'undefined') return fetch;
+  if (!_isStorefrontPage) return fetch;
 
-  // 1. Pre-saved native fetch (set in index.html before App Bridge loads)
-  if ((window as any).__nativeFetch) {
-    console.log('[safeFetch] Using pre-saved __nativeFetch');
-    return (window as any).__nativeFetch;
+  if (!_iframeFetch) {
+    console.warn('[safeFetch] No iframe fetch available, using window.fetch directly');
+    return fetch;
   }
 
-  // 2. If we're on a /s/* path (storefront), or storefront=true, we MUST bypass
-  //    App Bridge. Create a persistent hidden iframe and keep it alive.
-  const isStorefrontPath = window.location.pathname.startsWith('/s/') ||
-    new URLSearchParams(window.location.search).get('storefront') === 'true';
+  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const t = Date.now();
 
-  if (isStorefrontPath) {
-    try {
-      const iframe = document.createElement('iframe');
-      iframe.style.cssText = 'display:none!important;width:0;height:0;border:0;position:absolute;';
-      iframe.setAttribute('aria-hidden', 'true');
-      document.documentElement.appendChild(iframe);
-      // DO NOT remove the iframe — keeping it alive is critical
-      const nativeFn = iframe.contentWindow!.fetch.bind(iframe.contentWindow!);
-      (window as any).__nativeFetch = nativeFn;
-      (window as any).__nativeFetchIframe = iframe; // prevent GC
-      console.log('[safeFetch] Storefront: extracted native fetch from persistent hidden iframe');
-      return nativeFn;
-    } catch (e) {
-      console.warn('[safeFetch] Storefront: iframe extraction failed, falling back to window.fetch', e);
-    }
-  }
+    const iframePromise = _iframeFetch(input, init).then(r => {
+      (window as any).__safeFetchImpl = 'iframe';
+      console.log(`[safeFetch] iframe resolved ${url.substring(0, 80)} in ${Date.now() - t}ms`);
+      return r;
+    });
 
-  // 3. Non-storefront or fallback: use window.fetch (App Bridge is expected)
-  return fetch;
+    // Race: if iframe fetch doesn't settle in 3s, try window.fetch as fallback
+    const fallbackPromise = new Promise<Response>((resolve, reject) => {
+      setTimeout(() => {
+        console.warn(`[safeFetch] iframe fetch stalled for ${url.substring(0, 80)}, falling back to window.fetch`);
+        window.fetch(input as RequestInfo, init).then(r => {
+          (window as any).__safeFetchImpl = 'window.fetch-fallback';
+          console.log(`[safeFetch] window.fetch fallback resolved in ${Date.now() - t}ms`);
+          resolve(r);
+        }).catch(reject);
+      }, 3000);
+    });
+
+    return Promise.race([iframePromise, fallbackPromise]);
+  };
 })();
 
 /**
@@ -1448,12 +1482,13 @@ export default function EmbedDesign() {
           ]);
 
         // Phase 1: submit job
-        const fetchImpl = (window as any).__nativeFetch ? '__nativeFetch' : 'window.fetch';
-        console.log('[SF UI] about to POST', endpoint, { bodyKeys: Object.keys(payload), shop: payload.shop, runtimeMode, fetchImpl, ts: Date.now() });
+        const reqId = crypto.randomUUID();
+        const fetchImpl = (window as any).__safeFetchImpl || ((window as any).__nativeFetch ? 'iframe' : 'window.fetch');
+        console.log('[SF UI] about to POST', endpoint, { reqId, bodyKeys: Object.keys(payload), shop: payload.shop, runtimeMode, fetchImpl, ts: Date.now() });
         const postStart = Date.now();
         const fetchPromise = safeFetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-Req-Id": reqId },
           body: JSON.stringify(payload),
         });
         console.log('[SF UI] safeFetch returned promise in', Date.now() - postStart, 'ms (not yet resolved)');
@@ -1492,7 +1527,7 @@ export default function EmbedDesign() {
           await new Promise<void>(r => setTimeout(r, 2000));
           try {
             const statusRes = await raceTimeout(
-              safeFetch(statusUrl),
+              safeFetch(statusUrl, { headers: { "X-Req-Id": reqId } }),
               15_000,
               'GET /generate/status',
             );
