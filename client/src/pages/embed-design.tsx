@@ -182,73 +182,48 @@ function normalizeVariantId(raw: string | number): string {
  * and makes the extracted fetch silently hang (the original bug).
  */
 /**
- * Get a native (unpatched) fetch reference for storefront use.
- * Returns null if not on storefront or extraction fails.
+ * Minimal fetch wrapper for all embed contexts.
+ * Uses window.fetch directly with credentials:omit and mode:cors.
+ * No iframe extraction, no race logic — deterministic and cross-origin safe.
  */
-function _getIframeFetch(): typeof fetch | null {
-  if (typeof window === 'undefined') return null;
-  if ((window as any).__nativeFetch) return (window as any).__nativeFetch;
+const safeFetch: typeof fetch = async (input, init = {}) => {
+  const reqId =
+    (init.headers && (init.headers as any)["X-Req-Id"]) ||
+    crypto.randomUUID();
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+
+  console.log("[safeFetch] START", {
+    url: url.substring(0, 120),
+    method: init.method || "GET",
+    reqId,
+    ts: Date.now(),
+  });
+
   try {
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'display:none!important;width:0;height:0;border:0;position:absolute;';
-    iframe.setAttribute('aria-hidden', 'true');
-    document.documentElement.appendChild(iframe);
-    const fn = iframe.contentWindow!.fetch.bind(iframe.contentWindow!);
-    (window as any).__nativeFetch = fn;
-    (window as any).__nativeFetchIframe = iframe;
-    console.log('[safeFetch] Extracted native fetch from persistent hidden iframe');
-    return fn;
-  } catch (e) {
-    console.warn('[safeFetch] iframe extraction failed:', e);
-    return null;
-  }
-}
-
-const _isStorefrontPage = typeof window !== 'undefined' && (
-  window.location.pathname.startsWith('/s/') ||
-  new URLSearchParams(window.location.search).get('storefront') === 'true'
-);
-const _iframeFetch = _isStorefrontPage ? _getIframeFetch() : null;
-
-/**
- * Storefront-safe fetch with automatic fallback.
- * Tries iframe-native fetch first; if it doesn't resolve within 3s,
- * races against window.fetch so requests never silently hang.
- */
-const safeFetch: typeof fetch = (() => {
-  if (typeof window === 'undefined') return fetch;
-  if (!_isStorefrontPage) return fetch;
-
-  if (!_iframeFetch) {
-    console.warn('[safeFetch] No iframe fetch available, using window.fetch directly');
-    return fetch;
-  }
-
-  return (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const t = Date.now();
-
-    const iframePromise = _iframeFetch(input, init).then(r => {
-      (window as any).__safeFetchImpl = 'iframe';
-      console.log(`[safeFetch] iframe resolved ${url.substring(0, 80)} in ${Date.now() - t}ms`);
-      return r;
+    const res = await window.fetch(input as RequestInfo, {
+      ...init,
+      credentials: "omit",
+      mode: "cors",
     });
 
-    // Race: if iframe fetch doesn't settle in 3s, try window.fetch as fallback
-    const fallbackPromise = new Promise<Response>((resolve, reject) => {
-      setTimeout(() => {
-        console.warn(`[safeFetch] iframe fetch stalled for ${url.substring(0, 80)}, falling back to window.fetch`);
-        window.fetch(input as RequestInfo, init).then(r => {
-          (window as any).__safeFetchImpl = 'window.fetch-fallback';
-          console.log(`[safeFetch] window.fetch fallback resolved in ${Date.now() - t}ms`);
-          resolve(r);
-        }).catch(reject);
-      }, 3000);
+    console.log("[safeFetch] RESPONSE", {
+      url: url.substring(0, 120),
+      status: res.status,
+      reqId,
+      ts: Date.now(),
     });
 
-    return Promise.race([iframePromise, fallbackPromise]);
-  };
-})();
+    return res;
+  } catch (err) {
+    console.error("[safeFetch] ERROR", {
+      url: url.substring(0, 120),
+      reqId,
+      err,
+      ts: Date.now(),
+    });
+    throw err;
+  }
+};
 
 /**
  * Module-scoped timeout wrapper for use outside of useEffect closures (e.g. useMutation).
@@ -281,7 +256,7 @@ async function fetchWithTimeoutSimple(
 let __embedInstanceActive = false;
 
 console.log('[EmbedDesign] API Base URL:', API_BASE);
-console.log('[EmbedDesign] Using native fetch bypass:', !!(typeof window !== 'undefined' && (window as any).__nativeFetch));
+console.log('[EmbedDesign] safeFetch: direct window.fetch (credentials omit, mode cors)');
 
 // DIAGNOSTIC: Quick sanity check on module load using safeFetch (runs once)
 if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
@@ -1483,7 +1458,7 @@ export default function EmbedDesign() {
 
         // Phase 1: submit job
         const reqId = crypto.randomUUID();
-        const fetchImpl = (window as any).__safeFetchImpl || ((window as any).__nativeFetch ? 'iframe' : 'window.fetch');
+        const fetchImpl = 'window.fetch';
         console.log('[SF UI] about to POST', endpoint, { reqId, bodyKeys: Object.keys(payload), shop: payload.shop, runtimeMode, fetchImpl, ts: Date.now() });
         const postStart = Date.now();
         const fetchPromise = safeFetch(endpoint, {
