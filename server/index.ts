@@ -339,58 +339,47 @@ app.use((req, res, next) => {
 
 
   // ────────────────────────────────────────────────────────────
-  // Proxy-aware SPA HTML route
+  // Proxy-aware static assets + SPA HTML for /s/designer
   //
-  // When proxied (req.isProxied=true), serve index.html with:
-  //   - All asset URLs rewritten to /apps/appai/assets/... so they
-  //     load through the Shopify App Proxy (same origin, no CORS)
-  //   - window.__APPAI_API_BASE__="/apps/appai" injected
-  // Non-proxied requests fall through to Vite (dev) or serveStatic (prod).
+  // Vite builds with base: "./" so HTML contains relative asset refs:
+  //   <script src="./assets/index-xxx.js">
+  // Browser at /apps/appai/s/designer resolves these to /apps/appai/s/assets/...
+  // Shopify proxies → /api/proxy/s/assets/... → rewriter → /s/assets/...
+  // This static middleware serves them from dist/public.
   // ────────────────────────────────────────────────────────────
-  app.get("/s/designer", (req: Request, res: Response, next: NextFunction) => {
-    if (!(req as any).isProxied) return next();
+  {
+    const candidateA = path.resolve(__dirname, "public");
+    const candidateB = path.resolve(__dirname, "../public");
+    const publicDir = fs.existsSync(path.join(candidateA, "index.html")) ? candidateA
+                    : fs.existsSync(path.join(candidateB, "index.html")) ? candidateB
+                    : candidateA;
 
-    const candidateA = path.resolve(__dirname, "public", "index.html");
-    const candidateB = path.resolve(__dirname, "../public", "index.html");
-    const indexPath = fs.existsSync(candidateA) ? candidateA
-                    : fs.existsSync(candidateB) ? candidateB
-                    : null;
+    // Serve assets at /s/ so /s/assets/index-xxx.js → publicDir/assets/index-xxx.js
+    app.use("/s", express.static(publicDir, { index: false }));
+    console.log(`[APP PROXY] Static assets mounted at /s → ${publicDir}`);
 
-    if (!indexPath) {
-      console.error("[APP PROXY HTML] index.html not found — checked:", candidateA, candidateB);
-      return res.status(503).send("App is starting up. Please try again in a moment.");
-    }
+    // Proxied designer HTML handler
+    app.get("/s/designer", (req: Request, res: Response, next: NextFunction) => {
+      if (!(req as any).isProxied) return next();
 
-    const PROXY_BASE = "/apps/appai";
-    let html = fs.readFileSync(indexPath, "utf-8");
+      const indexPath = path.join(publicDir, "index.html");
+      if (!fs.existsSync(indexPath)) {
+        console.error("[APP PROXY HTML] index.html not found at", indexPath);
+        return res.status(503).send("App is starting up. Please try again in a moment.");
+      }
 
-    // Rewrite any absolute Railway asset URLs to proxy path
-    html = html.replace(
-      /https:\/\/appai-pod-production\.up\.railway\.app\/assets\//g,
-      `${PROXY_BASE}/assets/`
-    );
+      let html = fs.readFileSync(indexPath, "utf-8");
 
-    // Rewrite relative /assets/ refs in src="" and href="" to proxy path
-    html = html.replace(
-      /((?:src|href)=")\/assets\//g,
-      `$1${PROXY_BASE}/assets/`
-    );
+      // Inject API_BASE so all API calls route through Shopify App Proxy
+      const injection = `<script>window.__APPAI_API_BASE__="/apps/appai";</script>`;
+      html = html.replace("<head>", `<head>\n  ${injection}`);
 
-    // Rewrite favicon
-    html = html.replace(
-      /((?:src|href)=")\/favicon/g,
-      `$1${PROXY_BASE}/favicon`
-    );
-
-    // Inject API_BASE before first <script>
-    const injection = `<script>window.__APPAI_API_BASE__="${PROXY_BASE}";</script>`;
-    html = html.replace("<head>", `<head>\n  ${injection}`);
-
-    console.log(`[APP PROXY HTML] Serving index.html — assets via ${PROXY_BASE}, API_BASE=${PROXY_BASE}`);
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("X-Frame-Options", "ALLOWALL");
-    res.send(html);
-  });
+      console.log(`[APP PROXY HTML] Serving proxied designer HTML`);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("X-Frame-Options", "ALLOWALL");
+      res.send(html);
+    });
+  }
 
   // ✅ 3) Vite in dev, static in prod (LAST)
   if (process.env.NODE_ENV === "production") {
