@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -50,56 +51,7 @@ interface ProductTypeConfig {
   baseMockupImages?: Record<string, string>;
 }
 
-/**
- * Get the API base URL for the embed.
- *
- * Priority:
- * 1. window.__APPAI_API_BASE__ (injected by server for App Proxy context)
- * 2. data-appai-api-base attribute on script tag
- * 3. App Proxy path detection: /apps/appai/* → API_BASE = "/apps/appai"
- * 4. Same-origin Railway (iframe loaded directly from Railway) → ""
- * 5. Hard-coded Railway fallback
- *
- * App Proxy flow:
- *   iframe src = https://{shop}/apps/appai/s/designer
- *   window.__APPAI_API_BASE__ injected = "/apps/appai"
- *   API calls: /apps/appai/api/storefront/generate  (same Shopify origin, no CORS)
- *   Shopify proxies → https://railway.app/api/storefront/generate
- */
-function getApiBase(): string {
-  if (typeof window === 'undefined') return '';
-
-  // 1. Server-injected override (set in proxied index.html)
-  if ((window as any).__APPAI_API_BASE__ !== undefined) {
-    return (window as any).__APPAI_API_BASE__;
-  }
-
-  // 2. Script data attribute
-  if (typeof document !== 'undefined') {
-    const script = document.querySelector('script[data-appai-api-base]');
-    if (script) {
-      const base = script.getAttribute('data-appai-api-base');
-      if (base !== null) return base;
-    }
-  }
-
-  // 3. Running inside App Proxy: path starts with /apps/appai/
-  if (window.location.pathname.startsWith('/apps/appai/')) {
-    return '/apps/appai';
-  }
-
-  // 4. Running directly on Railway (same origin — empty base works)
-  const origin = window.location.origin;
-  if (origin.includes('railway.app') || origin.includes('localhost') || origin.includes('127.0.0.1')) {
-    return '';
-  }
-
-  // 5. Fallback
-  return 'https://appai-pod-production.up.railway.app';
-}
-
-// Get API base once at module load
-const API_BASE = getApiBase();
+// API_BASE and buildAppUrl imported from @/lib/urlBase
 
 /**
  * Parse JSON from a Response, with a guard against HTML responses.
@@ -132,9 +84,8 @@ function isDataUrl(url: string): boolean {
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  if (isDataUrl(url)) return url; // data URL — cannot prepend API_BASE
-  // Relative path like /objects/designs/xxx.png
-  return API_BASE + url;
+  if (isDataUrl(url)) return url;
+  return buildAppUrl(url);
 }
 
 /**
@@ -161,8 +112,8 @@ async function ensureHostedUrl(url: string): Promise<string> {
   // Already hosted — pass through
   if (url.startsWith("https://") || url.startsWith("http://")) return url;
 
-  // Relative path — resolve to absolute
-  if (url.startsWith("/")) return API_BASE + url;
+  // Relative path — resolve to absolute (buildAppUrl prevents double-prefix)
+  if (url.startsWith("/")) return buildAppUrl(url);
 
   // data: URL — upload directly to server storage
   if (isDataUrl(url)) {
@@ -174,7 +125,7 @@ async function ensureHostedUrl(url: string): Promise<string> {
     });
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
     const { objectPath } = await uploadRes.json();
-    const hostedUrl = API_BASE + objectPath;
+    const hostedUrl = buildAppUrl(objectPath);
     console.log("[EmbedDesign] Data URL uploaded, hosted URL:", hostedUrl);
     return hostedUrl;
   }
@@ -311,7 +262,7 @@ function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   const path = window.location.pathname;
 
   // App Proxy path: /apps/appai/s/designer (iframe on Shopify domain via proxy)
-  if (path.startsWith('/apps/appai/s/')) return 'storefront';
+  if (path.startsWith(`${PROXY_PREFIX}/s/`)) return 'storefront';
 
   // Direct Railway path: /s/designer
   if (path.startsWith('/s/')) return 'storefront';
@@ -644,8 +595,8 @@ export default function EmbedDesign() {
       if (url.startsWith('http')) {
         fullUrl = url;
       } else {
-        console.error(`[EmbedDesign] BUG: Relative URL passed to fetchWithTimeout: ${url} — auto-fixing with API_BASE`);
-        fullUrl = `${API_BASE}${url}`;
+        console.error(`[EmbedDesign] BUG: Relative URL passed to fetchWithTimeout: ${url} — auto-fixing with buildAppUrl`);
+        fullUrl = buildAppUrl(url);
       }
       const reqId = Math.random().toString(36).substring(2, 6);
       const startTime = Date.now();
@@ -1543,7 +1494,7 @@ export default function EmbedDesign() {
             const status = await safeJson(statusRes, 'GET /generate/status');
             console.log('[EmbedDesign] Job status:', status.status, jobId);
             if (status.status === 'complete') {
-              const abs = (u?: string) => u && u.startsWith('/') ? `${API_BASE}${u}` : u;
+              const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
               return { ...status, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
             }
             if (status.status === 'failed') throw new Error(status.error || 'Generation failed');

@@ -4,6 +4,7 @@ import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ShopifyProvider } from "./lib/shopify";
+import { ROUTER_BASE } from "./lib/urlBase";
 
 import Home from "@/pages/home";
 import DesignPage from "@/pages/design";
@@ -21,12 +22,6 @@ import AdminCredits from "@/pages/admin/credits";
 import AdminCreateProduct from "@/pages/admin/create-product";
 import AdminCustomizerPages from "@/pages/admin/customizer-pages";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
-
-// Compute router base: when running through Shopify App Proxy the pathname
-// starts with /apps/appai — wouter needs to strip that prefix to match routes.
-const routerBase = (typeof window !== "undefined" && (window as any).__APPAI_ROUTER_BASE__)
-  || (typeof window !== "undefined" && window.location.pathname.startsWith("/apps/appai") ? "/apps/appai" : "")
-  || "";
 
 function AppRouter() {
   return (
@@ -63,7 +58,7 @@ function AppRouter() {
 
 export default function App() {
   return (
-    <WouterRouter base={routerBase}>
+    <WouterRouter base={ROUTER_BASE}>
       <ShopifyProvider>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
