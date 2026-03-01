@@ -1456,23 +1456,17 @@ export default function EmbedDesign() {
             ),
           ]);
 
-        // Phase 1: submit job
-        const reqId = crypto.randomUUID();
-        const fetchImpl = 'window.fetch';
-        console.log('[SF UI] about to POST', endpoint, { reqId, bodyKeys: Object.keys(payload), shop: payload.shop, runtimeMode, fetchImpl, ts: Date.now() });
-        const postStart = Date.now();
-        const fetchPromise = safeFetch(endpoint, {
+        // Phase 1: submit job — bare window.fetch, no wrappers
+        console.log("DIRECT FETCH CALL");
+        const jobRes = await window.fetch("/api/storefront/generate", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-Req-Id": reqId },
+          headers: {
+            "Content-Type": "application/json",
+            "X-Req-Id": "direct-test",
+          },
           body: JSON.stringify(payload),
         });
-        console.log('[SF UI] safeFetch returned promise in', Date.now() - postStart, 'ms (not yet resolved)');
-        fetchPromise.then(
-          () => console.log('[SF UI] POST resolved in', Date.now() - postStart, 'ms'),
-          (e: any) => console.warn('[SF UI] POST rejected in', Date.now() - postStart, 'ms:', e?.message),
-        );
-        const jobRes = await raceTimeout(fetchPromise, 60_000, 'POST /generate');
-        console.log('[SF UI] POST complete — status', jobRes.status, 'in', Date.now() - postStart, 'ms');
+        console.log("DIRECT FETCH RESOLVED", jobRes.status);
         const jobData = await jobRes.json();
         if (!jobRes.ok) {
           if (jobData.error === 'FREE_LIMIT_REACHED') {
