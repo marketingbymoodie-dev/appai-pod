@@ -7,7 +7,7 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2024-10"
+api_version = "2026-01"
 
 [access_scopes]
 # write_content required for creating/updating Shopify Pages via Admin API

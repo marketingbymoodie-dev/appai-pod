@@ -101,6 +101,22 @@ function getApiBase(): string {
 // Get API base once at module load
 const API_BASE = getApiBase();
 
+/**
+ * Parse JSON from a Response, with a guard against HTML responses.
+ * Throws a descriptive error instead of cryptic "Unexpected token <".
+ */
+async function safeJson<T = any>(res: Response, label?: string): Promise<T> {
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("application/json") && !ct.includes("text/json")) {
+    const text = await res.text().catch(() => "(unreadable)");
+    throw new Error(
+      `Expected JSON from ${label ?? res.url} but got ${ct || "no content-type"}. ` +
+      `Status ${res.status}. Body: ${text.slice(0, 200)}`
+    );
+  }
+  return res.json() as Promise<T>;
+}
+
 /** Check if a URL is a base64 data URL */
 function isDataUrl(url: string): boolean {
   return !!url && url.startsWith("data:");
@@ -276,7 +292,7 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
   const pingUrl = `${API_BASE}/api/storefront/ping`;
   const start = Date.now();
   safeFetch(pingUrl)
-    .then(r => r.json())
+    .then(r => safeJson(r, '/api/storefront/ping'))
     .then(data => console.log(`[EmbedDesign] Ping OK in ${Date.now() - start}ms:`, data))
     .catch(err => console.error(`[EmbedDesign] Ping FAILED in ${Date.now() - start}ms:`, err.message));
 }
@@ -817,7 +833,7 @@ export default function EmbedDesign() {
           setProductTypeError(null);
           // Still fetch style presets — lightweight, non-blocking
           fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`)
-            .then(r => r.json())
+            .then(r => safeJson(r, '/api/config'))
             .then(c => { if (!isCancelled && c.stylePresets) setStylePresets(c.stylePresets); })
             .catch(() => {});
           if (!isCancelled) setConfigLoading(false);
@@ -886,7 +902,7 @@ export default function EmbedDesign() {
         console.log('[EmbedDesign] Designer fetch URL:', designerUrl);
 
         const [configRes, designerRes] = await Promise.all([
-          fetchWithTimeout(`${API_BASE}/api/config?${cacheBuster}`).then(res => res.json()).catch(() => ({ stylePresets: [] })),
+          fetchWithTimeout(`${API_BASE}/api/config?${cacheBuster}`).then(res => safeJson(res, '/api/config')).catch(() => ({ stylePresets: [] })),
           fetchWithRetry(designerUrl)
         ]);
 
@@ -1484,7 +1500,7 @@ export default function EmbedDesign() {
         });
         const jobRes = await raceTimeout(fetchPromise, 60_000, 'POST /generate');
         console.log('[SF UI] POST complete — status', jobRes.status, 'in', Date.now() - postStart, 'ms');
-        const jobData = await jobRes.json();
+        const jobData = await safeJson(jobRes, 'POST /generate');
         if (!jobRes.ok) {
           if (jobData.error === 'FREE_LIMIT_REACHED') {
             setFreeLimitReached(true);
@@ -1524,7 +1540,7 @@ export default function EmbedDesign() {
               continue;
             }
             consecutiveErrors = 0;
-            const status = await statusRes.json();
+            const status = await safeJson(statusRes, 'GET /generate/status');
             console.log('[EmbedDesign] Job status:', status.status, jobId);
             if (status.status === 'complete') {
               const abs = (u?: string) => u && u.startsWith('/') ? `${API_BASE}${u}` : u;
