@@ -61,23 +61,23 @@ function verifyShopifyProxyHmac(query: Record<string, string>): boolean {
   }
 }
 
+// Proxy root: /apps/appai/ → redirect to /apps/appai/s/designer
+app.get(["/api/proxy", "/api/proxy/"], (req, res) => {
+  const qs = req.originalUrl.includes("?") ? req.originalUrl.slice(req.originalUrl.indexOf("?")) : "";
+  console.log(`[APP PROXY] Root hit → redirecting to /api/proxy/s/designer${qs}`);
+  return res.redirect(302, `/api/proxy/s/designer${qs}`);
+});
+
 app.use((req, res, next) => {
   if (!req.url.startsWith("/api/proxy/")) return next();
 
-  // Determine what follows /api/proxy:
-  //   /api/proxy/api/storefront/generate → suffix = /api/storefront/generate  (REWRITE)
-  //   /api/proxy/s/designer             → suffix = /s/designer                (REWRITE)
-  //   /api/proxy/customizer-page        → suffix = /customizer-page           (DO NOT rewrite — has its own route)
   const suffix = req.url.slice("/api/proxy".length);
   const shouldRewrite = suffix.startsWith("/api/") || suffix.startsWith("/s/");
 
   if (!shouldRewrite) {
-    // Existing /api/proxy/* routes (customizer-page, customizer-pages, objects, designs)
-    // already have their own handlers + proxyAuth in routes.ts — pass through untouched.
     return next();
   }
 
-  // Verify Shopify HMAC — reject in production if invalid
   const query = req.query as Record<string, string>;
   const valid = verifyShopifyProxyHmac(query);
   if (!valid) {
@@ -89,7 +89,7 @@ app.use((req, res, next) => {
   }
 
   const original = req.url;
-  req.url = suffix; // e.g. /api/storefront/generate?... or /s/designer?...
+  req.url = suffix;
   (req as any).isProxied = true;
   console.log(`[APP PROXY] ${req.method} ${original} → ${req.url} shop=${query.shop ?? "?"}`);
   next();
