@@ -72,7 +72,8 @@ app.use((req, res, next) => {
   if (!req.url.startsWith("/api/proxy/")) return next();
 
   const suffix = req.url.slice("/api/proxy".length);
-  const shouldRewrite = suffix.startsWith("/api/") || suffix.startsWith("/s/");
+  const shouldRewrite = suffix.startsWith("/api/") || suffix.startsWith("/s/")
+    || suffix.startsWith("/assets/") || suffix.startsWith("/favicon");
 
   if (!shouldRewrite) {
     return next();
@@ -368,13 +369,21 @@ app.use((req, res, next) => {
         return res.status(503).send("App is starting up. Please try again in a moment.");
       }
 
+      const P = "/apps/appai";
       let html = fs.readFileSync(indexPath, "utf-8");
 
-      // Inject API_BASE so all API calls route through Shopify App Proxy
-      const injection = `<script>window.__APPAI_API_BASE__="/apps/appai";</script>`;
+      // Rewrite absolute /assets/ refs to proxy path (handles base:"/" builds)
+      html = html.replace(/((?:src|href)=")\/assets\//g, `$1${P}/assets/`);
+      html = html.replace(/((?:src|href)=")\/favicon/g, `$1${P}/favicon`);
+
+      // Rewrite relative ./assets/ refs to proxy path (handles base:"./" builds)
+      html = html.replace(/((?:src|href)=")\.\/assets\//g, `$1${P}/assets/`);
+
+      // Inject globals: API base + router base
+      const injection = `<script>window.__APPAI_API_BASE__="${P}";window.__APPAI_ROUTER_BASE__="${P}";</script>`;
       html = html.replace("<head>", `<head>\n  ${injection}`);
 
-      console.log(`[APP PROXY HTML] Serving proxied designer HTML`);
+      console.log(`[APP PROXY HTML] Serving proxied designer HTML — assets+api via ${P}`);
       res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.setHeader("X-Frame-Options", "ALLOWALL");
       res.send(html);
