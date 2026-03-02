@@ -262,7 +262,12 @@ export function ProductMockup({
     }
 
     if (displayUrl) {
-      console.log("[ProductMockup] Rendering image with URL:", displayUrl, "scale:", transform.scale);
+      // Apply CSS transform to give immediate visual feedback when user adjusts zoom/position.
+      // scale: user's zoom level (100 = 1:1, 150 = 50% larger, etc.)
+      // x/y: 0–100 positioning offset mapped to translate (0 = far left/top, 100 = far right/bottom)
+      const scaleVal = transform.scale / 100;
+      const xOffset = transform.x - 50; // -50..50 range
+      const yOffset = transform.y - 50; // -50..50 range
       return (
         <img
           src={displayUrl}
@@ -271,6 +276,8 @@ export function ProductMockup({
           style={{
             pointerEvents: "none",
             borderRadius: printShape === "circle" ? "50%" : undefined,
+            transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
+            transformOrigin: "center center",
           }}
           draggable={false}
           data-testid="img-generated"

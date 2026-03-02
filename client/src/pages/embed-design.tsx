@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   ProductMockup,
@@ -1413,7 +1413,7 @@ export default function EmbedDesign() {
 
   // Sync cart state with the parent page's Add to Cart button (storefront mode only)
   useEffect(() => {
-    if (!isStorefront || runtimeMode === 'standalone') return;
+    if (!isStorefront) return;
 
     const hasMockups = productTypeConfig?.hasPrintifyMockups;
     const mockupsReady = printifyMockups.length > 0 || printifyMockupImages.length > 0;
@@ -1993,13 +1993,10 @@ export default function EmbedDesign() {
     quantity: number;
     properties: Record<string, string>;
   }): Promise<{ success: boolean; error?: string }> => {
-    // Fail fast if bridge is not ready — don't waste 12s on a timeout
+    // Log bridge state for diagnostics but don't fail fast — allow postMessage attempt
+    // The parent sends BRIDGE_READY every 500ms, so React state may lag real connectivity
     if (!bridgeReady && !(window as any).__aiArtBridgeReady) {
-      console.error('[Design Studio] addToCartStorefront called but bridge is NOT ready');
-      return Promise.resolve({
-        success: false,
-        error: 'The storefront add-to-cart bridge is not connected. Please refresh the page and try again.',
-      });
+      console.warn('[Design Studio] addToCartStorefront: bridge not confirmed yet, attempting anyway');
     }
 
     return new Promise((resolve) => {
@@ -2104,10 +2101,15 @@ export default function EmbedDesign() {
     // Normalize variant ID (strip GID prefix if present)
     const normalizedVariant = normalizeVariantId(variantId);
 
-    // Build the full artwork URL — try to get hosted, but don't block cart add
+    // Build the full artwork URL — try to get hosted with a 10s cap, but don't block cart add
     let artworkFullUrl = '';
     try {
-      artworkFullUrl = await ensureHostedUrl(generatedDesign.imageUrl);
+      artworkFullUrl = await Promise.race([
+        ensureHostedUrl(generatedDesign.imageUrl),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('ensureHostedUrl timed out after 10s')), 10_000)
+        ),
+      ]);
       // If we had to upload, also update stored design
       if (artworkFullUrl !== toAbsoluteImageUrl(generatedDesign.imageUrl)) {
         setGeneratedDesign(prev => prev ? { ...prev, imageUrl: artworkFullUrl } : prev);
@@ -2431,6 +2433,17 @@ export default function EmbedDesign() {
         }
         sendIframeReady();
       }, 2_000);
+
+      // Optimistic fallback: if BRIDGE_READY hasn't arrived in 4s, assume the parent
+      // is listening and allow the ATC button to proceed. The postMessage attempt will
+      // either succeed or time out gracefully.
+      setTimeout(() => {
+        if (!(window as any).__aiArtBridgeReady) {
+          console.warn('[Design Studio] No BRIDGE_READY in 4s — enabling ATC optimistically');
+          setBridgeReady(true);
+          (window as any).__aiArtBridgeReady = true;
+        }
+      }, 4_000);
 
       // If bridge doesn't connect in 20s, show actionable error
       bridgeTimeout = setTimeout(() => {
@@ -3037,6 +3050,67 @@ export default function EmbedDesign() {
               />
             )}
 
+            {/* Add to Cart — shown in both admin embed and storefront after design is ready */}
+            {(isShopify || isStorefront) && generatedDesign && (
+              <div className="flex flex-col gap-2">
+                {addedToCart ? (
+                  <>
+                    <Button
+                      className="w-full h-12 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
+                      onClick={() => { window.parent.location.href = '/cart'; }}
+                      data-testid="button-view-cart"
+                    >
+                      <CheckCircle className="w-5 h-5 mr-2" />
+                      Added to Cart — View Cart
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => { setAddedToCart(false); setGeneratedDesign(null); setPrompt(""); }}
+                    >
+                      Create Another Design
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      onClick={handleAddToCart}
+                      disabled={isAddingToCart || atcWaitingForMockups}
+                      className="w-full h-12 text-base font-medium"
+                      data-testid="button-add-to-cart"
+                    >
+                      {isAddingToCart ? (
+                        <>
+                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                          Adding to Cart...
+                        </>
+                      ) : atcWaitingForMockups ? (
+                        <>
+                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                          Generating preview…
+                        </>
+                      ) : isStorefront && bridgeError ? (
+                        <>
+                          <ShoppingCart className="w-5 h-5 mr-2" />
+                          Add to Cart (unavailable)
+                        </>
+                      ) : (
+                        <>
+                          <ShoppingCart className="w-5 h-5 mr-2" />
+                          Add to Cart
+                        </>
+                      )}
+                    </Button>
+                    {isStorefront && bridgeError && (
+                      <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
+                        {bridgeError}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Mockup gallery / status */}
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
@@ -3133,89 +3207,12 @@ export default function EmbedDesign() {
                     Viewing a shared design. Generate your own or add to cart!
                   </div>
                 )}
-                
-                {/* Shopify Add to Cart - shown in admin embed only;
-                    in storefront mode the button lives outside the iframe on the product page */}
-                {isShopify && !isStorefront && (
-                  <>
-                    {addedToCart ? (
-                      <>
-                        <Button
-                          className="w-full h-12 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-                          onClick={() => { window.parent.location.href = '/cart'; }}
-                          data-testid="button-view-cart"
-                        >
-                          <CheckCircle className="w-5 h-5 mr-2" />
-                          Added to Cart — View Cart
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="w-full"
-                          onClick={() => { setAddedToCart(false); setGeneratedDesign(null); setPrompt(""); }}
-                        >
-                          Create Another Design
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button
-                          onClick={handleAddToCart}
-                          disabled={
-                            isAddingToCart ||
-                            (isStorefront && !bridgeReady) ||
-                            atcWaitingForMockups
-                          }
-                          className="w-full h-12 text-base font-medium"
-                          data-testid="button-add-to-cart"
-                        >
-                          {isAddingToCart ? (
-                            <>
-                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                              Adding to Cart...
-                            </>
-                          ) : atcWaitingForMockups ? (
-                            <>
-                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                              Generating preview…
-                            </>
-                          ) : isStorefront && bridgeError ? (
-                            <>
-                              <ShoppingCart className="w-5 h-5 mr-2" />
-                              Add to Cart (unavailable)
-                            </>
-                          ) : isStorefront && !bridgeReady ? (
-                            <>
-                              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                              Connecting to store...
-                            </>
-                          ) : (
-                            <>
-                              <ShoppingCart className="w-5 h-5 mr-2" />
-                              Add to Cart
-                            </>
-                          )}
-                        </Button>
-                        {isStorefront && bridgeError && (
-                          <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
-                            {bridgeError}
-                          </p>
-                        )}
-                        {isStorefront && !bridgeReady && !bridgeError && (
-                          <p className="text-xs text-muted-foreground text-center">
-                            Waiting for storefront connection. If this persists, please refresh the page.
-                          </p>
-                        )}
-                      </>
-                    )}
-                  </>
-                )}
-                
+
                 {/* Secondary actions */}
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
                     onClick={() => {
-                      // Validation for required fields
                       if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
                         alert("Please select a style before generating");
                         return;
@@ -3233,6 +3230,40 @@ export default function EmbedDesign() {
                     <RefreshCw className="w-4 h-4 mr-2" />
                     Regenerate
                   </Button>
+
+                  {/* Refresh Mockups - re-fetches product mockups using current artwork + transform */}
+                  {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                          setMockupError(null);
+                          setMockupFailed(false);
+                          setPrintifyMockups([]);
+                          setPrintifyMockupImages([]);
+                          setSelectedMockupIndex(0);
+                          fetchPrintifyMockups(
+                            toAbsoluteImageUrl(generatedDesign.imageUrl),
+                            productTypeConfig.id,
+                            selectedSize,
+                            selectedFrameColor || 'default',
+                            transform.scale,
+                            transform.x,
+                            transform.y
+                          );
+                        }
+                      }}
+                      disabled={mockupLoading || !generatedDesign?.imageUrl}
+                      title="Refresh Mockups"
+                      data-testid="button-refresh-mockups"
+                    >
+                      {mockupLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <RefreshCcw className="w-4 h-4" />
+                      )}
+                    </Button>
+                  )}
 
                   <Button
                     variant="outline"
