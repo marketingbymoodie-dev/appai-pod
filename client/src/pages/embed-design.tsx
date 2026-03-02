@@ -162,44 +162,52 @@ function normalizeVariantId(raw: string | number): string {
  */
 /**
  * Minimal fetch wrapper for all embed contexts.
- * Uses window.fetch directly with credentials:omit and mode:cors.
- * No iframe extraction, no race logic — deterministic and cross-origin safe.
+ *
+ * Key points:
+ * - Uses window.fetch directly (no iframe tricks, no App Bridge interception)
+ * - credentials:"same-origin" so Shopify proxy cookies are sent correctly
+ * - NO mode:"cors" override — let the browser use the natural default so
+ *   same-origin proxy requests (/apps/appai/...) are not forced into CORS mode
+ * - Clears the caller-supplied signal via finally is the caller's responsibility
+ * - Only logs "ABORTED" when signal.aborted is true (genuine abort/timeout)
  */
 const safeFetch: typeof fetch = async (input, init = {}) => {
   const reqId =
     (init.headers && (init.headers as any)["X-Req-Id"]) ||
     crypto.randomUUID();
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+  const start = Date.now();
 
   console.log("[safeFetch] START", {
     url: url.substring(0, 120),
     method: init.method || "GET",
     reqId,
-    ts: Date.now(),
+    ts: start,
   });
 
   try {
     const res = await window.fetch(input as RequestInfo, {
       ...init,
-      credentials: "omit",
-      mode: "cors",
+      credentials: "same-origin",
+      // No mode override — browser default is correct for proxy same-origin requests
     });
 
     console.log("[safeFetch] RESPONSE", {
       url: url.substring(0, 120),
       status: res.status,
+      ms: Date.now() - start,
       reqId,
-      ts: Date.now(),
     });
 
     return res;
-  } catch (err) {
-    console.error("[safeFetch] ERROR", {
-      url: url.substring(0, 120),
-      reqId,
-      err,
-      ts: Date.now(),
-    });
+  } catch (err: any) {
+    const ms = Date.now() - start;
+    const sig = (init as any).signal as AbortSignal | undefined;
+    if (sig?.aborted) {
+      console.error("[safeFetch] ABORTED", { url: url.substring(0, 120), ms, reqId });
+    } else {
+      console.error("[safeFetch] ERROR", { url: url.substring(0, 120), ms, reqId, err });
+    }
     throw err;
   }
 };
@@ -207,6 +215,7 @@ const safeFetch: typeof fetch = async (input, init = {}) => {
 /**
  * Module-scoped timeout wrapper for use outside of useEffect closures (e.g. useMutation).
  * Does not depend on any closure state; safe to call anywhere in the component.
+ * clearTimeout runs in finally — guaranteed regardless of how the promise settles.
  */
 async function fetchWithTimeoutSimple(
   url: string,
@@ -217,16 +226,18 @@ async function fetchWithTimeoutSimple(
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const res = await safeFetch(url, { ...options, signal: controller.signal });
-    clearTimeout(timer);
     if (!res.ok) {
       const body = await res.text().catch(() => res.statusText);
       throw new Error(`HTTP ${res.status}: ${body}`);
     }
     return res;
   } catch (err: any) {
-    clearTimeout(timer);
-    if (err.name === 'AbortError') throw new Error(`Request to ${url.substring(0, 80)} timed out after ${timeout}ms`);
+    if (controller.signal.aborted) {
+      throw new Error(`Request to ${url.substring(0, 80)} timed out after ${timeout}ms`);
+    }
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -583,100 +594,79 @@ export default function EmbedDesign() {
     let isCancelled = false;
 
     /**
-     * Robust fetch with timeout.
-     * - Each call creates its own AbortController (linked to master)
-     * - Timeout ALSO aborts the fetch (doesn't leave it hanging)
-     * - Uses completed flag to prevent race conditions
-     * - Properly cleans up all resources
+     * Fetch with timeout + master-abort linkage.
+     *
+     * Replaces the old new Promise((resolve,reject)=>{...}) pattern which had
+     * a race condition: if safeFetch resolved after the completed flag was set
+     * by any other path, neither resolve() nor reject() would be called and
+     * the Promise would hang until the timeout fired.
+     *
+     * This version uses plain async/await so there is no executor race:
+     * - timeout only calls controller.abort() — it does NOT call reject()
+     * - the single await safeFetch(...) either returns, throws AbortError, or
+     *   throws another network error — all paths are handled in the catch
+     * - clearTimeout runs in finally so it ALWAYS fires after fetch settles
      */
     const fetchWithTimeout = async (url: string, timeout = 60000): Promise<Response> => {
-      // SAFETY: All URLs MUST be absolute. If a relative URL slips through, fix it but warn loudly.
+      // Normalise URL — relative paths must be prefixed
       let fullUrl: string;
-      if (url.startsWith('http')) {
+      if (url.startsWith('http') || url.startsWith('/apps/')) {
         fullUrl = url;
-      } else {
+      } else if (url.startsWith('/')) {
         console.error(`[EmbedDesign] BUG: Relative URL passed to fetchWithTimeout: ${url} — auto-fixing with buildAppUrl`);
         fullUrl = buildAppUrl(url);
+      } else {
+        fullUrl = url;
       }
+
       const reqId = Math.random().toString(36).substring(2, 6);
       const startTime = Date.now();
       const logPrefix = `[EmbedDesign] [${sessionId}/${reqId}]`;
 
-      // Each request gets its own AbortController
-      const requestAbort = new AbortController();
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
-      let completed = false;
-
-      // Check if already cancelled before starting
+      // Bail early if master context is already cancelled
       if (masterAbort.signal.aborted || isCancelled) {
-        console.log(`${logPrefix} Skipping - already cancelled`);
+        console.log(`${logPrefix} Skipping — already cancelled`);
         throw new DOMException('Request aborted', 'AbortError');
       }
 
-      // Link request abort to master - if master aborts, abort this request too
-      const onMasterAbort = () => {
-        if (!completed) {
-          console.log(`${logPrefix} Master abort received`);
-          requestAbort.abort();
-        }
-      };
-      masterAbort.signal.addEventListener('abort', onMasterAbort);
+      const controller = new AbortController();
 
-      // Log FULL URL including query params - critical for debugging
-      console.log(`${logPrefix} START FULL URL: ${fullUrl}`);
+      // Forward master abort into this request's controller
+      const onMasterAbort = () => controller.abort();
+      masterAbort.signal.addEventListener('abort', onMasterAbort, { once: true });
+
+      // Timeout fires the abort signal — it does NOT reject the promise directly.
+      // That way clearTimeout in finally always wins; no dual-settle possible.
+      const timeoutId = setTimeout(() => {
+        console.error(`${logPrefix} TIMEOUT after ${timeout}ms — aborting`);
+        controller.abort();
+      }, timeout);
+
+      console.log(`${logPrefix} START: ${fullUrl}`);
 
       try {
-        const response = await new Promise<Response>((resolve, reject) => {
-          // Set up timeout - IMPORTANT: also aborts the fetch when it fires
-          timeoutId = setTimeout(() => {
-            if (!completed) {
-              completed = true;
-              console.error(`${logPrefix} TIMEOUT after ${timeout}ms - aborting fetch for ${fullUrl.substring(0, 100)}`);
-              requestAbort.abort();
-              reject(new Error(`Request to ${fullUrl.substring(0, 80)} timed out after ${timeout}ms`));
-            }
-          }, timeout);
+        const res = await safeFetch(fullUrl, { signal: controller.signal });
+        const elapsed = Date.now() - startTime;
 
-          // Start the actual fetch — use safeFetch to bypass App Bridge interception
-          safeFetch(fullUrl, { signal: requestAbort.signal })
-            .then(async res => {
-              if (!completed) {
-                completed = true;
-                const elapsed = Date.now() - startTime;
-                if (timeoutId) clearTimeout(timeoutId);
-
-                // Handle 4xx/5xx errors IMMEDIATELY - don't treat them as success
-                if (!res.ok) {
-                  let errorBody = '';
-                  try {
-                    errorBody = await res.text();
-                  } catch (e) {
-                    errorBody = res.statusText;
-                  }
-                  console.error(`${logPrefix} HTTP ${res.status} in ${elapsed}ms: ${errorBody}`);
-                  reject(new Error(`HTTP ${res.status}: ${errorBody || res.statusText}`));
-                  return;
-                }
-
-                console.log(`${logPrefix} OK ${res.status} in ${elapsed}ms`);
-                resolve(res);
-              }
-            })
-            .catch(err => {
-              if (!completed) {
-                completed = true;
-                if (timeoutId) clearTimeout(timeoutId);
-                reject(err);
-              }
-            });
-        });
-
-        return response;
-      } finally {
-        completed = true;
-        if (timeoutId !== null) {
-          clearTimeout(timeoutId);
+        if (!res.ok) {
+          const body = await res.text().catch(() => res.statusText);
+          console.error(`${logPrefix} HTTP ${res.status} in ${elapsed}ms`);
+          throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
         }
+
+        console.log(`${logPrefix} OK ${res.status} in ${elapsed}ms`);
+        return res;
+      } catch (err: any) {
+        const elapsed = Date.now() - startTime;
+        // Translate AbortError into a human-readable timeout message
+        if (controller.signal.aborted) {
+          throw new Error(`Request to ${fullUrl.substring(0, 80)} timed out after ${timeout}ms`);
+        }
+        console.error(`${logPrefix} FAILED in ${elapsed}ms:`, err.message);
+        throw err;
+      } finally {
+        // Always clear — this fires whether fetch resolved, rejected, or was aborted
+        clearTimeout(timeoutId);
         masterAbort.signal.removeEventListener('abort', onMasterAbort);
       }
     };
