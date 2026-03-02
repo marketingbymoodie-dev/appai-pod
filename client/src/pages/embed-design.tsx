@@ -161,17 +161,69 @@ function normalizeVariantId(raw: string | number): string {
  * and makes the extracted fetch silently hang (the original bug).
  */
 /**
- * Core fetch wrapper with built-in AbortController timeout and stage logging.
+ * XHR-based fetch replacement for Shopify storefront iframes.
  *
- * - Built-in 30s safety-net timeout (overridden when caller passes own signal)
- * - credentials:"same-origin" — correct for Shopify App Proxy same-origin requests
- * - No mode override — browser default handles same-origin proxy paths correctly
- * - clearTimeout runs in finally — guaranteed regardless of how fetch settles
- * - Logs: calling fetch → fetch resolved (status + ms) → timeout firing → fetch error
+ * ROOT CAUSE (confirmed via diagnostic deploy 2026-03-02):
+ * Shopify registers a service worker on the storefront domain that intercepts
+ * ALL window.fetch() calls via its `fetch` event handler. For App Proxy paths
+ * like /apps/appai/api/*, the SW does not know how to handle these requests
+ * and never responds — the fetch Promise hangs forever.
  *
- * When fetchWithTimeout passes its own signal, both signals are active:
- * whichever fires first aborts the fetch. The built-in timeout is a last-resort
- * safety net so no fetch can hang indefinitely even if the caller's timeout fails.
+ * XMLHttpRequest is NOT intercepted by service workers (SW only catches fetch
+ * events, not XHR). Our diagnostic proved XHR resolves in ~855ms while every
+ * window.fetch() call times out at 30s with no network request visible.
+ *
+ * This function wraps XHR in a Promise that returns a Response-like object
+ * compatible with our existing .json() / .text() / .ok / .status usage.
+ */
+function xhrFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const method = (options.method || 'GET').toUpperCase();
+    xhr.open(method, url);
+
+    if (options.headers) {
+      const h = options.headers as Record<string, string>;
+      Object.keys(h).forEach(k => xhr.setRequestHeader(k, h[k]));
+    }
+
+    xhr.onload = () => {
+      const responseHeaders = new Headers();
+      xhr.getAllResponseHeaders().trim().split(/[\r\n]+/).forEach(line => {
+        const parts = line.split(': ');
+        if (parts.length >= 2) responseHeaders.append(parts[0], parts.slice(1).join(': '));
+      });
+
+      const body = xhr.responseText;
+      const resp = new Response(body, {
+        status: xhr.status,
+        statusText: xhr.statusText,
+        headers: responseHeaders,
+      });
+      resolve(resp);
+    };
+    xhr.onerror = () => reject(new TypeError('Network request failed'));
+    xhr.ontimeout = () => reject(new DOMException('Request timed out', 'AbortError'));
+
+    if (options.signal) {
+      const sig = options.signal;
+      if (sig.aborted) {
+        reject(new DOMException('Request aborted', 'AbortError'));
+        return;
+      }
+      sig.addEventListener('abort', () => { xhr.abort(); reject(new DOMException('Request aborted', 'AbortError')); }, { once: true });
+    }
+
+    xhr.send(options.body as XMLHttpRequestBodyInit | null ?? null);
+  });
+}
+
+const _isStorefrontIframe = typeof window !== 'undefined' &&
+  window.location.pathname.startsWith('/apps/appai/s/');
+
+/**
+ * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
+ * is broken by Shopify's service worker) and window.fetch everywhere else.
  */
 const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit = {}, timeoutMs = 30000): Promise<Response> => {
   const controller = new AbortController();
@@ -182,9 +234,6 @@ const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit =
     controller.abort();
   }, timeoutMs);
 
-  // Merge caller signal with our built-in timeout signal:
-  // if the caller already has a signal (e.g. from fetchWithTimeout), listen on
-  // it so an external abort also cancels our fetch.
   const callerSignal = options.signal as AbortSignal | undefined | null;
   if (callerSignal) {
     if (callerSignal.aborted) {
@@ -196,16 +245,24 @@ const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit =
 
   try {
     const urlStr = String(url).substring(0, 120);
-    console.log("[safeFetch] calling fetch", urlStr);
-    const res = await window.fetch(url as RequestInfo, {
-      ...options,
-      signal: controller.signal,
-      credentials: "same-origin",
-    });
-    console.log("[safeFetch] fetch resolved", urlStr, res.status, Date.now() - started, "ms");
+    const impl = _isStorefrontIframe ? 'xhr' : 'fetch';
+    console.log(`[safeFetch] calling ${impl}`, urlStr);
+
+    let res: Response;
+    if (_isStorefrontIframe) {
+      res = await xhrFetch(urlStr, { ...options, signal: controller.signal });
+    } else {
+      res = await window.fetch(url as RequestInfo, {
+        ...options,
+        signal: controller.signal,
+        credentials: "same-origin",
+      });
+    }
+
+    console.log("[safeFetch] resolved", urlStr, res.status, Date.now() - started, "ms");
     return res;
   } catch (err: any) {
-    console.log("[safeFetch] fetch error", err?.name, Date.now() - started, "ms", String(url).substring(0, 100));
+    console.log("[safeFetch] error", err?.name, Date.now() - started, "ms", String(url).substring(0, 100));
     throw err;
   } finally {
     clearTimeout(timeoutId);
@@ -246,7 +303,7 @@ async function fetchWithTimeoutSimple(
 let __embedInstanceActive = false;
 
 console.log('[EmbedDesign] API Base URL:', API_BASE, '| path:', typeof window !== 'undefined' ? window.location.pathname : 'ssr');
-console.log('[EmbedDesign] safeFetch: direct window.fetch (credentials omit, mode cors)');
+console.log('[EmbedDesign] safeFetch impl:', _isStorefrontIframe ? 'XHR (storefront iframe)' : 'window.fetch');
 
 // DIAGNOSTIC: Quick sanity check on module load using safeFetch (runs once)
 if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
