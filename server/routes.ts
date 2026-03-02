@@ -4559,6 +4559,12 @@ ${textEdgeRestrictions}
         });
       }
 
+      // Strip Shopify App Proxy prefix if present (client sends /apps/appai/objects/... in proxy mode)
+      if (designImageUrl.startsWith("/apps/appai/objects/")) {
+        designImageUrl = designImageUrl.replace("/apps/appai", "");
+        console.log(`[Storefront Mockup] [${correlationId}] Stripped proxy prefix → ${designImageUrl}`);
+      }
+
       // Resolve designImageUrl to an absolute URL (or pass data URLs through).
       // uploadImageToPrintify() in printify-mockups.ts natively handles data URLs
       // by extracting the base64 and sending { contents: base64Data } to Printify.

@@ -25,67 +25,6 @@ console.log("=".repeat(60));
 const app = express();
 
 // ============================================================
-// PHASE 1: GLOBAL TIMING — must be the very first middleware.
-// Determines whether requests from the storefront iframe reach Railway at all,
-// and whether Railway sends a response back. Evidence collected here drives the
-// entire root-cause decision tree.
-// ============================================================
-app.use((req, res, next) => {
-  const start = Date.now();
-  const id = Math.random().toString(36).slice(2, 6);
-  console.log(`[TIMING-IN] ${id} ${req.method} ${req.originalUrl}`);
-  res.on("finish", () => {
-    console.log(`[TIMING-OUT] ${id} ${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - start}ms`);
-  });
-  res.on("close", () => {
-    if (!res.writableFinished) {
-      console.log(`[TIMING-CLOSE] ${id} ${req.method} ${req.originalUrl} PREMATURE CLOSE after ${Date.now() - start}ms`);
-    }
-  });
-  next();
-});
-
-// ============================================================
-// PHASE 7: EVENT LOOP HEARTBEAT — detects if the Node.js event loop
-// is blocked (stalled tick > 100ms means something is synchronously blocking).
-// ============================================================
-setInterval(() => {
-  const lag = Date.now();
-  setImmediate(() => {
-    const delta = Date.now() - lag;
-    if (delta > 100) console.warn(`[HEARTBEAT] Event loop lag: ${delta}ms — possible blocking operation`);
-  });
-}, 5000);
-
-// ============================================================
-// EDGE TEST - Absolute first route, no middleware
-// ============================================================
-app.get("/edge-test", (req, res) => {
-  console.log("[EDGE TEST] HIT - origin:", req.headers.origin, "host:", req.headers.host);
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET");
-  res.json({ ok: true, edge: "reached", ts: Date.now() });
-});
-
-// ============================================================
-// PHASE 2: TRIVIAL BYPASS DIAGNOSTIC ROUTE
-// Lives at /api/proxy/diag so it is accessible from storefront as
-// /apps/appai/diag (Shopify proxies /apps/appai/* → /api/proxy/*).
-// This route is BEFORE the proxy rewriter middleware, so if it
-// responds from the iframe it proves that:
-//   (a) Requests reach Railway, AND
-//   (b) Railway can send responses back through the proxy.
-// If it hangs, the issue is categorically in the Shopify proxy layer
-// or between the browser and Shopify — nothing to do with our middleware.
-// ============================================================
-app.get("/api/proxy/diag", (req, res) => {
-  console.log("[DIAG] HIT /api/proxy/diag origin:", req.headers.origin, "host:", req.headers.host);
-  res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
-  res.setHeader("Vary", "Origin");
-  res.json({ ok: true, ts: Date.now(), via: "proxy-diag", path: req.originalUrl });
-});
-
-// ============================================================
 // APP PROXY URL REWRITER — must be FIRST middleware so all
 // subsequent route handlers see the real path.
 //
@@ -148,14 +87,6 @@ app.use((req, res, next) => {
 });
 
 // ============================================================
-// STEP 1: GLOBAL PROBE - MUST BE FIRST MIDDLEWARE
-// ============================================================
-app.use((req, res, next) => {
-  console.log(`[GLOBAL PROBE] ${new Date().toISOString()} ${req.method} ${req.url}`);
-  next();
-});
-
-// ============================================================
 // GLOBAL API CORS — single authoritative handler for all /api routes.
 // Rules:
 //   - Echo the request Origin (never wildcard when credentials matter)
@@ -202,28 +133,6 @@ app.use("/api/storefront", (req, res, next) => {
 app.get("/api/storefront/ping", (req, res) => {
   console.log("[PING HIT] /api/storefront/ping");
   res.status(200).json({ ok: true, ts: Date.now(), probe: "direct" });
-});
-
-// ============================================================
-// API TEST ROUTE - Direct test before registerRoutes
-// ============================================================
-app.get("/api/test", (req, res) => {
-  console.log("[API TEST] HIT - origin:", req.headers.origin);
-  res.json({ ok: true, api: "test", ts: Date.now() });
-});
-
-// ============================================================
-// DIRECT DESIGNER ROUTE - Bypass registerRoutes to test
-// ============================================================
-app.get("/api/storefront/product-types/:id/designer-direct", (req, res) => {
-  console.log("[DESIGNER-DIRECT] HIT - id:", req.params.id, "shop:", req.query.shop);
-  res.json({
-    ok: true,
-    route: "designer-direct",
-    id: req.params.id,
-    shop: req.query.shop,
-    ts: Date.now()
-  });
 });
 
 /**
@@ -274,14 +183,6 @@ export function log(message: string, source = "express") {
 
   console.log(`${formattedTime} [${source}] ${message}`);
 }
-
-// Early request logging for debugging
-app.use((req, res, next) => {
-  if (req.path.startsWith("/api")) {
-    console.log(`[INCOMING] ${req.method} ${req.path}`);
-  }
-  next();
-});
 
 // Request logging (API only)
 app.use((req, res, next) => {

@@ -316,75 +316,6 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
     .catch(err => console.error(`[EmbedDesign] Ping FAILED in ${Date.now() - start}ms:`, err.message));
 }
 
-// ============================================================
-// PHASE 2 (client): Bypass diag fetch — tests a route that exists
-// BEFORE the proxy rewriter middleware, so if this resolves it proves
-// requests reach Railway AND Railway can respond through the proxy.
-// ============================================================
-if (typeof window !== 'undefined' && !(window as any).__APP_AI_DIAG_DONE__) {
-  (window as any).__APP_AI_DIAG_DONE__ = true;
-  const diagUrl = `${API_BASE}/diag`;
-  const diagStart = Date.now();
-  console.log(`[DIAG] fetching bypass diag: ${diagUrl}`);
-  window.fetch(diagUrl)
-    .then(r => r.json())
-    .then(d => console.log(`[DIAG] bypass diag resolved in ${Date.now() - diagStart}ms:`, d))
-    .catch(e => console.error(`[DIAG] bypass diag failed in ${Date.now() - diagStart}ms:`, e.message));
-}
-
-// ============================================================
-// PHASE 5: Client-side environment diagnostics.
-// Runs once on module load to gather evidence about:
-//   - Service worker registrations that may intercept/swallow fetch requests
-//   - Whether XHR works when window.fetch hangs (indicates fetch monkey-patching)
-//   - Whether credentials:"omit" resolves when credentials:"same-origin" hangs
-//   - Whether a direct Railway call works from inside the iframe
-// These run fire-and-forget; results appear in the browser console.
-// ============================================================
-if (typeof window !== 'undefined' && !(window as any).__APP_AI_CLIENT_DIAG_DONE__) {
-  (window as any).__APP_AI_CLIENT_DIAG_DONE__ = true;
-
-  // --- Service worker check ---
-  if (navigator.serviceWorker) {
-    console.log('[DIAG-SW] controller:', navigator.serviceWorker.controller?.scriptURL ?? 'none');
-    navigator.serviceWorker.getRegistrations().then(regs => {
-      console.log('[DIAG-SW] registrations:', regs.length, regs.map(r => r.scope));
-    }).catch(e => console.warn('[DIAG-SW] getRegistrations failed:', e.message));
-  } else {
-    console.log('[DIAG-SW] navigator.serviceWorker not available');
-  }
-
-  const pingTarget = `${API_BASE}/api/storefront/ping`;
-
-  // --- XHR test: if XHR resolves but window.fetch hangs, fetch is monkey-patched ---
-  const xhr = new XMLHttpRequest();
-  const xhrStart = Date.now();
-  xhr.open('GET', pingTarget);
-  xhr.onload = () => console.log(`[DIAG-XHR] ping resolved in ${Date.now() - xhrStart}ms status=${xhr.status}:`, xhr.responseText.substring(0, 120));
-  xhr.onerror = () => console.error(`[DIAG-XHR] ping onerror in ${Date.now() - xhrStart}ms`);
-  xhr.ontimeout = () => console.error(`[DIAG-XHR] ping timeout after 10000ms`);
-  xhr.timeout = 10000;
-  xhr.send();
-
-  // --- credentials:"omit" test: if this resolves but "same-origin" hangs, Shopify
-  //     session cookies are triggering additional processing in the proxy ---
-  const nocredStart = Date.now();
-  console.log(`[DIAG-NOCRED] fetching ${pingTarget} with credentials:omit`);
-  window.fetch(pingTarget, { credentials: 'omit' })
-    .then(r => r.json())
-    .then(d => console.log(`[DIAG-NOCRED] resolved in ${Date.now() - nocredStart}ms:`, d))
-    .catch(e => console.error(`[DIAG-NOCRED] failed in ${Date.now() - nocredStart}ms:`, e.message));
-
-  // --- Direct Railway test: if this resolves but the proxy path hangs,
-  //     Shopify's proxy layer is the bottleneck ---
-  const railwayDirect = 'https://appai-pod-production.up.railway.app/api/storefront/ping';
-  const directStart = Date.now();
-  console.log(`[DIAG-DIRECT] fetching Railway directly: ${railwayDirect}`);
-  window.fetch(railwayDirect, { mode: 'cors', credentials: 'omit' })
-    .then(r => r.json())
-    .then(d => console.log(`[DIAG-DIRECT] Railway direct resolved in ${Date.now() - directStart}ms:`, d))
-    .catch(e => console.error(`[DIAG-DIRECT] Railway direct failed in ${Date.now() - directStart}ms:`, e.message));
-}
 
 /**
  * Runtime mode detection for the embed.
@@ -647,6 +578,7 @@ export default function EmbedDesign() {
   const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
   const [mockupError, setMockupError] = useState<string | null>(null);
+  const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const mockupRegenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -1347,6 +1279,7 @@ export default function EmbedDesign() {
     } catch (error) {
       console.error("Failed to generate Printify mockups:", error);
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
+      setMockupFailed(true);
     } finally {
       setMockupLoading(false);
       // Clear the "Artwork Generating" overlay on the parent page
@@ -1356,6 +1289,16 @@ export default function EmbedDesign() {
     }
   }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode]);
 
+  // Reset mockupFailed when a new design image becomes available so the
+  // useEffect hooks below can trigger a fresh mockup attempt.
+  const prevMockupImageUrlRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (generatedDesign?.imageUrl && generatedDesign.imageUrl !== prevMockupImageUrlRef.current) {
+      prevMockupImageUrlRef.current = generatedDesign.imageUrl;
+      setMockupFailed(false);
+    }
+  }, [generatedDesign?.imageUrl]);
+
   // Fetch Printify mockups for shared designs once product config is loaded
   useEffect(() => {
     if (
@@ -1364,7 +1307,8 @@ export default function EmbedDesign() {
       productTypeConfig?.hasPrintifyMockups &&
       selectedSize &&
       printifyMockups.length === 0 &&
-      !mockupLoading
+      !mockupLoading &&
+      !mockupFailed
     ) {
       fetchPrintifyMockups(
         toAbsoluteImageUrl(generatedDesign.imageUrl),
@@ -1376,7 +1320,7 @@ export default function EmbedDesign() {
         transform.y
       );
     }
-  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, transform, fetchPrintifyMockups]);
+  }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // This handles the case where React state batching causes config to arrive after the mutation settles.
@@ -1388,7 +1332,8 @@ export default function EmbedDesign() {
       !selectedSize ||
       printifyMockups.length > 0 ||
       printifyMockupImages.length > 0 ||
-      mockupLoading
+      mockupLoading ||
+      mockupFailed
     ) return;
 
     console.log('[Mockups] Fallback trigger: config loaded after generation');
@@ -1401,7 +1346,7 @@ export default function EmbedDesign() {
       transform.x,
       transform.y
     );
-  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, transform, fetchPrintifyMockups]);
+  }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
 
   // Debounced regeneration of Printify mockups when transform changes
   useEffect(() => {
