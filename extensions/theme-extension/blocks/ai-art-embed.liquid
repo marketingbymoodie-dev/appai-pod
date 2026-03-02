@@ -282,18 +282,16 @@
       container.id = 'ai-art-studio-auto-embed';
       container.innerHTML = `
         <div class="ai-art-studio-embed__wrapper">
-          <h2 class="ai-art-studio-embed__heading">Create Your Custom Design</h2>
-          <p class="ai-art-studio-embed__description">${config.description || 'Use AI to generate a unique artwork. Describe your vision and our AI will bring it to life.'}</p>
+          <div id="ai-art-atc-wrapper" style="display:none;margin-bottom:14px;">
+            <button id="ai-art-atc-btn" disabled class="ai-art-atc-btn">
+              Create your design first
+            </button>
+          </div>
           <div class="ai-art-studio-embed__studio" style="height:600px;">
             <div class="ai-art-studio-embed__loading">
               <div class="ai-art-studio-embed__spinner"></div>
               <p>Loading design studio...</p>
             </div>
-          </div>
-          <div id="ai-art-atc-wrapper" style="display:none;margin-top:14px;">
-            <button id="ai-art-atc-btn" disabled class="ai-art-atc-btn">
-              Create your design first
-            </button>
           </div>
         </div>
       `;
@@ -1444,17 +1442,9 @@
   max-width: 100%;
 }
 
-.ai-art-studio-embed__heading {
-  font-size: 1.5rem;
-  font-weight: 600;
-  margin-bottom: 0.5rem;
-  text-align: center;
-}
-
+.ai-art-studio-embed__heading,
 .ai-art-studio-embed__description {
-  color: #666;
-  text-align: center;
-  margin-bottom: 1.5rem;
+  display: none;
   max-width: 600px;
   margin-left: auto;
   margin-right: auto;

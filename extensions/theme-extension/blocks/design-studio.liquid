@@ -91,14 +91,6 @@
 {% endschema %}
 
 <div class="ai-art-studio-block" data-block-id="{{ block.id }}">
-  {% if heading != blank %}
-    <h2 class="ai-art-studio__heading">{{ heading }}</h2>
-  {% endif %}
-
-  {% if description != blank %}
-    <p class="ai-art-studio__description">{{ description }}</p>
-  {% endif %}
-
   <div
     id="ai-art-studio-container-{{ block.id }}"
     class="ai-art-studio__container"
