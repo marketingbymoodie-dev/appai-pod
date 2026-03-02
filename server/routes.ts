@@ -4560,24 +4560,25 @@ ${textEdgeRestrictions}
       }
 
       // Strip Shopify App Proxy prefix if present (client sends /apps/appai/objects/... in proxy mode)
-      if (designImageUrl.startsWith("/apps/appai/objects/")) {
-        designImageUrl = designImageUrl.replace("/apps/appai", "");
-        console.log(`[Storefront Mockup] [${correlationId}] Stripped proxy prefix → ${designImageUrl}`);
+      let normalizedImageUrl = designImageUrl;
+      if (normalizedImageUrl.startsWith("/apps/appai/objects/")) {
+        normalizedImageUrl = normalizedImageUrl.replace("/apps/appai", "");
+        console.log(`[Storefront Mockup] [${correlationId}] Stripped proxy prefix → ${normalizedImageUrl}`);
       }
 
       // Resolve designImageUrl to an absolute URL (or pass data URLs through).
       // uploadImageToPrintify() in printify-mockups.ts natively handles data URLs
       // by extracting the base64 and sending { contents: base64Data } to Printify.
-      let absoluteImageUrl = designImageUrl;
-      if (designImageUrl.startsWith("data:")) {
+      let absoluteImageUrl = normalizedImageUrl;
+      if (normalizedImageUrl.startsWith("data:")) {
         // Data URL from generate fallback — pass through to Printify upload
-        console.log(`[Storefront Mockup] [${correlationId}] Data URL (${designImageUrl.length} chars) — will upload base64 to Printify`);
-      } else if (designImageUrl.startsWith("/objects/")) {
+        console.log(`[Storefront Mockup] [${correlationId}] Data URL (${normalizedImageUrl.length} chars) — will upload base64 to Printify`);
+      } else if (normalizedImageUrl.startsWith("/objects/")) {
         const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
-        absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
+        absoluteImageUrl = `${protocol}://${host}${normalizedImageUrl}`;
         console.log(`[Storefront Mockup] [${correlationId}] Converted relative path:`, absoluteImageUrl);
-      } else if (designImageUrl.startsWith("https://")) {
+      } else if (normalizedImageUrl.startsWith("https://")) {
         console.log(`[Storefront Mockup] [${correlationId}] Using absolute URL:`, absoluteImageUrl);
       } else {
         return res.status(400).json({
