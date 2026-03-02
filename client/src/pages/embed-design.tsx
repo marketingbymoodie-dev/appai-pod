@@ -1623,6 +1623,7 @@ export default function EmbedDesign() {
       // Clear any existing mockups and fetch new Printify composite mockups
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
       const shouldFetchMockups = !!(productTypeConfig?.hasPrintifyMockups) && !!imageUrl && !!selectedSize;
       console.log('[Mockups] onSuccess check:', {
         hasPrintifyMockups: productTypeConfig?.hasPrintifyMockups,
@@ -1817,6 +1818,7 @@ export default function EmbedDesign() {
       // Clear any existing mockups and fetch Printify composite mockups for imported design
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
         fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
@@ -2987,20 +2989,43 @@ export default function EmbedDesign() {
               data-testid="container-mockup"
             >
               <div className="absolute inset-0">
-                <ProductMockup
-                  imageUrl={generatedDesign?.imageUrl}
-                  mockupUrl={isStorefront ? (getPreferredMockupUrl() || null) : null}
-                  isLoading={generateMutation.isPending || (isStorefront && mockupLoading && !getPreferredMockupUrl())}
-                  selectedSize={selectedSizeConfig}
-                  selectedFrameColor={selectedFrameColorConfig}
-                  transform={transform}
-                  onTransformChange={setTransform}
-                  enableDrag={!!generatedDesign?.imageUrl}
-                  designerType={productTypeConfig?.designerType || "generic"}
-                  printShape={productTypeConfig?.printShape || "rectangle"}
-                  canvasConfig={productTypeConfig?.canvasConfig}
-                  blankImageUrl={productTypeConfig?.baseMockupImages?.front || null}
-                />
+                {(() => {
+                  const isGeneratingArtwork = generateMutation.isPending;
+                  const isGeneratingMockups = isStorefront && mockupLoading && !getPreferredMockupUrl();
+                  const loadingStage: "generating" | "mockups" | null =
+                    isGeneratingArtwork ? "generating" : isGeneratingMockups ? "mockups" : null;
+
+                  // Resolve which mockup URL to show based on gallery selection.
+                  // selectedMockupIndex 0 = raw artwork; 1+ = mockup at that index.
+                  const galleryMockups: string[] =
+                    printifyMockupImages.length > 0
+                      ? printifyMockupImages.map(img => img.url)
+                      : printifyMockups;
+                  const selectedMockupUrl =
+                    isStorefront && selectedMockupIndex > 0 && galleryMockups.length >= selectedMockupIndex
+                      ? galleryMockups[selectedMockupIndex - 1]
+                      : isStorefront && selectedMockupIndex === 0 && galleryMockups.length === 0
+                        ? (getPreferredMockupUrl() || null)
+                        : null;
+
+                  return (
+                    <ProductMockup
+                      imageUrl={generatedDesign?.imageUrl}
+                      mockupUrl={selectedMockupUrl}
+                      isLoading={isGeneratingArtwork || isGeneratingMockups}
+                      loadingStage={loadingStage}
+                      selectedSize={selectedSizeConfig}
+                      selectedFrameColor={selectedFrameColorConfig}
+                      transform={transform}
+                      onTransformChange={setTransform}
+                      enableDrag={!!generatedDesign?.imageUrl && selectedMockupIndex === 0}
+                      designerType={productTypeConfig?.designerType || "generic"}
+                      printShape={productTypeConfig?.printShape || "rectangle"}
+                      canvasConfig={productTypeConfig?.canvasConfig}
+                      blankImageUrl={productTypeConfig?.baseMockupImages?.front || null}
+                    />
+                  );
+                })()}
               </div>
             </div>
 
@@ -3012,15 +3037,10 @@ export default function EmbedDesign() {
               />
             )}
 
-            {/* Mockup generation status */}
+            {/* Mockup gallery / status */}
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
-                {mockupLoading ? (
-                  <div className="flex items-center justify-center gap-2 py-3 bg-muted/50 rounded-md">
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                    <span className="text-sm text-muted-foreground">Generating product preview…</span>
-                  </div>
-                ) : mockupError ? (
+                {mockupError ? (
                   <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
                     <span className="text-sm text-destructive flex-1">Preview unavailable — you can still add to cart</span>
                     <button
@@ -3044,11 +3064,53 @@ export default function EmbedDesign() {
                       Retry
                     </button>
                   </div>
-                ) : printifyMockups.length > 0 || printifyMockupImages.length > 0 ? (
-                  <div className="flex items-center justify-center gap-2 py-3 bg-green-500/10 rounded-md">
-                    <span className="text-sm text-green-600">Product preview ready</span>
-                  </div>
-                ) : null}
+                ) : (() => {
+                  const galleryMockups: Array<{ url: string; label: string }> =
+                    printifyMockupImages.length > 0
+                      ? printifyMockupImages
+                      : printifyMockups.map((url, i) => ({ url, label: i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}` }));
+
+                  const hasMockups = galleryMockups.length > 0;
+
+                  if (!hasMockups) return null;
+
+                  const allItems: Array<{ url: string; label: string }> = [
+                    { url: generatedDesign.imageUrl, label: "Artwork" },
+                    ...galleryMockups.slice(0, 3),
+                  ];
+
+                  return (
+                    <div className="space-y-2" data-testid="container-mockup-gallery">
+                      <p className="text-xs text-muted-foreground text-center">Tap a preview to view</p>
+                      <div className="flex gap-2 justify-center">
+                        {allItems.map((item, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => setSelectedMockupIndex(idx)}
+                            className={`relative w-16 h-16 rounded-md overflow-hidden border-2 transition-all flex-shrink-0 ${
+                              selectedMockupIndex === idx
+                                ? "border-primary ring-2 ring-primary ring-offset-1"
+                                : "border-border hover:border-primary/50"
+                            }`}
+                            aria-label={item.label}
+                            title={item.label}
+                          >
+                            <img
+                              src={item.url}
+                              alt={item.label}
+                              className="w-full h-full object-cover"
+                              draggable={false}
+                            />
+                            <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-black/50 text-white py-px leading-tight">
+                              {item.label}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 

@@ -9,6 +9,8 @@ interface ProductMockupProps {
    *  this is shown instead of the raw artwork overlaid on a blank. */
   mockupUrl?: string | null;
   isLoading?: boolean;
+  /** Which phase of loading is active, used for stage-specific spinner text. */
+  loadingStage?: "generating" | "mockups" | null;
   selectedSize?: PrintSize | null;
   selectedFrameColor?: FrameColor | null;
   transform: ImageTransform;
@@ -30,6 +32,7 @@ export function ProductMockup({
   imageUrl,
   mockupUrl,
   isLoading = false,
+  loadingStage,
   selectedSize,
   selectedFrameColor,
   transform,
@@ -226,10 +229,16 @@ export function ProductMockup({
 
   const renderImageContent = () => {
     if (isLoading) {
+      const stageText =
+        loadingStage === "generating"
+          ? "Generating Art..."
+          : loadingStage === "mockups"
+          ? "Creating Mockups..."
+          : "Creating...";
       return (
         <div className="flex flex-col items-center gap-2 text-muted-foreground">
           <Loader2 className="h-8 w-8 animate-spin" />
-          <span className="text-xs">Creating...</span>
+          <span className="text-xs animate-pulse font-medium">{stageText}</span>
         </div>
       );
     }
