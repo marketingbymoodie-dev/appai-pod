@@ -425,6 +425,12 @@ export async function registerRoutes(
   const serverStartTime = Date.now();
   let dbReady = false;
 
+  // In-memory cache for /api/config — avoids a DB hit on every storefront page load.
+  // Style presets change only when a merchant edits them (rare), so 5 minutes is safe.
+  interface ConfigCacheEntry { data: object; expiresAt: number; }
+  const configCache = new Map<string, ConfigCacheEntry>();
+  const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
   // Test DB connection asynchronously (non-blocking)
   (async () => {
     try {
@@ -493,6 +499,10 @@ export async function registerRoutes(
     const t0 = Date.now();
     console.log("[CONFIG] HIT /api/config");
 
+    // Allow Shopify CDN and browsers to cache; stale-while-revalidate means
+    // clients serve cached data instantly while refreshing in the background.
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
+
     const hardcodedFallback = STYLE_PRESETS.map((s) => ({
       id: s.id,
       name: s.name,
@@ -500,6 +510,15 @@ export async function registerRoutes(
       category: s.category,
     }));
 
+    // ── Cache hit: respond immediately without touching the DB ──────────────
+    const cacheKey = "global";
+    const cached = configCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      console.log(`[CONFIG] cache hit, responded in ${Date.now() - t0}ms`);
+      return res.json(cached.data);
+    }
+
+    console.log(`[CONFIG] cache miss, DB start +${Date.now() - t0}ms`);
     try {
       // 5s timeout — a slow DB query must not block the storefront generator
       const dbStyles = await Promise.race([
@@ -509,7 +528,7 @@ export async function registerRoutes(
         ),
       ]);
 
-      console.log(`[CONFIG] getAllActiveStylePresets ${Date.now() - t0}ms, ${dbStyles.length} styles`);
+      console.log(`[CONFIG] DB done ${Date.now() - t0}ms, ${dbStyles.length} styles`);
 
       const stylePresets =
         dbStyles.length > 0
@@ -521,22 +540,29 @@ export async function registerRoutes(
             }))
           : hardcodedFallback;
 
-      return res.json({
+      const payload = {
         sizes: PRINT_SIZES,
         frameColors: FRAME_COLORS,
         stylePresets,
         blueprintId: 540,
-      });
+      };
+      configCache.set(cacheKey, { data: payload, expiresAt: Date.now() + CONFIG_CACHE_TTL_MS });
+      console.log(`[CONFIG] responded in ${Date.now() - t0}ms (DB path)`);
+      return res.json(payload);
     } catch (error) {
-      console.error(`[CONFIG] Error after ${Date.now() - t0}ms:`, error);
+      console.error(`[CONFIG] DB error after ${Date.now() - t0}ms:`, error);
 
-      // Return hardcoded fallback immediately so the storefront doesn't time out
-      return res.json({
+      // Return hardcoded fallback immediately so the storefront doesn't time out.
+      // Cache the fallback too so subsequent requests don't hit the failing DB.
+      const fallbackPayload = {
         sizes: PRINT_SIZES,
         frameColors: FRAME_COLORS,
         stylePresets: hardcodedFallback,
         blueprintId: 540,
-      });
+      };
+      configCache.set(cacheKey, { data: fallbackPayload, expiresAt: Date.now() + CONFIG_CACHE_TTL_MS });
+      console.log(`[CONFIG] responded in ${Date.now() - t0}ms (fallback path)`);
+      return res.json(fallbackPayload);
     }
   });
 

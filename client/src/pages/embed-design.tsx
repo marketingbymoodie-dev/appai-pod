@@ -783,7 +783,7 @@ export default function EmbedDesign() {
           }
           setProductTypeError(null);
           // Still fetch style presets — lightweight, non-blocking
-          fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`)
+          fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`, 8000)
             .then(r => safeJson(r, '/api/config'))
             .then(c => { if (!isCancelled && c.stylePresets) setStylePresets(c.stylePresets); })
             .catch(() => {});
@@ -853,7 +853,7 @@ export default function EmbedDesign() {
         console.log('[EmbedDesign] Designer fetch URL:', designerUrl);
 
         const [configRes, designerRes] = await Promise.all([
-          fetchWithTimeout(`${API_BASE}/api/config?${cacheBuster}`).then(res => safeJson(res, '/api/config')).catch(() => ({ stylePresets: [] })),
+          fetchWithTimeout(`${API_BASE}/api/config?${cacheBuster}`, 8000).then(res => safeJson(res, '/api/config')).catch(() => ({ stylePresets: [] })),
           fetchWithRetry(designerUrl)
         ]);
 
