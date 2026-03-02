@@ -161,54 +161,54 @@ function normalizeVariantId(raw: string | number): string {
  * and makes the extracted fetch silently hang (the original bug).
  */
 /**
- * Minimal fetch wrapper for all embed contexts.
+ * Core fetch wrapper with built-in AbortController timeout and stage logging.
  *
- * Key points:
- * - Uses window.fetch directly (no iframe tricks, no App Bridge interception)
- * - credentials:"same-origin" so Shopify proxy cookies are sent correctly
- * - NO mode:"cors" override — let the browser use the natural default so
- *   same-origin proxy requests (/apps/appai/...) are not forced into CORS mode
- * - Clears the caller-supplied signal via finally is the caller's responsibility
- * - Only logs "ABORTED" when signal.aborted is true (genuine abort/timeout)
+ * - Built-in 30s safety-net timeout (overridden when caller passes own signal)
+ * - credentials:"same-origin" — correct for Shopify App Proxy same-origin requests
+ * - No mode override — browser default handles same-origin proxy paths correctly
+ * - clearTimeout runs in finally — guaranteed regardless of how fetch settles
+ * - Logs: calling fetch → fetch resolved (status + ms) → timeout firing → fetch error
+ *
+ * When fetchWithTimeout passes its own signal, both signals are active:
+ * whichever fires first aborts the fetch. The built-in timeout is a last-resort
+ * safety net so no fetch can hang indefinitely even if the caller's timeout fails.
  */
-const safeFetch: typeof fetch = async (input, init = {}) => {
-  const reqId =
-    (init.headers && (init.headers as any)["X-Req-Id"]) ||
-    crypto.randomUUID();
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
-  const start = Date.now();
+const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit = {}, timeoutMs = 30000): Promise<Response> => {
+  const controller = new AbortController();
+  const started = Date.now();
 
-  console.log("[safeFetch] START", {
-    url: url.substring(0, 120),
-    method: init.method || "GET",
-    reqId,
-    ts: start,
-  });
+  const timeoutId = setTimeout(() => {
+    console.log("[safeFetch] timeout firing after", Date.now() - started, "ms for", String(url).substring(0, 100));
+    controller.abort();
+  }, timeoutMs);
+
+  // Merge caller signal with our built-in timeout signal:
+  // if the caller already has a signal (e.g. from fetchWithTimeout), listen on
+  // it so an external abort also cancels our fetch.
+  const callerSignal = options.signal as AbortSignal | undefined | null;
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException("Request aborted", "AbortError");
+    }
+    callerSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
 
   try {
-    const res = await window.fetch(input as RequestInfo, {
-      ...init,
+    const urlStr = String(url).substring(0, 120);
+    console.log("[safeFetch] calling fetch", urlStr);
+    const res = await window.fetch(url as RequestInfo, {
+      ...options,
+      signal: controller.signal,
       credentials: "same-origin",
-      // No mode override — browser default is correct for proxy same-origin requests
     });
-
-    console.log("[safeFetch] RESPONSE", {
-      url: url.substring(0, 120),
-      status: res.status,
-      ms: Date.now() - start,
-      reqId,
-    });
-
+    console.log("[safeFetch] fetch resolved", urlStr, res.status, Date.now() - started, "ms");
     return res;
   } catch (err: any) {
-    const ms = Date.now() - start;
-    const sig = (init as any).signal as AbortSignal | undefined;
-    if (sig?.aborted) {
-      console.error("[safeFetch] ABORTED", { url: url.substring(0, 120), ms, reqId });
-    } else {
-      console.error("[safeFetch] ERROR", { url: url.substring(0, 120), ms, reqId, err });
-    }
+    console.log("[safeFetch] fetch error", err?.name, Date.now() - started, "ms", String(url).substring(0, 100));
     throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 

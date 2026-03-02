@@ -17,6 +17,7 @@ import {
   ReactNode,
 } from "react";
 import { invalidateAuthQueries } from "./queryClient";
+import { PROXY_PREFIX } from "./urlBase";
 
 // ─── Capture host + shop from the initial URL immediately at module load ─────
 // Must happen before any SPA navigation removes the query params.
@@ -38,6 +39,8 @@ export function isShopifyEmbedded(): boolean {
 
   // Path-based: /s/* is storefront — NEVER embedded admin
   if (path.startsWith('/s/')) return false;
+  // App Proxy path: /apps/appai/s/* — also storefront, never admin
+  if (path.startsWith(`${PROXY_PREFIX}/s/`)) return false;
 
   // Legacy query-param guard: storefront=true is NOT admin embedded
   if (params.get("storefront") === "true") return false;
