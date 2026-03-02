@@ -488,16 +488,29 @@ export async function registerRoutes(
     res.json({ ok: true, dbReady: true });
   });
 
-   // ✅ Public: Get product configuration (MUST be before setupAuth)
+  // ✅ Public: Get product configuration (MUST be before setupAuth)
   app.get("/api/config", async (_req: Request, res: Response) => {
-    console.log("🔥 HIT /api/config route");
+    const t0 = Date.now();
+    console.log("[CONFIG] HIT /api/config");
+
+    const hardcodedFallback = STYLE_PRESETS.map((s) => ({
+      id: s.id,
+      name: s.name,
+      promptSuffix: s.promptPrefix,
+      category: s.category,
+    }));
 
     try {
-      // Get all active style presets from database
-      const dbStyles = await storage.getAllActiveStylePresets();
+      // 5s timeout — a slow DB query must not block the storefront generator
+      const dbStyles = await Promise.race([
+        storage.getAllActiveStylePresets(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error("getAllActiveStylePresets DB timeout")), 5000)
+        ),
+      ]);
 
-      // Convert database styles to the format expected by the frontend
-      // If no database styles exist, fall back to hardcoded presets with consistent shape
+      console.log(`[CONFIG] getAllActiveStylePresets ${Date.now() - t0}ms, ${dbStyles.length} styles`);
+
       const stylePresets =
         dbStyles.length > 0
           ? dbStyles.map((s) => ({
@@ -506,12 +519,7 @@ export async function registerRoutes(
               promptSuffix: s.promptPrefix,
               category: s.category || "all",
             }))
-          : STYLE_PRESETS.map((s) => ({
-              id: s.id,
-              name: s.name,
-              promptSuffix: s.promptPrefix,
-              category: s.category,
-            }));
+          : hardcodedFallback;
 
       return res.json({
         sizes: PRINT_SIZES,
@@ -520,18 +528,13 @@ export async function registerRoutes(
         blueprintId: 540,
       });
     } catch (error) {
-      console.error("Error fetching config:", error);
+      console.error(`[CONFIG] Error after ${Date.now() - t0}ms:`, error);
 
-      // Fallback to hardcoded presets on error with consistent shape
+      // Return hardcoded fallback immediately so the storefront doesn't time out
       return res.json({
         sizes: PRINT_SIZES,
         frameColors: FRAME_COLORS,
-        stylePresets: STYLE_PRESETS.map((s) => ({
-          id: s.id,
-          name: s.name,
-          promptSuffix: s.promptPrefix,
-          category: s.category,
-        })),
+        stylePresets: hardcodedFallback,
         blueprintId: 540,
       });
     }
@@ -4256,8 +4259,11 @@ ${textEdgeRestrictions}
       // ── Background worker: AI call + storage save ─────────────────────────────
       // Fire-and-forget; never awaited. Railway keeps the process alive.
       (async () => {
+        const wStart = Date.now();
+        const W = `[SF-GEN ${reqId}]`;
         try {
           await storage.updateGenerationJob(jobId, { status: "running" });
+          console.log(`${W} worker started jobId=${jobId} +${Date.now() - wStart}ms`);
 
           // Resolve reference image to a publicly accessible URL
           let inputImageUrl: string | null = null;
@@ -4281,40 +4287,48 @@ ${textEdgeRestrictions}
                 await storage.updateGenerationJob(jobId, { referenceImageUrl: inputImageUrl });
               }
             } catch (refErr) {
-              console.warn(`[Storefront Generate] [${jobId}] Could not process reference image, continuing without it:`, refErr);
+              console.warn(`${W} Could not process reference image, continuing without it:`, refErr);
               inputImageUrl = null;
             }
           }
+          console.log(`${W} ref image resolved +${Date.now() - wStart}ms inputImageUrl=${inputImageUrl ? "yes" : "none"}`);
 
           // Call AI image generation
+          const aiStart = Date.now();
+          console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
           });
+          console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
           if (!base64Data) {
             await storage.updateGenerationJob(jobId, { status: "failed", errorMessage: "AI model returned no image data" });
+            console.error(`${W} AI returned no image data — job failed`);
             return;
           }
 
           const mimeType = generatedMimeType || "image/png";
 
           // Save image to object storage (retry once, then fall back to data URL)
+          const saveStart = Date.now();
           let imageUrl: string;
           let thumbnailUrl: string | undefined;
           try {
             const result = await saveImageToStorage(base64Data, mimeType, { isApparel, targetDims });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
+            console.log(`${W} storage save OK ${Date.now() - saveStart}ms`);
           } catch (storageError) {
-            console.warn(`[Storefront Generate] [${jobId}] Storage save failed, retrying once:`, storageError);
+            console.warn(`${W} Storage save failed, retrying once:`, storageError);
             try {
               const result = await saveImageToStorage(base64Data, mimeType, { isApparel, targetDims });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
+              console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
             } catch (retryError) {
-              console.error(`[Storefront Generate] [${jobId}] Storage save failed on retry, using data URL:`, retryError);
+              console.error(`${W} Storage save failed on retry, using data URL:`, retryError);
               imageUrl = `data:${mimeType};base64,${base64Data}`;
             }
           }
@@ -4328,9 +4342,9 @@ ${textEdgeRestrictions}
             designId,
           });
 
-          console.log(`[Storefront Generate] [${jobId}] complete — designId=${designId}`);
+          console.log(`${W} complete designId=${designId} total=${Date.now() - wStart}ms`);
         } catch (workerErr: any) {
-          console.error(`[Storefront Generate] [${jobId}] worker error:`, workerErr);
+          console.error(`${W} worker failed +${Date.now() - wStart}ms stage=unknown:`, workerErr.message ?? workerErr);
           await storage.updateGenerationJob(jobId, {
             status: "failed",
             errorMessage: workerErr.message ?? "Unknown generation error",
@@ -4359,6 +4373,7 @@ ${textEdgeRestrictions}
   // Poll this endpoint after POST /api/storefront/generate returns { jobId }.
   app.get("/api/storefront/generate/status", async (req: Request, res: Response) => {
     const reqId = (req as any).reqId || "none";
+    const t0 = Date.now();
     try {
       const { jobId, shop } = req.query as { jobId?: string; shop?: string };
 
@@ -4370,16 +4385,20 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid shop domain format" });
       }
 
-      // Verify shop is installed
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
-        return res.status(403).json({ error: "Shop not authorized" });
+      // Fetch the job directly — shop mismatch check below replaces the installation lookup.
+      // Removing the installation query halves DB load per poll (called every 2s).
+      const job = await Promise.race([
+        storage.getGenerationJob(jobId),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error("getGenerationJob DB timeout")), 5000)
+        ),
+      ]);
+
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found", reqId });
       }
 
-      const job = await storage.getGenerationJob(jobId);
-      if (!job || job.shop !== shop) {
-        return res.status(404).json({ error: "Job not found" });
-      }
+      console.log(`[SF STATUS] ${reqId} jobId=${jobId} status=${job.status} ${Date.now() - t0}ms`);
 
       if (job.status === "complete") {
         return res.json({
@@ -4398,8 +4417,8 @@ ${textEdgeRestrictions}
 
       // pending or running
       return res.json({ status: job.status, reqId });
-    } catch (error) {
-      console.error("[SF STATUS]", reqId, "Error:", error);
+    } catch (error: any) {
+      console.error(`[SF STATUS] ${reqId} Error after ${Date.now() - t0}ms:`, error.message);
       res.status(500).json({ error: "Failed to fetch job status", reqId });
     }
   });
