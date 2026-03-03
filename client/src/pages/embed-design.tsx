@@ -581,6 +581,10 @@ export default function EmbedDesign() {
   const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
+
+  // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
+  const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
+  const currentMockupColorRef = useRef<string>('');
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -1261,21 +1265,19 @@ export default function EmbedDesign() {
       
       if (result.success && result.mockupUrls?.length > 0) {
         const absUrls = result.mockupUrls.map(toAbsoluteImageUrl);
-        setPrintifyMockups(absUrls);
-        setSelectedMockupIndex(0);
-        sendMockupsToParent(absUrls);
-        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs (absolute)');
-      } else if (!result.success) {
-        throw new Error(result.message || "Mockup generation returned unsuccessful");
-      }
-      if (result.success && result.mockupImages?.length > 0) {
-        const absImages = result.mockupImages.map((img: { url: string; label: string }) => ({
+        const absImages = (result.mockupImages || []).map((img: { url: string; label: string }) => ({
           ...img,
           url: toAbsoluteImageUrl(img.url),
         }));
+        setPrintifyMockups(absUrls);
         setPrintifyMockupImages(absImages);
         setSelectedMockupIndex(0);
-        console.log('[Mockups] Stored', absImages.length, 'mockup images (absolute)');
+        sendMockupsToParent(absUrls);
+        currentMockupColorRef.current = colorId;
+        mockupColorCacheRef.current[colorId] = { urls: absUrls, images: absImages };
+        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for color', colorId);
+      } else if (!result.success) {
+        throw new Error(result.message || "Mockup generation returned unsuccessful");
       }
     } catch (error) {
       console.error("Failed to generate Printify mockups:", error);
@@ -1357,6 +1359,99 @@ export default function EmbedDesign() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
+
+  // When frame color changes, swap mockups from the per-color cache or mark stale
+  useEffect(() => {
+    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    if (!hasMockups || !selectedFrameColor || mockupLoading) return;
+    if (selectedFrameColor === currentMockupColorRef.current) return;
+
+    const cached = mockupColorCacheRef.current[selectedFrameColor];
+    if (cached && cached.images.length > 0) {
+      setPrintifyMockups(cached.urls);
+      setPrintifyMockupImages(cached.images);
+      currentMockupColorRef.current = selectedFrameColor;
+      setSelectedMockupIndex(0);
+      setMockupsStale(false);
+      console.log('[Mockups] Swapped to cached mockups for color', selectedFrameColor);
+    } else {
+      setMockupsStale(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFrameColor]);
+
+  // Background prefetch: after primary mockups load, fetch other frame colors silently
+  useEffect(() => {
+    if (
+      !generatedDesign?.imageUrl ||
+      !productTypeConfig?.hasPrintifyMockups ||
+      !selectedSize ||
+      printifyMockupImages.length === 0 ||
+      mockupLoading ||
+      !productTypeConfig?.frameColors?.length
+    ) return;
+
+    const otherColors = productTypeConfig.frameColors.filter(
+      (c: { id: string }) => c.id !== currentMockupColorRef.current && !mockupColorCacheRef.current[c.id]
+    );
+    if (otherColors.length === 0) return;
+
+    console.log('[Mockups] Background prefetch for colors:', otherColors.map((c: { id: string }) => c.id));
+    const controller = new AbortController();
+
+    (async () => {
+      const imageUrl = toAbsoluteImageUrl(generatedDesign!.imageUrl);
+      const endpoint = isStorefront
+        ? `${API_BASE}/api/storefront/mockup`
+        : isShopify
+          ? `${API_BASE}/api/shopify/mockup`
+          : `${API_BASE}/api/mockup/generate`;
+
+      for (const color of otherColors) {
+        if (controller.signal.aborted) break;
+        if (mockupColorCacheRef.current[color.id]) continue;
+
+        try {
+          const payload: Record<string, unknown> = {
+            productTypeId: productTypeConfig!.id,
+            designImageUrl: imageUrl,
+            sizeId: selectedSize,
+            colorId: color.id,
+            scale: Math.max(10, Math.min(200, transform.scale)),
+            x: Math.max(0, Math.min(100, transform.x)),
+            y: Math.max(0, Math.min(100, transform.y)),
+          };
+          if (isStorefront || isShopify) payload.shop = shopDomain;
+          if (isShopify) payload.sessionToken = sessionToken;
+
+          const response = await safeFetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          }, 60000);
+
+          if (!response.ok) continue;
+          const result = await response.json();
+
+          if (result.success && result.mockupUrls?.length > 0) {
+            const absUrls = result.mockupUrls.map(toAbsoluteImageUrl);
+            const absImages = (result.mockupImages || []).map((img: { url: string; label: string }) => ({
+              ...img,
+              url: toAbsoluteImageUrl(img.url),
+            }));
+            mockupColorCacheRef.current[color.id] = { urls: absUrls, images: absImages };
+            console.log('[Mockups] Background cached color', color.id, '—', absUrls.length, 'mockups');
+          }
+        } catch {
+          // Silently fail for background prefetch
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [printifyMockupImages.length, mockupLoading]);
 
   // Variants state — must be declared BEFORE the AI_ART_STUDIO_CART_STATE useEffect
   // that includes `variants` in its dependency array (avoids TDZ ReferenceError in production bundle)
@@ -1596,6 +1691,8 @@ export default function EmbedDesign() {
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
+      mockupColorCacheRef.current = {};
+      currentMockupColorRef.current = '';
       const shouldFetchMockups = !!(productTypeConfig?.hasPrintifyMockups) && !!imageUrl && !!selectedSize;
       console.log('[Mockups] onSuccess check:', {
         hasPrintifyMockups: productTypeConfig?.hasPrintifyMockups,
@@ -1791,6 +1888,8 @@ export default function EmbedDesign() {
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
+      mockupColorCacheRef.current = {};
+      currentMockupColorRef.current = '';
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
         fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
       }
@@ -3031,6 +3130,8 @@ export default function EmbedDesign() {
                         setPrintifyMockupImages([]);
                         setSelectedMockupIndex(0);
                         setMockupsStale(false);
+                        mockupColorCacheRef.current = {};
+                        currentMockupColorRef.current = '';
                         fetchPrintifyMockups(
                           toAbsoluteImageUrl(generatedDesign.imageUrl),
                           productTypeConfig.id,

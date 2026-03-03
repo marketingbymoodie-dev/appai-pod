@@ -125,6 +125,16 @@ export function ProductMockup({
   };
 
   const renderFramedPrint = () => {
+    // When displaying a Printify composite mockup, skip the CSS frame overlay
+    // because the mockup image already has the frame baked in.
+    if (mockupUrl) {
+      return (
+        <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
+          {renderImageContent()}
+        </div>
+      );
+    }
+
     const getFrameInsets = () => {
       if (!selectedSize) return { outer: "0.75rem", inner: "1rem" };
       const sizeId = selectedSize.id;
