@@ -455,7 +455,8 @@
           if (!res.ok) {
             var errMsg = (json && (json.description || json.message)) || text || 'HTTP ' + res.status;
             if (res.status === 422 && (errMsg.toLowerCase().includes('cannot find') || errMsg.toLowerCase().includes('not found'))) {
-              throw new Error('This product is not available for purchase yet. Please try again in a moment or contact the store.');
+              console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying once after 3s...');
+              throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
             }
             throw new Error('Cart add failed: ' + errMsg);
           }
@@ -735,6 +736,31 @@
             refreshCartUI();
           })
           .catch(function(err) {
+            // Retry once after 3s if variant not found (product may still be publishing)
+            if (err && err.__retryable) {
+              console.log(B, 'Retrying ATC in 3s for variant', err.variantId);
+              return new Promise(function(resolve) { setTimeout(resolve, 3000); })
+                .then(function() { return addToCart(err.variantId, data.quantity, data.properties); })
+                .then(function(cart) {
+                  console.log(B, 'Cart add SUCCESS on retry for cid:', cid);
+                  replyToIframe(event, {
+                    type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+                    correlationId: cid, ok: true, success: true,
+                    cart: cart, result: cart, _bridgeVersion: BRIDGE_VERSION
+                  });
+                  refreshCartUI();
+                })
+                .catch(function(retryErr) {
+                  var msg = (retryErr && retryErr.message) || String(retryErr);
+                  console.error(B, 'Cart add FAILED on retry for cid:', cid, msg);
+                  replyToIframe(event, {
+                    type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+                    correlationId: cid, ok: false, success: false,
+                    error: 'This product is not available for purchase yet. Please refresh the page and try again.',
+                    _bridgeVersion: BRIDGE_VERSION
+                  });
+                });
+            }
             console.error(B, 'Cart add FAILED for cid:', cid, err.message);
             replyToIframe(event, {
               type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',

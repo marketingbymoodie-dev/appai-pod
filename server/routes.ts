@@ -9240,25 +9240,22 @@ ${textEdgeRestrictions}
     }
 
     // ── Publish product to Online Store ───────────────────────────────────────
-    // Set status: active and published: true (Online Store channel only via published_scope: web)
+    // Step 1: Set product status to active (REST)
+    // Step 2: Publish to Online Store sales channel (GraphQL - most reliable)
     {
       const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
       if (productIdNum) {
-        const publishResult = await shopifyApiCall(shop, installation.accessToken, `products/${productIdNum}.json`, {
+        const activateResult = await shopifyApiCall(shop, installation.accessToken, `products/${productIdNum}.json`, {
           method: "PUT",
-          body: JSON.stringify({
-            product: {
-              id: productIdNum,
-              status: "active",
-              published: true,
-              published_scope: "web",
-            },
-          }),
+          body: JSON.stringify({ product: { id: productIdNum, status: "active" } }),
         });
-        if (!publishResult.ok) {
-          console.warn(`[customizer-pages] Failed to publish product ${productIdNum}: ${publishResult.error}`);
-        } else {
-          console.log(`[customizer-pages] Published product ${productIdNum} to Online Store for shop ${shop}`);
+        if (!activateResult.ok) {
+          console.warn(`[customizer-pages] Failed to activate product ${productIdNum}: ${activateResult.error}`);
+        }
+        try {
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+        } catch (pubErr: any) {
+          console.warn(`[customizer-pages] GraphQL publish failed for product ${productIdNum}: ${pubErr.message}`);
         }
       }
     }
@@ -9489,6 +9486,63 @@ ${textEdgeRestrictions}
     }
   }
 
+  /**
+   * Ensures a product is published to the Online Store sales channel via GraphQL.
+   * Uses publishablePublish which is the reliable way to create publication records.
+   * Silently succeeds if the product is already published.
+   */
+  async function ensureProductPublishedToOnlineStore(shop: string, accessToken: string, productId: number) {
+    const gqlEndpoint = `https://${shop}/admin/api/2024-01/graphql.json`;
+    const headers = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
+
+    // Step 1: Find the Online Store publication ID
+    const pubQuery = JSON.stringify({
+      query: `{ publications(first: 20) { edges { node { id name } } } }`,
+    });
+    const pubRes = await fetch(gqlEndpoint, { method: "POST", headers, body: pubQuery });
+    if (!pubRes.ok) throw new Error(`Publications query failed: ${pubRes.status}`);
+    const pubData = await pubRes.json() as any;
+    const publications = pubData?.data?.publications?.edges ?? [];
+    const onlineStore = publications.find((e: any) =>
+      /online store/i.test(e.node.name)
+    );
+    if (!onlineStore) {
+      console.warn(`[ensurePublished] No "Online Store" publication found for ${shop}. Available: ${publications.map((e: any) => e.node.name).join(", ")}`);
+      return;
+    }
+    const publicationId = onlineStore.node.id;
+    console.log(`[ensurePublished] Online Store publication: ${publicationId}`);
+
+    // Step 2: Publish the product to Online Store
+    const productGid = `gid://shopify/Product/${productId}`;
+    const publishMutation = JSON.stringify({
+      query: `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+        publishablePublish(id: $id, input: $input) {
+          publishable { ... on Product { id title } }
+          userErrors { field message }
+        }
+      }`,
+      variables: {
+        id: productGid,
+        input: [{ publicationId }],
+      },
+    });
+    const publishRes = await fetch(gqlEndpoint, { method: "POST", headers, body: publishMutation });
+    if (!publishRes.ok) throw new Error(`publishablePublish failed: ${publishRes.status}`);
+    const publishData = await publishRes.json() as any;
+    const userErrors = publishData?.data?.publishablePublish?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      const alreadyPublished = userErrors.some((e: any) => /already been published/i.test(e.message));
+      if (alreadyPublished) {
+        console.log(`[ensurePublished] Product ${productId} already published to Online Store`);
+      } else {
+        console.warn(`[ensurePublished] userErrors for product ${productId}:`, userErrors);
+      }
+    } else {
+      console.log(`[ensurePublished] Published product ${productId} to Online Store for ${shop}`);
+    }
+  }
+
   /** Middleware that verifies the Shopify App Proxy HMAC and attaches req.proxyShop */
   function proxyAuth(req: Request, res: Response, next: Function) {
     const query = req.query as Record<string, string>;
@@ -9570,7 +9624,7 @@ ${textEdgeRestrictions}
           const prodResult = await shopifyApiCall(
             shop,
             installation.accessToken,
-            `products/${page.baseProductId}.json?fields=id,status,published_scope,variants`
+            `products/${page.baseProductId}.json?fields=id,status,published_at,variants`
           );
           const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
           variants = rawVariants.map((v: any) => ({
@@ -9579,34 +9633,35 @@ ${textEdgeRestrictions}
             price: v.price || "0.00",
           }));
 
-          // Auto-publish the product to Online Store if it is still in draft status.
-          // /cart/add.js returns 422 "Cannot find variant" for variants on unpublished products.
+          // Ensure the product is active and published to Online Store.
+          // /cart/add.js returns 422 "Cannot find variant" for variants on draft/unpublished products.
           const productStatus: string = prodResult.data?.product?.status ?? "";
-          const publishedScope: string = prodResult.data?.product?.published_scope ?? "";
-          if (productStatus === "draft" || publishedScope !== "web") {
-            const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
-            if (productIdNum) {
-              const publishResult = await shopifyApiCall(
-                shop,
-                installation.accessToken,
-                `products/${productIdNum}.json`,
-                {
-                  method: "PUT",
-                  body: JSON.stringify({
-                    product: {
-                      id: productIdNum,
-                      status: "active",
-                      published: true,
-                      published_scope: "web",
-                    },
-                  }),
-                }
-              );
-              if (!publishResult.ok) {
-                console.warn(`[proxy/customizer-page] Auto-publish failed for product ${productIdNum}: ${publishResult.error}`);
-              } else {
-                console.log(`[proxy/customizer-page] Auto-published product ${productIdNum} (was status="${productStatus}", scope="${publishedScope}") for shop ${shop}`);
-              }
+          const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
+          console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
+
+          const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
+
+          // Step 1: Activate draft products via REST API
+          if (productStatus !== "active" && productIdNum) {
+            console.log(`[proxy/customizer-page] Activating draft product ${productIdNum}`);
+            const activateResult = await shopifyApiCall(
+              shop, installation.accessToken, `products/${productIdNum}.json`,
+              { method: "PUT", body: JSON.stringify({ product: { id: productIdNum, status: "active" } }) }
+            );
+            if (!activateResult.ok) {
+              console.warn(`[proxy/customizer-page] Failed to activate product ${productIdNum}: ${activateResult.error}`);
+            } else {
+              console.log(`[proxy/customizer-page] Activated product ${productIdNum}`);
+            }
+          }
+
+          // Step 2: Publish to Online Store via GraphQL (most reliable method).
+          // REST published_at alone doesn't always create the publication record.
+          if (productIdNum) {
+            try {
+              await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+            } catch (pubErr: any) {
+              console.warn(`[proxy/customizer-page] Publication check failed: ${pubErr.message}`);
             }
           }
         }
