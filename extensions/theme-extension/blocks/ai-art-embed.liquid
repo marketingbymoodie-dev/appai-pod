@@ -421,48 +421,12 @@
       }
     }
 
-    // --- Shadow SKU: resolve a design-specific variant for checkout thumbnail ---
-    // Returns a promise resolving to { variantId } where variantId is the shadow
-    // variant ID (or the original if the API call fails/times out).
-    function resolveDesignSku(sourceVariantId, designId, mockupUrl) {
-      if (!config.appUrl || !config.shopDomain || !sourceVariantId || !designId || !mockupUrl) {
-        return Promise.resolve({ variantId: sourceVariantId });
-      }
-      if (mockupUrl.indexOf('https://') !== 0) {
-        return Promise.resolve({ variantId: sourceVariantId });
-      }
-
-      var controller = new AbortController();
-      var tid = setTimeout(function() { controller.abort(); }, 8000);
-
-      return fetch(config.appUrl + '/api/storefront/design-sku', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({
-          shop: config.shopDomain,
-          sourceVariantId: String(sourceVariantId),
-          designId: String(designId),
-          mockupUrl: mockupUrl
-        }),
-        signal: controller.signal
-      })
-        .then(function(r) {
-          clearTimeout(tid);
-          return r.json();
-        })
-        .then(function(json) {
-          if (json && json.ok && json.shadowVariantId) {
-            console.log(B, 'Shadow SKU resolved:', json.shadowVariantId, '(reused:', json.reused, ')');
-            return { variantId: json.shadowVariantId };
-          }
-          console.warn(B, 'Shadow SKU response not ok, falling back to source variant:', json);
-          return { variantId: sourceVariantId };
-        })
-        .catch(function(err) {
-          clearTimeout(tid);
-          console.warn(B, 'Shadow SKU request failed, falling back:', err.message);
-          return { variantId: sourceVariantId };
-        });
+    // --- Design SKU: always use the original Shopify variant ID ---
+    // Design details (artwork, mockup, design ID) are passed as cart line item
+    // properties, so no shadow variant is needed. Using a shadow variant ID that
+    // doesn't exist in the store causes a 422 "Cannot find variant" error.
+    function resolveDesignSku(sourceVariantId /*, designId, mockupUrl */) {
+      return Promise.resolve({ variantId: sourceVariantId });
     }
 
     // --- Cart add via Shopify Ajax API ---
