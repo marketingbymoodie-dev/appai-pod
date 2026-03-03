@@ -130,9 +130,15 @@ function buildMockupCacheKey(
   providerId: number,
   variantId: number,
   label: string,
+  scale: number = 1,
+  x: number = 0,
+  y: number = 0,
 ): string {
   const designHash = crypto.createHash("sha256").update(designImageUrl).digest("hex").substring(0, 12);
-  return `${designHash}_bp${blueprintId}_pr${providerId}_v${variantId}_${label}`;
+  const s = Math.round(scale * 100);
+  const px = Math.round(x * 100);
+  const py = Math.round(y * 100);
+  return `${designHash}_bp${blueprintId}_pr${providerId}_v${variantId}_s${s}_x${px}_y${py}_${label}`;
 }
 
 /**
@@ -493,7 +499,7 @@ export async function generatePrintifyMockup(
 
   // --- Cache-first: check if all preferred views are already cached ---
   const preferredCacheKeys = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map(
-    (label) => buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, label)
+    (label) => buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, label, scale, x, y)
   );
   const cachedPaths = preferredCacheKeys.map(getCachedMockup);
   const allCached = cachedPaths.every((p) => p !== null);
@@ -592,7 +598,7 @@ export async function generatePrintifyMockup(
 
     // Build cache keys for the selected views
     const cacheKeys = selected.map((img) =>
-      buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label)
+      buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label, scale, x, y)
     );
 
     const cached = await cacheMockupImages(selectedData, cacheKeys);
