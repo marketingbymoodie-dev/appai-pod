@@ -452,7 +452,13 @@
         return res.text().then(function(text) {
           var json;
           try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
-          if (!res.ok) throw new Error('Cart add failed: ' + ((json && (json.description || json.message)) || text || 'HTTP ' + res.status));
+          if (!res.ok) {
+            var errMsg = (json && (json.description || json.message)) || text || 'HTTP ' + res.status;
+            if (res.status === 422 && (errMsg.toLowerCase().includes('cannot find') || errMsg.toLowerCase().includes('not found'))) {
+              throw new Error('This product is not available for purchase yet. Please try again in a moment or contact the store.');
+            }
+            throw new Error('Cart add failed: ' + errMsg);
+          }
 
           // After successful add, fetch full cart state for diagnostics
           fetch('/cart.js', { credentials: 'same-origin' })

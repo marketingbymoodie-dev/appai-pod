@@ -9561,6 +9561,7 @@ ${textEdgeRestrictions}
 
     // Fetch all variants for the base product so the storefront can render a
     // variant selector with prices before the customer generates artwork.
+    // Also check product status and auto-publish if needed so /cart/add.js accepts the variant.
     let variants: Array<{ id: string; title: string; price: string }> = [];
     if (page.baseProductId) {
       try {
@@ -9569,7 +9570,7 @@ ${textEdgeRestrictions}
           const prodResult = await shopifyApiCall(
             shop,
             installation.accessToken,
-            `products/${page.baseProductId}.json?fields=id,variants`
+            `products/${page.baseProductId}.json?fields=id,status,published_scope,variants`
           );
           const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
           variants = rawVariants.map((v: any) => ({
@@ -9577,6 +9578,37 @@ ${textEdgeRestrictions}
             title: v.title || "",
             price: v.price || "0.00",
           }));
+
+          // Auto-publish the product to Online Store if it is still in draft status.
+          // /cart/add.js returns 422 "Cannot find variant" for variants on unpublished products.
+          const productStatus: string = prodResult.data?.product?.status ?? "";
+          const publishedScope: string = prodResult.data?.product?.published_scope ?? "";
+          if (productStatus === "draft" || publishedScope !== "web") {
+            const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
+            if (productIdNum) {
+              const publishResult = await shopifyApiCall(
+                shop,
+                installation.accessToken,
+                `products/${productIdNum}.json`,
+                {
+                  method: "PUT",
+                  body: JSON.stringify({
+                    product: {
+                      id: productIdNum,
+                      status: "active",
+                      published: true,
+                      published_scope: "web",
+                    },
+                  }),
+                }
+              );
+              if (!publishResult.ok) {
+                console.warn(`[proxy/customizer-page] Auto-publish failed for product ${productIdNum}: ${publishResult.error}`);
+              } else {
+                console.log(`[proxy/customizer-page] Auto-published product ${productIdNum} (was status="${productStatus}", scope="${publishedScope}") for shop ${shop}`);
+              }
+            }
+          }
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
