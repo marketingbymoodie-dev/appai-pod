@@ -9537,6 +9537,23 @@ ${textEdgeRestrictions}
         console.log(`[ensurePublished] Product ${productId} already published to Online Store`);
       } else {
         console.warn(`[ensurePublished] userErrors for product ${productId}:`, userErrors);
+        // REST fallback: set published_at using write_products scope (already granted).
+        // Works even before write_publications scope is approved.
+        console.log(`[ensurePublished] Trying REST published_at fallback for product ${productId}`);
+        const restRes = await fetch(
+          `https://${shop}/admin/api/2024-01/products/${productId}.json`,
+          {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({ product: { id: productId, status: "active", published_at: new Date().toISOString() } }),
+          }
+        );
+        if (restRes.ok) {
+          const restData = await restRes.json() as any;
+          console.log(`[ensurePublished] REST fallback result: status="${restData?.product?.status}" published_at="${restData?.product?.published_at}"`);
+        } else {
+          console.warn(`[ensurePublished] REST fallback also failed: ${restRes.status}`);
+        }
       }
     } else {
       console.log(`[ensurePublished] Published product ${productId} to Online Store for ${shop}`);
@@ -9617,6 +9634,7 @@ ${textEdgeRestrictions}
     // variant selector with prices before the customer generates artwork.
     // Also check product status and auto-publish if needed so /cart/add.js accepts the variant.
     let variants: Array<{ id: string; title: string; price: string }> = [];
+    let productPublished: boolean | null = null;
     if (page.baseProductId) {
       try {
         const installation = await storage.getShopifyInstallationByShop(shop);
@@ -9638,6 +9656,7 @@ ${textEdgeRestrictions}
           const productStatus: string = prodResult.data?.product?.status ?? "";
           const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
           console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
+          productPublished = productStatus === "active" && !!publishedAt;
 
           const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
 
@@ -9700,6 +9719,7 @@ ${textEdgeRestrictions}
       designerConfig,
       variants,
       stylePresets,
+      productPublished,
     });
   }));
 

@@ -11,7 +11,7 @@ api_version = "2026-01"
 
 [access_scopes]
 # write_content required for creating/updating Shopify Pages via Admin API
-scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content"
+scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications"
 
 [app_proxy]
 # Storefront → backend proxy. No CORS, no hardcoded app URLs in theme extension.
