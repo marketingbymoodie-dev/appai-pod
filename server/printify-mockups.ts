@@ -157,7 +157,8 @@ function getCachedMockup(cacheKey: string): string | null {
 
   const parts = cacheKey.split("_");
   const designId = parts[0] || cacheKey;
-  const viewName = parts.slice(-1)[0] || "front";
+  // Include transform (s/x/y) in the view name so each zoom/position gets a unique Supabase path
+  const viewName = parts.slice(4).join("_") || "front";
   return getSupabasePublicUrl(designId, viewName);
 }
 
@@ -190,7 +191,8 @@ function selectPreferredViews(images: MockupImage[]): MockupImage[] {
 async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Promise<string | null> {
   const parts = cacheKey.split("_");
   const designId = parts[0] || cacheKey;
-  const viewName = parts.slice(-1)[0] || "front";
+  // Include transform (s/x/y) in the view name so each zoom/position gets a unique Supabase path
+  const viewName = parts.slice(4).join("_") || "front";
 
   try {
     const response = await fetch(printifyUrl);
