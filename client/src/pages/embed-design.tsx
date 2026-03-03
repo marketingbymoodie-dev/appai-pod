@@ -581,7 +581,6 @@ export default function EmbedDesign() {
   const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
-  const mockupRegenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -1349,44 +1348,6 @@ export default function EmbedDesign() {
       transform.y
     );
   }, [isStorefront, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, printifyMockupImages.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
-
-  // Debounced regeneration of Printify mockups when transform changes
-  useEffect(() => {
-    // Only regenerate if we already have mockups and user is adjusting placement
-    if (
-      !productTypeConfig?.hasPrintifyMockups ||
-      !generatedDesign?.imageUrl ||
-      !selectedSize ||
-      (printifyMockups.length === 0 && printifyMockupImages.length === 0)
-    ) {
-      return;
-    }
-
-    // Clear any existing timeout
-    if (mockupRegenerationTimeoutRef.current) {
-      clearTimeout(mockupRegenerationTimeoutRef.current);
-    }
-
-    // Debounce the regeneration by 1 second after user stops adjusting
-    mockupRegenerationTimeoutRef.current = setTimeout(() => {
-      fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
-        productTypeConfig.id,
-        selectedSize,
-        selectedFrameColor || 'default',
-        transform.scale,
-        transform.x,
-        transform.y
-      );
-    }, 1000);
-
-    // Cleanup timeout on unmount or when deps change
-    return () => {
-      if (mockupRegenerationTimeoutRef.current) {
-        clearTimeout(mockupRegenerationTimeoutRef.current);
-      }
-    };
-  }, [transform.scale, transform.x, transform.y, productTypeConfig, generatedDesign?.imageUrl, selectedSize, selectedFrameColor, printifyMockups.length, fetchPrintifyMockups]);
 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
@@ -3054,15 +3015,11 @@ export default function EmbedDesign() {
             </div>
 
             {generatedDesign?.imageUrl && (
-              <div className="flex items-center gap-2">
-                <div className="flex-1">
-                  <ZoomControls
-                    transform={transform}
-                    onTransformChange={setTransform}
-                    disabled={!generatedDesign?.imageUrl}
-                  />
-                </div>
-                {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
+              <ZoomControls
+                transform={transform}
+                onTransformChange={setTransform}
+                disabled={!generatedDesign?.imageUrl}
+                extraActions={(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups ? (
                   <Button
                     variant="outline"
                     size="sm"
@@ -3097,8 +3054,8 @@ export default function EmbedDesign() {
                     )}
                     <span className="text-xs">Refresh Mockups</span>
                   </Button>
-                )}
-              </div>
+                ) : undefined}
+              />
             )}
 
             {/* Add to Cart — shown in both admin embed and storefront after design is ready */}

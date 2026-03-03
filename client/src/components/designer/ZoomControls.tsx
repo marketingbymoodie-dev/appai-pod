@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type React from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { ZoomIn, Crosshair, Move, ChevronDown, ChevronUp } from "lucide-react";
@@ -10,6 +11,7 @@ interface ZoomControlsProps {
   disabled?: boolean;
   showPositionControls?: boolean;
   maxZoom?: number;
+  extraActions?: React.ReactNode;
 }
 
 export function ZoomControls({
@@ -18,6 +20,7 @@ export function ZoomControls({
   disabled = false,
   showPositionControls = true,
   maxZoom = 200,
+  extraActions,
 }: ZoomControlsProps) {
   const [showPosition, setShowPosition] = useState(false);
 
@@ -80,17 +83,20 @@ export function ZoomControls({
 
       {showPositionControls && (
         <>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowPosition(!showPosition)}
-            className="flex items-center gap-1 text-xs text-muted-foreground self-start"
-            data-testid="button-toggle-position"
-          >
-            <Move className="h-3 w-3" />
-            Reposition
-            {showPosition ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowPosition(!showPosition)}
+              className="flex items-center gap-1 text-xs text-muted-foreground self-start"
+              data-testid="button-toggle-position"
+            >
+              <Move className="h-3 w-3" />
+              Reposition
+              {showPosition ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            </Button>
+            {extraActions}
+          </div>
 
           {showPosition && (
             <div className="flex flex-col gap-2 p-2 bg-muted/30 rounded-md">
