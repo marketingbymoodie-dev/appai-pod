@@ -580,6 +580,7 @@ export default function EmbedDesign() {
   const [mockupError, setMockupError] = useState<string | null>(null);
   const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
+  const [mockupsStale, setMockupsStale] = useState(false);
   const mockupRegenerationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
@@ -1192,6 +1193,7 @@ export default function EmbedDesign() {
     }
 
     setMockupLoading(true);
+    setMockupsStale(false);
     // Notify parent page so it can show the "Artwork Generating" overlay
     if (runtimeMode !== 'standalone') {
       window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
@@ -1355,7 +1357,7 @@ export default function EmbedDesign() {
       !productTypeConfig?.hasPrintifyMockups ||
       !generatedDesign?.imageUrl ||
       !selectedSize ||
-      printifyMockups.length === 0
+      (printifyMockups.length === 0 && printifyMockupImages.length === 0)
     ) {
       return;
     }
@@ -1385,6 +1387,15 @@ export default function EmbedDesign() {
       }
     };
   }, [transform.scale, transform.x, transform.y, productTypeConfig, generatedDesign?.imageUrl, selectedSize, selectedFrameColor, printifyMockups.length, fetchPrintifyMockups]);
+
+  // Mark mockups as stale when transform changes and mockups already exist
+  useEffect(() => {
+    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    if (hasMockups && !mockupLoading) {
+      setMockupsStale(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transform.scale, transform.x, transform.y]);
 
   // Variants state — must be declared BEFORE the AI_ART_STUDIO_CART_STATE useEffect
   // that includes `variants` in its dependency array (avoids TDZ ReferenceError in production bundle)
@@ -3043,11 +3054,51 @@ export default function EmbedDesign() {
             </div>
 
             {generatedDesign?.imageUrl && (
-              <ZoomControls
-                transform={transform}
-                onTransformChange={setTransform}
-                disabled={!generatedDesign?.imageUrl}
-              />
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <ZoomControls
+                    transform={transform}
+                    onTransformChange={setTransform}
+                    disabled={!generatedDesign?.imageUrl}
+                  />
+                </div>
+                {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                        setMockupError(null);
+                        setMockupFailed(false);
+                        setPrintifyMockups([]);
+                        setPrintifyMockupImages([]);
+                        setSelectedMockupIndex(0);
+                        setMockupsStale(false);
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || 'default',
+                          transform.scale,
+                          transform.x,
+                          transform.y
+                        );
+                      }
+                    }}
+                    disabled={mockupLoading || !generatedDesign?.imageUrl}
+                    title="Refresh Mockups"
+                    data-testid="button-refresh-mockups"
+                    className="shrink-0"
+                  >
+                    {mockupLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <RefreshCcw className="w-4 h-4 mr-1" />
+                    )}
+                    <span className="text-xs">Refresh Mockups</span>
+                  </Button>
+                )}
+              </div>
             )}
 
             {/* Add to Cart — shown in both admin embed and storefront after design is ready */}
@@ -3156,7 +3207,7 @@ export default function EmbedDesign() {
                   return (
                     <div className="space-y-2" data-testid="container-mockup-gallery">
                       <p className="text-xs text-muted-foreground text-center">Tap a preview to view</p>
-                      <div className="flex gap-2 justify-center">
+                      <div className="relative flex gap-2 justify-center">
                         {allItems.map((item, idx) => (
                           <button
                             key={idx}
@@ -3181,6 +3232,13 @@ export default function EmbedDesign() {
                             </span>
                           </button>
                         ))}
+                        {mockupsStale && !mockupLoading && (
+                          <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/60 pointer-events-none">
+                            <span className="text-white text-[10px] font-semibold text-center leading-tight px-1">
+                              Refresh your Mockups
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -3231,39 +3289,6 @@ export default function EmbedDesign() {
                     Regenerate
                   </Button>
 
-                  {/* Refresh Mockups - re-fetches product mockups using current artwork + transform */}
-                  {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                          setMockupError(null);
-                          setMockupFailed(false);
-                          setPrintifyMockups([]);
-                          setPrintifyMockupImages([]);
-                          setSelectedMockupIndex(0);
-                          fetchPrintifyMockups(
-                            toAbsoluteImageUrl(generatedDesign.imageUrl),
-                            productTypeConfig.id,
-                            selectedSize,
-                            selectedFrameColor || 'default',
-                            transform.scale,
-                            transform.x,
-                            transform.y
-                          );
-                        }
-                      }}
-                      disabled={mockupLoading || !generatedDesign?.imageUrl}
-                      title="Refresh Mockups"
-                      data-testid="button-refresh-mockups"
-                    >
-                      {mockupLoading ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <RefreshCcw className="w-4 h-4" />
-                      )}
-                    </Button>
-                  )}
 
                   <Button
                     variant="outline"
