@@ -229,16 +229,40 @@ export function ProductMockup({
 
   const renderImageContent = () => {
     if (isLoading) {
-      const stageText =
-        loadingStage === "generating"
-          ? "Generating Art..."
-          : loadingStage === "mockups"
-          ? "Creating Mockups..."
-          : "Creating...";
+      // During mockup generation, show artwork underneath with an overlay so
+      // the user can see their design immediately while mockups are being fetched.
+      if (loadingStage === "mockups" && imageUrl) {
+        const scaleVal = transform.scale / 100;
+        const xOffset = transform.x - 50;
+        const yOffset = transform.y - 50;
+        return (
+          <>
+            <img
+              src={imageUrl}
+              alt="Generated artwork"
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{
+                pointerEvents: "none",
+                borderRadius: printShape === "circle" ? "50%" : undefined,
+                transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
+                transformOrigin: "center center",
+              }}
+              draggable={false}
+            />
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40">
+              <Loader2 className="h-10 w-10 animate-spin text-white" />
+              <span className="text-2xl animate-pulse font-semibold text-white mt-3 drop-shadow">Creating Mockups...</span>
+            </div>
+          </>
+        );
+      }
+      // During artwork generation (no artwork available yet)
       return (
-        <div className="flex flex-col items-center gap-2 text-muted-foreground">
-          <Loader2 className="h-8 w-8 animate-spin" />
-          <span className="text-xs animate-pulse font-medium">{stageText}</span>
+        <div className="flex flex-col items-center gap-3 text-muted-foreground">
+          <Loader2 className="h-10 w-10 animate-spin" />
+          <span className="text-2xl animate-pulse font-semibold">
+            {loadingStage === "generating" ? "Generating Art..." : "Creating..."}
+          </span>
         </div>
       );
     }
