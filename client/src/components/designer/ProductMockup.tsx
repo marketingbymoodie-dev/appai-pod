@@ -125,9 +125,13 @@ export function ProductMockup({
   };
 
   const renderFramedPrint = () => {
-    // When displaying a Printify composite mockup, skip the CSS frame overlay
-    // because the mockup image already has the frame baked in.
-    if (mockupUrl) {
+    // Skip the CSS frame overlay when:
+    // - Displaying a Printify composite mockup (already has frame baked in)
+    // - Displaying the blank product image (may already have frame)
+    // Only show the CSS frame when the user's generated artwork is being displayed.
+    const showFrameOverlay = !mockupUrl && !!imageUrl;
+
+    if (!showFrameOverlay) {
       return (
         <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
           {renderImageContent()}

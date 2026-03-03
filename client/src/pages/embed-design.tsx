@@ -1396,10 +1396,15 @@ export default function EmbedDesign() {
     );
     if (otherColors.length === 0) return;
 
-    console.log('[Mockups] Background prefetch for colors:', otherColors.map((c: { id: string }) => c.id));
+    console.log('[Mockups] Background prefetch queued for colors:', otherColors.map((c: { id: string }) => c.id));
     const controller = new AbortController();
 
     (async () => {
+      // Wait before starting background fetches so they don't compete with
+      // primary content rendering and initial page interactions.
+      await new Promise(r => setTimeout(r, 3000));
+      if (controller.signal.aborted) return;
+
       const imageUrl = toAbsoluteImageUrl(generatedDesign!.imageUrl);
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/mockup`
