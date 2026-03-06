@@ -504,8 +504,16 @@
                 sectionWrapper.innerHTML = newContent ? newContent.innerHTML : html;
 
                 // Apply stored mockup immediately to the freshly-injected DOM
-                // (zero delay, no /cart.js fetch needed)
                 if (typeof window.aiArtFastReplace === 'function') window.aiArtFastReplace();
+
+                // Staggered retries for lazy-loaded images and slow drawer animations
+                [500, 1500].forEach(function(delay) {
+                  setTimeout(function() {
+                    if (typeof window.__applyCartMockups === 'function') window.__applyCartMockups();
+                    else if (typeof window.aiArtFastReplace === 'function') window.aiArtFastReplace();
+                    try { window.dispatchEvent(new Event('appai:cart-updated')); } catch(_) {}
+                  }, delay);
+                });
 
                 // Re-query and open the drawer
                 var newDrawer = document.querySelector('cart-drawer');
@@ -782,6 +790,25 @@
           .catch(function(err) {
             replyToIframe(event, { type: 'ai-art-studio:cart-updated', success: false, error: err.message });
           });
+        return;
+      }
+
+      // ===== POST-ATC IMAGE SWAP =====
+      if (data.type === 'AI_ART_STUDIO_REPLACE_CART_IMAGES') {
+        console.log(B, 'Post-ATC image swap requested');
+        if (data.mockupUrl && data.variantId) {
+          window.__aiArtRecentMockup = { variantId: String(data.variantId), url: data.mockupUrl, designId: '' };
+        }
+        // Immediate attempt
+        if (typeof window.aiArtFastReplace === 'function') window.aiArtFastReplace();
+        // Retry after DOM settles (section re-render may still be in progress)
+        setTimeout(function() {
+          if (typeof window.__applyCartMockups === 'function') window.__applyCartMockups();
+          else if (typeof window.aiArtFastReplace === 'function') window.aiArtFastReplace();
+        }, 800);
+        setTimeout(function() {
+          if (typeof window.__applyCartMockups === 'function') window.__applyCartMockups();
+        }, 2000);
         return;
       }
 

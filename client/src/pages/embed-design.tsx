@@ -1531,23 +1531,31 @@ export default function EmbedDesign() {
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
     }
 
-    const mockupFullUrl = getPreferredMockupUrl();
+    const mockupFullUrl = mockupsStale ? '' : getPreferredMockupUrl();
     if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
     if (selectedSize) properties['Size'] = selectedSize;
+    if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+
+    const shouldDisable = waitingForMockups || isAddingToCart || mockupsStale;
+    const label = waitingForMockups
+      ? 'Generating preview\u2026'
+      : mockupsStale
+        ? 'Refresh Mockups to Continue'
+        : 'Add to Cart';
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups,
-      disabled: waitingForMockups || isAddingToCart,
+      ready: !waitingForMockups && !mockupsStale,
+      disabled: shouldDisable,
       waitingForMockups,
-      label: waitingForMockups ? 'Generating preview\u2026' : 'Add to Cart',
+      label,
       payload: {
         variantId,
         quantity: 1,
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId, mockupsStale]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -2165,6 +2173,10 @@ export default function EmbedDesign() {
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+    if (mockupsStale) {
+      setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
+      return;
+    }
 
     const variantId = findVariantId();
 
@@ -2210,9 +2222,15 @@ export default function EmbedDesign() {
       // else: data URL too large for Shopify cart property (255 char limit) — omit
     }
 
-    const mockupFullUrl = getPreferredMockupUrl();
+    // Guard: only use the mockup URL if it belongs to the currently selected color.
+    // Without this, changing frame color and adding to cart before mockups refresh
+    // would send the previous color's mockup to the cart.
+    const colorMatches = !selectedFrameColor || currentMockupColorRef.current === selectedFrameColor;
+    const mockupFullUrl = colorMatches ? getPreferredMockupUrl() : '';
     if (!mockupFullUrl) {
-      console.warn('[Design Studio] No mockup URL available for cart. printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
+      console.warn('[Design Studio] No mockup URL available for cart. colorMatches:', colorMatches,
+        'currentColor:', currentMockupColorRef.current, 'selected:', selectedFrameColor,
+        'printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
     } else {
       console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 120));
     }
@@ -2227,31 +2245,32 @@ export default function EmbedDesign() {
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
 
-    // Update variant image for checkout display (fire-and-forget, 3s timeout)
+    // Update variant image for checkout display — await so Shopify has the correct
+    // image before /cart/add.js fires and the cart drawer renders.
     if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
-      safeFetch(`${API_BASE}/api/storefront/variant-image`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shop: shopDomain,
-          productId,
-          variantId: normalizedVariant,
-          mockupUrl: mockupFullUrl,
-        }),
-        signal: controller.signal,
-      })
-        .then((res) => {
-          clearTimeout(timeout);
-          if (!res.ok) {
-            console.warn('[Design Studio] Variant image update failed:', res.status);
-          }
-        })
-        .catch((e) => {
-          clearTimeout(timeout);
-          console.warn('[Design Studio] Variant image update failed:', e?.message || e);
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const imgRes = await safeFetch(`${API_BASE}/api/storefront/variant-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shop: shopDomain,
+            productId,
+            variantId: normalizedVariant,
+            mockupUrl: mockupFullUrl,
+          }),
+          signal: controller.signal,
         });
+        clearTimeout(timeout);
+        if (!imgRes.ok) {
+          console.warn('[Design Studio] Variant image update failed:', imgRes.status);
+        } else {
+          console.log('[Design Studio] Variant image updated successfully before cart add.');
+        }
+      } catch (e: any) {
+        console.warn('[Design Studio] Variant image update failed/timed out:', e?.message || e);
+      }
     }
 
     // Storefront mode: use postMessage to parent (AJAX cart, no navigation)
@@ -2270,6 +2289,15 @@ export default function EmbedDesign() {
             title: "Added to cart!",
             description: "Your custom design has been added to the cart.",
           });
+          // Tell parent to re-run cart image swap after a short delay so the
+          // freshly-added item's DOM element is in place.
+          if (mockupFullUrl) {
+            window.parent.postMessage({
+              type: 'AI_ART_STUDIO_REPLACE_CART_IMAGES',
+              mockupUrl: mockupFullUrl,
+              variantId: normalizedVariant,
+            }, '*');
+          }
           // Persist design state
           try {
             const stateKey = `aiart:last_design:${shopDomain}:${productHandle || 'unknown'}:${normalizedVariant}`;
@@ -3189,7 +3217,7 @@ export default function EmbedDesign() {
                   <>
                     <Button
                       onClick={handleAddToCart}
-                      disabled={isAddingToCart || atcWaitingForMockups}
+                      disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
                       className="w-full h-12 text-base font-medium"
                       data-testid="button-add-to-cart"
                     >
@@ -3202,6 +3230,11 @@ export default function EmbedDesign() {
                         <>
                           <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                           Generating preview…
+                        </>
+                      ) : mockupsStale ? (
+                        <>
+                          <ShoppingCart className="w-5 h-5 mr-2" />
+                          Refresh Mockups to Continue
                         </>
                       ) : isStorefront && bridgeError ? (
                         <>
