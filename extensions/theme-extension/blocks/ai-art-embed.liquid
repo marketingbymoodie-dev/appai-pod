@@ -339,6 +339,89 @@
     studioContainer.appendChild(iframe);
     
     // ================================================================
+    // Theme extraction — reads computed styles from the live storefront DOM
+    // and builds a plain object for injection into the iframe CSS variables.
+    // Works with any Shopify theme (Dawn, custom, etc.) without relying on
+    // theme-specific CSS variable names.
+    // ================================================================
+    function extractStoreTheme() {
+      var theme = {};
+      try {
+        var body = document.body;
+        var cs = getComputedStyle(body);
+
+        // Body background and text
+        theme.backgroundColor = cs.backgroundColor;
+        theme.textColor = cs.color;
+        theme.fontFamily = cs.fontFamily;
+        theme.fontSize = cs.fontSize;
+
+        // Primary button: try Shopify standard selectors then fall back broadly
+        var btn = document.querySelector(
+          'button[name="add"], .product-form__submit, .shopify-payment-button__button, ' +
+          'button.btn--primary, .btn--filled, button.button--primary, .product-form button[type="submit"]'
+        );
+        if (!btn) btn = document.querySelector('button[type="submit"]');
+        if (btn) {
+          var bcs = getComputedStyle(btn);
+          theme.buttonBg = bcs.backgroundColor;
+          theme.buttonColor = bcs.color;
+          theme.buttonRadius = bcs.borderRadius;
+          theme.buttonFontSize = bcs.fontSize;
+          theme.buttonFontWeight = bcs.fontWeight;
+          theme.buttonFontFamily = bcs.fontFamily;
+          theme.buttonBorderColor = bcs.borderColor;
+          theme.buttonBorderWidth = bcs.borderWidth;
+          theme.buttonLetterSpacing = bcs.letterSpacing;
+          theme.buttonTextTransform = bcs.textTransform;
+        }
+
+        // Headings
+        var h1 = document.querySelector('.product__title, h1.product-single__title, h1');
+        if (!h1) h1 = document.querySelector('h1, h2');
+        if (h1) {
+          var hcs = getComputedStyle(h1);
+          theme.headingFontFamily = hcs.fontFamily;
+          theme.headingFontWeight = hcs.fontWeight;
+          theme.headingColor = hcs.color;
+          theme.headingLetterSpacing = hcs.letterSpacing;
+          theme.headingTextTransform = hcs.textTransform;
+        }
+
+        // Inputs / form fields
+        var input = document.querySelector(
+          'input.field__input, .product-form input[type="text"], ' +
+          '.product-form select, input[type="email"], input[type="text"]'
+        );
+        if (input) {
+          var ics = getComputedStyle(input);
+          theme.inputBg = ics.backgroundColor;
+          theme.inputBorderColor = ics.borderColor;
+          theme.inputRadius = ics.borderRadius;
+          theme.inputColor = ics.color;
+          theme.inputFontFamily = ics.fontFamily;
+        }
+
+        // Links / accent color
+        var link = document.querySelector('a:not([class*="btn"]):not([class*="button"]):not([class*="nav"])');
+        if (link) {
+          theme.accentColor = getComputedStyle(link).color;
+        }
+
+        // Card / section background (for the app's card backgrounds)
+        var section = document.querySelector('.product, .product-single, section.product__info, main');
+        if (section) {
+          theme.sectionBg = getComputedStyle(section).backgroundColor;
+        }
+
+        console.log('[AI Art Bridge] Extracted store theme:', JSON.stringify(theme).substring(0, 200));
+      } catch (e) {
+        console.warn('[AI Art Bridge] extractStoreTheme error:', e);
+      }
+      return theme;
+    }
+
+    // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
     var BRIDGE_VERSION = '1.0.0';
@@ -673,6 +756,20 @@
           } catch(e) {
             console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
           }
+        }
+
+        // Send store theme so the iframe can match the merchant's visual style.
+        try {
+          var storeTheme = extractStoreTheme();
+          if (storeTheme && Object.keys(storeTheme).length > 0) {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_STUDIO_THEME',
+              theme: storeTheme,
+            }, iframeOrigin || '*');
+            console.log(B, 'Sent THEME to iframe');
+          }
+        } catch(e) {
+          console.warn(B, 'Failed to send THEME:', e.message);
         }
 
         return;

@@ -76,6 +76,67 @@ function isDataUrl(url: string): boolean {
 }
 
 /**
+ * Convert a CSS color string (rgb(), rgba(), or #hex) to an HSL string
+ * in the format expected by the app's CSS variables: "H S% L%"
+ * (no hsl() wrapper, just the values, as that's what Tailwind/shadcn use).
+ * Returns null if the color cannot be parsed or is transparent.
+ */
+function cssColorToHSL(color: string | undefined | null): string | null {
+  if (!color || color === 'transparent' || color === 'rgba(0, 0, 0, 0)') return null;
+
+  // Parse rgb(r, g, b) or rgba(r, g, b, a)
+  const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)/);
+  if (rgbMatch) {
+    let r = parseInt(rgbMatch[1]) / 255;
+    let g = parseInt(rgbMatch[2]) / 255;
+    let b = parseInt(rgbMatch[3]) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h = 0, s = 0;
+    const l = (max + min) / 2;
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+    const hDeg = Math.round(h * 360);
+    const sPct = Math.round(s * 100);
+    const lPct = Math.round(l * 100);
+    return `${hDeg} ${sPct}% ${lPct}%`;
+  }
+
+  // Parse #hex or #rrggbb
+  const hexMatch = color.match(/^#([0-9a-f]{3,8})$/i);
+  if (hexMatch) {
+    let hex = hexMatch[1];
+    if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+    if (hex.length === 6) {
+      const r2 = parseInt(hex.slice(0, 2), 16) / 255;
+      const g2 = parseInt(hex.slice(2, 4), 16) / 255;
+      const b2 = parseInt(hex.slice(4, 6), 16) / 255;
+      return cssColorToHSL(`rgb(${Math.round(r2*255)}, ${Math.round(g2*255)}, ${Math.round(b2*255)})`);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Given an HSL string "H S% L%", return a lighter or darker version
+ * by adjusting lightness by the given delta (-100 to +100).
+ */
+function adjustHSLLightness(hsl: string, delta: number): string {
+  const parts = hsl.match(/^(\d+)\s+(\d+)%\s+(\d+)%$/);
+  if (!parts) return hsl;
+  const h = parts[1], s = parts[2];
+  const l = Math.max(0, Math.min(100, parseInt(parts[3]) + delta));
+  return `${h} ${s}% ${l}%`;
+}
+
+/**
  * Resolve an image URL to an absolute URL suitable for sending to the backend.
  * Handles three cases:
  * - Already absolute (http/https) → pass through
@@ -2511,6 +2572,82 @@ export default function EmbedDesign() {
       if (type === "AI_ART_STUDIO_STYLE_PRESETS" && Array.isArray(event.data.stylePresets)) {
         console.log('[Design Studio] STYLE_PRESETS received:', event.data.stylePresets.length, 'presets');
         setStylePresets(event.data.stylePresets);
+      }
+
+      // Store theme: apply merchant's colors, fonts and radius to the iframe's CSS variables
+      if (type === "AI_ART_STUDIO_THEME" && event.data.theme) {
+        const t = event.data.theme as Record<string, string>;
+        const root = document.documentElement.style;
+
+        // -- Background & text --
+        const bgHSL = cssColorToHSL(t.backgroundColor);
+        const fgHSL = cssColorToHSL(t.textColor);
+        if (bgHSL) root.setProperty('--background', bgHSL);
+        if (fgHSL) {
+          root.setProperty('--foreground', fgHSL);
+          root.setProperty('--card-foreground', fgHSL);
+        }
+
+        // -- Primary button --
+        const btnBgHSL = cssColorToHSL(t.buttonBg);
+        const btnFgHSL = cssColorToHSL(t.buttonColor);
+        if (btnBgHSL) {
+          root.setProperty('--primary', btnBgHSL);
+          root.setProperty('--ring', btnBgHSL);
+          root.setProperty('--sidebar-primary', btnBgHSL);
+          // Derive primary-border as slightly darker
+          root.setProperty('--primary-border', adjustHSLLightness(btnBgHSL, -8));
+        }
+        if (btnFgHSL) {
+          root.setProperty('--primary-foreground', btnFgHSL);
+        }
+        if (t.buttonRadius) {
+          // Shopify buttons may have e.g. "4px" or "24px"; map to --radius
+          root.setProperty('--radius', t.buttonRadius);
+        }
+
+        // -- Fonts --
+        if (t.fontFamily) {
+          root.setProperty('--font-sans', t.fontFamily);
+        }
+        if (t.headingFontFamily && t.headingFontFamily !== t.fontFamily) {
+          root.setProperty('--font-heading', t.headingFontFamily);
+        }
+
+        // -- Input border --
+        const inputBorderHSL = cssColorToHSL(t.inputBorderColor);
+        if (inputBorderHSL) {
+          root.setProperty('--border', inputBorderHSL);
+          root.setProperty('--input', inputBorderHSL);
+        }
+        const inputBgHSL = cssColorToHSL(t.inputBg);
+        if (inputBgHSL) {
+          root.setProperty('--card', inputBgHSL);
+        }
+
+        // -- Accent (links) --
+        const accentHSL = cssColorToHSL(t.accentColor);
+        if (accentHSL) {
+          root.setProperty('--accent', accentHSL);
+        }
+
+        // -- Derived secondary/muted colors from background --
+        if (bgHSL) {
+          // Secondary is slightly off-background (darker in light mode)
+          root.setProperty('--secondary', adjustHSLLightness(bgHSL, -6));
+          root.setProperty('--secondary-border', adjustHSLLightness(bgHSL, -14));
+          // Muted is a subtle mid-tone
+          root.setProperty('--muted', adjustHSLLightness(bgHSL, -8));
+          // Card backgrounds
+          root.setProperty('--popover', adjustHSLLightness(bgHSL, -3));
+        }
+        if (fgHSL) {
+          // Muted foreground is a lighter version of the text color
+          root.setProperty('--muted-foreground', adjustHSLLightness(fgHSL, 30));
+          root.setProperty('--secondary-foreground', fgHSL);
+        }
+
+        console.log('[Design Studio] Applied store theme CSS variables');
       }
     };
 
