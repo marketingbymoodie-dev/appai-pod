@@ -8,7 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, Info } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   ProductMockup,
@@ -2820,73 +2821,126 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4">
-              {/* Reference Image Upload — full-width button replacing Import tab */}
-              <div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleFileChange}
-                  className="hidden"
-                  data-testid="input-reference-file"
-                />
-                <input
-                  ref={importFileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg,image/webp"
-                  onChange={(e) => handleImportFile(e, "kittl")}
-                  className="hidden"
-                  data-testid="input-import-kittl"
-                />
-                <input
-                  ref={customUploadInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg,image/webp"
-                  onChange={(e) => handleImportFile(e, "upload")}
-                  className="hidden"
-                  data-testid="input-import-custom"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => fileInputRef.current?.click()}
-                  data-testid="button-upload-reference"
-                >
-                  <ImagePlus className="w-4 h-4 mr-2" />
-                  {isImporting ? "Importing..." : "Upload Image"}
-                </Button>
-                <p className="text-xs text-muted-foreground mt-1 text-center">
-                  Reference Image (optional)
-                </p>
-                {referencePreview && (
-                  <div className="flex items-center gap-3 mt-2">
-                    <div className="relative shrink-0">
-                      <img
-                        src={referencePreview}
-                        alt="Reference"
-                        className="w-12 h-12 object-cover rounded-md"
-                        data-testid="img-reference-preview"
-                      />
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="icon"
-                        className="absolute -top-2 -right-2 w-5 h-5"
-                        onClick={clearReferenceImage}
-                        data-testid="button-clear-reference"
-                      >
-                        <X className="w-3 h-3" />
-                      </Button>
-                    </div>
-                    <span className="text-xs text-muted-foreground">Reference image selected</span>
-                  </div>
-                )}
-                {importError && (
-                  <p className="text-destructive text-sm mt-1" data-testid="text-import-error">
-                    {importError}
+              {/* Row 1: Generate + Upload side-by-side */}
+              <div className="flex flex-col sm:flex-row gap-2">
+                {/* Generate button — left, wider */}
+                <div className="flex-[3] min-w-0">
+                  <Button
+                    onClick={() => {
+                      if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+                        alert("Please select a style before generating");
+                        return;
+                      }
+                      if (printSizes.length > 0 && selectedSize === "") {
+                        alert("Please select a size before generating");
+                        return;
+                      }
+                      handleGenerate();
+                    }}
+                    disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
+                    className="w-full h-12 text-base font-medium"
+                    data-testid="button-generate"
+                  >
+                    {generateMutation.isPending ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 mr-2" />
+                        {isShopify ? "Generate Design" : "Generate Design"}
+                      </>
+                    )}
+                  </Button>
+                  {(isShopify || isStorefront) && (
+                    <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+                      10 Free artworks
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button type="button" className="inline-flex items-center" aria-label="Pricing info">
+                            <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
+                          <p className="font-medium">Artwork Credits</p>
+                          <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
+                          <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+                          <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+                        </PopoverContent>
+                      </Popover>
+                    </p>
+                  )}
+                </div>
+
+                {/* Upload reference image — right, narrower */}
+                <div className="flex-[2] min-w-0">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleFileChange}
+                    className="hidden"
+                    data-testid="input-reference-file"
+                  />
+                  <input
+                    ref={importFileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    onChange={(e) => handleImportFile(e, "kittl")}
+                    className="hidden"
+                    data-testid="input-import-kittl"
+                  />
+                  <input
+                    ref={customUploadInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    onChange={(e) => handleImportFile(e, "upload")}
+                    className="hidden"
+                    data-testid="input-import-custom"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full h-12"
+                    onClick={() => fileInputRef.current?.click()}
+                    data-testid="button-upload-reference"
+                  >
+                    <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
+                    {isImporting ? "Importing..." : "Upload"}
+                  </Button>
+                  <p className="text-xs text-muted-foreground mt-1 text-center">
+                    Reference Image (optional)
                   </p>
-                )}
+                  {referencePreview && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="relative shrink-0">
+                        <img
+                          src={referencePreview}
+                          alt="Reference"
+                          className="w-8 h-8 object-cover rounded"
+                          data-testid="img-reference-preview"
+                        />
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="icon"
+                          className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                          onClick={clearReferenceImage}
+                          data-testid="button-clear-reference"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </Button>
+                      </div>
+                      <span className="text-xs text-muted-foreground truncate">Image selected</span>
+                    </div>
+                  )}
+                  {importError && (
+                    <p className="text-destructive text-xs mt-1" data-testid="text-import-error">
+                      {importError}
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* Style Selection */}
@@ -2918,59 +2972,33 @@ export default function EmbedDesign() {
                 />
               </div>
 
-              {/* Size Selection */}
-              {printSizes.length > 0 && (
-                <div className="space-y-2">
-                  <SizeSelector
-                    sizes={printSizes}
-                    selectedSize={selectedSize}
-                    onSizeChange={(sizeId) => {
-                      setSelectedSize(sizeId);
-                      setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                    }}
-                  />
-                  {selectedSize === "" && (
-                    <p className="text-xs text-muted-foreground">Please select a size before generating</p>
+              {/* Size + Frame Color on same row */}
+              {(printSizes.length > 0 || frameColorObjects.length > 0) && (
+                <div className={`grid gap-3 ${printSizes.length > 0 && frameColorObjects.length > 0 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+                  {printSizes.length > 0 && (
+                    <div>
+                      <SizeSelector
+                        sizes={printSizes}
+                        selectedSize={selectedSize}
+                        onSizeChange={(sizeId) => {
+                          setSelectedSize(sizeId);
+                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                        }}
+                      />
+                      {selectedSize === "" && (
+                        <p className="text-xs text-muted-foreground mt-1">Please select a size</p>
+                      )}
+                    </div>
+                  )}
+                  {frameColorObjects.length > 0 && (
+                    <FrameColorSelector
+                      frameColors={frameColorObjects}
+                      selectedFrameColor={selectedFrameColor}
+                      onFrameColorChange={setSelectedFrameColor}
+                    />
                   )}
                 </div>
               )}
-
-              {frameColorObjects.length > 0 && (
-                <FrameColorSelector
-                  frameColors={frameColorObjects}
-                  selectedFrameColor={selectedFrameColor}
-                  onFrameColorChange={setSelectedFrameColor}
-                />
-              )}
-
-              <Button
-                onClick={() => {
-                  if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                    alert("Please select a style before generating");
-                    return;
-                  }
-                  if (printSizes.length > 0 && selectedSize === "") {
-                    alert("Please select a size before generating");
-                    return;
-                  }
-                  handleGenerate();
-                }}
-                disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
-                className="w-full h-12 text-base font-medium"
-                data-testid="button-generate"
-              >
-                {generateMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4 mr-2" />
-                    {isShopify ? "Generate Design" : "Generate (1 Credit)"}
-                  </>
-                )}
-              </Button>
             </div>
           </div>
 
