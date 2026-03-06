@@ -1,5 +1,11 @@
-import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { PrintSize } from "./types";
 
 interface SizeSelectorProps {
@@ -18,19 +24,22 @@ export function SizeSelector({
   return (
     <div className="space-y-2">
       {showLabel && <Label className="text-sm font-medium">Size</Label>}
-      <div className="grid grid-cols-3 gap-2">
-        {sizes.map((size) => (
-          <Button
-            key={size.id}
-            variant={selectedSize === size.id ? "default" : "outline"}
-            className="text-xs"
-            onClick={() => onSizeChange(size.id)}
-            data-testid={`button-size-${size.id}`}
-          >
-            <span className="font-medium">{size.name}</span>
-          </Button>
-        ))}
-      </div>
+      <Select value={selectedSize} onValueChange={onSizeChange}>
+        <SelectTrigger data-testid="select-size">
+          <SelectValue placeholder="Select a size" />
+        </SelectTrigger>
+        <SelectContent>
+          {sizes.map((size) => (
+            <SelectItem
+              key={size.id}
+              value={size.id}
+              data-testid={`option-size-${size.id}`}
+            >
+              {size.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }

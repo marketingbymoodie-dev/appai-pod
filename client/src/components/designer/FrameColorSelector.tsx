@@ -1,4 +1,11 @@
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { FrameColor } from "./types";
 
 interface FrameColorSelectorProps {
@@ -14,25 +21,43 @@ export function FrameColorSelector({
   onFrameColorChange,
   showLabel = true,
 }: FrameColorSelectorProps) {
+  const selected = frameColors.find((c) => c.id === selectedFrameColor);
+
   return (
     <div className="space-y-2">
-      {showLabel && <Label className="text-sm font-medium">Frame</Label>}
-      <div className="flex gap-2">
-        {frameColors.map((color) => (
-          <button
-            key={color.id}
-            className={`w-10 h-10 rounded-md border-2 transition-all ${
-              selectedFrameColor === color.id
-                ? "border-primary ring-2 ring-primary ring-offset-2"
-                : "border-muted"
-            }`}
-            style={{ backgroundColor: color.hex }}
-            onClick={() => onFrameColorChange(color.id)}
-            title={color.name}
-            data-testid={`button-frame-${color.id}`}
-          />
-        ))}
-      </div>
+      {showLabel && <Label className="text-sm font-medium">Color</Label>}
+      <Select value={selectedFrameColor} onValueChange={onFrameColorChange}>
+        <SelectTrigger data-testid="select-frame-color">
+          <SelectValue placeholder="Select a color">
+            {selected && (
+              <span className="flex items-center gap-2">
+                <span
+                  className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
+                  style={{ backgroundColor: selected.hex }}
+                />
+                {selected.name}
+              </span>
+            )}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {frameColors.map((color) => (
+            <SelectItem
+              key={color.id}
+              value={color.id}
+              data-testid={`option-frame-${color.id}`}
+            >
+              <span className="flex items-center gap-2">
+                <span
+                  className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
+                  style={{ backgroundColor: color.hex }}
+                />
+                {color.name}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }

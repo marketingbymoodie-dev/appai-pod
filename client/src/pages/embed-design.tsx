@@ -494,6 +494,9 @@ export default function EmbedDesign() {
   // Track the initial transform to detect changes for auto-save
   const initialTransformRef = useRef<ImageTransform | null>(null);
 
+  // Ref for the artwork column — used to auto-scroll on mobile after generation
+  const artworkColumnRef = useRef<HTMLDivElement | null>(null);
+
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
@@ -1679,6 +1682,13 @@ export default function EmbedDesign() {
       initialTransformRef.current = newTransform;
       setLoginError(null);
 
+      // Auto-scroll to artwork column on mobile after generation completes
+      if (typeof window !== 'undefined' && window.innerWidth < 768 && artworkColumnRef.current) {
+        setTimeout(() => {
+          artworkColumnRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+      }
+
       // Persist design state to sessionStorage so refresh doesn't lose it
       try {
         const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
@@ -2688,14 +2698,14 @@ export default function EmbedDesign() {
 
   return (
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
-      <div className="max-w-2xl mx-auto space-y-4">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-lg font-semibold" data-testid="text-title">
-            Create Your Design
-          </h2>
-          {/* Login / credits info — hidden for Shopify admin and storefront anonymous mode */}
-          {!isShopify && !isStorefront && (
-            isLoggedIn ? (
+      <div className="max-w-6xl mx-auto space-y-4">
+        {/* Login / credits info — only shown in standalone (non-Shopify, non-storefront) mode */}
+        {!isShopify && !isStorefront && (
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold" data-testid="text-title">
+              Create Your Design
+            </h2>
+            {isLoggedIn ? (
               <span className="text-sm text-muted-foreground" data-testid="text-credits">
                 {credits} credits
               </span>
@@ -2704,9 +2714,9 @@ export default function EmbedDesign() {
                 <LogIn className="w-4 h-4" />
                 Log in to create
               </span>
-            )
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
@@ -2788,9 +2798,27 @@ export default function EmbedDesign() {
           </Card>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Form panel - shows second on mobile when design exists */}
-          <div className={`space-y-4 ${generatedDesign ? "order-2 md:order-1" : ""}`}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Generator/form panel — right on desktop, first on mobile */}
+          <div className="space-y-4 order-1 md:order-2">
+            {/* Product title + price */}
+            {(isStorefront || isShopify) && (
+              <div className="space-y-1">
+                <h1 className="text-xl font-bold leading-tight" data-testid="text-product-title">
+                  {displayName || productTitle}
+                </h1>
+                {shopifyVariants.length > 0 && (() => {
+                  const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
+                  const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
+                  if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
+                  return (
+                    <p className="text-lg font-semibold text-muted-foreground" data-testid="text-product-price">
+                      ${parseFloat(selected.price).toFixed(2)}
+                    </p>
+                  );
+                })()}
+              </div>
+            )}
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "generate" | "import")}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="generate" data-testid="tab-generate">
@@ -2877,19 +2905,6 @@ export default function EmbedDesign() {
                     className="min-h-[80px]"
                   />
                 </div>
-
-                {/* Selected variant price display */}
-                {isStorefront && shopifyVariants.length > 0 && (() => {
-                  const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
-                  const selected = shopifyVariants.find(v => v.id === activeId) || shopifyVariants[0];
-                  if (!selected || !selected.price || parseFloat(selected.price) <= 0) return null;
-                  return (
-                    <div className="flex items-center justify-between py-1">
-                      <span className="text-sm text-muted-foreground">Price</span>
-                      <span className="text-lg font-semibold">${parseFloat(selected.price).toFixed(2)}</span>
-                    </div>
-                  );
-                })()}
 
                 {/* Size Selection - Required */}
                 {printSizes.length > 0 && (
@@ -3059,8 +3074,8 @@ export default function EmbedDesign() {
             </Tabs>
           </div>
 
-          {/* Design preview panel - shows first on mobile when design exists */}
-          <div className={`space-y-3 ${generatedDesign ? "order-1 md:order-2" : ""}`}>
+          {/* Artwork preview panel — left on desktop, second on mobile */}
+          <div ref={artworkColumnRef} className="space-y-3 order-2 md:order-1">
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               className="w-full rounded-md overflow-hidden relative"
@@ -3352,7 +3367,6 @@ export default function EmbedDesign() {
                     Regenerate
                   </Button>
 
-
                   <Button
                     variant="outline"
                     onClick={handleShare}
@@ -3366,6 +3380,16 @@ export default function EmbedDesign() {
                     )}
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* Product Details — shown below gallery when in storefront/shopify mode */}
+            {(isStorefront || isShopify) && productTypeConfig?.description && (
+              <div className="border-t pt-4 mt-2 space-y-2" data-testid="container-product-details">
+                <h3 className="text-sm font-semibold">Product Details</h3>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  {productTypeConfig.description}
+                </p>
               </div>
             )}
           </div>
