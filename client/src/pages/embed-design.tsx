@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   ProductMockup,
@@ -2805,7 +2805,7 @@ export default function EmbedDesign() {
             {(isStorefront || isShopify) && (
               <div className="space-y-1">
                 <h1 className="text-xl font-bold leading-tight" data-testid="text-product-title">
-                  {displayName || productTitle}
+                  {productTypeConfig?.name || displayName || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
                   const activeId = shopifyVariantId || shopifyVariants[0]?.id || '';
@@ -2819,240 +2819,108 @@ export default function EmbedDesign() {
                 })()}
               </div>
             )}
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "generate" | "import")}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="generate" data-testid="tab-generate">
-                  <Sparkles className="w-4 h-4 mr-2" />
-                  AI Generate
-                </TabsTrigger>
-                <TabsTrigger value="import" data-testid="tab-import">
-                  <Upload className="w-4 h-4 mr-2" />
-                  Import Design
-                </TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="generate" className="space-y-4 mt-4">
-                {/* Style Selection - Required, at top */}
-                {showPresetsParam && filteredStylePresets.length > 0 && (
-                  <div className="space-y-2">
-                    <StyleSelector
-                      stylePresets={filteredStylePresets}
-                      selectedStyle={selectedPreset}
-                      onStyleChange={setSelectedPreset}
-                    />
-                    {selectedPreset === "" && (
-                      <p className="text-xs text-muted-foreground">Please select a style before generating</p>
-                    )}
-                  </div>
-                )}
-
-                {/* Reference Image Upload */}
-                <div className="space-y-2">
-                  <Label data-testid="label-reference">Reference Image (optional)</Label>
-                  <div className="flex items-center gap-4 flex-wrap">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={handleFileChange}
-                      className="hidden"
-                      data-testid="input-reference-file"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => fileInputRef.current?.click()}
-                      data-testid="button-upload-reference"
-                    >
-                      <ImagePlus className="w-4 h-4 mr-2" />
-                      Upload
-                    </Button>
-                    {referencePreview && (
-                      <div className="relative">
-                        <img
-                          src={referencePreview}
-                          alt="Reference"
-                          className="w-12 h-12 object-cover rounded-md"
-                          data-testid="img-reference-preview"
-                        />
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="icon"
-                          className="absolute -top-2 -right-2 w-5 h-5"
-                          onClick={clearReferenceImage}
-                          data-testid="button-clear-reference"
-                        >
-                          <X className="w-3 h-3" />
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Prompt Description */}
-                <div className="space-y-2">
-                  <Label htmlFor="prompt" data-testid="label-prompt">
-                    Describe your artwork
-                  </Label>
-                  <Textarea
-                    id="prompt"
-                    data-testid="input-prompt"
-                    placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    className="min-h-[80px]"
-                  />
-                </div>
-
-                {/* Size Selection - Required */}
-                {printSizes.length > 0 && (
-                  <div className="space-y-2">
-                    <SizeSelector
-                      sizes={printSizes}
-                      selectedSize={selectedSize}
-                      onSizeChange={(sizeId) => {
-                        setSelectedSize(sizeId);
-                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                      }}
-                    />
-                    {selectedSize === "" && (
-                      <p className="text-xs text-muted-foreground">Please select a size before generating</p>
-                    )}
-                  </div>
-                )}
-
-                {frameColorObjects.length > 0 && (
-                  <FrameColorSelector
-                    frameColors={frameColorObjects}
-                    selectedFrameColor={selectedFrameColor}
-                    onFrameColorChange={setSelectedFrameColor}
-                  />
-                )}
-
+            <div className="space-y-4">
+              {/* Reference Image Upload — full-width button replacing Import tab */}
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                  data-testid="input-reference-file"
+                />
+                <input
+                  ref={importFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  onChange={(e) => handleImportFile(e, "kittl")}
+                  className="hidden"
+                  data-testid="input-import-kittl"
+                />
+                <input
+                  ref={customUploadInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/jpg,image/webp"
+                  onChange={(e) => handleImportFile(e, "upload")}
+                  className="hidden"
+                  data-testid="input-import-custom"
+                />
                 <Button
-                  onClick={() => {
-                    // Validation for required fields
-                    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                      alert("Please select a style before generating");
-                      return;
-                    }
-                    if (printSizes.length > 0 && selectedSize === "") {
-                      alert("Please select a size before generating");
-                      return;
-                    }
-                    handleGenerate();
-                  }}
-                  disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
+                  type="button"
+                  variant="outline"
                   className="w-full"
-                  data-testid="button-generate"
+                  onClick={() => fileInputRef.current?.click()}
+                  data-testid="button-upload-reference"
                 >
-                  {generateMutation.isPending ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Generating...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4 mr-2" />
-                      {isShopify ? "Generate Design" : "Generate (1 Credit)"}
-                    </>
-                  )}
+                  <ImagePlus className="w-4 h-4 mr-2" />
+                  {isImporting ? "Importing..." : "Upload Image"}
                 </Button>
-              </TabsContent>
-
-              <TabsContent value="import" className="space-y-4 mt-4">
-                <Card>
-                  <CardContent className="pt-6 space-y-4">
-                    <div className="text-center space-y-2">
-                      <h3 className="font-medium">Import from Kittl</h3>
-                      <p className="text-sm text-muted-foreground">
-                        Export your design from Kittl as PNG or SVG, then upload it here.
-                      </p>
-                    </div>
-                    
-                    <div className="flex flex-col gap-3">
-                      <a
-                        href="https://www.kittl.com"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary flex items-center justify-center gap-1 hover:underline"
-                        data-testid="link-kittl"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        Open Kittl Designer
-                      </a>
-                      
-                      <input
-                        ref={importFileInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/jpg,image/webp"
-                        onChange={(e) => handleImportFile(e, "kittl")}
-                        className="hidden"
-                        data-testid="input-import-kittl"
-                      />
-                      
-                      <Button
-                        variant="default"
-                        onClick={() => importFileInputRef.current?.click()}
-                        disabled={isImporting}
-                        className="w-full"
-                        data-testid="button-import-kittl"
-                      >
-                        {isImporting ? (
-                          <>
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Importing...
-                          </>
-                        ) : (
-                          <>
-                            <Upload className="w-4 h-4 mr-2" />
-                            Upload Kittl Design
-                          </>
-                        )}
-                      </Button>
-                    </div>
-
-                    {importError && (
-                      <p className="text-destructive text-sm text-center" data-testid="text-import-error">
-                        {importError}
-                      </p>
-                    )}
-
-                    <div className="border-t pt-4 mt-4">
-                      <p className="text-xs text-muted-foreground text-center mb-3">
-                        Or upload any custom design
-                      </p>
-                      <input
-                        ref={customUploadInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/jpg,image/webp"
-                        onChange={(e) => handleImportFile(e, "upload")}
-                        className="hidden"
-                        data-testid="input-import-custom"
+                <p className="text-xs text-muted-foreground mt-1 text-center">
+                  Reference Image (optional)
+                </p>
+                {referencePreview && (
+                  <div className="flex items-center gap-3 mt-2">
+                    <div className="relative shrink-0">
+                      <img
+                        src={referencePreview}
+                        alt="Reference"
+                        className="w-12 h-12 object-cover rounded-md"
+                        data-testid="img-reference-preview"
                       />
                       <Button
-                        variant="outline"
-                        onClick={() => customUploadInputRef.current?.click()}
-                        disabled={isImporting}
-                        className="w-full"
-                        data-testid="button-import-custom"
+                        type="button"
+                        variant="destructive"
+                        size="icon"
+                        className="absolute -top-2 -right-2 w-5 h-5"
+                        onClick={clearReferenceImage}
+                        data-testid="button-clear-reference"
                       >
-                        <ImagePlus className="w-4 h-4 mr-2" />
-                        Upload Custom Design
+                        <X className="w-3 h-3" />
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
+                    <span className="text-xs text-muted-foreground">Reference image selected</span>
+                  </div>
+                )}
+                {importError && (
+                  <p className="text-destructive text-sm mt-1" data-testid="text-import-error">
+                    {importError}
+                  </p>
+                )}
+              </div>
 
-                <div className="text-xs text-muted-foreground space-y-1">
-                  <p>Supported formats: PNG, JPG, WebP</p>
-                  <p>Maximum file size: 10MB</p>
-                  <p>For best results, export from Kittl as high-resolution PNG</p>
+              {/* Style Selection */}
+              {showPresetsParam && filteredStylePresets.length > 0 && (
+                <div className="space-y-2">
+                  <StyleSelector
+                    stylePresets={filteredStylePresets}
+                    selectedStyle={selectedPreset}
+                    onStyleChange={setSelectedPreset}
+                  />
+                  {selectedPreset === "" && (
+                    <p className="text-xs text-muted-foreground">Please select a style before generating</p>
+                  )}
                 </div>
+              )}
 
-                {printSizes.length > 0 && (
+              {/* Prompt Description */}
+              <div className="space-y-2">
+                <Label htmlFor="prompt" data-testid="label-prompt">
+                  Describe your artwork
+                </Label>
+                <Textarea
+                  id="prompt"
+                  data-testid="input-prompt"
+                  placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  className="min-h-[80px]"
+                />
+              </div>
+
+              {/* Size Selection */}
+              {printSizes.length > 0 && (
+                <div className="space-y-2">
                   <SizeSelector
                     sizes={printSizes}
                     selectedSize={selectedSize}
@@ -3061,17 +2929,49 @@ export default function EmbedDesign() {
                       setTransform({ scale: defaultZoom, x: 50, y: 50 });
                     }}
                   />
-                )}
+                  {selectedSize === "" && (
+                    <p className="text-xs text-muted-foreground">Please select a size before generating</p>
+                  )}
+                </div>
+              )}
 
-                {frameColorObjects.length > 0 && (
-                  <FrameColorSelector
-                    frameColors={frameColorObjects}
-                    selectedFrameColor={selectedFrameColor}
-                    onFrameColorChange={setSelectedFrameColor}
-                  />
+              {frameColorObjects.length > 0 && (
+                <FrameColorSelector
+                  frameColors={frameColorObjects}
+                  selectedFrameColor={selectedFrameColor}
+                  onFrameColorChange={setSelectedFrameColor}
+                />
+              )}
+
+              <Button
+                onClick={() => {
+                  if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+                    alert("Please select a style before generating");
+                    return;
+                  }
+                  if (printSizes.length > 0 && selectedSize === "") {
+                    alert("Please select a size before generating");
+                    return;
+                  }
+                  handleGenerate();
+                }}
+                disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
+                className="w-full h-12 text-base font-medium"
+                data-testid="button-generate"
+              >
+                {generateMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    {isShopify ? "Generate Design" : "Generate (1 Credit)"}
+                  </>
                 )}
-              </TabsContent>
-            </Tabs>
+              </Button>
+            </div>
           </div>
 
           {/* Artwork preview panel — left on desktop, second on mobile */}
@@ -3131,6 +3031,44 @@ export default function EmbedDesign() {
                   );
                 })()}
               </div>
+
+              {/* Left/right arrow navigation — only when mockups are available */}
+              {isStorefront && generatedDesign?.imageUrl && (() => {
+                const galleryMockupCount = printifyMockupImages.length > 0
+                  ? printifyMockupImages.slice(0, 3).length
+                  : printifyMockups.slice(0, 3).length;
+                const totalItems = 1 + galleryMockupCount;
+                if (totalItems <= 1) return null;
+                return (
+                  <>
+                    <button
+                      type="button"
+                      aria-label="Previous"
+                      onClick={() => setSelectedMockupIndex(i => (i - 1 + totalItems) % totalItems)}
+                      className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Next"
+                      onClick={() => setSelectedMockupIndex(i => (i + 1) % totalItems)}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white animate-pulse hover:[animation:none] transition-colors"
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </>
+                );
+              })()}
+
+              {/* Stale mockups overlay */}
+              {mockupsStale && !mockupLoading && generatedDesign?.imageUrl && (
+                <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
+                  <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
+                    Refresh your Mockups
+                  </span>
+                </div>
+              )}
             </div>
 
             {generatedDesign?.imageUrl && (
@@ -3138,44 +3076,63 @@ export default function EmbedDesign() {
                 transform={transform}
                 onTransformChange={setTransform}
                 disabled={!generatedDesign?.imageUrl}
-                extraActions={(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                        setMockupError(null);
-                        setMockupFailed(false);
-                        setPrintifyMockups([]);
-                        setPrintifyMockupImages([]);
-                        setSelectedMockupIndex(0);
-                        setMockupsStale(false);
-                        mockupColorCacheRef.current = {};
-                        currentMockupColorRef.current = '';
-                        fetchPrintifyMockups(
-                          toAbsoluteImageUrl(generatedDesign.imageUrl),
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || 'default',
-                          transform.scale,
-                          transform.x,
-                          transform.y
-                        );
-                      }
-                    }}
-                    disabled={mockupLoading || !generatedDesign?.imageUrl}
-                    title="Refresh Mockups"
-                    data-testid="button-refresh-mockups"
-                    className="shrink-0"
-                  >
-                    {mockupLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
-                    ) : (
-                      <RefreshCcw className="w-4 h-4 mr-1" />
+                extraActions={
+                  <div className="flex items-center gap-2">
+                    {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                            setMockupError(null);
+                            setMockupFailed(false);
+                            setPrintifyMockups([]);
+                            setPrintifyMockupImages([]);
+                            setSelectedMockupIndex(0);
+                            setMockupsStale(false);
+                            mockupColorCacheRef.current = {};
+                            currentMockupColorRef.current = '';
+                            fetchPrintifyMockups(
+                              toAbsoluteImageUrl(generatedDesign.imageUrl),
+                              productTypeConfig.id,
+                              selectedSize,
+                              selectedFrameColor || 'default',
+                              transform.scale,
+                              transform.x,
+                              transform.y
+                            );
+                          }
+                        }}
+                        disabled={mockupLoading || !generatedDesign?.imageUrl}
+                        title="Refresh Mockups"
+                        data-testid="button-refresh-mockups"
+                        className="shrink-0"
+                      >
+                        {mockupLoading ? (
+                          <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                        ) : (
+                          <RefreshCcw className="w-4 h-4 mr-1" />
+                        )}
+                        <span className="text-xs">Refresh Mockups</span>
+                      </Button>
                     )}
-                    <span className="text-xs">Refresh Mockups</span>
-                  </Button>
-                ) : undefined}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleShare}
+                      disabled={isSharing || !generatedDesign?.imageUrl}
+                      data-testid="button-share"
+                      className="shrink-0"
+                    >
+                      {isSharing ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                      ) : (
+                        <Share2 className="w-4 h-4 mr-1" />
+                      )}
+                      <span className="text-xs">Share</span>
+                    </Button>
+                  </div>
+                }
               />
             )}
 
@@ -3274,49 +3231,27 @@ export default function EmbedDesign() {
                       : printifyMockups.map((url, i) => ({ url, label: i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}` }));
 
                   const hasMockups = galleryMockups.length > 0;
-
                   if (!hasMockups) return null;
 
-                  const allItems: Array<{ url: string; label: string }> = [
-                    { url: generatedDesign.imageUrl, label: "Artwork" },
-                    ...galleryMockups.slice(0, 3),
-                  ];
+                  const totalItems = 1 + galleryMockups.slice(0, 3).length;
 
                   return (
-                    <div className="space-y-2" data-testid="container-mockup-gallery">
-                      <p className="text-xs text-muted-foreground text-center">Tap a preview to view</p>
-                      <div className="relative flex gap-2 justify-center">
-                        {allItems.map((item, idx) => (
+                    <div data-testid="container-mockup-gallery">
+                      {/* Dot indicators */}
+                      <div className="flex justify-center gap-1.5 mt-2">
+                        {Array.from({ length: totalItems }).map((_, idx) => (
                           <button
                             key={idx}
                             type="button"
                             onClick={() => setSelectedMockupIndex(idx)}
-                            className={`relative w-16 h-16 rounded-md overflow-hidden border-2 transition-all flex-shrink-0 ${
+                            aria-label={`View ${idx === 0 ? "Artwork" : galleryMockups[idx - 1]?.label || `Mockup ${idx}`}`}
+                            className={`rounded-full transition-all duration-200 ${
                               selectedMockupIndex === idx
-                                ? "border-primary ring-2 ring-primary ring-offset-1"
-                                : "border-border hover:border-primary/50"
+                                ? "w-4 h-2 bg-foreground"
+                                : "w-2 h-2 bg-foreground/30 hover:bg-foreground/60"
                             }`}
-                            aria-label={item.label}
-                            title={item.label}
-                          >
-                            <img
-                              src={item.url}
-                              alt={item.label}
-                              className="w-full h-full object-cover"
-                              draggable={false}
-                            />
-                            <span className="absolute bottom-0 inset-x-0 text-[9px] text-center bg-black/50 text-white py-px leading-tight">
-                              {item.label}
-                            </span>
-                          </button>
+                          />
                         ))}
-                        {mockupsStale && !mockupLoading && (
-                          <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/60 pointer-events-none">
-                            <span className="text-white text-[10px] font-semibold text-center leading-tight px-1">
-                              Refresh your Mockups
-                            </span>
-                          </div>
-                        )}
                       </div>
                     </div>
                   );
@@ -3336,50 +3271,9 @@ export default function EmbedDesign() {
               </p>
             )}
 
-            {generatedDesign && (
-              <div className="flex flex-col gap-3">
-                {isSharedDesign && (
-                  <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-2 text-center">
-                    Viewing a shared design. Generate your own or add to cart!
-                  </div>
-                )}
-
-                {/* Secondary actions */}
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                        alert("Please select a style before generating");
-                        return;
-                      }
-                      if (printSizes.length > 0 && selectedSize === "") {
-                        alert("Please select a size before generating");
-                        return;
-                      }
-                      handleGenerate();
-                    }}
-                    disabled={generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && credits <= 0)}
-                    className="flex-1"
-                    data-testid="button-regenerate"
-                  >
-                    <RefreshCw className="w-4 h-4 mr-2" />
-                    Regenerate
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    onClick={handleShare}
-                    disabled={isSharing}
-                    data-testid="button-share"
-                  >
-                    {isSharing ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Share2 className="w-4 h-4" />
-                    )}
-                  </Button>
-                </div>
+            {isSharedDesign && generatedDesign && (
+              <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-2 text-center">
+                Viewing a shared design. Generate your own or add to cart!
               </div>
             )}
 
@@ -3387,9 +3281,10 @@ export default function EmbedDesign() {
             {(isStorefront || isShopify) && productTypeConfig?.description && (
               <div className="border-t pt-4 mt-2 space-y-2" data-testid="container-product-details">
                 <h3 className="text-sm font-semibold">Product Details</h3>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  {productTypeConfig.description}
-                </p>
+                <div
+                  className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
+                />
               </div>
             )}
           </div>
