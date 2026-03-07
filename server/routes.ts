@@ -8932,6 +8932,28 @@ ${textEdgeRestrictions}
         return res.status(502).json({ error: "Failed to prepare cost lookup — could not upload placeholder image to Printify" });
       }
 
+      // Discover the correct placeholder position for this blueprint (varies by product type)
+      const firstVid = Array.from(printifyVariantIds)[0];
+      let placeholderPosition = "front";
+      try {
+        const phResp = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${firstVid}/placeholders.json`,
+          { headers: { "Authorization": `Bearer ${apiToken}` } }
+        );
+        if (phResp.ok) {
+          const phData = await phResp.json();
+          const phList = phData.placeholders || phData || [];
+          if (Array.isArray(phList) && phList.length > 0 && phList[0]?.position) {
+            placeholderPosition = phList[0].position;
+            console.log(`[Printify Costs] Using placeholder position "${placeholderPosition}" for blueprint ${productType.printifyBlueprintId}`);
+          }
+        } else {
+          console.warn(`[Printify Costs] Placeholder API returned ${phResp.status}, falling back to "front"`);
+        }
+      } catch (phErr) {
+        console.warn("[Printify Costs] Could not fetch placeholder position, falling back to front:", phErr);
+      }
+
       // Create temporary Printify product to read costs
       const tempProductBody = {
         title: `_cost_probe_${Date.now()}`,
@@ -8941,7 +8963,7 @@ ${textEdgeRestrictions}
         variants: Array.from(printifyVariantIds).map(id => ({ id, price: 100, is_enabled: true })),
         print_areas: [{
           variant_ids: Array.from(printifyVariantIds),
-          placeholders: [{ position: "front", images: [{ id: dummyImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }],
+          placeholders: [{ position: placeholderPosition, images: [{ id: dummyImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }],
         }],
       };
 
@@ -9856,6 +9878,22 @@ ${textEdgeRestrictions}
           );
           if (pResult.ok && pResult.data?.product) {
             const p = pResult.data.product;
+            // Build printifyVariantId → label map from the stored variantMap
+            const storedVm = typeof pt.variantMap === "string" ? JSON.parse(pt.variantMap || "{}") : (pt.variantMap || {});
+            const allSizes = JSON.parse(pt.frameSizes || "[]");
+            const allColors = JSON.parse(pt.frameColors || "[]");
+            const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
+            const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
+            const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
+            const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
+            const printifyVariantLabels: Record<string, string> = {};
+            for (const [key, entry] of Object.entries(storedVm)) {
+              const [sizeId, colorId] = key.split(":");
+              const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
+              const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
+              const vid = String((entry as any).printifyVariantId);
+              printifyVariantLabels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+            }
             enriched.push({
               productTypeId: pt.id,
               productId: pt.shopifyProductId,
@@ -9864,6 +9902,7 @@ ${textEdgeRestrictions}
               needsShopifySync: false,
               printifyBlueprintId: pt.printifyBlueprintId ?? null,
               printifyProviderId: pt.printifyProviderId ?? null,
+              printifyVariantLabels,
               variants: (p.variants ?? []).map((v: any) => ({
                 id: String(v.id),
                 title: v.title,
@@ -9883,6 +9922,7 @@ ${textEdgeRestrictions}
           needsShopifySync: true,
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
+          printifyVariantLabels: {},
           variants: [],
         });
       }

@@ -608,6 +608,21 @@ export default function AdminCreateProduct() {
     return variants;
   }, [designerConfig, filteredSizes, filteredColors]);
 
+  // Build a local Printify variant-ID → human label map from designerConfig so shipping labels
+  // display correctly even when the production costs query hasn't resolved yet.
+  const localVariantLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    const vm = designerConfig?.variantMap || {};
+    for (const [key, entry] of Object.entries(vm)) {
+      const [sizeId, colorId] = key.split(":");
+      const sizeName = filteredSizes.find(s => s.id === sizeId)?.name ?? sizeId;
+      const colorName = filteredColors.find(c => c.id === colorId)?.name;
+      const vid = String((entry as any).printifyVariantId);
+      labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+    }
+    return labels;
+  }, [designerConfig, filteredSizes, filteredColors]);
+
   // Printify costs query for Generator Tester pricing step
   const { data: genCostsData, isLoading: genCostsLoading } = useQuery<{
     costs: Record<string, number>;
@@ -1508,7 +1523,7 @@ export default function AdminCreateProduct() {
                             <span>Variant</span><span className="text-right">1st Item</span><span className="text-right">Additional</span>
                           </div>
                           {tierEntries.map((entry) => {
-                            const label = genCostsData?.printifyVariantLabels?.[String(entry.variantId)] ?? `Variant ${entry.variantId}`;
+                            const label = localVariantLabels[String(entry.variantId)] ?? genCostsData?.printifyVariantLabels?.[String(entry.variantId)] ?? `Variant ${entry.variantId}`;
                             return (
                               <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                 <span className="truncate">{label}</span>

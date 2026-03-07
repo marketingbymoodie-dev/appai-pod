@@ -69,6 +69,7 @@ interface Blank {
   needsShopifySync?: boolean;
   printifyBlueprintId?: number | null;
   printifyProviderId?: number | null;
+  printifyVariantLabels?: Record<string, string>;
   variants: BlankVariant[];
 }
 
@@ -640,8 +641,8 @@ export default function AdminCustomizerPages() {
                                       <span className="text-right">Additional</span>
                                     </div>
                                     {tierEntries.map((entry) => {
-                                      const variantTitle = costsData?.printifyVariantLabels?.[String(entry.variantId)]
-                                        ?? selectedVariants.find((v) => String(entry.variantId) === v.id)?.title
+                                      const variantTitle = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
+                                        ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
                                         ?? `Variant ${entry.variantId}`;
                                       return (
                                         <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
