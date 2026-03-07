@@ -105,6 +105,7 @@ export type GenerateImageParams = {
   prompt: string;
   aspectRatio?: string;
   inputImageUrl?: string | null;
+  isApparel?: boolean;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -137,26 +138,50 @@ const PROMPT_MAX_LENGTH = 600;
 /**
  * Strip the verbose canvas-requirements block injected by the route handler and
  * replace it with a compact version that fits Nano Banana's context window better.
+ *
+ * For apparel: the verbose "MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING" block
+ * is stripped and replaced with a short isolated-design constraint, ensuring the
+ * user's actual prompt is never truncated away.
+ *
+ * For non-apparel (wall art / decor): strips the "=== CRITICAL CANVAS REQUIREMENTS"
+ * block and prepends a short full-bleed constraint.
  */
-function compressPrompt(raw: string): string {
-  // Remove everything between the "=== CRITICAL CANVAS REQUIREMENTS" header
-  // and the "=== ARTWORK DESCRIPTION ===" header (or "=== IMAGE CONTENT" as fallback).
-  let compressed = raw.replace(
-    /=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/,
-    ""
-  );
-  // Also strip any leftover section headers
-  compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
-  compressed = compressed.replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|$)/g, "");
+function compressPrompt(raw: string, isApparel: boolean): string {
+  let compressed: string;
 
-  compressed = compressed.trim();
+  if (isApparel) {
+    // Strip the verbose apparel sizing block (everything from the blank line before
+    // "MANDATORY IMAGE REQUIREMENTS" through "=== ARTWORK DESCRIPTION ===")
+    compressed = raw.replace(
+      /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
+      ""
+    );
+    // Strip the artwork description header
+    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
+    compressed = compressed.trim();
 
-  // Prepend a short, model-friendly version of the constraints
-  const shortConstraints =
-    "Full-bleed, edge-to-edge, no borders, no blank margins. " +
-    "Keep important elements away from edges (wraparound safe area). ";
+    // Prepend a short, model-friendly apparel constraint (no "full-bleed" contradiction)
+    const shortApparelConstraints =
+      "Isolated centered graphic design on solid background, suitable for apparel printing. ";
+    compressed = shortApparelConstraints + compressed;
+  } else {
+    // Remove everything between the "=== CRITICAL CANVAS REQUIREMENTS" header
+    // and the "=== ARTWORK DESCRIPTION ===" header (or "=== IMAGE CONTENT" as fallback).
+    compressed = raw.replace(
+      /=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/,
+      ""
+    );
+    // Also strip any leftover section headers
+    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
+    compressed = compressed.replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|$)/g, "");
+    compressed = compressed.trim();
 
-  compressed = shortConstraints + compressed;
+    // Prepend a short, model-friendly version of the constraints
+    const shortConstraints =
+      "Full-bleed, edge-to-edge, no borders, no blank margins. " +
+      "Keep important elements away from edges (wraparound safe area). ";
+    compressed = shortConstraints + compressed;
+  }
 
   // Hard truncate
   if (compressed.length > PROMPT_MAX_LENGTH) {
@@ -249,7 +274,7 @@ export async function generateImageBase64(
   const token = getReplicateToken();
   const version = getReplicateModelVersion();
 
-  const compressedPrompt = compressPrompt(params.prompt);
+  const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 
   // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4

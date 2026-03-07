@@ -1028,6 +1028,7 @@ ${textEdgeRestrictions}
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
+        isApparel,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -1228,6 +1229,7 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
       // Generate the new image (Replicate)
 const { data: base64Data, mimeType } = await generateImageBase64({
   prompt: fullPrompt,
+  isApparel: true,
 });
 
 // Match the old Gemini shape so the rest of the code still works
@@ -1239,17 +1241,7 @@ const imagePart = {
 };
 
 if (!imagePart.inlineData.data) {
-  return res.status(500).json({ error: "Failed to regenerate image" });const { data: base64Data, mimeType } = await generateImageBase64({
-  prompt: fullPrompt,
-});
-
-if (!base64Data) {
-  console.error("[Regenerate-Tier] Replicate returned no image data");
   return res.status(500).json({ error: "Failed to regenerate image" });
-}
-
-const finalMimeType = mimeType || "image/png";
-
 }
 
       // Save image with background removal
@@ -1758,6 +1750,7 @@ ${textEdgeRestrictions}
         prompt: fullPrompt,
         aspectRatio: geminiAspectRatio ?? "1:1",
         inputImageUrl,
+        isApparel,
       });
 
       if (!base64Data) {
@@ -4385,6 +4378,7 @@ ${textEdgeRestrictions}
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
+            isApparel,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 

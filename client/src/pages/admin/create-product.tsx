@@ -328,7 +328,7 @@ export default function AdminCreateProduct() {
         frameColor: selectedFrameColor,
         stylePreset: selectedStyle,
         productTypeId: selectedProductTypeId,
-        referenceImageBase64: referenceImage,
+        referenceImage: referenceImage,
       });
 
       const data = await response.json();
