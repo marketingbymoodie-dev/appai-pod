@@ -7845,7 +7845,27 @@ ${textEdgeRestrictions}
       sizes = sizes.map(s => {
         const dims = placeholderDimensionsBySize[s.id];
         if (dims) {
-          return { ...s, aspectRatio: computeAspectRatioFromDims(dims.width, dims.height) };
+          let pw = dims.width;
+          let ph = dims.height;
+          // If the size has physical dimensions (e.g. 20x30 inches), use them to
+          // determine the intended orientation and re-orient the pixel dims to match.
+          // Printify placeholders can be portrait even for landscape products.
+          if (s.width > 0 && s.height > 0 && s.width !== s.height) {
+            const physicalIsLandscape = s.height > s.width; // e.g. 20x30: height(30) > width(20)
+            const pixelIsLandscape = dims.width >= dims.height;
+            if (physicalIsLandscape && !pixelIsLandscape) {
+              // Physical is landscape but pixels are portrait → flip pixels
+              pw = dims.height;
+              ph = dims.width;
+            } else if (!physicalIsLandscape && pixelIsLandscape) {
+              // Physical is portrait but pixels are landscape → flip pixels
+              pw = dims.height;
+              ph = dims.width;
+            }
+          }
+          const ar = computeAspectRatioFromDims(pw, ph);
+          console.log(`[Import] Per-size aspect ratio: sizeId=${s.id} physDims=${s.width}x${s.height} pxDims=${dims.width}x${dims.height} → ${pw}x${ph} → ${ar}`);
+          return { ...s, aspectRatio: ar };
         }
         return s;
       });
