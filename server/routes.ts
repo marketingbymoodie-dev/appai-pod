@@ -8843,6 +8843,207 @@ ${textEdgeRestrictions}
 
   // ── Printify Cost & Shipping Endpoints ──────────────────────────────────────
 
+  // Helper: fetch the first placeholder position for a blueprint/provider/variant
+  async function fetchPlaceholderPosition(
+    blueprintId: number,
+    providerId: number,
+    variantId: number,
+    apiToken: string
+  ): Promise<string> {
+    try {
+      const resp = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variantId}/placeholders.json`,
+        { headers: { Authorization: `Bearer ${apiToken}` } }
+      );
+      if (resp.ok) {
+        const data = await resp.json();
+        const list = data.placeholders || data || [];
+        if (Array.isArray(list) && list.length > 0 && list[0]?.position) {
+          console.log(`[Printify Costs] Placeholder position: "${list[0].position}"`);
+          return list[0].position;
+        }
+      } else {
+        console.warn(`[Printify Costs] Placeholder API returned ${resp.status}`);
+      }
+    } catch (e) {
+      console.warn("[Printify Costs] Could not fetch placeholder position:", e);
+    }
+    return "front";
+  }
+
+  // Helper: attempt to create a Printify temp product and immediately delete it, returning variant costs.
+  // Returns { success, costs, tempProductId, error } — always deletes the product if created.
+  async function tryCreateTempProductForCosts(
+    shopId: string,
+    apiToken: string,
+    blueprintId: number,
+    providerId: number,
+    variantIds: number[],
+    placeholderPosition: string,
+    imageSpec: { id: string; x: number; y: number; scale: number; angle: number } | null
+  ): Promise<{ success: boolean; costs: Record<string, number>; tempProductId?: string; status?: number; error?: string }> {
+    const body: any = {
+      title: `_cost_probe_${Date.now()}`,
+      description: "Temporary product for cost lookup - will be deleted immediately",
+      blueprint_id: blueprintId,
+      print_provider_id: providerId,
+      variants: variantIds.map(id => ({ id, price: 100, is_enabled: true })),
+      print_areas: [{
+        variant_ids: variantIds,
+        placeholders: [{ position: placeholderPosition, images: imageSpec ? [imageSpec] : [] }],
+      }],
+    };
+    const createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const status = createResp.status;
+    if (!createResp.ok) {
+      const errorText = await createResp.text();
+      return { success: false, costs: {}, status, error: errorText };
+    }
+    const product = await createResp.json();
+    const tempProductId: string = product.id;
+    const costs: Record<string, number> = {};
+    for (const v of (product.variants || [])) {
+      if (v.id && typeof v.cost === "number") {
+        costs[String(v.id)] = v.cost;
+      }
+    }
+    // Clean up immediately
+    try {
+      await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
+    } catch (delErr) {
+      console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
+    }
+    return { success: true, costs, tempProductId, status };
+  }
+
+  // Helper: get an existing image ID from the merchant's Printify uploads library
+  async function getExistingUploadId(apiToken: string): Promise<string | null> {
+    try {
+      const resp = await fetch("https://api.printify.com/v1/uploads.json?limit=1", {
+        headers: { Authorization: `Bearer ${apiToken}` },
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const uploads = data.data || data || [];
+        if (Array.isArray(uploads) && uploads.length > 0 && uploads[0]?.id) {
+          console.log(`[Printify Costs] Found existing upload id=${uploads[0].id}`);
+          return String(uploads[0].id);
+        }
+      }
+    } catch (e) {
+      console.warn("[Printify Costs] Could not fetch existing uploads:", e);
+    }
+    return null;
+  }
+
+  // Helper: upload a public image URL to Printify and return the image ID
+  async function uploadPublicImageToPrintify(apiToken: string, imageUrl: string): Promise<string | null> {
+    try {
+      const resp = await fetch("https://api.printify.com/v1/uploads/images.json", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ file_name: "cost_probe.png", url: imageUrl }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        console.log(`[Printify Costs] Uploaded image via URL, id=${data.id}`);
+        return data.id ? String(data.id) : null;
+      } else {
+        const errText = await resp.text();
+        console.warn(`[Printify Costs] URL image upload failed (${resp.status}): ${errText}`);
+      }
+    } catch (e) {
+      console.warn("[Printify Costs] URL image upload error:", e);
+    }
+    return null;
+  }
+
+  // Core waterfall logic: tries three strategies to create a temp product and get costs.
+  // Returns { costs, strategyUsed, diagnostics }
+  async function fetchPrintifyCostsWaterfall(
+    shopId: string,
+    apiToken: string,
+    blueprintId: number,
+    providerId: number,
+    variantIds: number[],
+    baseMockupImages: Record<string, string>
+  ): Promise<{
+    costs: Record<string, number>;
+    strategyUsed: string | null;
+    diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }>;
+  }> {
+    const diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
+    const firstVid = variantIds[0];
+    const position = await fetchPlaceholderPosition(blueprintId, providerId, firstVid, apiToken);
+    const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
+
+    // Strategy 1: print_areas with empty images array
+    console.log(`[Printify Costs] Strategy 1 — empty images[] for position "${position}"`);
+    const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, null);
+    diagnostics.push({ strategy: "empty_images", status: s1.status, success: s1.success, error: s1.error });
+    if (s1.success) return { costs: s1.costs, strategyUsed: "empty_images", diagnostics };
+
+    console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
+
+    // Strategy 2: reuse an existing image from the merchant's Printify library
+    console.log("[Printify Costs] Strategy 2 — reuse existing upload from library");
+    const existingId = await getExistingUploadId(apiToken);
+    if (existingId) {
+      const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, imageSpec(existingId));
+      diagnostics.push({ strategy: "reuse_existing_upload", status: s2.status, success: s2.success, error: s2.error });
+      if (s2.success) return { costs: s2.costs, strategyUsed: "reuse_existing_upload", diagnostics };
+      console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
+    } else {
+      diagnostics.push({ strategy: "reuse_existing_upload", success: false, error: "No existing uploads found in library" });
+      console.warn("[Printify Costs] Strategy 2 skipped — no existing uploads in library");
+    }
+
+    // Strategy 3: upload the stored mockup image URL (Printify CDN)
+    const mockupUrl: string | undefined =
+      baseMockupImages.front || baseMockupImages.lifestyle || (Object.values(baseMockupImages)[0] as string | undefined);
+    if (mockupUrl) {
+      console.log(`[Printify Costs] Strategy 3a — upload product mockup URL: ${mockupUrl.slice(0, 80)}`);
+      const uploadedId = await uploadPublicImageToPrintify(apiToken, mockupUrl);
+      if (uploadedId) {
+        const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, imageSpec(uploadedId));
+        diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success, error: s3a.error });
+        if (s3a.success) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
+        console.warn(`[Printify Costs] Strategy 3a failed (${s3a.status}): ${s3a.error?.slice(0, 200)}`);
+      } else {
+        diagnostics.push({ strategy: "upload_mockup_url", success: false, error: "Upload of mockup URL failed" });
+      }
+    }
+
+    // Strategy 3b: upload a known-good public placeholder image
+    const fallbackUrls = [
+      "https://images.printify.com/mockup/5d39b411749d0a000f30e0f4/45740/2x2-white.jpg",
+      "https://via.assets.so/img.jpg?w=1200&h=1200&tc=white&bg=999999",
+      "https://placehold.co/1200x1200/png",
+    ];
+    for (const url of fallbackUrls) {
+      console.log(`[Printify Costs] Strategy 3b — upload fallback public URL: ${url}`);
+      const uploadedId = await uploadPublicImageToPrintify(apiToken, url);
+      if (uploadedId) {
+        const s3b = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, imageSpec(uploadedId));
+        diagnostics.push({ strategy: `upload_fallback_url:${url}`, status: s3b.status, success: s3b.success, error: s3b.error });
+        if (s3b.success) return { costs: s3b.costs, strategyUsed: `upload_fallback_url`, diagnostics };
+        console.warn(`[Printify Costs] Strategy 3b (${url}) failed (${s3b.status}): ${s3b.error?.slice(0, 200)}`);
+      } else {
+        diagnostics.push({ strategy: `upload_fallback_url:${url}`, success: false, error: "Upload failed" });
+      }
+    }
+
+    return { costs: {}, strategyUsed: null, diagnostics };
+  }
+
   // GET /api/admin/printify/costs/:productTypeId
   // Creates a temporary Printify product to read variant production costs, then deletes it.
   // Returns cached costs if available and less than 24 hours old.
@@ -8867,12 +9068,11 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
       }
 
-      // Check cache first
+      // Check cache first (24h TTL)
       const cachedRaw = JSON.parse(productType.printifyCosts || "{}");
       const cacheAge = cachedRaw._fetchedAt ? Date.now() - new Date(cachedRaw._fetchedAt).getTime() : Infinity;
       if (cacheAge < 24 * 60 * 60 * 1000 && Object.keys(cachedRaw).length > 1) {
         const { _fetchedAt, ...cachedCosts } = cachedRaw;
-        // Also build Shopify variant mapping from cache
         const svIds = (typeof productType.shopifyVariantIds === "string"
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
@@ -8884,7 +9084,6 @@ ${textEdgeRestrictions}
             cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
           }
         }
-        // Build printifyVariantId → label mapping from product metadata
         const cachedLabels: Record<string, string> = {};
         const sizes = JSON.parse(productType.sizes || "[]");
         const frameColors = JSON.parse(productType.frameColors || "[]");
@@ -8901,135 +9100,40 @@ ${textEdgeRestrictions}
 
       // Extract all unique Printify variant IDs from variantMap
       const variantMap = JSON.parse(productType.variantMap || "{}");
-      const printifyVariantIds = new Set<number>();
+      const printifyVariantIds: number[] = [];
+      const seen = new Set<number>();
       for (const entry of Object.values(variantMap) as any[]) {
-        if (entry?.printifyVariantId) printifyVariantIds.add(Number(entry.printifyVariantId));
+        if (entry?.printifyVariantId && !seen.has(Number(entry.printifyVariantId))) {
+          seen.add(Number(entry.printifyVariantId));
+          printifyVariantIds.push(Number(entry.printifyVariantId));
+        }
       }
-      if (printifyVariantIds.size === 0) {
+      if (printifyVariantIds.length === 0) {
         return res.status(400).json({ error: "No Printify variant IDs found in product type" });
       }
 
-      // Step A: Try creating the temp product WITHOUT print_areas — some blueprints accept this
-      // and we get variant costs without needing a placeholder image at all.
-      const probeTitle = `_cost_probe_${Date.now()}`;
-      let tempProductBody: any = {
-        title: probeTitle,
-        description: "Temporary product for cost lookup - will be deleted immediately",
-        blueprint_id: productType.printifyBlueprintId,
-        print_provider_id: productType.printifyProviderId,
-        variants: Array.from(printifyVariantIds).map(id => ({ id, price: 100, is_enabled: true })),
-      };
+      const baseMockupImages = typeof productType.baseMockupImages === "string"
+        ? JSON.parse(productType.baseMockupImages || "{}")
+        : (productType.baseMockupImages || {});
 
-      console.log(`[Printify Costs] Step A — creating temp product without print_areas for blueprint ${productType.printifyBlueprintId}`);
-      let createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
-        method: "POST",
-        headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(tempProductBody),
-      });
+      console.log(`[Printify Costs] Starting waterfall for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
+      const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
+        shopId, apiToken,
+        productType.printifyBlueprintId, productType.printifyProviderId,
+        printifyVariantIds, baseMockupImages
+      );
 
-      // Step B: If Step A failed, upload the product's own mockup image via URL and retry with print_areas
-      if (!createResp.ok) {
-        console.warn(`[Printify Costs] Step A failed (${createResp.status}), trying Step B with print_areas`);
-
-        // Discover the correct placeholder position for this blueprint
-        const firstVid = Array.from(printifyVariantIds)[0];
-        let placeholderPosition = "front";
-        try {
-          const phResp = await fetch(
-            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${firstVid}/placeholders.json`,
-            { headers: { "Authorization": `Bearer ${apiToken}` } }
-          );
-          if (phResp.ok) {
-            const phData = await phResp.json();
-            const phList = phData.placeholders || phData || [];
-            if (Array.isArray(phList) && phList.length > 0 && phList[0]?.position) {
-              placeholderPosition = phList[0].position;
-              console.log(`[Printify Costs] Placeholder position "${placeholderPosition}" for blueprint ${productType.printifyBlueprintId}`);
-            }
-          }
-        } catch (phErr) {
-          console.warn("[Printify Costs] Could not fetch placeholder position, using 'front':", phErr);
-        }
-
-        // Upload the product's own mockup image via URL (these are Printify CDN images at proper resolution)
-        const mockupImages = typeof productType.baseMockupImages === "string"
-          ? JSON.parse(productType.baseMockupImages || "{}")
-          : (productType.baseMockupImages || {});
-        const mockupUrl: string | undefined = (mockupImages as any).front || (mockupImages as any).lifestyle || Object.values(mockupImages as any)[0] as string | undefined;
-
-        let dummyImageId: string | null = null;
-        if (mockupUrl) {
-          try {
-            const uploadResp = await fetch("https://api.printify.com/v1/uploads/images.json", {
-              method: "POST",
-              headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ file_name: "cost_probe.png", url: mockupUrl }),
-            });
-            if (uploadResp.ok) {
-              const uploadData = await uploadResp.json();
-              dummyImageId = uploadData.id;
-              console.log(`[Printify Costs] Uploaded mockup image via URL, id=${dummyImageId}`);
-            } else {
-              console.warn(`[Printify Costs] Mockup image URL upload failed: ${uploadResp.status}`);
-            }
-          } catch (uploadErr) {
-            console.warn("[Printify Costs] Mockup image upload error:", uploadErr);
-          }
-        }
-
-        if (dummyImageId) {
-          tempProductBody = {
-            ...tempProductBody,
-            title: probeTitle,
-            print_areas: [{
-              variant_ids: Array.from(printifyVariantIds),
-              placeholders: [{ position: placeholderPosition, images: [{ id: dummyImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }],
-            }],
-          };
-          createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
-            body: JSON.stringify(tempProductBody),
-          });
-          console.log(`[Printify Costs] Step B result: ${createResp.status}`);
-        } else {
-          console.warn("[Printify Costs] No mockup URL available for Step B");
-        }
+      if (!strategyUsed || Object.keys(costs).length === 0) {
+        console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
+        return res.status(502).json({ error: "Failed to fetch costs from Printify after all strategies", diagnostics });
       }
 
-      if (!createResp.ok) {
-        const errText = await createResp.text();
-        console.error(`[Printify Costs] Failed to create temp product: ${createResp.status} ${errText}`);
-        return res.status(502).json({ error: "Failed to fetch costs from Printify", detail: errText });
-      }
-
-      const tempProduct = await createResp.json();
-      const tempProductId = tempProduct.id;
-
-      // Extract costs from the response
-      const costs: Record<string, number> = {};
-      for (const v of (tempProduct.variants || [])) {
-        if (v.id && typeof v.cost === "number") {
-          costs[String(v.id)] = v.cost;
-        }
-      }
-
-      // Delete the temp product immediately
-      try {
-        await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
-          method: "DELETE",
-          headers: { "Authorization": `Bearer ${apiToken}` },
-        });
-        console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
-      } catch (delErr) {
-        console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
-      }
+      console.log(`[Printify Costs] Success via "${strategyUsed}", extracted ${Object.keys(costs).length} costs`);
 
       // Cache costs on the product type
-      const cacheData = { ...costs, _fetchedAt: new Date().toISOString() };
-      await storage.updateProductType(productTypeId, { printifyCosts: JSON.stringify(cacheData) });
+      await storage.updateProductType(productTypeId, { printifyCosts: JSON.stringify({ ...costs, _fetchedAt: new Date().toISOString() }) });
 
-      // Build a variant-key to cost mapping for easier frontend consumption
+      // Build variant-key → cost mapping
       const variantKeyCosts: Record<string, number> = {};
       for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
         if (entry?.printifyVariantId && costs[String(entry.printifyVariantId)] !== undefined) {
@@ -9049,7 +9153,7 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Build printifyVariantId → label mapping so frontend can display shipping rows
+      // Build printifyVariantId → label mapping
       const printifyVariantLabels: Record<string, string> = {};
       const sizes = JSON.parse(productType.sizes || "[]");
       const frameColors = JSON.parse(productType.frameColors || "[]");
@@ -9062,10 +9166,78 @@ ${textEdgeRestrictions}
         }
       }
 
-      return res.json({ costs, variantKeyCosts, shopifyVariantCosts, printifyVariantLabels, cached: false });
+      return res.json({ costs, variantKeyCosts, shopifyVariantCosts, printifyVariantLabels, cached: false, strategyUsed });
     } catch (err: any) {
       console.error("[/api/admin/printify/costs]", err);
       return res.status(500).json({ error: "Failed to fetch Printify costs" });
+    }
+  });
+
+  // GET /api/admin/printify/costs-debug/:productTypeId
+  // Diagnostic endpoint: runs all waterfall strategies and reports what each one returns.
+  // Does NOT cache results. Use this to diagnose why production costs aren't showing.
+  app.get("/api/admin/printify/costs-debug/:productTypeId", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const apiToken = merchant.printifyApiToken;
+      const shopId = merchant.printifyShopId;
+      if (!apiToken || !shopId) {
+        return res.status(400).json({ error: "Printify credentials not configured" });
+      }
+
+      const productTypeId = parseInt(req.params.productTypeId, 10);
+      if (!productTypeId) return res.status(400).json({ error: "Invalid product type ID" });
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType) return res.status(404).json({ error: "Product type not found" });
+      if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+        return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
+      }
+
+      const variantMap = JSON.parse(productType.variantMap || "{}");
+      const printifyVariantIds: number[] = [];
+      const seen = new Set<number>();
+      for (const entry of Object.values(variantMap) as any[]) {
+        if (entry?.printifyVariantId && !seen.has(Number(entry.printifyVariantId))) {
+          seen.add(Number(entry.printifyVariantId));
+          printifyVariantIds.push(Number(entry.printifyVariantId));
+        }
+      }
+
+      if (printifyVariantIds.length === 0) {
+        return res.status(400).json({ error: "No Printify variant IDs found" });
+      }
+
+      const baseMockupImages = typeof productType.baseMockupImages === "string"
+        ? JSON.parse(productType.baseMockupImages || "{}")
+        : (productType.baseMockupImages || {});
+
+      const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
+        shopId, apiToken,
+        productType.printifyBlueprintId, productType.printifyProviderId,
+        printifyVariantIds, baseMockupImages
+      );
+
+      return res.json({
+        success: strategyUsed !== null && Object.keys(costs).length > 0,
+        strategyUsed,
+        costsExtracted: Object.keys(costs).length,
+        sampleCosts: Object.entries(costs).slice(0, 3).map(([id, c]) => ({ variantId: id, costCents: c })),
+        diagnostics,
+        productTypeInfo: {
+          name: productType.name,
+          blueprintId: productType.printifyBlueprintId,
+          providerId: productType.printifyProviderId,
+          variantCount: printifyVariantIds.length,
+          hasMockupImages: Object.keys(baseMockupImages).length > 0,
+        },
+      });
+    } catch (err: any) {
+      console.error("[/api/admin/printify/costs-debug]", err);
+      return res.status(500).json({ error: "Debug endpoint failed", detail: String(err) });
     }
   });
 
