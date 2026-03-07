@@ -8909,71 +8909,93 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "No Printify variant IDs found in product type" });
       }
 
-      // Upload a 1x1 transparent PNG so we can populate print_areas (Printify requires at least one placeholder with an image)
-      const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRElEQrkJggg==";
-      let dummyImageId: string | null = null;
-      try {
-        const uploadResp = await fetch("https://api.printify.com/v1/uploads/images.json", {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ file_name: "cost_probe_1px.png", contents: TINY_PNG_BASE64 }),
-        });
-        if (uploadResp.ok) {
-          const uploadData = await uploadResp.json();
-          dummyImageId = uploadData.id;
-        } else {
-          console.warn(`[Printify Costs] Dummy image upload failed: ${uploadResp.status}`);
-        }
-      } catch (uploadErr) {
-        console.warn("[Printify Costs] Dummy image upload error:", uploadErr);
-      }
-
-      if (!dummyImageId) {
-        return res.status(502).json({ error: "Failed to prepare cost lookup — could not upload placeholder image to Printify" });
-      }
-
-      // Discover the correct placeholder position for this blueprint (varies by product type)
-      const firstVid = Array.from(printifyVariantIds)[0];
-      let placeholderPosition = "front";
-      try {
-        const phResp = await fetch(
-          `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${firstVid}/placeholders.json`,
-          { headers: { "Authorization": `Bearer ${apiToken}` } }
-        );
-        if (phResp.ok) {
-          const phData = await phResp.json();
-          const phList = phData.placeholders || phData || [];
-          if (Array.isArray(phList) && phList.length > 0 && phList[0]?.position) {
-            placeholderPosition = phList[0].position;
-            console.log(`[Printify Costs] Using placeholder position "${placeholderPosition}" for blueprint ${productType.printifyBlueprintId}`);
-          }
-        } else {
-          console.warn(`[Printify Costs] Placeholder API returned ${phResp.status}, falling back to "front"`);
-        }
-      } catch (phErr) {
-        console.warn("[Printify Costs] Could not fetch placeholder position, falling back to front:", phErr);
-      }
-
-      // Create temporary Printify product to read costs
-      const tempProductBody = {
-        title: `_cost_probe_${Date.now()}`,
+      // Step A: Try creating the temp product WITHOUT print_areas — some blueprints accept this
+      // and we get variant costs without needing a placeholder image at all.
+      const probeTitle = `_cost_probe_${Date.now()}`;
+      let tempProductBody: any = {
+        title: probeTitle,
         description: "Temporary product for cost lookup - will be deleted immediately",
         blueprint_id: productType.printifyBlueprintId,
         print_provider_id: productType.printifyProviderId,
         variants: Array.from(printifyVariantIds).map(id => ({ id, price: 100, is_enabled: true })),
-        print_areas: [{
-          variant_ids: Array.from(printifyVariantIds),
-          placeholders: [{ position: placeholderPosition, images: [{ id: dummyImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }],
-        }],
       };
 
-      console.log(`[Printify Costs] Creating temp product for blueprint ${productType.printifyBlueprintId}, provider ${productType.printifyProviderId}, ${printifyVariantIds.size} variants`);
-
-      const createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
+      console.log(`[Printify Costs] Step A — creating temp product without print_areas for blueprint ${productType.printifyBlueprintId}`);
+      let createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(tempProductBody),
       });
+
+      // Step B: If Step A failed, upload the product's own mockup image via URL and retry with print_areas
+      if (!createResp.ok) {
+        console.warn(`[Printify Costs] Step A failed (${createResp.status}), trying Step B with print_areas`);
+
+        // Discover the correct placeholder position for this blueprint
+        const firstVid = Array.from(printifyVariantIds)[0];
+        let placeholderPosition = "front";
+        try {
+          const phResp = await fetch(
+            `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${firstVid}/placeholders.json`,
+            { headers: { "Authorization": `Bearer ${apiToken}` } }
+          );
+          if (phResp.ok) {
+            const phData = await phResp.json();
+            const phList = phData.placeholders || phData || [];
+            if (Array.isArray(phList) && phList.length > 0 && phList[0]?.position) {
+              placeholderPosition = phList[0].position;
+              console.log(`[Printify Costs] Placeholder position "${placeholderPosition}" for blueprint ${productType.printifyBlueprintId}`);
+            }
+          }
+        } catch (phErr) {
+          console.warn("[Printify Costs] Could not fetch placeholder position, using 'front':", phErr);
+        }
+
+        // Upload the product's own mockup image via URL (these are Printify CDN images at proper resolution)
+        const mockupImages = typeof productType.baseMockupImages === "string"
+          ? JSON.parse(productType.baseMockupImages || "{}")
+          : (productType.baseMockupImages || {});
+        const mockupUrl: string | undefined = (mockupImages as any).front || (mockupImages as any).lifestyle || Object.values(mockupImages as any)[0] as string | undefined;
+
+        let dummyImageId: string | null = null;
+        if (mockupUrl) {
+          try {
+            const uploadResp = await fetch("https://api.printify.com/v1/uploads/images.json", {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ file_name: "cost_probe.png", url: mockupUrl }),
+            });
+            if (uploadResp.ok) {
+              const uploadData = await uploadResp.json();
+              dummyImageId = uploadData.id;
+              console.log(`[Printify Costs] Uploaded mockup image via URL, id=${dummyImageId}`);
+            } else {
+              console.warn(`[Printify Costs] Mockup image URL upload failed: ${uploadResp.status}`);
+            }
+          } catch (uploadErr) {
+            console.warn("[Printify Costs] Mockup image upload error:", uploadErr);
+          }
+        }
+
+        if (dummyImageId) {
+          tempProductBody = {
+            ...tempProductBody,
+            title: probeTitle,
+            print_areas: [{
+              variant_ids: Array.from(printifyVariantIds),
+              placeholders: [{ position: placeholderPosition, images: [{ id: dummyImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }],
+            }],
+          };
+          createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify(tempProductBody),
+          });
+          console.log(`[Printify Costs] Step B result: ${createResp.status}`);
+        } else {
+          console.warn("[Printify Costs] No mockup URL available for Step B");
+        }
+      }
 
       if (!createResp.ok) {
         const errText = await createResp.text();
@@ -9869,6 +9891,27 @@ ${textEdgeRestrictions}
       // Enrich products that are already on Shopify with live variant data.
       // Products not yet on Shopify are included with needsShopifySync: true.
       const enriched: any[] = [];
+
+      // Helper: build printifyVariantId → human-readable label from stored variantMap
+      function buildPrintifyVariantLabels(pt: any): Record<string, string> {
+        const storedVm = typeof pt.variantMap === "string" ? JSON.parse(pt.variantMap || "{}") : (pt.variantMap || {});
+        const allSizes = JSON.parse(pt.frameSizes || "[]");
+        const allColors = JSON.parse(pt.frameColors || "[]");
+        const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
+        const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
+        const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
+        const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
+        const labels: Record<string, string> = {};
+        for (const [key, entry] of Object.entries(storedVm)) {
+          const [sizeId, colorId] = key.split(":");
+          const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
+          const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
+          const vid = String((entry as any).printifyVariantId);
+          labels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+        }
+        return labels;
+      }
+
       for (const pt of productTypes) {
         if (pt.shopifyProductId) {
           const pResult = await shopifyApiCall(
@@ -9878,22 +9921,6 @@ ${textEdgeRestrictions}
           );
           if (pResult.ok && pResult.data?.product) {
             const p = pResult.data.product;
-            // Build printifyVariantId → label map from the stored variantMap
-            const storedVm = typeof pt.variantMap === "string" ? JSON.parse(pt.variantMap || "{}") : (pt.variantMap || {});
-            const allSizes = JSON.parse(pt.frameSizes || "[]");
-            const allColors = JSON.parse(pt.frameColors || "[]");
-            const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
-            const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
-            const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
-            const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
-            const printifyVariantLabels: Record<string, string> = {};
-            for (const [key, entry] of Object.entries(storedVm)) {
-              const [sizeId, colorId] = key.split(":");
-              const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
-              const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
-              const vid = String((entry as any).printifyVariantId);
-              printifyVariantLabels[vid] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
-            }
             enriched.push({
               productTypeId: pt.id,
               productId: pt.shopifyProductId,
@@ -9902,7 +9929,7 @@ ${textEdgeRestrictions}
               needsShopifySync: false,
               printifyBlueprintId: pt.printifyBlueprintId ?? null,
               printifyProviderId: pt.printifyProviderId ?? null,
-              printifyVariantLabels,
+              printifyVariantLabels: buildPrintifyVariantLabels(pt),
               variants: (p.variants ?? []).map((v: any) => ({
                 id: String(v.id),
                 title: v.title,
@@ -9922,7 +9949,7 @@ ${textEdgeRestrictions}
           needsShopifySync: true,
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
-          printifyVariantLabels: {},
+          printifyVariantLabels: buildPrintifyVariantLabels(pt),
           variants: [],
         });
       }
