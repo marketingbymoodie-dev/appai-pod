@@ -62,9 +62,10 @@ interface BlankVariant {
 
 interface Blank {
   productTypeId: number;
-  productId: string;
+  productId: string | null;
   title: string;
   imageUrl: string | null;
+  needsShopifySync?: boolean;
   variants: BlankVariant[];
 }
 
@@ -148,7 +149,8 @@ export default function AdminCustomizerPages() {
     mutationFn: async (body: {
       title: string;
       handle: string;
-      baseProductId: string;
+      baseProductId?: string;
+      productTypeId?: number;
       variantPrices: Record<string, string>;
     }) => {
       const res = await apiRequest("POST", "/api/appai/customizer-pages", body);
@@ -206,12 +208,19 @@ export default function AdminCustomizerPages() {
   }
 
   /** Derive variants for the currently-selected product (Step 2 pricing) */
-  const selectedBlank = (blanksData?.blanks ?? []).find((b) => b.productId === formProductId);
+  const selectedBlank = (blanksData?.blanks ?? []).find(
+    (b) => (b.productId ? b.productId : `pt:${b.productTypeId}`) === formProductId
+  );
   const selectedVariants: BlankVariant[] = selectedBlank?.variants ?? [];
 
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
+    // If the product isn't on Shopify yet, skip pricing step (no Shopify variants to price yet)
+    if (selectedBlank?.needsShopifySync) {
+      setFormStep(3);
+      return;
+    }
     const prefilled: Record<string, string> = {};
     for (const v of selectedVariants) {
       prefilled[v.id] = variantPrices[v.id] ?? (v.price && v.price !== "0.00" ? v.price : "");
@@ -240,10 +249,14 @@ export default function AdminCustomizerPages() {
   }
 
   function handleSubmitCreate() {
+    // For products on Shopify: pass their shopify productId.
+    // For products not yet on Shopify: pass the productTypeId so the backend can auto-send.
+    const isSync = selectedBlank?.needsShopifySync;
     createMutation.mutate({
       title: formTitle,
       handle: formHandle,
-      baseProductId: formProductId,
+      baseProductId: isSync ? undefined : formProductId,
+      productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
     });
   }
@@ -369,8 +382,7 @@ export default function AdminCustomizerPages() {
                         <Skeleton className="h-10 w-full mt-1" />
                       ) : (blanksData?.blanks ?? []).length === 0 ? (
                         <p className="text-sm text-destructive mt-1">
-                          No blank products found. Add products tagged{" "}
-                          <code className="bg-muted px-1 rounded">appai-blank</code> in Shopify.
+                          No products found. Import products from Printify first.
                         </p>
                       ) : (
                         <Select value={formProductId} onValueChange={setFormProductId}>
@@ -378,17 +390,27 @@ export default function AdminCustomizerPages() {
                             <SelectValue placeholder="Select a product…" />
                           </SelectTrigger>
                           <SelectContent>
-                            {(blanksData?.blanks ?? []).map((blank) => (
-                              <SelectItem key={blank.productId} value={blank.productId}>
-                                {blank.title}
-                              </SelectItem>
-                            ))}
+                            {(blanksData?.blanks ?? []).map((blank) => {
+                              const val = blank.productId ? blank.productId : `pt:${blank.productTypeId}`;
+                              return (
+                                <SelectItem key={val} value={val}>
+                                  {blank.title}
+                                  {blank.needsShopifySync ? " (not yet sent to store)" : ""}
+                                </SelectItem>
+                              );
+                            })}
                           </SelectContent>
                         </Select>
                       )}
-                      <p className="text-xs text-muted-foreground mt-1">
-                        All variants will be available to customers on the storefront.
-                      </p>
+                      {selectedBlank?.needsShopifySync ? (
+                        <p className="text-xs text-amber-600 mt-1">
+                          This product hasn't been sent to your store yet. It will be automatically sent as a draft when you create this page. You'll need to set pricing in Shopify Admin before publishing it live.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          All variants will be available to customers on the storefront.
+                        </p>
+                      )}
                     </div>
                     <Button
                       className="w-full"
@@ -466,21 +488,27 @@ export default function AdminCustomizerPages() {
                         <span className="text-muted-foreground">Product</span>
                         <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
                       </div>
-                      <div className="border-t pt-2 mt-1 space-y-1">
-                        <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                        {selectedVariants.map((v) => (
-                          <div key={v.id} className="flex justify-between">
-                            <span>{v.title}</span>
-                            <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
-                          </div>
-                        ))}
-                      </div>
+                      {selectedBlank?.needsShopifySync ? (
+                        <div className="border-t pt-2 mt-1">
+                          <p className="text-xs text-amber-600">This product will be automatically sent to your store as a draft. Set pricing in Shopify Admin → Products before publishing it live.</p>
+                        </div>
+                      ) : (
+                        <div className="border-t pt-2 mt-1 space-y-1">
+                          <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
+                          {selectedVariants.map((v) => (
+                            <div key={v.id} className="flex justify-between">
+                              <span>{v.title}</span>
+                              <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      This will publish the product to your Online Store and add a "Customizer" link to your main navigation menu.
+                      This will create the customizer page on your Online Store.
                     </p>
                     <div className="flex gap-2">
-                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(2)} disabled={createMutation.isPending}>
+                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(selectedBlank?.needsShopifySync ? 1 : 2)} disabled={createMutation.isPending}>
                         Back
                       </Button>
                       <Button className="flex-1" onClick={handleSubmitCreate} disabled={createMutation.isPending}>
@@ -741,56 +769,6 @@ export default function AdminCustomizerPages() {
                 ))}
               </div>
             )}
-
-            {/* ── SETUP GUIDE ── */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Setup Guide</CardTitle>
-                <CardDescription>One-time configuration steps</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                {[
-                  {
-                    n: 1,
-                    title: "Enable the AppAI App Embed",
-                    body: "Online Store → Themes → Customize → App Embeds → Enable AI Art Studio Embed. One-time step.",
-                  },
-                  {
-                    n: 2,
-                    title: "Import your products from Printify",
-                    body: "Go to Products → Import from Printify. Allowance depends on your plan.",
-                  },
-                  {
-                    n: 3,
-                    title: "Test your Generator and publish to your store",
-                    body: "Use Generator Tester to verify the AI output looks correct, then publish the product to Shopify.",
-                  },
-                  {
-                    n: 4,
-                    title: "Create a customizer page for your new generator",
-                    body: "Click Create Page above, pick a title, URL handle, and which product customers will customize.",
-                  },
-                  {
-                    n: 5,
-                    title: "Add your product generator page to your store menu",
-                    body: "In Shopify, go to Online Store → Navigation and add a link to /pages/your-handle.",
-                  },
-                ].map(({ n, title, body }) => (
-                  <div key={n} className="flex items-start gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
-                      {n}
-                    </span>
-                    <div>
-                      <p className="font-medium">{title}</p>
-                      <p className="text-muted-foreground">{body}</p>
-                    </div>
-                  </div>
-                ))}
-                <p className="text-muted-foreground pt-1">
-                  Visit the storefront page to ensure it's loading correctly. Repeat steps 3–5 for every product you want to have a generator page for.
-                </p>
-              </CardContent>
-            </Card>
 
             {/* ── FALLBACK URL ── */}
             <Card>

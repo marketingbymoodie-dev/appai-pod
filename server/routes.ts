@@ -9223,17 +9223,18 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, variantPrices } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
       baseProductId?: string;
+      productTypeId?: number;
       variantPrices?: Record<string, string>;
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
     if (!handle?.trim()) return res.status(400).json({ error: "Handle is required" });
-    if (!baseVariantId && !baseProductId) return res.status(400).json({ error: "baseProductId is required" });
+    if (!baseVariantId && !baseProductId && !incomingProductTypeId) return res.status(400).json({ error: "baseProductId or productTypeId is required" });
 
     // Validate handle format
     if (!/^[a-z0-9][a-z0-9-]*$/.test(handle)) {
@@ -9252,6 +9253,43 @@ ${textEdgeRestrictions}
     // Uniqueness check
     const existing = await storage.getCustomizerPageByHandle(shop, handle);
     if (existing) return res.status(409).json({ error: `Handle "${handle}" is already in use` });
+
+    // If a productTypeId is provided but no shopify product exists yet, auto-send it to Shopify as a draft.
+    let resolvedBaseProductId = baseProductId;
+    if (!baseVariantId && !baseProductId && incomingProductTypeId) {
+      const ptForSync = await storage.getProductType(incomingProductTypeId);
+      if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
+
+      if (ptForSync.shopifyProductId) {
+        // Already sent to Shopify previously — use it
+        resolvedBaseProductId = ptForSync.shopifyProductId;
+      } else {
+        // Need to auto-send to Shopify; make an internal call to the existing publish logic
+        const publishResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Forward the session cookie / auth token from the original request
+            "Cookie": req.headers["cookie"] ?? "",
+            "Authorization": req.headers["authorization"] ?? "",
+          },
+          body: JSON.stringify({
+            productTypeId: incomingProductTypeId,
+            shopDomain: shop.replace(".myshopify.com", ""),
+            selectedColorIds: [],
+          }),
+        });
+        if (!publishResp.ok) {
+          const errBody = await publishResp.json().catch(() => ({}));
+          return res.status(400).json({ error: errBody.error ?? "Failed to send product to Shopify. Try using Generator Tester to send it first." });
+        }
+        const publishData = await publishResp.json();
+        resolvedBaseProductId = publishData.shopifyProductId ? String(publishData.shopifyProductId) : null;
+        if (!resolvedBaseProductId) {
+          return res.status(400).json({ error: "Product was sent to Shopify but no product ID was returned. Try again." });
+        }
+      }
+    }
 
     // Plan limit check
     const currentCount = await storage.countCustomizerPages(shop);
@@ -9272,9 +9310,9 @@ ${textEdgeRestrictions}
     let productTitle: string;
     let productHandle: string;
 
-    if (baseProductId && !baseVariantId) {
+    if (resolvedBaseProductId && !baseVariantId) {
       // New product-level flow
-      const productNum = parseInt(String(baseProductId).replace(/\D/g, ""), 10);
+      const productNum = parseInt(String(resolvedBaseProductId).replace(/\D/g, ""), 10);
       if (!productNum) return res.status(400).json({ error: "Invalid baseProductId" });
 
       const prodResult = await shopifyApiCall(
@@ -9283,12 +9321,12 @@ ${textEdgeRestrictions}
         `products/${productNum}.json?fields=id,title,handle,variants`,
       );
       if (!prodResult.ok || !prodResult.data?.product) {
-        return res.status(400).json({ error: `Product ${baseProductId} not found in this store` });
+        return res.status(400).json({ error: `Product ${resolvedBaseProductId} not found in this store` });
       }
       const product = prodResult.data.product;
       const firstVariant = product.variants?.[0];
       if (!firstVariant) {
-        return res.status(400).json({ error: `Product ${baseProductId} has no variants` });
+        return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
       }
       variant = firstVariant;
       productTitle = product.title ?? "";
@@ -9534,36 +9572,43 @@ ${textEdgeRestrictions}
 
     try {
       const productTypes = await storage.getActiveProductTypes();
-      const blanks = productTypes
-        .filter((pt: any) => pt.shopifyProductId)
-        .map((pt: any) => ({
-          productTypeId: pt.id,
-          productId: pt.shopifyProductId,
-          title: pt.name,
-          imageUrl: pt.mockupImageUrl ?? null,
-        }));
 
-      // Enrich with Shopify variant data for the first active product
+      // Enrich products that are already on Shopify with live variant data.
+      // Products not yet on Shopify are included with needsShopifySync: true.
       const enriched: any[] = [];
-      for (const blank of blanks) {
-        if (!blank.productId) continue;
-        const pResult = await shopifyApiCall(
-          shop,
-          installation.accessToken,
-          `products/${blank.productId}.json?fields=id,title,variants,images`,
-        );
-        if (!pResult.ok || !pResult.data?.product) continue;
-        const p = pResult.data.product;
+      for (const pt of productTypes) {
+        if (pt.shopifyProductId) {
+          const pResult = await shopifyApiCall(
+            shop,
+            installation.accessToken,
+            `products/${pt.shopifyProductId}.json?fields=id,title,variants,images`,
+          );
+          if (pResult.ok && pResult.data?.product) {
+            const p = pResult.data.product;
+            enriched.push({
+              productTypeId: pt.id,
+              productId: pt.shopifyProductId,
+              title: p.title,
+              imageUrl: p.images?.[0]?.src ?? pt.mockupImageUrl ?? null,
+              needsShopifySync: false,
+              variants: (p.variants ?? []).map((v: any) => ({
+                id: String(v.id),
+                title: v.title,
+                price: v.price,
+                sku: v.sku,
+              })),
+            });
+            continue;
+          }
+        }
+        // Not on Shopify (or Shopify fetch failed) — include without variant data
         enriched.push({
-          ...blank,
-          title: p.title,
-          variants: (p.variants ?? []).map((v: any) => ({
-            id: String(v.id),
-            title: v.title,
-            price: v.price,
-            sku: v.sku,
-          })),
-          imageUrl: p.images?.[0]?.src ?? blank.imageUrl,
+          productTypeId: pt.id,
+          productId: pt.shopifyProductId ?? null,
+          title: pt.name,
+          imageUrl: (pt as any).mockupImageUrl ?? null,
+          needsShopifySync: true,
+          variants: [],
         });
       }
       return res.json({ blanks: enriched });

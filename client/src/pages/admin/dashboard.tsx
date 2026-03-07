@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart3, CheckCircle, AlertCircle, TrendingUp } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
+import { BookOpen } from "lucide-react";
 
 interface GenerationStats {
   total: number;
@@ -91,24 +92,53 @@ export default function AdminDashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-            <CardDescription>Common tasks to get you started</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 md:grid-cols-3">
-              <a href="/admin/create-product" className="block p-4 rounded-lg border hover-elevate">
-                <h3 className="font-medium mb-1">Generator Tester</h3>
-                <p className="text-sm text-muted-foreground">Test the AI generator for a new product type</p>
-              </a>
-              <a href="/admin/products" className="block p-4 rounded-lg border hover-elevate">
-                <h3 className="font-medium mb-1">Manage Products</h3>
-                <p className="text-sm text-muted-foreground">Import and configure product types</p>
-              </a>
-              <a href="/admin/settings" className="block p-4 rounded-lg border hover-elevate">
-                <h3 className="font-medium mb-1">Configure Settings</h3>
-                <p className="text-sm text-muted-foreground">Set up Printify and other integrations</p>
-              </a>
+            <div className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4 text-muted-foreground" />
+              <CardTitle>Setup Guide</CardTitle>
             </div>
+            <CardDescription>One-time configuration steps</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {[
+              {
+                n: 1,
+                title: "Enable the AppAI App Embed",
+                body: "Online Store → Themes → Customize → App Embeds → Enable AI Art Studio Embed. One-time step.",
+              },
+              {
+                n: 2,
+                title: "Import your products from Printify",
+                body: "Go to Products Import and import from Printify.",
+              },
+              {
+                n: 3,
+                title: "Test your Generator and send to your store",
+                body: "Use Generator Tester to verify the AI output looks correct, then send the product to your store.",
+              },
+              {
+                n: 4,
+                title: "Create a customizer page for your new generator",
+                body: "Click Create Page, pick a title, URL handle, and which product customers will customize. Customizer page allowance depends on your plan.",
+              },
+              {
+                n: 5,
+                title: "Add your product generator page to your store menu",
+                body: "In Shopify, go to Online Store → Navigation and add a link to /pages/your-handle.",
+              },
+            ].map(({ n, title, body }) => (
+              <div key={n} className="flex items-start gap-3">
+                <span className="flex-shrink-0 w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  {n}
+                </span>
+                <div>
+                  <p className="font-medium">{title}</p>
+                  <p className="text-muted-foreground">{body}</p>
+                </div>
+              </div>
+            ))}
+            <p className="text-muted-foreground pt-1">
+              Visit the storefront page to ensure it's loading correctly. Repeat steps 3–5 for every product you want to have a generator page for.
+            </p>
           </CardContent>
         </Card>
       </div>

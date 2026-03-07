@@ -675,7 +675,7 @@ export default function AdminCreateProduct() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Generator Tester</h1>
-          <p className="text-muted-foreground">Test the AI generator for a product type before publishing to your store</p>
+          <p className="text-muted-foreground">Test the AI generator for a product type before sending to your store</p>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
@@ -1171,7 +1171,7 @@ export default function AdminCreateProduct() {
             {selectedProductTypeId && designerConfig && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-lg">Publish to Shopify</CardTitle>
+          <CardTitle className="text-lg">Send to Store</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">
@@ -1199,7 +1199,7 @@ export default function AdminCreateProduct() {
       <Dialog open={showPublishDialog} onOpenChange={setShowPublishDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Publish to Shopify</DialogTitle>
+            <DialogTitle>Send to Store</DialogTitle>
             <DialogDescription>
               Enter your Shopify store domain to create this product as a draft.
             </DialogDescription>
