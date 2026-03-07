@@ -790,8 +790,20 @@ export async function registerRoutes(
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
         if (productSize) {
-          // Use size-specific aspect ratio if available, otherwise fall back to product type's
-          const aspectRatioStr = productSize.aspectRatio || productType.aspectRatio || "3:4";
+          let aspectRatioStr = productSize.aspectRatio || productType.aspectRatio || "3:4";
+
+          // For double-sided products, convert combined ratio to per-side ratio
+          if (productType.doubleSidedPrint) {
+            const [arW, arH] = aspectRatioStr.split(":").map(Number);
+            if (arW && arH && !isNaN(arW) && !isNaN(arH) && arW / arH >= 1.9) {
+              const perSideW = arW / 2;
+              const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+              const d = gcdFn(Math.round(perSideW), arH);
+              aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
+              console.log(`[Admin Gen] Double-sided ratio override → ${aspectRatioStr} (per-side)`);
+            }
+          }
+
           const genDims = calculateGenDimensions(aspectRatioStr);
           
           sizeConfig = {
@@ -808,7 +820,19 @@ export async function registerRoutes(
       
       if (!sizeConfig) {
         // Default fallback - use product type's aspect ratio if available
-        const aspectRatioStr = productType?.aspectRatio || "3:4";
+        let aspectRatioStr = productType?.aspectRatio || "3:4";
+
+        // For double-sided products, convert combined ratio to per-side ratio
+        if (productType?.doubleSidedPrint) {
+          const [arW, arH] = aspectRatioStr.split(":").map(Number);
+          if (arW && arH && !isNaN(arW) && !isNaN(arH) && arW / arH >= 1.9) {
+            const perSideW = arW / 2;
+            const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+            const d = gcdFn(Math.round(perSideW), arH);
+            aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
+          }
+        }
+
         const genDims = calculateGenDimensions(aspectRatioStr);
         sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: aspectRatioStr, genWidth: genDims.genWidth, genHeight: genDims.genHeight } as any;
       }
@@ -4156,7 +4180,26 @@ ${textEdgeRestrictions}
       if (!sizeConfig && productType) {
         const productSizes = JSON.parse(productType.sizes || "[]");
         const productSize = productSizes.find((s: any) => s.id === size);
-        const aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
+        let aspectRatioStr = productSize?.aspectRatio || productType.aspectRatio || "3:4";
+
+        // For double-sided products, the stored ratio may be the combined front+back ratio.
+        // Convert to per-side ratio so the AI generates artwork for one side only.
+        if (productType.doubleSidedPrint) {
+          const [arW, arH] = aspectRatioStr.split(":").map(Number);
+          if (arW && arH && !isNaN(arW) && !isNaN(arH)) {
+            const ratio = arW / arH;
+            if (ratio >= 1.9) {
+              // Likely a combined ratio (e.g. 2:1 for square pillow front+back).
+              // Halve the width to get per-side ratio.
+              const perSideW = arW / 2;
+              const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+              const d = gcdFn(Math.round(perSideW), arH);
+              aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
+              console.log(P, reqId, `Double-sided ratio override: ${arW}:${arH} → ${aspectRatioStr} (per-side)`);
+            }
+          }
+        }
+
         const genDims = calculateGenDimensions(aspectRatioStr);
 
         sizeConfig = {
@@ -4171,7 +4214,21 @@ ${textEdgeRestrictions}
       }
 
       if (!sizeConfig) {
-        sizeConfig = PRINT_SIZES[0];
+        let aspectRatioStr = productType?.aspectRatio || "3:4";
+
+        if (productType?.doubleSidedPrint) {
+          const [arW, arH] = aspectRatioStr.split(":").map(Number);
+          if (arW && arH && !isNaN(arW) && !isNaN(arH) && arW / arH >= 1.9) {
+            const perSideW = arW / 2;
+            const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+            const d = gcdFn(Math.round(perSideW), arH);
+            aspectRatioStr = `${Math.round(perSideW / d)}:${Math.round(arH / d)}`;
+            console.log(P, reqId, `Double-sided fallback ratio override → ${aspectRatioStr} (per-side)`);
+          }
+        }
+
+        const genDims = calculateGenDimensions(aspectRatioStr);
+        sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: aspectRatioStr, genWidth: genDims.genWidth, genHeight: genDims.genHeight } as any;
       }
 
       // Build full prompt with shape/orientation requirements (synchronous)
@@ -7992,7 +8049,9 @@ ${textEdgeRestrictions}
         .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
         .replace(/<[^>]*>/g, ' ') // Strip HTML tags
         .toLowerCase();
-      const doubleSidedPrint = decodedCombined.includes("double sided") || 
+      const hasBackPlaceholder = !!placeholderDimensions["back"];
+      const doubleSidedPrint = hasBackPlaceholder ||
+                               decodedCombined.includes("double sided") || 
                                decodedCombined.includes("double-sided") || 
                                decodedCombined.includes("two sided") ||
                                decodedCombined.includes("two-sided") ||

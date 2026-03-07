@@ -1,5 +1,5 @@
 import pRetry from "p-retry";
-import sharp from "sharp";
+
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -73,45 +73,6 @@ function isAllowedImageUrl(url: string): boolean {
   }
 }
 
-async function duplicateImageSideBySide(imageUrl: string): Promise<Buffer> {
-  let imageBuffer: Buffer;
-  
-  if (isDataUrl(imageUrl)) {
-    const base64Data = extractBase64FromDataUrl(imageUrl);
-    imageBuffer = Buffer.from(base64Data, 'base64');
-  } else {
-    if (!isAllowedImageUrl(imageUrl)) {
-      throw new Error("Image URL not from allowed source");
-    }
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch image: ${response.status}`);
-    }
-    const arrayBuffer = await response.arrayBuffer();
-    imageBuffer = Buffer.from(arrayBuffer);
-  }
-  
-  const metadata = await sharp(imageBuffer).metadata();
-  const width = metadata.width || 1024;
-  const height = metadata.height || 1024;
-  
-  const duplicatedImage = await sharp({
-    create: {
-      width: width * 2,
-      height: height,
-      channels: 4,
-      background: { r: 255, g: 255, b: 255, alpha: 0 }
-    }
-  })
-    .composite([
-      { input: imageBuffer, left: 0, top: 0 },
-      { input: imageBuffer, left: width, top: 0 }
-    ])
-    .png()
-    .toBuffer();
-  
-  return duplicatedImage;
-}
 
 const MAX_RETRIES = 3;
 const MAX_MOCKUP_VIEWS = 4;
@@ -337,14 +298,13 @@ async function createTemporaryProduct(
   const printifyX = 0.5 + (x * 0.5);
   const printifyY = 0.5 + (y * 0.5);
 
-  const placeholders = [
-    {
-      position: "front",
-      images: [
-        { id: imageId, x: printifyX, y: printifyY, scale: scale, angle: 0 },
-      ],
-    },
+  const imageEntry = { id: imageId, x: printifyX, y: printifyY, scale: scale, angle: 0 };
+  const placeholders: Array<{ position: string; images: typeof imageEntry[] }> = [
+    { position: "front", images: [imageEntry] },
   ];
+  if (doubleSided) {
+    placeholders.push({ position: "back", images: [imageEntry] });
+  }
 
   const requestBody = {
     title: `Mockup Preview - ${Date.now()}`,
@@ -358,7 +318,7 @@ async function createTemporaryProduct(
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       console.log(`[Printify] Creating temp product (attempt ${attempt}/${MAX_RETRIES}):`, {
-        shopId, blueprintId, providerId, variantId, imageId, scale, x: printifyX, y: printifyY,
+        shopId, blueprintId, providerId, variantId, imageId, scale, x: printifyX, y: printifyY, doubleSided,
       });
 
       const response = await fetch(
@@ -527,15 +487,7 @@ export async function generatePrintifyMockup(
   let productId: string | null = null;
 
   try {
-    let imageToUpload: string | Buffer = imageUrl;
-    
-    if (doubleSided) {
-      console.log("Duplicating image side-by-side for double-sided product...");
-      imageToUpload = await duplicateImageSideBySide(imageUrl);
-      console.log("Image duplicated successfully, uploading to Printify...");
-    }
-    
-    const uploadedImage = await uploadImageToPrintify(imageToUpload, printifyApiToken);
+    const uploadedImage = await uploadImageToPrintify(imageUrl, printifyApiToken);
     if (!uploadedImage) {
       return {
         success: false,
