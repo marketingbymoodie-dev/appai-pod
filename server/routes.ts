@@ -7497,6 +7497,10 @@ ${textEdgeRestrictions}
       // Store per-position to handle multi-placement products correctly
       const placeholderDimensions: Record<string, { width: number; height: number }> = {};
 
+      // Per-size placeholder dimensions: keyed by sizeId -> primary-position dims
+      // Populated after extractedSizeId is known for each variant
+      const placeholderDimensionsBySize: Record<string, { width: number; height: number }> = {};
+
       // Known size patterns for various product types
       const apparelSizes = ["XXS", "XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "XXL", "XXXL"];
       const apparelSizesLower = apparelSizes.map(s => s.toLowerCase());
@@ -7664,6 +7668,32 @@ ${textEdgeRestrictions}
           }
         }
 
+        // Track per-size placeholder dimensions now that extractedSizeId is known.
+        // Use the same primary-position priority (front > default > first available).
+        if (extractedSizeId) {
+          const variantPlaceholders: Record<string, { width: number; height: number }> = {};
+          for (const ph of (variant.placeholders || [])) {
+            if (ph.width && ph.height) {
+              const pos = ph.position || "default";
+              const ex = variantPlaceholders[pos];
+              if (!ex || ph.width * ph.height > ex.width * ex.height) {
+                variantPlaceholders[pos] = { width: ph.width, height: ph.height };
+              }
+            }
+          }
+          const primaryDims =
+            variantPlaceholders["front"] ||
+            variantPlaceholders["default"] ||
+            Object.values(variantPlaceholders)[0];
+          if (primaryDims) {
+            const existing = placeholderDimensionsBySize[extractedSizeId];
+            // Keep the largest area seen for this size across variants
+            if (!existing || primaryDims.width * primaryDims.height > existing.width * existing.height) {
+              placeholderDimensionsBySize[extractedSizeId] = primaryDims;
+            }
+          }
+        }
+
         // Try to extract color from title (after the "/" or from options)
         let colorName = "";
         // First check options object (normalize various color option names)
@@ -7794,6 +7824,31 @@ ${textEdgeRestrictions}
       // Convert maps to arrays
       let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
+
+      // Compute per-size aspect ratios from per-size placeholder dimensions collected above.
+      // Helper uses the same thresholds as the product-level ratio calculation.
+      const computeAspectRatioFromDims = (w: number, h: number): string => {
+        const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
+        const divisor = gcdFn(w, h);
+        const sw = w / divisor;
+        const sh = h / divisor;
+        if (sw <= 20 && sh <= 20) return `${sw}:${sh}`;
+        const r = w / h;
+        if (r >= 1.7) return "16:9";
+        if (r >= 1.4) return "3:2";
+        if (r >= 1.2) return "4:3";
+        if (r >= 0.9) return "1:1";
+        if (r >= 0.7) return "3:4";
+        if (r >= 0.6) return "2:3";
+        return "9:16";
+      };
+      sizes = sizes.map(s => {
+        const dims = placeholderDimensionsBySize[s.id];
+        if (dims) {
+          return { ...s, aspectRatio: computeAspectRatioFromDims(dims.width, dims.height) };
+        }
+        return s;
+      });
 
       // Fallback: If no sizes extracted, create from product name or use default
       // This handles single-variant products and products where size wasn't parseable

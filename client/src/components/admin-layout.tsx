@@ -45,7 +45,7 @@ const menuItems = [
   { title: "Customizer Pages", url: "/admin/customizer-pages", icon: LayoutTemplate },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
   { title: "Products", url: "/admin/products", icon: Package },
-  { title: "Create Product", url: "/admin/create-product", icon: Plus },
+  { title: "Generator Tester", url: "/admin/create-product", icon: Plus },
   { title: "Styles", url: "/admin/styles", icon: Palette },
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },

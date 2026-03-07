@@ -97,7 +97,7 @@ export default function AdminDashboard() {
           <CardContent>
             <div className="grid gap-4 md:grid-cols-3">
               <a href="/admin/create-product" className="block p-4 rounded-lg border hover-elevate">
-                <h3 className="font-medium mb-1">Create New Product</h3>
+                <h3 className="font-medium mb-1">Generator Tester</h3>
                 <p className="text-sm text-muted-foreground">Test the AI generator for a new product type</p>
               </a>
               <a href="/admin/products" className="block p-4 rounded-lg border hover-elevate">

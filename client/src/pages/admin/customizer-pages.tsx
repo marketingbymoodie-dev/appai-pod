@@ -757,13 +757,23 @@ export default function AdminCustomizerPages() {
                   },
                   {
                     n: 2,
-                    title: "Create a customizer page above",
-                    body: "Click Create Page, pick a title, URL handle, and which product variant customers will customize.",
+                    title: "Import your products from Printify",
+                    body: "Go to Products → Import from Printify. Allowance depends on your plan.",
                   },
                   {
                     n: 3,
-                    title: "Visit the storefront page",
-                    body: "The AppAI embed auto-mounts the customizer on /pages/your-handle.",
+                    title: "Test your Generator and publish to your store",
+                    body: "Use Generator Tester to verify the AI output looks correct, then publish the product to Shopify.",
+                  },
+                  {
+                    n: 4,
+                    title: "Create a customizer page for your new generator",
+                    body: "Click Create Page above, pick a title, URL handle, and which product customers will customize.",
+                  },
+                  {
+                    n: 5,
+                    title: "Add your product generator page to your store menu",
+                    body: "In Shopify, go to Online Store → Navigation and add a link to /pages/your-handle.",
                   },
                 ].map(({ n, title, body }) => (
                   <div key={n} className="flex items-start gap-3">
@@ -776,6 +786,9 @@ export default function AdminCustomizerPages() {
                     </div>
                   </div>
                 ))}
+                <p className="text-muted-foreground pt-1">
+                  Visit the storefront page to ensure it's loading correctly. Repeat steps 3–5 for every product you want to have a generator page for.
+                </p>
               </CardContent>
             </Card>
 

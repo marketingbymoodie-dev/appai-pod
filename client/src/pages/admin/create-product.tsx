@@ -674,7 +674,7 @@ export default function AdminCreateProduct() {
     <AdminLayout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Create New Product</h1>
+          <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Generator Tester</h1>
           <p className="text-muted-foreground">Test the AI generator for a product type before publishing to your store</p>
         </div>
 

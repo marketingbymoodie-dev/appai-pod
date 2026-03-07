@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +50,7 @@ interface PrintifyProvider {
 
 export default function AdminProducts() {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   
   const [printifyImportOpen, setPrintifyImportOpen] = useState(false);
   const [blueprintSearch, setBlueprintSearch] = useState("");
@@ -538,7 +540,7 @@ export default function AdminProducts() {
                       <Button 
                         variant="outline" 
                         size="sm"
-                        onClick={() => window.location.href = `/admin/create-product?productTypeId=${pt.id}`}
+                        onClick={() => navigate(`/admin/create-product?productTypeId=${pt.id}`)}
                         data-testid={`button-test-${pt.id}`}
                       >
                         Test Generator
