@@ -200,7 +200,10 @@ async function runPrediction(
   input: Record<string, any>,
 ): Promise<{ mimeType: string; data: string }> {
   console.log("[Replicate] Creating prediction with version:", version);
-  console.log("[Replicate] Input aspect_ratio:", input.aspect_ratio, "output_format:", input.output_format, "has_image_input:", !!input.image_input);
+  const imgInput = input.image_input;
+  const imgType = imgInput?.[0]?.startsWith?.("data:") ? "data-url" : imgInput?.[0] ? "http-url" : "none";
+  const imgSize = imgInput?.[0]?.length || 0;
+  console.log("[Replicate] Input aspect_ratio:", input.aspect_ratio, "output_format:", input.output_format, "image_input:", imgType, `(${imgSize} chars)`);
   console.log("[Replicate] Prompt length:", input.prompt?.length, "first 200 chars:", input.prompt?.substring(0, 200));
 
   const created: ReplicatePrediction = await fetchJson(

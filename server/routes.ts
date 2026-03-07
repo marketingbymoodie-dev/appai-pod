@@ -994,33 +994,32 @@ ${textEdgeRestrictions}
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
-      // Resolve reference image to a publicly accessible URL for Replicate
+      // Resolve reference image for Replicate — pass data URLs directly to avoid URL-accessibility issues
       let inputImageUrl: string | null = null;
       if (referenceImage) {
         try {
-          if (referenceImage.startsWith("/objects/")) {
-            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            inputImageUrl = `${appUrl}${referenceImage}`;
-          } else if (referenceImage.startsWith("data:")) {
-            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
-            if (match) {
-              const refContentType = match[1];
-              const refBuffer = Buffer.from(match[2], "base64");
-              const refExt = refContentType.includes("png") ? "png" : "jpg";
-              const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
-              const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-              inputImageUrl = `${appUrl}${refObjectPath}`;
-            }
+          if (referenceImage.startsWith("data:")) {
+            inputImageUrl = referenceImage;
           } else if (referenceImage.startsWith("http")) {
             inputImageUrl = referenceImage;
+          } else if (referenceImage.startsWith("/objects/")) {
+            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+            inputImageUrl = `${appUrl}${referenceImage}`;
           }
           if (inputImageUrl) {
-            console.log("[Generate] Reference image URL:", inputImageUrl.substring(0, 100));
+            const urlType = inputImageUrl.startsWith("data:") ? "data-url" : "http-url";
+            const urlSize = inputImageUrl.length;
+            console.log(`[Generate] Reference image: type=${urlType}, size=${urlSize} chars`);
           }
         } catch (refErr) {
           console.warn("[Generate] Could not process reference image, generating without it:", refErr);
           inputImageUrl = null;
         }
+      }
+
+      // When a reference image is provided, instruct the model to use it
+      if (inputImageUrl) {
+        fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
       }
 
       // Generate image using Replicate
@@ -1716,33 +1715,32 @@ ${textEdgeRestrictions}
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
-      // Resolve reference image to a publicly accessible URL for Replicate
+      // Resolve reference image for Replicate — pass data URLs directly to avoid URL-accessibility issues
       let inputImageUrl: string | null = null;
       if (referenceImage) {
         try {
-          if (referenceImage.startsWith("/objects/")) {
-            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            inputImageUrl = `${appUrl}${referenceImage}`;
-          } else if (referenceImage.startsWith("data:")) {
-            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
-            if (match) {
-              const refContentType = match[1];
-              const refBuffer = Buffer.from(match[2], "base64");
-              const refExt = refContentType.includes("png") ? "png" : "jpg";
-              const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
-              const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-              inputImageUrl = `${appUrl}${refObjectPath}`;
-            }
+          if (referenceImage.startsWith("data:")) {
+            inputImageUrl = referenceImage;
           } else if (referenceImage.startsWith("http")) {
             inputImageUrl = referenceImage;
+          } else if (referenceImage.startsWith("/objects/")) {
+            const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
+            inputImageUrl = `${appUrl}${referenceImage}`;
           }
           if (inputImageUrl) {
-            console.log("[Shopify Generate] Reference image URL:", inputImageUrl.substring(0, 100));
+            const urlType = inputImageUrl.startsWith("data:") ? "data-url" : "http-url";
+            const urlSize = inputImageUrl.length;
+            console.log(`[Shopify Generate] Reference image: type=${urlType}, size=${urlSize} chars`);
           }
         } catch (refErr) {
           console.warn("[Shopify Generate] Could not process reference image, generating without it:", refErr);
           inputImageUrl = null;
         }
+      }
+
+      // When a reference image is provided, instruct the model to use it
+      if (inputImageUrl) {
+        fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
       }
 
       // Generate image via Replicate
@@ -4343,26 +4341,21 @@ ${textEdgeRestrictions}
           await storage.updateGenerationJob(jobId, { status: "running" });
           console.log(`${W} worker started jobId=${jobId} +${Date.now() - wStart}ms`);
 
-          // Resolve reference image to a publicly accessible URL
+          // Resolve reference image — pass data URLs directly to avoid URL-accessibility issues
           let inputImageUrl: string | null = null;
           if (referenceImage) {
             try {
-              if (referenceImage.startsWith("/objects/")) {
-                inputImageUrl = `${appUrl}${referenceImage}`;
-              } else if (referenceImage.startsWith("data:")) {
-                const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/s);
-                if (match) {
-                  const refContentType = match[1];
-                  const refBuffer = Buffer.from(match[2], "base64");
-                  const refExt = refContentType.includes("png") ? "png" : "jpg";
-                  const refObjectPath = await objectStorage.saveUploadedBuffer(refBuffer, refContentType, refExt);
-                  inputImageUrl = `${appUrl}${refObjectPath}`;
-                }
+              if (referenceImage.startsWith("data:")) {
+                inputImageUrl = referenceImage;
               } else if (referenceImage.startsWith("http")) {
                 inputImageUrl = referenceImage;
+              } else if (referenceImage.startsWith("/objects/")) {
+                inputImageUrl = `${appUrl}${referenceImage}`;
               }
               if (inputImageUrl) {
-                await storage.updateGenerationJob(jobId, { referenceImageUrl: inputImageUrl });
+                const urlType = inputImageUrl.startsWith("data:") ? "data-url" : "http-url";
+                console.log(`${W} Reference image: type=${urlType}, size=${inputImageUrl.length} chars`);
+                await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : inputImageUrl });
               }
             } catch (refErr) {
               console.warn(`${W} Could not process reference image, continuing without it:`, refErr);
@@ -4370,6 +4363,11 @@ ${textEdgeRestrictions}
             }
           }
           console.log(`${W} ref image resolved +${Date.now() - wStart}ms inputImageUrl=${inputImageUrl ? "yes" : "none"}`);
+
+          // When a reference image is provided, instruct the model to use it
+          if (inputImageUrl) {
+            fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
+          }
 
           // Call AI image generation
           const aiStart = Date.now();
