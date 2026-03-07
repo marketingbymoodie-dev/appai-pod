@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store, AlertTriangle, Check, Move } from "lucide-react";
+import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store, AlertTriangle, Check, Move, DollarSign, Info, ChevronRight, ChevronLeft } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -78,11 +78,19 @@ export default function AdminCreateProduct() {
   
   // Shopify publishing state
   const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [publishStep, setPublishStep] = useState<1 | 2>(1);
   const [shopDomain, setShopDomain] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
   const [selectedColorsForPublish, setSelectedColorsForPublish] = useState<Set<string>>(new Set());
   const [shopifyInstallations, setShopifyInstallations] = useState<Array<{ id: number; shopDomain: string; shopName: string }>>([]);
   const [installationsLoading, setInstallationsLoading] = useState(false);
+  const [publishVariantPrices, setPublishVariantPrices] = useState<Record<string, string>>({});
+  const [publishPriceErrors, setPublishPriceErrors] = useState<Record<string, string>>({});
+
+  // Printify costs popup state (shared with pricing step)
+  const [publishCostsOpen, setPublishCostsOpen] = useState(false);
+  const [publishShippingTier, setPublishShippingTier] = useState("standard");
+  const [publishShippingCountry, setPublishShippingCountry] = useState("US");
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -577,6 +585,95 @@ export default function AdminCreateProduct() {
   const variantCount = savedVariantCount;
   const isOverLimit = variantCount > SHOPIFY_VARIANT_LIMIT;
 
+  // Build variant list for pricing step (sizeId:colorId -> label)
+  const publishVariantList = useMemo(() => {
+    if (!designerConfig) return [];
+    const variants: Array<{ key: string; label: string }> = [];
+    const sizes = filteredSizes;
+    const colors = filteredColors;
+    const vm = designerConfig.variantMap || {};
+    if (colors.length > 0) {
+      for (const size of sizes) {
+        for (const color of colors) {
+          const key = `${size.id}:${color.id}`;
+          if (vm[key]) variants.push({ key, label: `${size.name} / ${color.name}` });
+        }
+      }
+    } else {
+      for (const size of sizes) {
+        const key = `${size.id}:default`;
+        if (vm[key]) variants.push({ key, label: size.name });
+      }
+    }
+    return variants;
+  }, [designerConfig, filteredSizes, filteredColors]);
+
+  // Printify costs query for Generator Tester pricing step
+  const { data: genCostsData, isLoading: genCostsLoading } = useQuery<{
+    costs: Record<string, number>;
+    shopifyVariantCosts: Record<string, number>;
+    printifyVariantLabels: Record<string, string>;
+    cached: boolean;
+  }>({
+    queryKey: ["/api/admin/printify/costs", selectedProductTypeId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedProductTypeId}`);
+      return res.json();
+    },
+    enabled: publishCostsOpen && !!selectedProductTypeId && !!designerConfig?.printifyBlueprintId,
+  });
+
+  const { data: genShippingData, isLoading: genShippingLoading } = useQuery<{
+    version: string;
+    tiers?: string[];
+    shipping?: Record<string, Array<{
+      variantId: number;
+      country: string;
+      firstItem: number;
+      additionalItems: number;
+      currency: string;
+      handlingTime?: { from: number; to: number };
+    }>>;
+    countries?: string[];
+  }>({
+    queryKey: ["/api/admin/printify/shipping", designerConfig?.printifyBlueprintId, selectedProductType?.printifyProviderId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/printify/shipping/${designerConfig!.printifyBlueprintId}/${selectedProductType!.printifyProviderId}`);
+      return res.json();
+    },
+    enabled: publishCostsOpen && !!designerConfig?.printifyBlueprintId && !!selectedProductType?.printifyProviderId,
+  });
+
+  // Advance from store selection to pricing step
+  function advanceToPublishPricing() {
+    if (!shopDomain.trim() || isOverLimit || variantCount === 0) return;
+    const prefilled: Record<string, string> = {};
+    for (const v of publishVariantList) {
+      prefilled[v.key] = publishVariantPrices[v.key] ?? "";
+    }
+    setPublishVariantPrices(prefilled);
+    setPublishPriceErrors({});
+    setPublishStep(2);
+  }
+
+  // Validate prices before final submit
+  function validatePublishPrices(): boolean {
+    const errs: Record<string, string> = {};
+    for (const v of publishVariantList) {
+      const val = publishVariantPrices[v.key] ?? "";
+      const num = parseFloat(val);
+      if (!val.trim() || isNaN(num) || num <= 0) {
+        errs[v.key] = "Required — enter a price greater than $0.00";
+      }
+    }
+    if (Object.keys(errs).length > 0) {
+      setPublishPriceErrors(errs);
+      return false;
+    }
+    setPublishPriceErrors({});
+    return true;
+  }
+
   // Publish product to Shopify
   const handlePublishToShopify = async () => {
     if (!selectedProductTypeId || !shopDomain) {
@@ -588,20 +685,12 @@ export default function AdminCreateProduct() {
       return;
     }
 
+    if (!validatePublishPrices()) return;
+
     // Format shop domain
     let formattedDomain = shopDomain.trim().toLowerCase();
     if (!formattedDomain.endsWith(".myshopify.com")) {
       formattedDomain = `${formattedDomain}.myshopify.com`;
-    }
-
-    // Check variant limit
-    if (isOverLimit) {
-      toast({
-        title: "Too many variants",
-        description: `Shopify allows up to ${SHOPIFY_VARIANT_LIMIT} variants. Please deselect some colors.`,
-        variant: "destructive",
-      });
-      return;
     }
 
     setIsPublishing(true);
@@ -610,20 +699,17 @@ export default function AdminCreateProduct() {
         productTypeId: selectedProductTypeId,
         shopDomain: formattedDomain,
         selectedColorIds: designerConfig?.frameColors.length ? Array.from(selectedColorsForPublish) : undefined,
+        variantPrices: publishVariantPrices,
       });
 
-      const data = await response.json();
+      await response.json();
       
       setShowPublishDialog(false);
+      setPublishStep(1);
       toast({
-        title: "Product created!",
-        description: "Your product has been created as a draft in Shopify. Set your prices and publish when ready.",
+        title: "Product sent to store!",
+        description: "Your product is ready for your customizer page.",
       });
-
-      // Open Shopify admin in new tab
-      if (data.adminUrl) {
-        window.open(data.adminUrl, "_blank");
-      }
     } catch (error: any) {
       toast({
         title: "Failed to create product",
@@ -1175,7 +1261,7 @@ export default function AdminCreateProduct() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    Ready to add this product to your store? This will create a draft product with the design studio widget embedded.
+                    Ready to send this product to your store? You'll set retail prices before sending.
                   </p>
                   <Button 
                     className="w-full" 
@@ -1186,7 +1272,7 @@ export default function AdminCreateProduct() {
                     Send to Store
                   </Button>
                   <p className="text-xs text-muted-foreground">
-                    Creates a draft product on Shopify with variants, mockup images, and the design studio. You'll set prices before publishing.
+                    Creates your product on Shopify with variants, mockup images, and the design studio ready for your customizer page.
                   </p>
                 </CardContent>
               </Card>
@@ -1195,147 +1281,253 @@ export default function AdminCreateProduct() {
         </div>
       </div>
 
-      {/* Publish to Shopify Dialog */}
-      <Dialog open={showPublishDialog} onOpenChange={setShowPublishDialog}>
-        <DialogContent>
+      {/* Send to Store Dialog — Step 1: Store + Product info, Step 2: Pricing */}
+      <Dialog open={showPublishDialog} onOpenChange={(open) => { setShowPublishDialog(open); if (!open) setPublishStep(1); }}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Send to Store</DialogTitle>
+            <DialogTitle>Send to Store{publishStep === 2 ? " — Set Pricing" : ""}</DialogTitle>
             <DialogDescription>
-              Enter your Shopify store domain to create this product as a draft.
+              {publishStep === 1
+                ? "Select your store and review the product before setting prices."
+                : "Set a retail price for each variant. You can view Printify costs for reference."}
             </DialogDescription>
           </DialogHeader>
-          
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="shop-domain">Store</Label>
-              {installationsLoading ? (
-                <Skeleton className="h-10 w-full" />
-              ) : shopifyInstallations.length > 1 ? (
-                <Select 
-                  value={shopDomain} 
-                  onValueChange={setShopDomain}
-                >
-                  <SelectTrigger data-testid="select-shop-domain">
-                    <SelectValue placeholder="Select your store" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {shopifyInstallations.map((inst) => {
-                      const domainSlug = (inst.shopDomain || "").replace(".myshopify.com", "");
-                      return (
-                        <SelectItem key={inst.id} value={domainSlug}>
-                          {inst.shopDomain || `${domainSlug}.myshopify.com`}
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
-              ) : shopifyInstallations.length === 1 ? (
-                <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
-                  <Check className="h-4 w-4 text-green-600" />
-                  <span className="text-sm font-medium">{shopifyInstallations[0].shopDomain}</span>
-                </div>
-              ) : (
-                <div className="flex gap-2 items-center">
-                  <Input
-                    id="shop-domain"
-                    placeholder="your-store"
-                    value={shopDomain}
-                    onChange={(e) => setShopDomain(e.target.value)}
-                    data-testid="input-shop-domain"
-                  />
-                  <span className="text-sm text-muted-foreground whitespace-nowrap">.myshopify.com</span>
-                </div>
-              )}
-              {shopifyInstallations.length === 0 && !installationsLoading && (
-                <p className="text-xs text-muted-foreground">
-                  No connected stores found. Enter your store name manually or{' '}
-                  <a href="/shopify/install" className="underline text-primary">connect your Shopify store</a> first.
-                </p>
-              )}
-            </div>
 
-            {designerConfig && (
-              <div className="space-y-3">
-                <div className="bg-muted p-3 rounded-lg space-y-2">
-                  <p className="text-sm font-medium">Product: {designerConfig.name}</p>
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      Selected variants for Shopify
-                    </p>
-                    <span className={`text-lg font-bold ${
-                      isOverLimit 
-                        ? 'text-red-600' 
-                        : 'text-green-600'
-                    }`}>
-                      {variantCount}
-                    </span>
+          {/* ── Step 1: Store selection + product info ── */}
+          {publishStep === 1 && (
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="shop-domain">Store</Label>
+                {installationsLoading ? (
+                  <Skeleton className="h-10 w-full" />
+                ) : shopifyInstallations.length > 1 ? (
+                  <Select value={shopDomain} onValueChange={setShopDomain}>
+                    <SelectTrigger data-testid="select-shop-domain">
+                      <SelectValue placeholder="Select your store" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {shopifyInstallations.map((inst) => {
+                        const domainSlug = (inst.shopDomain || "").replace(".myshopify.com", "");
+                        return (
+                          <SelectItem key={inst.id} value={domainSlug}>
+                            {inst.shopDomain || `${domainSlug}.myshopify.com`}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                ) : shopifyInstallations.length === 1 ? (
+                  <div className="flex items-center gap-2 p-2 bg-muted rounded-md">
+                    <Check className="h-4 w-4 text-green-600" />
+                    <span className="text-sm font-medium">{shopifyInstallations[0].shopDomain}</span>
                   </div>
-                </div>
-
-                {isOverLimit && (
-                  <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md">
-                    <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
-                    <div className="text-sm text-red-700 dark:text-red-300">
-                      <p className="font-medium">Too many variants ({variantCount})</p>
-                      <p className="text-xs mt-1">
-                        Shopify allows maximum {SHOPIFY_VARIANT_LIMIT} variants per product.
-                        <a href="/admin/products" className="underline ml-1">
-                          Edit variants on the Products page
-                        </a>
-                      </p>
-                    </div>
+                ) : (
+                  <div className="flex gap-2 items-center">
+                    <Input id="shop-domain" placeholder="your-store" value={shopDomain} onChange={(e) => setShopDomain(e.target.value)} data-testid="input-shop-domain" />
+                    <span className="text-sm text-muted-foreground whitespace-nowrap">.myshopify.com</span>
                   </div>
                 )}
-
-                {!isOverLimit && variantCount > 0 && (
+                {shopifyInstallations.length === 0 && !installationsLoading && (
                   <p className="text-xs text-muted-foreground">
-                    Need to change which sizes or colors are included?{' '}
-                    <a href="/admin/products" className="underline">
-                      Edit variants on the Products page
-                    </a>
+                    No connected stores found. Enter your store name manually or{" "}
+                    <a href="/shopify/install" className="underline text-primary">connect your Shopify store</a> first.
                   </p>
                 )}
               </div>
-            )}
 
-            <div className="text-sm text-muted-foreground space-y-1">
-              <p>This will:</p>
-              <ul className="list-disc list-inside space-y-1 text-xs">
-                <li>Create a draft product in your Shopify store</li>
-                <li>Add all size and color variants</li>
-                <li>Include mockup images</li>
-                <li>Enable the design studio widget</li>
-                <li>Leave prices at $0 for you to set</li>
-              </ul>
+              {designerConfig && (
+                <div className="space-y-3">
+                  <div className="bg-muted p-3 rounded-lg space-y-2">
+                    <p className="text-sm font-medium">Product: {designerConfig.name}</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-muted-foreground">Variants</p>
+                      <span className={`text-lg font-bold ${isOverLimit ? "text-red-600" : "text-green-600"}`}>{variantCount}</span>
+                    </div>
+                  </div>
+                  {isOverLimit && (
+                    <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md">
+                      <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+                      <div className="text-sm text-red-700 dark:text-red-300">
+                        <p className="font-medium">Too many variants ({variantCount})</p>
+                        <p className="text-xs mt-1">Shopify allows maximum {SHOPIFY_VARIANT_LIMIT} variants.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="text-sm text-muted-foreground space-y-1">
+                <p>This will:</p>
+                <ul className="list-disc list-inside space-y-1 text-xs">
+                  <li>Create your product with all size and color variants</li>
+                  <li>Include mockup images and the design studio widget</li>
+                  <li>Set your retail prices on each variant</li>
+                </ul>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowPublishDialog(false)}>Cancel</Button>
+                <Button onClick={advanceToPublishPricing} disabled={!shopDomain.trim() || isOverLimit || variantCount === 0}>
+                  Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" />
+                </Button>
+              </DialogFooter>
             </div>
-          </div>
+          )}
 
-          <DialogFooter>
-            <Button 
-              variant="outline" 
-              onClick={() => setShowPublishDialog(false)}
-              data-testid="button-cancel-publish"
-            >
-              Cancel
-            </Button>
-            <Button 
-              onClick={handlePublishToShopify} 
-              disabled={isPublishing || !shopDomain.trim() || isOverLimit || variantCount === 0}
-              data-testid="button-confirm-publish"
-            >
-              {isPublishing ? (
+          {/* ── Step 2: Variant pricing ── */}
+          {publishStep === 2 && (
+            <div className="space-y-4 py-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">
+                  Set a price for each variant.
+                </p>
+                {designerConfig?.printifyBlueprintId && (
+                  <Button variant="outline" size="sm" className="flex-shrink-0 ml-2" onClick={() => { setPublishCostsOpen(true); setPublishShippingTier("standard"); setPublishShippingCountry("US"); }}>
+                    <Info className="h-3.5 w-3.5 mr-1" /> Printify Costs
+                  </Button>
+                )}
+              </div>
+              <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
+                {publishVariantList.map((v) => (
+                  <div key={v.key}>
+                    <Label className="flex items-center gap-1">
+                      <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
+                      {v.label}
+                    </Label>
+                    <div className="flex items-center mt-1">
+                      <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">$</span>
+                      <Input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={publishVariantPrices[v.key] ?? ""}
+                        onChange={(e) => {
+                          setPublishVariantPrices((prev) => ({ ...prev, [v.key]: e.target.value }));
+                          if (publishPriceErrors[v.key]) setPublishPriceErrors((prev) => { const n = { ...prev }; delete n[v.key]; return n; });
+                        }}
+                        className={`rounded-l-none ${publishPriceErrors[v.key] ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                      />
+                    </div>
+                    {publishPriceErrors[v.key] && (
+                      <p className="text-xs text-destructive mt-1">{publishPriceErrors[v.key]}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setPublishStep(1)}>
+                  <ChevronLeft className="h-4 w-4 mr-1" /> Back
+                </Button>
+                <Button onClick={handlePublishToShopify} disabled={isPublishing}>
+                  {isPublishing ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating...</>
+                  ) : (
+                    <><Send className="h-4 w-4 mr-2" /> Send to Store</>
+                  )}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Printify Costs Dialog (Generator Tester) ── */}
+      <Dialog open={publishCostsOpen} onOpenChange={setPublishCostsOpen}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Printify Costs — {designerConfig?.name}</DialogTitle>
+          </DialogHeader>
+          <Tabs defaultValue="production" className="w-full">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="production">Production</TabsTrigger>
+              <TabsTrigger value="shipping">Shipping</TabsTrigger>
+            </TabsList>
+            <TabsContent value="production" className="space-y-3 pt-2">
+              {genCostsLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                  <span className="text-sm text-muted-foreground">Fetching production costs from Printify...</span>
+                </div>
+              ) : genCostsData?.costs ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Creating...
+                  <div className="rounded-md border text-sm">
+                    <div className="grid grid-cols-2 gap-2 px-3 py-2 bg-muted font-medium">
+                      <span>Variant</span>
+                      <span className="text-right">Production Cost</span>
+                    </div>
+                    {publishVariantList.map((v) => {
+                      const vm = designerConfig?.variantMap?.[v.key];
+                      const costCents = vm?.printifyVariantId ? genCostsData.costs[String(vm.printifyVariantId)] : undefined;
+                      return (
+                        <div key={v.key} className="grid grid-cols-2 gap-2 px-3 py-2 border-t">
+                          <span>{v.label}</span>
+                          <span className="text-right font-mono">{costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {genCostsData.cached && <p className="text-xs text-muted-foreground">Cached data. Refreshed every 24 hours.</p>}
                 </>
               ) : (
-                <>
-                  <Send className="h-4 w-4 mr-2" />
-                  Create Product
-                </>
+                <p className="text-sm text-muted-foreground py-4 text-center">Production cost data is not available.</p>
               )}
-            </Button>
-          </DialogFooter>
+            </TabsContent>
+            <TabsContent value="shipping" className="space-y-3 pt-2">
+              {genShippingLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                  <span className="text-sm text-muted-foreground">Loading shipping rates...</span>
+                </div>
+              ) : genShippingData?.tiers && genShippingData.shipping ? (
+                <>
+                  <div className="flex gap-2 flex-wrap">
+                    {genShippingData.tiers.map((tier) => (
+                      <Button key={tier} variant={publishShippingTier === tier ? "default" : "outline"} size="sm" onClick={() => setPublishShippingTier(tier)} className="capitalize">{tier}</Button>
+                    ))}
+                  </div>
+                  {genShippingData.countries && genShippingData.countries.length > 0 && (
+                    <Select value={publishShippingCountry} onValueChange={setPublishShippingCountry}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Select country" /></SelectTrigger>
+                      <SelectContent>
+                        {genShippingData.countries.map((c) => (
+                          <SelectItem key={c} value={c}>{c === "REST_OF_THE_WORLD" ? "Rest of the World" : c}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {(() => {
+                    const tierEntries = (genShippingData.shipping[publishShippingTier] ?? []).filter((e) => e.country === publishShippingCountry);
+                    if (tierEntries.length === 0) return <p className="text-sm text-muted-foreground text-center py-4">No shipping data for this tier/country.</p>;
+                    const ht = tierEntries[0]?.handlingTime;
+                    return (
+                      <>
+                        {ht && <p className="text-xs text-muted-foreground">Handling time: {ht.from}–{ht.to} business days</p>}
+                        <div className="rounded-md border text-sm">
+                          <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
+                            <span>Variant</span><span className="text-right">1st Item</span><span className="text-right">Additional</span>
+                          </div>
+                          {tierEntries.map((entry) => {
+                            const label = genCostsData?.printifyVariantLabels?.[String(entry.variantId)] ?? `Variant ${entry.variantId}`;
+                            return (
+                              <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                <span className="truncate">{label}</span>
+                                <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
+                                <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground py-4 text-center">Shipping data is not available.</p>
+              )}
+            </TabsContent>
+          </Tabs>
+          <p className="text-xs text-muted-foreground border-t pt-3">Set your retail price above production + shipping costs to ensure profitability.</p>
         </DialogContent>
       </Dialog>
     </AdminLayout>

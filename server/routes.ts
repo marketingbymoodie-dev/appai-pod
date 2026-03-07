@@ -1852,7 +1852,7 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Merchant not found" });
       }
 
-      const { productTypeId, shopDomain, selectedColorIds } = req.body;
+      const { productTypeId, shopDomain, selectedColorIds, variantPrices } = req.body;
 
       if (!productTypeId) {
         return res.status(400).json({ error: "Product type ID is required" });
@@ -2035,31 +2035,34 @@ ${textEdgeRestrictions}
       const sizesToUse = allSizes.filter((s: { id: string }) => sizeIdsToUse.includes(s.id));
       const colorsToUse = allColors.filter((c: { id: string }) => colorIdsToUse.includes(c.id));
 
+      // variantPrices is keyed by "sizeId:colorId" (or "sizeId:default") → price string
+      const priceMap: Record<string, string> = variantPrices && typeof variantPrices === "object" ? variantPrices : {};
+
       if (colorsToUse.length > 0) {
-        // Product has both sizes and colors
         for (const size of sizesToUse) {
           for (const color of colorsToUse) {
             const variantKey = `${size.id}:${color.id}`;
             if (variantMap[variantKey]) {
+              const p = priceMap[variantKey];
               shopifyVariants.push({
                 option1: size.name,
                 option2: color.name,
-                price: "0.00", // Merchant sets pricing
+                price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : "0.00",
                 sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`,
                 inventory_management: null,
-                inventory_policy: "continue", // Allow overselling (POD)
+                inventory_policy: "continue",
               });
             }
           }
         }
       } else if (allColors.length === 0) {
-        // Product has only sizes (e.g., phone cases)
         for (const size of sizesToUse) {
           const variantKey = `${size.id}:default`;
           if (variantMap[variantKey]) {
+            const p = priceMap[variantKey];
             shopifyVariants.push({
               option1: size.name,
-              price: "0.00", // Merchant sets pricing
+              price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : "0.00",
               sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`,
               inventory_management: null,
               inventory_policy: "continue", // Allow overselling (POD)
@@ -2142,8 +2145,8 @@ ${textEdgeRestrictions}
           `,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: productType.name,
-          status: "draft",
-          published_scope: "web",
+          status: "active",
+          published: false,
           tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
           variants: shopifyVariants.length > 0 ? shopifyVariants : [{ price: "0.00" }],
@@ -2248,9 +2251,8 @@ ${textEdgeRestrictions}
         shopifyVariantIds[key] = v.id;
       }
 
-      // Product is pre-configured for Online Store only via published_scope: "web"
-      // When merchant activates the product, it will only appear on Online Store (not POS)
-      console.log(`Product ${shopifyProductId} configured for Online Store only (published_scope: web)`);
+      // Product is active but not published to any sales channel — only accessible via the customizer page
+      console.log(`Product ${shopifyProductId} created as active, not published to any sales channel`);
 
       // Save Shopify product ID, handle, shop domain, and variant IDs to the product type for future updates
       await storage.updateProductType(productType.id, {
@@ -8907,6 +8909,29 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "No Printify variant IDs found in product type" });
       }
 
+      // Upload a 1x1 transparent PNG so we can populate print_areas (Printify requires at least one placeholder with an image)
+      const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRElEQrkJggg==";
+      let dummyImageId: string | null = null;
+      try {
+        const uploadResp = await fetch("https://api.printify.com/v1/uploads/images.json", {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ file_name: "cost_probe_1px.png", contents: TINY_PNG_BASE64 }),
+        });
+        if (uploadResp.ok) {
+          const uploadData = await uploadResp.json();
+          dummyImageId = uploadData.id;
+        } else {
+          console.warn(`[Printify Costs] Dummy image upload failed: ${uploadResp.status}`);
+        }
+      } catch (uploadErr) {
+        console.warn("[Printify Costs] Dummy image upload error:", uploadErr);
+      }
+
+      if (!dummyImageId) {
+        return res.status(502).json({ error: "Failed to prepare cost lookup — could not upload placeholder image to Printify" });
+      }
+
       // Create temporary Printify product to read costs
       const tempProductBody = {
         title: `_cost_probe_${Date.now()}`,
@@ -8914,7 +8939,10 @@ ${textEdgeRestrictions}
         blueprint_id: productType.printifyBlueprintId,
         print_provider_id: productType.printifyProviderId,
         variants: Array.from(printifyVariantIds).map(id => ({ id, price: 100, is_enabled: true })),
-        print_areas: [{ variant_ids: Array.from(printifyVariantIds), placeholders: [] }],
+        print_areas: [{
+          variant_ids: Array.from(printifyVariantIds),
+          placeholders: [{ position: "front", images: [{ id: dummyImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }],
+        }],
       };
 
       console.log(`[Printify Costs] Creating temp product for blueprint ${productType.printifyBlueprintId}, provider ${productType.printifyProviderId}, ${printifyVariantIds.size} variants`);
@@ -9641,9 +9669,9 @@ ${textEdgeRestrictions}
       }
     }
 
-    // ── Publish product to Online Store ───────────────────────────────────────
-    // Step 1: Set product status to active (REST)
-    // Step 2: Publish to Online Store sales channel (GraphQL - most reliable)
+    // ── Ensure product is active (but NOT published to Online Store) ──────────
+    // The product must be active for the customizer cart flow, but should not
+    // appear on any sales channel — customers access it only via the customizer page.
     {
       const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
       if (productIdNum) {
@@ -9653,11 +9681,6 @@ ${textEdgeRestrictions}
         });
         if (!activateResult.ok) {
           console.warn(`[customizer-pages] Failed to activate product ${productIdNum}: ${activateResult.error}`);
-        }
-        try {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
-        } catch (pubErr: any) {
-          console.warn(`[customizer-pages] GraphQL publish failed for product ${productIdNum}: ${pubErr.message}`);
         }
       }
     }
@@ -10109,15 +10132,8 @@ ${textEdgeRestrictions}
             }
           }
 
-          // Step 2: Publish to Online Store via GraphQL (most reliable method).
-          // REST published_at alone doesn't always create the publication record.
-          if (productIdNum) {
-            try {
-              await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
-            } catch (pubErr: any) {
-              console.warn(`[proxy/customizer-page] Publication check failed: ${pubErr.message}`);
-            }
-          }
+          // Base product should NOT be published to Online Store — only active for API access.
+          // The customizer page's shadow product handles the actual cart add.
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
@@ -10414,6 +10430,17 @@ ${textEdgeRestrictions}
     if (!shopifyVariantId) {
       console.error(`[PublishDesign] Created product has no variant:`, createdProduct);
       return res.status(500).json({ error: "Created product has no purchasable variant" });
+    }
+
+    // Redirect the shadow product's storefront URL to homepage so customers
+    // can't browse to a confusing product page by clicking the cart link.
+    try {
+      await shopifyApiCall(shop, accessToken, "redirects.json", {
+        method: "POST",
+        body: JSON.stringify({ redirect: { path: `/products/${shopifyProductHandle}`, target: "/" } }),
+      });
+    } catch (rdErr: any) {
+      console.warn(`[PublishDesign] Redirect creation failed for /products/${shopifyProductHandle}: ${rdErr.message}`);
     }
 
     // Update customerKey on design record
