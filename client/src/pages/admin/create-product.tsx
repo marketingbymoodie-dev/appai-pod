@@ -91,6 +91,9 @@ export default function AdminCreateProduct() {
   const [publishCostsOpen, setPublishCostsOpen] = useState(false);
   const [publishShippingTier, setPublishShippingTier] = useState("standard");
   const [publishShippingCountry, setPublishShippingCountry] = useState("US");
+
+  // Markup percentage for recommended retail pricing (default 60%)
+  const [markupPercent, setMarkupPercent] = useState(60);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -624,7 +627,26 @@ export default function AdminCreateProduct() {
   }, [designerConfig, filteredSizes, filteredColors]);
 
   // Printify costs query for Generator Tester pricing step
-  const { data: genCostsData, isLoading: genCostsLoading } = useQuery<{
+  // Shared rounding helper: rounds a price up to the nearest .95 ending
+  function roundUpTo95(price: number): number {
+    const dollars = Math.floor(price);
+    return price <= dollars + 0.95 ? dollars + 0.95 : dollars + 1.95;
+  }
+
+  // Recommended retail prices keyed by variant key (sizeId:colorId), computed from costs + markup
+  const publishRecommendedPrices = useMemo(() => {
+    if (!genCostsData?.costs || !designerConfig?.variantMap) return {} as Record<string, string>;
+    const result: Record<string, string> = {};
+    for (const v of publishVariantList) {
+      const vm = designerConfig.variantMap[v.key];
+      if (!vm?.printifyVariantId) continue;
+      const costCents = genCostsData.costs[String(vm.printifyVariantId)];
+      if (costCents == null) continue;
+      const raw = (costCents / 100) * (1 + markupPercent / 100);
+      result[v.key] = roundUpTo95(raw).toFixed(2);
+    }
+    return result;
+  }, [genCostsData, designerConfig, publishVariantList, markupPercent]);  const { data: genCostsData, isLoading: genCostsLoading } = useQuery<{
     costs: Record<string, number>;
     shopifyVariantCosts: Record<string, number>;
     printifyVariantLabels: Record<string, string>;
@@ -635,7 +657,7 @@ export default function AdminCreateProduct() {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedProductTypeId}`);
       return res.json();
     },
-    enabled: publishCostsOpen && !!selectedProductTypeId && !!designerConfig?.printifyBlueprintId,
+    enabled: (publishCostsOpen || publishStep === 2) && !!selectedProductTypeId && !!designerConfig?.printifyBlueprintId,
   });
 
   const { data: genShippingData, isLoading: genShippingLoading } = useQuery<{
@@ -1394,7 +1416,7 @@ export default function AdminCreateProduct() {
             <div className="space-y-4 py-2">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-muted-foreground">
-                  Set a price for each variant.
+                  Set a retail price for each variant.
                 </p>
                 {designerConfig?.printifyBlueprintId && (
                   <Button variant="outline" size="sm" className="flex-shrink-0 ml-2" onClick={() => { setPublishCostsOpen(true); setPublishShippingTier("standard"); setPublishShippingCountry("US"); }}>
@@ -1402,13 +1424,65 @@ export default function AdminCreateProduct() {
                   </Button>
                 )}
               </div>
+
+              {/* Markup % control + Apply All */}
+              {designerConfig?.printifyBlueprintId && (
+                <div className="flex items-center gap-2 p-3 rounded-md bg-muted/50 border">
+                  <span className="text-sm text-muted-foreground whitespace-nowrap">Markup:</span>
+                  <div className="flex items-center gap-1">
+                    <Input
+                      type="number"
+                      min="1"
+                      max="999"
+                      step="1"
+                      value={markupPercent}
+                      onChange={(e) => setMarkupPercent(Math.max(1, parseInt(e.target.value) || 60))}
+                      className="w-16 h-8 text-center text-sm"
+                    />
+                    <span className="text-sm text-muted-foreground">%</span>
+                  </div>
+                  {genCostsLoading && <span className="text-xs text-muted-foreground ml-1">Loading costs…</span>}
+                  {Object.keys(publishRecommendedPrices).length > 0 && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="ml-auto text-xs h-8"
+                      onClick={() => {
+                        const filled: Record<string, string> = { ...publishVariantPrices };
+                        for (const [key, price] of Object.entries(publishRecommendedPrices)) {
+                          filled[key] = price;
+                        }
+                        setPublishVariantPrices(filled);
+                        setPublishPriceErrors({});
+                      }}
+                    >
+                      Apply All Suggested
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
                 {publishVariantList.map((v) => (
                   <div key={v.key}>
-                    <Label className="flex items-center gap-1">
-                      <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
-                      {v.label}
-                    </Label>
+                    <div className="flex items-center justify-between">
+                      <Label className="flex items-center gap-1">
+                        <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
+                        {v.label}
+                      </Label>
+                      {publishRecommendedPrices[v.key] && (
+                        <button
+                          type="button"
+                          className="text-xs text-primary hover:underline cursor-pointer"
+                          onClick={() => {
+                            setPublishVariantPrices((prev) => ({ ...prev, [v.key]: publishRecommendedPrices[v.key] }));
+                            if (publishPriceErrors[v.key]) setPublishPriceErrors((prev) => { const n = { ...prev }; delete n[v.key]; return n; });
+                          }}
+                        >
+                          Suggested: ${publishRecommendedPrices[v.key]}
+                        </button>
+                      )}
+                    </div>
                     <div className="flex items-center mt-1">
                       <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">$</span>
                       <Input

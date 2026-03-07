@@ -112,6 +112,9 @@ export default function AdminCustomizerPages() {
   const [costsShippingCountry, setCostsShippingCountry] = useState("US");
   const [costsShippingTier, setCostsShippingTier] = useState("standard");
 
+  // Markup percentage for recommended retail pricing (default 60%)
+  const [markupPercent, setMarkupPercent] = useState(60);
+
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
   });
@@ -234,7 +237,7 @@ export default function AdminCustomizerPages() {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
       return res.json();
     },
-    enabled: costsOpen && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
+    enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
   });
 
   // Printify shipping query -- fetches per-tier, per-country shipping costs
@@ -258,6 +261,25 @@ export default function AdminCustomizerPages() {
     },
     enabled: costsOpen && !!selectedBlank?.printifyBlueprintId && !!selectedBlank?.printifyProviderId,
   });
+
+  /** Round a price up to the nearest .95 ending */
+  function roundUpTo95(price: number): number {
+    const dollars = Math.floor(price);
+    return price <= dollars + 0.95 ? dollars + 0.95 : dollars + 1.95;
+  }
+
+  // Recommended retail prices keyed by Shopify variant ID, computed from costs + markup
+  const recommendedPrices = useMemo(() => {
+    if (!costsData?.shopifyVariantCosts) return {} as Record<string, string>;
+    const result: Record<string, string> = {};
+    for (const v of selectedVariants) {
+      const costCents = costsData.shopifyVariantCosts[v.id];
+      if (costCents == null) continue;
+      const raw = (costCents / 100) * (1 + markupPercent / 100);
+      result[v.id] = roundUpTo95(raw).toFixed(2);
+    }
+    return result;
+  }, [costsData, selectedVariants, markupPercent]);
 
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
@@ -474,7 +496,7 @@ export default function AdminCustomizerPages() {
                   <div className="space-y-4 pt-2">
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-muted-foreground">
-                        Set a price for each variant. These are written directly to your Shopify product.
+                        Set a retail price for each variant.
                       </p>
                       {selectedBlank?.printifyBlueprintId && (
                         <Button
@@ -488,13 +510,65 @@ export default function AdminCustomizerPages() {
                         </Button>
                       )}
                     </div>
+
+                    {/* Markup % control + Apply All */}
+                    {selectedBlank?.printifyBlueprintId && (
+                      <div className="flex items-center gap-2 p-3 rounded-md bg-muted/50 border">
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">Markup:</span>
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            min="1"
+                            max="999"
+                            step="1"
+                            value={markupPercent}
+                            onChange={(e) => setMarkupPercent(Math.max(1, parseInt(e.target.value) || 60))}
+                            className="w-16 h-8 text-center text-sm"
+                          />
+                          <span className="text-sm text-muted-foreground">%</span>
+                        </div>
+                        {costsLoading && <span className="text-xs text-muted-foreground ml-1">Loading costs…</span>}
+                        {Object.keys(recommendedPrices).length > 0 && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="ml-auto text-xs h-8"
+                            onClick={() => {
+                              const filled: Record<string, string> = { ...variantPrices };
+                              for (const [id, price] of Object.entries(recommendedPrices)) {
+                                filled[id] = price;
+                              }
+                              setVariantPrices(filled);
+                              setPriceErrors({});
+                            }}
+                          >
+                            Apply All Suggested
+                          </Button>
+                        )}
+                      </div>
+                    )}
+
                     <div className="space-y-3">
                       {selectedVariants.map((v) => (
                         <div key={v.id}>
-                          <Label className="flex items-center gap-1">
-                            <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
-                            {v.title}
-                          </Label>
+                          <div className="flex items-center justify-between">
+                            <Label className="flex items-center gap-1">
+                              <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
+                              {v.title}
+                            </Label>
+                            {recommendedPrices[v.id] && (
+                              <button
+                                type="button"
+                                className="text-xs text-primary hover:underline cursor-pointer"
+                                onClick={() => {
+                                  setVariantPrices((prev) => ({ ...prev, [v.id]: recommendedPrices[v.id] }));
+                                  if (priceErrors[v.id]) setPriceErrors((prev) => { const n = { ...prev }; delete n[v.id]; return n; });
+                                }}
+                              >
+                                Suggested: ${recommendedPrices[v.id]}
+                              </button>
+                            )}
+                          </div>
                           <div className="flex items-center mt-1">
                             <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
                               $
