@@ -627,6 +627,20 @@ export default function AdminCreateProduct() {
   }, [designerConfig, filteredSizes, filteredColors]);
 
   // Printify costs query for Generator Tester pricing step
+  const { data: genCostsData, isLoading: genCostsLoading } = useQuery<{
+    costs: Record<string, number>;
+    shopifyVariantCosts: Record<string, number>;
+    printifyVariantLabels: Record<string, string>;
+    cached: boolean;
+  }>({
+    queryKey: ["/api/admin/printify/costs", selectedProductTypeId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedProductTypeId}`);
+      return res.json();
+    },
+    enabled: (publishCostsOpen || publishStep === 2) && !!selectedProductTypeId && !!designerConfig?.printifyBlueprintId,
+  });
+
   // Shared rounding helper: rounds a price up to the nearest .95 ending
   function roundUpTo95(price: number): number {
     const dollars = Math.floor(price);
@@ -646,19 +660,7 @@ export default function AdminCreateProduct() {
       result[v.key] = roundUpTo95(raw).toFixed(2);
     }
     return result;
-  }, [genCostsData, designerConfig, publishVariantList, markupPercent]);  const { data: genCostsData, isLoading: genCostsLoading } = useQuery<{
-    costs: Record<string, number>;
-    shopifyVariantCosts: Record<string, number>;
-    printifyVariantLabels: Record<string, string>;
-    cached: boolean;
-  }>({
-    queryKey: ["/api/admin/printify/costs", selectedProductTypeId],
-    queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedProductTypeId}`);
-      return res.json();
-    },
-    enabled: (publishCostsOpen || publishStep === 2) && !!selectedProductTypeId && !!designerConfig?.printifyBlueprintId,
-  });
+  }, [genCostsData, designerConfig, publishVariantList, markupPercent]);
 
   const { data: genShippingData, isLoading: genShippingLoading } = useQuery<{
     version: string;
