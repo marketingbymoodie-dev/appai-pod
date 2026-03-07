@@ -24,8 +24,9 @@ import {
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
-  CheckCircle2, ChevronRight, DollarSign,
+  CheckCircle2, ChevronRight, DollarSign, Info,
 } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import PlanPicker from "./plan-picker";
 
@@ -66,6 +67,8 @@ interface Blank {
   title: string;
   imageUrl: string | null;
   needsShopifySync?: boolean;
+  printifyBlueprintId?: number | null;
+  printifyProviderId?: number | null;
   variants: BlankVariant[];
 }
 
@@ -102,6 +105,11 @@ export default function AdminCustomizerPages() {
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
+
+  // Costs popup state
+  const [costsOpen, setCostsOpen] = useState(false);
+  const [costsShippingCountry, setCostsShippingCountry] = useState("US");
+  const [costsShippingTier, setCostsShippingTier] = useState("standard");
 
   const { data: pagesData, isLoading: pagesLoading, error: pagesError } = useQuery<PagesResponse>({
     queryKey: ["/api/appai/customizer-pages"],
@@ -212,6 +220,43 @@ export default function AdminCustomizerPages() {
     (b) => (b.productId ? b.productId : `pt:${b.productTypeId}`) === formProductId
   );
   const selectedVariants: BlankVariant[] = selectedBlank?.variants ?? [];
+
+  // Printify costs query -- fetches production costs via temporary product probe
+  const { data: costsData, isLoading: costsLoading } = useQuery<{
+    costs: Record<string, number>;
+    shopifyVariantCosts: Record<string, number>;
+    printifyVariantLabels: Record<string, string>;
+    cached: boolean;
+  }>({
+    queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
+      return res.json();
+    },
+    enabled: costsOpen && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
+  });
+
+  // Printify shipping query -- fetches per-tier, per-country shipping costs
+  const { data: shippingData, isLoading: shippingLoading } = useQuery<{
+    version: string;
+    tiers?: string[];
+    shipping?: Record<string, Array<{
+      variantId: number;
+      country: string;
+      firstItem: number;
+      additionalItems: number;
+      currency: string;
+      handlingTime?: { from: number; to: number };
+    }>>;
+    countries?: string[];
+  }>({
+    queryKey: ["/api/admin/printify/shipping", selectedBlank?.printifyBlueprintId, selectedBlank?.printifyProviderId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/admin/printify/shipping/${selectedBlank!.printifyBlueprintId}/${selectedBlank!.printifyProviderId}`);
+      return res.json();
+    },
+    enabled: costsOpen && !!selectedBlank?.printifyBlueprintId && !!selectedBlank?.printifyProviderId,
+  });
 
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
@@ -426,10 +471,22 @@ export default function AdminCustomizerPages() {
                 {/* ── STEP 2: Pricing ── */}
                 {formStep === 2 && (
                   <div className="space-y-4 pt-2">
-                    <p className="text-sm text-muted-foreground">
-                      Set a price for each variant. These are written directly to your Shopify product.
-                      You can change them anytime in <strong>Shopify Products</strong> — we won't override them.
-                    </p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-muted-foreground">
+                        Set a price for each variant. These are written directly to your Shopify product.
+                      </p>
+                      {selectedBlank?.printifyBlueprintId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-shrink-0 ml-2"
+                          onClick={() => { setCostsOpen(true); setCostsShippingTier("standard"); setCostsShippingCountry("US"); }}
+                        >
+                          <Info className="h-3.5 w-3.5 mr-1" />
+                          Printify Costs
+                        </Button>
+                      )}
+                    </div>
                     <div className="space-y-3">
                       {selectedVariants.map((v) => (
                         <div key={v.id}>
@@ -471,6 +528,146 @@ export default function AdminCustomizerPages() {
                     </div>
                   </div>
                 )}
+
+                {/* ── Printify Costs Dialog ── */}
+                <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
+                  <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
+                    </DialogHeader>
+                    <Tabs defaultValue="production" className="w-full">
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="production">Production</TabsTrigger>
+                        <TabsTrigger value="shipping">Shipping</TabsTrigger>
+                      </TabsList>
+
+                      {/* Production tab */}
+                      <TabsContent value="production" className="space-y-3 pt-2">
+                        {costsLoading ? (
+                          <div className="flex items-center justify-center py-8">
+                            <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                            <span className="text-sm text-muted-foreground">Fetching production costs from Printify...</span>
+                          </div>
+                        ) : costsData?.costs ? (
+                          <>
+                            <div className="rounded-md border text-sm">
+                              <div className="grid grid-cols-2 gap-2 px-3 py-2 bg-muted font-medium">
+                                <span>Variant</span>
+                                <span className="text-right">Production Cost</span>
+                              </div>
+                              {selectedVariants.length > 0 ? selectedVariants.map((v) => {
+                                const costCents = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
+                                return (
+                                  <div key={v.id} className="grid grid-cols-2 gap-2 px-3 py-2 border-t">
+                                    <span>{v.title}</span>
+                                    <span className="text-right font-mono">
+                                      {costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}
+                                    </span>
+                                  </div>
+                                );
+                              }) : Object.entries(costsData.costs).map(([vid, costCents]) => (
+                                <div key={vid} className="grid grid-cols-2 gap-2 px-3 py-2 border-t">
+                                  <span className="text-muted-foreground">Variant {vid}</span>
+                                  <span className="text-right font-mono">${(Number(costCents) / 100).toFixed(2)}</span>
+                                </div>
+                              ))}
+                            </div>
+                            {costsData.cached && (
+                              <p className="text-xs text-muted-foreground">Cached data. Production costs are refreshed every 24 hours.</p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-sm text-muted-foreground py-4 text-center">
+                            Production cost data is not available for this product. Ensure your Printify API token and Shop ID are configured in Settings.
+                          </p>
+                        )}
+                      </TabsContent>
+
+                      {/* Shipping tab */}
+                      <TabsContent value="shipping" className="space-y-3 pt-2">
+                        {shippingLoading ? (
+                          <div className="flex items-center justify-center py-8">
+                            <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                            <span className="text-sm text-muted-foreground">Loading shipping rates...</span>
+                          </div>
+                        ) : shippingData?.tiers && shippingData.shipping ? (
+                          <>
+                            <div className="flex gap-2 flex-wrap">
+                              {shippingData.tiers.map((tier) => (
+                                <Button
+                                  key={tier}
+                                  variant={costsShippingTier === tier ? "default" : "outline"}
+                                  size="sm"
+                                  onClick={() => setCostsShippingTier(tier)}
+                                  className="capitalize"
+                                >
+                                  {tier}
+                                </Button>
+                              ))}
+                            </div>
+                            {shippingData.countries && shippingData.countries.length > 0 && (
+                              <Select value={costsShippingCountry} onValueChange={setCostsShippingCountry}>
+                                <SelectTrigger className="w-full">
+                                  <SelectValue placeholder="Select country" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {shippingData.countries.map((c) => (
+                                    <SelectItem key={c} value={c}>
+                                      {c === "REST_OF_THE_WORLD" ? "Rest of the World" : c}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                            {(() => {
+                              const tierEntries = (shippingData.shipping[costsShippingTier] ?? [])
+                                .filter((e) => e.country === costsShippingCountry);
+                              if (tierEntries.length === 0) {
+                                return <p className="text-sm text-muted-foreground text-center py-4">No shipping data for this tier/country combination.</p>;
+                              }
+                              const handlingTime = tierEntries[0]?.handlingTime;
+                              return (
+                                <>
+                                  {handlingTime && (
+                                    <p className="text-xs text-muted-foreground">
+                                      Handling time: {handlingTime.from}–{handlingTime.to} business days
+                                    </p>
+                                  )}
+                                  <div className="rounded-md border text-sm">
+                                    <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
+                                      <span>Variant</span>
+                                      <span className="text-right">1st Item</span>
+                                      <span className="text-right">Additional</span>
+                                    </div>
+                                    {tierEntries.map((entry) => {
+                                      const variantTitle = costsData?.printifyVariantLabels?.[String(entry.variantId)]
+                                        ?? selectedVariants.find((v) => String(entry.variantId) === v.id)?.title
+                                        ?? `Variant ${entry.variantId}`;
+                                      return (
+                                        <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                          <span className="truncate">{variantTitle}</span>
+                                          <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
+                                          <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </>
+                        ) : (
+                          <p className="text-sm text-muted-foreground py-4 text-center">
+                            Shipping data is not available for this product.
+                          </p>
+                        )}
+                      </TabsContent>
+                    </Tabs>
+                    <p className="text-xs text-muted-foreground border-t pt-3">
+                      Set your retail price above production + shipping costs to ensure profitability.
+                    </p>
+                  </DialogContent>
+                </Dialog>
 
                 {/* ── STEP 3: Confirm ── */}
                 {formStep === 3 && (

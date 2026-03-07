@@ -8839,6 +8839,254 @@ ${textEdgeRestrictions}
     }
   });
 
+  // ── Printify Cost & Shipping Endpoints ──────────────────────────────────────
+
+  // GET /api/admin/printify/costs/:productTypeId
+  // Creates a temporary Printify product to read variant production costs, then deletes it.
+  // Returns cached costs if available and less than 24 hours old.
+  app.get("/api/admin/printify/costs/:productTypeId", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const apiToken = merchant.printifyApiToken;
+      const shopId = merchant.printifyShopId;
+      if (!apiToken || !shopId) {
+        return res.status(400).json({ error: "Printify API token and shop ID are required. Configure them in Settings." });
+      }
+
+      const productTypeId = parseInt(req.params.productTypeId, 10);
+      if (!productTypeId) return res.status(400).json({ error: "Invalid product type ID" });
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType) return res.status(404).json({ error: "Product type not found" });
+      if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
+        return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
+      }
+
+      // Check cache first
+      const cachedRaw = JSON.parse(productType.printifyCosts || "{}");
+      const cacheAge = cachedRaw._fetchedAt ? Date.now() - new Date(cachedRaw._fetchedAt).getTime() : Infinity;
+      if (cacheAge < 24 * 60 * 60 * 1000 && Object.keys(cachedRaw).length > 1) {
+        const { _fetchedAt, ...cachedCosts } = cachedRaw;
+        // Also build Shopify variant mapping from cache
+        const svIds = (typeof productType.shopifyVariantIds === "string"
+          ? JSON.parse(productType.shopifyVariantIds || "{}")
+          : productType.shopifyVariantIds || {}) as Record<string, number>;
+        const vm = JSON.parse(productType.variantMap || "{}");
+        const cachedShopifyCosts: Record<string, number> = {};
+        for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
+          const vmEntry = vm[mapKey] as any;
+          if (vmEntry?.printifyVariantId && cachedCosts[String(vmEntry.printifyVariantId)] !== undefined) {
+            cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
+          }
+        }
+        // Build printifyVariantId → label mapping from product metadata
+        const cachedLabels: Record<string, string> = {};
+        const sizes = JSON.parse(productType.sizes || "[]");
+        const frameColors = JSON.parse(productType.frameColors || "[]");
+        for (const [key, entry] of Object.entries(vm) as [string, any][]) {
+          if (entry?.printifyVariantId) {
+            const [sizeId, colorId] = key.split(":");
+            const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+            const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
+            cachedLabels[String(entry.printifyVariantId)] = colorName ? `${sizeName} / ${colorName}` : sizeName;
+          }
+        }
+        return res.json({ costs: cachedCosts, shopifyVariantCosts: cachedShopifyCosts, printifyVariantLabels: cachedLabels, cached: true });
+      }
+
+      // Extract all unique Printify variant IDs from variantMap
+      const variantMap = JSON.parse(productType.variantMap || "{}");
+      const printifyVariantIds = new Set<number>();
+      for (const entry of Object.values(variantMap) as any[]) {
+        if (entry?.printifyVariantId) printifyVariantIds.add(Number(entry.printifyVariantId));
+      }
+      if (printifyVariantIds.size === 0) {
+        return res.status(400).json({ error: "No Printify variant IDs found in product type" });
+      }
+
+      // Create temporary Printify product to read costs
+      const tempProductBody = {
+        title: `_cost_probe_${Date.now()}`,
+        description: "Temporary product for cost lookup - will be deleted immediately",
+        blueprint_id: productType.printifyBlueprintId,
+        print_provider_id: productType.printifyProviderId,
+        variants: Array.from(printifyVariantIds).map(id => ({ id, price: 100, is_enabled: true })),
+        print_areas: [{ variant_ids: Array.from(printifyVariantIds), placeholders: [] }],
+      };
+
+      console.log(`[Printify Costs] Creating temp product for blueprint ${productType.printifyBlueprintId}, provider ${productType.printifyProviderId}, ${printifyVariantIds.size} variants`);
+
+      const createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(tempProductBody),
+      });
+
+      if (!createResp.ok) {
+        const errText = await createResp.text();
+        console.error(`[Printify Costs] Failed to create temp product: ${createResp.status} ${errText}`);
+        return res.status(502).json({ error: "Failed to fetch costs from Printify", detail: errText });
+      }
+
+      const tempProduct = await createResp.json();
+      const tempProductId = tempProduct.id;
+
+      // Extract costs from the response
+      const costs: Record<string, number> = {};
+      for (const v of (tempProduct.variants || [])) {
+        if (v.id && typeof v.cost === "number") {
+          costs[String(v.id)] = v.cost;
+        }
+      }
+
+      // Delete the temp product immediately
+      try {
+        await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
+          method: "DELETE",
+          headers: { "Authorization": `Bearer ${apiToken}` },
+        });
+        console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
+      } catch (delErr) {
+        console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
+      }
+
+      // Cache costs on the product type
+      const cacheData = { ...costs, _fetchedAt: new Date().toISOString() };
+      await storage.updateProductType(productTypeId, { printifyCosts: JSON.stringify(cacheData) });
+
+      // Build a variant-key to cost mapping for easier frontend consumption
+      const variantKeyCosts: Record<string, number> = {};
+      for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
+        if (entry?.printifyVariantId && costs[String(entry.printifyVariantId)] !== undefined) {
+          variantKeyCosts[key] = costs[String(entry.printifyVariantId)];
+        }
+      }
+
+      // Build Shopify variant ID → cost mapping
+      const shopifyVariantCosts: Record<string, number> = {};
+      const svIds = (typeof productType.shopifyVariantIds === "string"
+        ? JSON.parse(productType.shopifyVariantIds || "{}")
+        : productType.shopifyVariantIds || {}) as Record<string, number>;
+      for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
+        const vmEntry = variantMap[mapKey] as any;
+        if (vmEntry?.printifyVariantId && costs[String(vmEntry.printifyVariantId)] !== undefined) {
+          shopifyVariantCosts[String(shopifyVid)] = costs[String(vmEntry.printifyVariantId)];
+        }
+      }
+
+      // Build printifyVariantId → label mapping so frontend can display shipping rows
+      const printifyVariantLabels: Record<string, string> = {};
+      const sizes = JSON.parse(productType.sizes || "[]");
+      const frameColors = JSON.parse(productType.frameColors || "[]");
+      for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
+        if (entry?.printifyVariantId) {
+          const [sizeId, colorId] = key.split(":");
+          const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+          const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
+          printifyVariantLabels[String(entry.printifyVariantId)] = colorName ? `${sizeName} / ${colorName}` : sizeName;
+        }
+      }
+
+      return res.json({ costs, variantKeyCosts, shopifyVariantCosts, printifyVariantLabels, cached: false });
+    } catch (err: any) {
+      console.error("[/api/admin/printify/costs]", err);
+      return res.status(500).json({ error: "Failed to fetch Printify costs" });
+    }
+  });
+
+  // GET /api/admin/printify/shipping/:blueprintId/:providerId
+  // Fetches shipping data from Printify v2 catalog API per tier, per country, per variant.
+  app.get("/api/admin/printify/shipping/:blueprintId/:providerId", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const apiToken = merchant.printifyApiToken;
+      if (!apiToken) return res.status(400).json({ error: "Printify API token not configured" });
+
+      const { blueprintId, providerId } = req.params;
+      if (!blueprintId || !providerId) return res.status(400).json({ error: "Blueprint and provider IDs are required" });
+
+      const headers = { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" };
+
+      // Fetch available shipping tiers
+      const listResp = await fetch(
+        `https://api.printify.com/v2/catalog/blueprints/${blueprintId}/print_providers/${providerId}/shipping.json`,
+        { headers }
+      );
+
+      if (!listResp.ok) {
+        // Fall back to v1 shipping if v2 isn't available
+        const v1Resp = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/shipping.json`,
+          { headers }
+        );
+        if (!v1Resp.ok) {
+          return res.status(502).json({ error: "Failed to fetch shipping info from Printify" });
+        }
+        const v1Data = await v1Resp.json();
+        return res.json({ version: "v1", shipping: v1Data });
+      }
+
+      const listData = await listResp.json();
+      const availableTiers = (listData.data || []).map((m: any) => m.attributes?.name).filter(Boolean);
+
+      // Fetch details for each tier in parallel
+      const tierResults: Record<string, any[]> = {};
+      await Promise.all(
+        availableTiers.map(async (tier: string) => {
+          try {
+            const tierResp = await fetch(
+              `https://api.printify.com/v2/catalog/blueprints/${blueprintId}/print_providers/${providerId}/shipping/${tier}.json`,
+              { headers }
+            );
+            if (tierResp.ok) {
+              const tierData = await tierResp.json();
+              tierResults[tier] = (tierData.data || []).map((entry: any) => ({
+                variantId: entry.attributes?.variantId,
+                country: entry.attributes?.country?.code,
+                firstItem: entry.attributes?.shippingCost?.firstItem?.amount,
+                additionalItems: entry.attributes?.shippingCost?.additionalItems?.amount,
+                currency: entry.attributes?.shippingCost?.firstItem?.currency || "USD",
+                handlingTime: entry.attributes?.handlingTime,
+              }));
+            }
+          } catch (e) {
+            console.error(`[Printify Shipping] Failed to fetch tier ${tier}:`, e);
+          }
+        })
+      );
+
+      // Extract unique countries across all tiers for the frontend country selector
+      const allCountries = new Set<string>();
+      for (const entries of Object.values(tierResults)) {
+        for (const e of entries) {
+          if (e.country) allCountries.add(e.country);
+        }
+      }
+
+      return res.json({
+        version: "v2",
+        tiers: availableTiers,
+        shipping: tierResults,
+        countries: Array.from(allCountries).sort((a, b) => {
+          if (a === "US") return -1;
+          if (b === "US") return 1;
+          if (a === "REST_OF_THE_WORLD") return 1;
+          if (b === "REST_OF_THE_WORLD") return -1;
+          return a.localeCompare(b);
+        }),
+      });
+    } catch (err: any) {
+      console.error("[/api/admin/printify/shipping]", err);
+      return res.status(500).json({ error: "Failed to fetch shipping info" });
+    }
+  });
+
   // POST /api/mockup/generate - Generate Printify mockup for a design
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -9284,7 +9532,7 @@ ${textEdgeRestrictions}
           return res.status(400).json({ error: errBody.error ?? "Failed to send product to Shopify. Try using Generator Tester to send it first." });
         }
         const publishData = await publishResp.json();
-        resolvedBaseProductId = publishData.shopifyProductId ? String(publishData.shopifyProductId) : null;
+        resolvedBaseProductId = publishData.shopifyProductId ? String(publishData.shopifyProductId) : undefined;
         if (!resolvedBaseProductId) {
           return res.status(400).json({ error: "Product was sent to Shopify but no product ID was returned. Try again." });
         }
@@ -9591,6 +9839,8 @@ ${textEdgeRestrictions}
               title: p.title,
               imageUrl: p.images?.[0]?.src ?? pt.mockupImageUrl ?? null,
               needsShopifySync: false,
+              printifyBlueprintId: pt.printifyBlueprintId ?? null,
+              printifyProviderId: pt.printifyProviderId ?? null,
               variants: (p.variants ?? []).map((v: any) => ({
                 id: String(v.id),
                 title: v.title,
@@ -9608,6 +9858,8 @@ ${textEdgeRestrictions}
           title: pt.name,
           imageUrl: (pt as any).mockupImageUrl ?? null,
           needsShopifySync: true,
+          printifyBlueprintId: pt.printifyBlueprintId ?? null,
+          printifyProviderId: pt.printifyProviderId ?? null,
           variants: [],
         });
       }

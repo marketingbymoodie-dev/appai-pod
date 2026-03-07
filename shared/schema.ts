@@ -255,6 +255,7 @@ export const productTypes = pgTable("product_types", {
   shopifyShopDomain: text("shopify_shop_domain"), // Which shop this product was published to
   shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
+  printifyCosts: text("printify_costs").default("{}"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
