@@ -626,27 +626,33 @@ export default function AdminCustomizerPages() {
                         ) : costsData?.costs ? (
                           <>
                             <div className="rounded-md border text-sm">
-                              <div className="grid grid-cols-2 gap-2 px-3 py-2 bg-muted font-medium">
+                              <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
                                 <span>Variant</span>
-                                <span className="text-right">Production Cost</span>
+                                <span className="text-right">Standard</span>
+                                <span className="text-right text-emerald-600">Premium (est.)</span>
                               </div>
                               {selectedVariants.length > 0 ? selectedVariants.map((v) => {
                                 const costCents = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
                                 return (
-                                  <div key={v.id} className="grid grid-cols-2 gap-2 px-3 py-2 border-t">
+                                  <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                     <span>{v.title}</span>
                                     <span className="text-right font-mono">
                                       {costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}
                                     </span>
+                                    <span className="text-right font-mono text-emerald-600">
+                                      {costCents != null ? `$${(costCents * 0.8 / 100).toFixed(2)}` : "—"}
+                                    </span>
                                   </div>
                                 );
                               }) : Object.entries(costsData.costs).map(([vid, costCents]) => (
-                                <div key={vid} className="grid grid-cols-2 gap-2 px-3 py-2 border-t">
+                                <div key={vid} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                   <span className="text-muted-foreground">Variant {vid}</span>
                                   <span className="text-right font-mono">${(Number(costCents) / 100).toFixed(2)}</span>
+                                  <span className="text-right font-mono text-emerald-600">${(Number(costCents) * 0.8 / 100).toFixed(2)}</span>
                                 </div>
                               ))}
                             </div>
+                            <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
                             {costsData.cached && (
                               <p className="text-xs text-muted-foreground">Cached data. Production costs are refreshed every 24 hours.</p>
                             )}
@@ -714,18 +720,29 @@ export default function AdminCustomizerPages() {
                                       <span className="text-right">1st Item</span>
                                       <span className="text-right">Additional</span>
                                     </div>
-                                    {tierEntries.map((entry) => {
-                                      const variantTitle = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
-                                        ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
-                                        ?? `Variant ${entry.variantId}`;
-                                      return (
-                                        <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
-                                          <span className="truncate">{variantTitle}</span>
-                                          <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
-                                          <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
-                                        </div>
-                                      );
-                                    })}
+                                    {(() => {
+                                      const seen = new Set<string>();
+                                      return tierEntries.filter((entry) => {
+                                        const label = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
+                                          ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
+                                          ?? `Variant ${entry.variantId}`;
+                                        const key = `${label}|${entry.firstItem}|${entry.additionalItems}`;
+                                        if (seen.has(key)) return false;
+                                        seen.add(key);
+                                        return true;
+                                      }).map((entry) => {
+                                        const variantTitle = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
+                                          ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
+                                          ?? `Variant ${entry.variantId}`;
+                                        return (
+                                          <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                            <span className="truncate">{variantTitle}</span>
+                                            <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
+                                            <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
+                                          </div>
+                                        );
+                                      });
+                                    })()}
                                   </div>
                                 </>
                               );

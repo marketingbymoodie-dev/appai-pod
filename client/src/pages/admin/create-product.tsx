@@ -1543,21 +1543,24 @@ export default function AdminCreateProduct() {
               ) : genCostsData?.costs ? (
                 <>
                   <div className="rounded-md border text-sm">
-                    <div className="grid grid-cols-2 gap-2 px-3 py-2 bg-muted font-medium">
+                    <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
                       <span>Variant</span>
-                      <span className="text-right">Production Cost</span>
+                      <span className="text-right">Standard</span>
+                      <span className="text-right text-emerald-600">Premium (est.)</span>
                     </div>
                     {publishVariantList.map((v) => {
                       const vm = designerConfig?.variantMap?.[v.key];
                       const costCents = vm?.printifyVariantId ? genCostsData.costs[String(vm.printifyVariantId)] : undefined;
                       return (
-                        <div key={v.key} className="grid grid-cols-2 gap-2 px-3 py-2 border-t">
+                        <div key={v.key} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                           <span>{v.label}</span>
                           <span className="text-right font-mono">{costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}</span>
+                          <span className="text-right font-mono text-emerald-600">{costCents != null ? `$${(costCents * 0.8 / 100).toFixed(2)}` : "—"}</span>
                         </div>
                       );
                     })}
                   </div>
+                  <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
                   {genCostsData.cached && <p className="text-xs text-muted-foreground">Cached data. Refreshed every 24 hours.</p>}
                 </>
               ) : (
@@ -1598,16 +1601,25 @@ export default function AdminCreateProduct() {
                           <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
                             <span>Variant</span><span className="text-right">1st Item</span><span className="text-right">Additional</span>
                           </div>
-                          {tierEntries.map((entry) => {
-                            const label = localVariantLabels[String(entry.variantId)] ?? genCostsData?.printifyVariantLabels?.[String(entry.variantId)] ?? `Variant ${entry.variantId}`;
-                            return (
-                              <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
-                                <span className="truncate">{label}</span>
-                                <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
-                                <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
-                              </div>
-                            );
-                          })}
+                          {(() => {
+                            const seen = new Set<string>();
+                            return tierEntries.filter((entry) => {
+                              const lbl = localVariantLabels[String(entry.variantId)] ?? genCostsData?.printifyVariantLabels?.[String(entry.variantId)] ?? `Variant ${entry.variantId}`;
+                              const key = `${lbl}|${entry.firstItem}|${entry.additionalItems}`;
+                              if (seen.has(key)) return false;
+                              seen.add(key);
+                              return true;
+                            }).map((entry) => {
+                              const label = localVariantLabels[String(entry.variantId)] ?? genCostsData?.printifyVariantLabels?.[String(entry.variantId)] ?? `Variant ${entry.variantId}`;
+                              return (
+                                <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                  <span className="truncate">{label}</span>
+                                  <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
+                                  <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
+                                </div>
+                              );
+                            });
+                          })()}
                         </div>
                       </>
                     );
