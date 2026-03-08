@@ -101,15 +101,17 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove background from an image using Replicate's lucataco/remove-bg (BRIA RMBG 2.0).
+ * Remove background from an image using Replicate's cjwbw/rembg (u2net).
+ * u2net handles flat graphic/illustration edges better than BRIA RMBG,
+ * producing cleaner results for apparel artwork with fewer stray fragments.
  *
  * Uses the same REPLICATE_API_TOKEN already configured for image generation.
  * Returns a transparent PNG buffer.
  */
-const REMOVE_BG_VERSION = "95fcc2a26d3899cd6c2691c900465aaeff466285a65c14638cc5f36f34befaf1";
+const REMOVE_BG_VERSION = "fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003";
 
 async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
-  console.log("[BG Removal] Starting via Replicate lucataco/remove-bg...");
+  console.log("[BG Removal] Starting via Replicate cjwbw/rembg (u2net)...");
   const startTime = Date.now();
 
   const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
@@ -133,7 +135,7 @@ async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
       headers,
       body: JSON.stringify({
         version: REMOVE_BG_VERSION,
-        input: { image: dataUrl },
+        input: { image: dataUrl, model: "u2net" },
       }),
     });
 
