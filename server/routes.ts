@@ -546,6 +546,8 @@ export async function registerRoutes(
       name: s.name,
       promptSuffix: s.promptPrefix,
       category: s.category,
+      promptPlaceholder: s.promptPlaceholder,
+      options: s.options,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -570,12 +572,18 @@ export async function registerRoutes(
 
       const stylePresets =
         dbStyles.length > 0
-          ? dbStyles.map((s) => ({
-              id: s.id.toString(),
-              name: s.name,
-              promptSuffix: s.promptPrefix,
-              category: s.category || "all",
-            }))
+          ? dbStyles.map((s) => {
+              // Merge promptPlaceholder and options from the hardcoded STYLE_PRESETS since the DB doesn't store them
+              const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
+              return {
+                id: s.id.toString(),
+                name: s.name,
+                promptSuffix: s.promptPrefix,
+                category: s.category || "all",
+                promptPlaceholder: hardcoded?.promptPlaceholder,
+                options: hardcoded?.options,
+              };
+            })
           : hardcodedFallback;
 
       const payload = {
