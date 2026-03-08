@@ -101,12 +101,14 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Chroma key background removal: replaces all #FF00FF (hot pink) pixels with transparency.
- * Works like a green screen but with hot pink — fast, local, no API calls, pixel-perfect.
- * Tolerance handles slight color variations from AI generation.
+ * Chroma key background removal with smart fallback.
+ *
+ * 1. Try removing #FF00FF (hot pink) pixels — the intended chroma key.
+ * 2. If <10% of pixels were pink (AI ignored the instruction), detect the actual
+ *    background color by sampling the four corners, then remove that color instead.
  */
 async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60): Promise<Buffer> {
-  console.log(`[Chroma Key] Removing #FF00FF background (tolerance=${tolerance})...`);
+  console.log(`[Chroma Key] Starting background removal (tolerance=${tolerance})...`);
   const startTime = Date.now();
 
   const { data, info } = await sharp(buffer)
@@ -116,28 +118,77 @@ async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60)
 
   const { width, height, channels } = info;
   const pixels = new Uint8Array(data);
-  let removed = 0;
+  const total = width * height;
 
-  // Target: #FF00FF = R:255, G:0, B:255
+  // Pass 1: try #FF00FF chroma key
+  let removed = 0;
   const targetR = 255, targetG = 0, targetB = 255;
 
   for (let i = 0; i < pixels.length; i += channels) {
     const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
     const dist = Math.abs(r - targetR) + Math.abs(g - targetG) + Math.abs(b - targetB);
     if (dist <= tolerance) {
-      pixels[i + 3] = 0; // set alpha to transparent
+      pixels[i + 3] = 0;
       removed++;
     }
   }
 
-  const total = width * height;
-  const pct = ((removed / total) * 100).toFixed(1);
-  const elapsed = Date.now() - startTime;
-  console.log(`[Chroma Key] Removed ${removed}/${total} pixels (${pct}%) in ${elapsed}ms`);
+  const pinkPct = (removed / total) * 100;
+  console.log(`[Chroma Key] Pink pass: removed ${removed}/${total} (${pinkPct.toFixed(1)}%)`);
 
-  return sharp(Buffer.from(pixels), { raw: { width, height, channels } })
-    .png()
-    .toBuffer();
+  // If pink removal worked (>10% of image was pink background), we're done
+  if (pinkPct >= 10) {
+    const elapsed = Date.now() - startTime;
+    console.log(`[Chroma Key] Complete in ${elapsed}ms — pink chroma key succeeded`);
+    return sharp(Buffer.from(pixels), { raw: { width, height, channels } }).png().toBuffer();
+  }
+
+  // Pass 2: pink didn't work — detect actual bg color from corners and remove it
+  console.log(`[Chroma Key] Pink pass removed <10%, falling back to corner-sample detection...`);
+
+  // Re-read raw pixels (undo the few pink removals)
+  const { data: data2 } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const px = new Uint8Array(data2);
+
+  // Sample the four corners (5x5 pixel blocks) to find the dominant background color
+  const cornerSamples: { r: number; g: number; b: number }[] = [];
+  const sampleSize = 5;
+  const corners = [
+    [0, 0], [width - sampleSize, 0],
+    [0, height - sampleSize], [width - sampleSize, height - sampleSize],
+  ];
+  for (const [cx, cy] of corners) {
+    for (let dy = 0; dy < sampleSize; dy++) {
+      for (let dx = 0; dx < sampleSize; dx++) {
+        const idx = ((cy + dy) * width + (cx + dx)) * channels;
+        cornerSamples.push({ r: px[idx], g: px[idx + 1], b: px[idx + 2] });
+      }
+    }
+  }
+
+  // Average the corner samples to get the background color
+  const avgR = Math.round(cornerSamples.reduce((s, c) => s + c.r, 0) / cornerSamples.length);
+  const avgG = Math.round(cornerSamples.reduce((s, c) => s + c.g, 0) / cornerSamples.length);
+  const avgB = Math.round(cornerSamples.reduce((s, c) => s + c.b, 0) / cornerSamples.length);
+  console.log(`[Chroma Key] Detected corner bg color: rgb(${avgR},${avgG},${avgB})`);
+
+  // Remove all pixels matching the detected background color (with tolerance)
+  let fallbackRemoved = 0;
+  const bgTolerance = 45;
+  for (let i = 0; i < px.length; i += channels) {
+    const r = px[i], g = px[i + 1], b = px[i + 2];
+    const dist = Math.abs(r - avgR) + Math.abs(g - avgG) + Math.abs(b - avgB);
+    if (dist <= bgTolerance) {
+      px[i + 3] = 0;
+      fallbackRemoved++;
+    }
+  }
+
+  const fallbackPct = (fallbackRemoved / total) * 100;
+  const elapsed = Date.now() - startTime;
+  console.log(`[Chroma Key] Fallback pass: removed ${fallbackRemoved}/${total} (${fallbackPct.toFixed(1)}%) in ${elapsed}ms`);
+
+  return sharp(Buffer.from(px), { raw: { width, height, channels } }).png().toBuffer();
 }
 
 /**

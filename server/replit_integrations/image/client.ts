@@ -133,57 +133,51 @@ function mapToSupportedAspectRatio(aspectRatio?: string): string {
   return "9:16";
 }
 
-const PROMPT_MAX_LENGTH = 600;
+const PROMPT_MAX_LENGTH = 900;
 
 /**
  * Strip the verbose canvas-requirements block injected by the route handler and
- * replace it with a compact version that fits Nano Banana's context window better.
+ * replace it with a compact version that fits the model's context window better.
  *
- * For apparel: the verbose "MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING" block
- * is stripped and replaced with a short isolated-design constraint, ensuring the
- * user's actual prompt is never truncated away.
- *
- * For non-apparel (wall art / decor): strips the "=== CRITICAL CANVAS REQUIREMENTS"
- * block and prepends a short full-bleed constraint.
+ * For apparel: strips the verbose block and prepends a compact chroma-key constraint.
+ * For non-apparel (wall art / decor): strips and prepends a compact full-bleed constraint.
  */
 function compressPrompt(raw: string, isApparel: boolean): string {
   let compressed: string;
 
   if (isApparel) {
-    // Strip the verbose apparel sizing block (everything from the blank line before
-    // "MANDATORY IMAGE REQUIREMENTS" through "=== ARTWORK DESCRIPTION ===")
+    // Strip the verbose apparel sizing block
     compressed = raw.replace(
       /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
       ""
     );
-    // Strip the artwork description header
     compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
     compressed = compressed.trim();
 
-    // Prepend a short, model-friendly apparel constraint (no "full-bleed" contradiction)
+    // Compact apparel constraint with chroma key background + no-added-text rule
     const shortApparelConstraints =
-      "Isolated centered graphic design on solid background, suitable for apparel printing. ";
+      "Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background. " +
+      "Every pixel not part of the design must be exactly #FF00FF. " +
+      "Do NOT use hot pink or magenta anywhere in the design itself. " +
+      "Clean hard edges, no gradients into background, no rectangular frames. " +
+      "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortApparelConstraints + compressed;
   } else {
-    // Remove everything between the "=== CRITICAL CANVAS REQUIREMENTS" header
-    // and the "=== ARTWORK DESCRIPTION ===" header (or "=== IMAGE CONTENT" as fallback).
     compressed = raw.replace(
       /=== CRITICAL CANVAS REQUIREMENTS[\s\S]*?(?==== ARTWORK DESCRIPTION|=== IMAGE CONTENT|$)/,
       ""
     );
-    // Also strip any leftover section headers
     compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
     compressed = compressed.replace(/=== IMAGE CONTENT REQUIREMENTS ===[\s\S]*?(?=\n\n|$)/g, "");
     compressed = compressed.trim();
 
-    // Prepend a short, model-friendly version of the constraints
     const shortConstraints =
       "Full-bleed, edge-to-edge, no borders, no blank margins. " +
       "Keep important elements away from edges (wraparound safe area). ";
     compressed = shortConstraints + compressed;
   }
 
-  // Hard truncate
+  // Hard truncate — but preserve the end of the prompt (user's description) over the middle
   if (compressed.length > PROMPT_MAX_LENGTH) {
     compressed = compressed.substring(0, PROMPT_MAX_LENGTH);
   }
