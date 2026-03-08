@@ -777,14 +777,16 @@ export async function registerRoutes(
 
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
+      let styleCategory = "all"; // Track category for base prompt enforcement
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
         if (merchantId) {
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
-          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
+          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null }) => s.id.toString() === stylePreset);
           if (selectedStyle && selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
+            styleCategory = selectedStyle.category || "all";
           }
         }
         // Fall back to hardcoded STYLE_PRESETS only if no merchant context or no match
@@ -792,6 +794,7 @@ export async function registerRoutes(
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
+            styleCategory = hardcodedStyle.category || "all";
           }
         }
       }
@@ -895,14 +898,12 @@ export async function registerRoutes(
       const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
       
       // Check if this is an apparel product - either from productType or from style preset category
+      // This covers both hardcoded and merchant-created styles via styleCategory
       let isApparel = productType?.designerType === "apparel";
       
-      // Also detect apparel from style preset category if no productType
-      if (!isApparel && stylePreset) {
-        const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-        if (hardcodedStyle && hardcodedStyle.category === "apparel") {
-          isApparel = true;
-        }
+      // Also detect apparel from style category (works for both DB and hardcoded styles)
+      if (!isApparel && styleCategory === "apparel") {
+        isApparel = true;
       }
 
       // Determine color tier for apparel products
@@ -1628,18 +1629,21 @@ console.log("[shopify/session] installation ok", {
 
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
+      let embedStyleCategory = "all"; // Track category for base prompt enforcement
       if (stylePreset && installation.merchantId) {
         // Try to find in database styles first
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
+        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
+          embedStyleCategory = selectedStyle.category || "all";
         }
         // Fall back to hardcoded STYLE_PRESETS if not found in database
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
+            embedStyleCategory = hardcodedStyle.category || "all";
           }
         }
       }
@@ -1810,6 +1814,12 @@ ${textEdgeRestrictions}
         }
       }
 
+      // Check if this is an apparel product (covers both DB and hardcoded styles)
+      let isApparel = productType?.designerType === "apparel";
+      if (!isApparel && embedStyleCategory === "apparel") {
+        isApparel = true;
+      }
+
       // When a reference image is provided, instruct the model to use it
       if (inputImageUrl) {
         fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
@@ -1829,18 +1839,6 @@ ${textEdgeRestrictions}
       }
 
       const mimeType = generatedMimeType || "image/png";
-
-      
-      // Check if this is an apparel product
-      let isApparel = productType?.designerType === "apparel";
-      
-      // Also detect apparel from style preset category if no productType
-      if (!isApparel && stylePreset) {
-        const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-        if (hardcodedStyle && hardcodedStyle.category === "apparel") {
-          isApparel = true;
-        }
-      }
       
       // Get target dimensions for resizing - skip for apparel (keep square)
       let targetDims: TargetDimensions | undefined;
@@ -4169,20 +4167,23 @@ ${textEdgeRestrictions}
 
       // Look up style preset
       let stylePromptPrefix = "";
+      let sfStyleCategory = "all"; // Track category for base prompt enforcement
       if (stylePreset && installation.merchantId) {
         t1 = Date.now();
         const dbStyles = await withTimeout(
           storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
         );
         console.log(P, reqId, `style presets lookup ok in ${Date.now() - t1}ms`);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null }) => s.id.toString() === stylePreset);
+        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
+          sfStyleCategory = selectedStyle.category || "all";
         }
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
+            sfStyleCategory = hardcodedStyle.category || "all";
           }
         }
       }
@@ -4296,60 +4297,106 @@ ${textEdgeRestrictions}
         sizeConfig = { id: size, name: size, width: 12, height: 16, aspectRatio: aspectRatioStr, genWidth: genDims.genWidth, genHeight: genDims.genHeight } as any;
       }
 
+      // Determine apparel status early — affects both prompt and dimensions
+      let isApparel = productType?.designerType === "apparel";
+      if (!isApparel && sfStyleCategory === "apparel") {
+        isApparel = true;
+      }
+
       // Build full prompt with shape/orientation requirements (synchronous)
       let fullPrompt = stylePromptPrefix
         ? `${stylePromptPrefix} ${prompt}`
         : prompt;
 
-      const printShape = productType?.printShape || "rectangle";
-      const bleedMargin = productType?.bleedMarginPercent || 5;
-      const safeZonePercent = 100 - (bleedMargin * 2);
+      let sizingRequirements: string;
 
-      let shapeInstructions = "";
-      if (printShape === "circle") {
-        shapeInstructions = `
+      if (isApparel) {
+        // Apparel: centered isolated design with solid background (same rules as admin generate)
+        const frameColor = req.body.frameColor;
+        let colorTier: ColorTier = "light";
+        if (frameColor && productType) {
+          const frameColors = JSON.parse(productType.frameColors || "[]");
+          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+          if (selectedColor?.hex) {
+            colorTier = getColorTier(selectedColor.hex);
+          }
+        }
+        const isDarkTier = colorTier === "dark";
+        const bgColor = isDarkTier ? "DARK CHARCOAL GRAY (#333333)" : "PURE WHITE (#FFFFFF)";
+        const designColors = isDarkTier
+          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark and black colors in the design."
+          : "VIBRANT colors. AVOID white and light colors in the design.";
+
+        // Use dark tier prompt variant if available
+        if (isDarkTier && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
+          const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
+          fullPrompt = darkTierPrompt ? `${darkTierPrompt} ${prompt}` : fullPrompt;
+        }
+
+        sizingRequirements = `
+
+MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
+1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
+2. SOLID ${bgColor} BACKGROUND: The design MUST be on a ${bgColor} background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The solid background can be easily removed for printing.
+3. DESIGN COLORS: Use ${designColors}
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
+7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
+8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+`;
+      } else {
+        // Decor: full-bleed edge-to-edge designs
+        const printShape = productType?.printShape || "rectangle";
+        const bleedMargin = productType?.bleedMarginPercent || 5;
+        const safeZonePercent = 100 - (bleedMargin * 2);
+
+        let shapeInstructions = "";
+        if (printShape === "circle") {
+          shapeInstructions = `
 CIRCULAR PRINT AREA: This design is for a CIRCULAR product (like a round pillow or coaster).
 - Center all important elements (faces, text, focal points) within the inner ${safeZonePercent}% of the circle
 - Keep a ${bleedMargin}% margin from the circular edge for manufacturing bleed
 - The corners of the canvas will be cropped to a circle - nothing important should be in the corners
 - Design with radial/circular composition in mind`;
-      } else if (printShape === "square") {
-        shapeInstructions = `
+        } else if (printShape === "square") {
+          shapeInstructions = `
 SQUARE PRINT AREA: This design is for a square product.
 - Center important elements within the inner ${safeZonePercent}% of the canvas
 - Keep a ${bleedMargin}% margin from all edges for bleed`;
-      } else {
-        shapeInstructions = `
+        } else {
+          shapeInstructions = `
 RECTANGULAR PRINT AREA:
 - Keep important elements within the inner ${safeZonePercent}% of the canvas
 - Maintain a ${bleedMargin}% margin from edges for bleed`;
-      }
+        }
 
-      const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
-      const aspectRatioValue = arW / arH;
-      let orientationDescription: string;
-      if (aspectRatioValue > 1.05) {
-        orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
-      } else if (aspectRatioValue < 0.95) {
-        orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
-      } else {
-        orientationDescription = `SQUARE`;
-      }
+        const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
+        const aspectRatioValue = arW / arH;
+        let orientationDescription: string;
+        if (aspectRatioValue > 1.05) {
+          orientationDescription = `HORIZONTAL LANDSCAPE (wider than tall)`;
+        } else if (aspectRatioValue < 0.95) {
+          orientationDescription = `VERTICAL PORTRAIT (taller than wide)`;
+        } else {
+          orientationDescription = `SQUARE`;
+        }
 
-      const isWrapAround = aspectRatioValue >= 1.2;
-      const textEdgeRestrictions = isWrapAround
-        ? `
+        const isWrapAround = aspectRatioValue >= 1.2;
+        const textEdgeRestrictions = isWrapAround
+          ? `
 TEXT AND ELEMENT PLACEMENT - CRITICAL:
 - DO NOT place any text, letters, words, or important elements within 20% of ANY edge
 - ALL text must be positioned in the CENTER 60% of the image both horizontally and vertically
 - The outer 20% margins on ALL sides should contain ONLY background/scenery - NO text whatsoever
 - This is a WRAP-AROUND cylindrical product - edges will be hidden or wrapped around`
-        : `
+          : `
 TEXT AND ELEMENT PLACEMENT:
 - Keep all text and important elements within the central 75% of the image
 - Avoid placing critical content near the edges where it may be cut off during printing`;
 
-      const sizingRequirements = `
+        sizingRequirements = `
 
 === CRITICAL CANVAS REQUIREMENTS (MUST FOLLOW) ===
 CANVAS: ${orientationDescription} format
@@ -4363,21 +4410,13 @@ ${textEdgeRestrictions}
 3. The subject must NOT appear floating - complete the background behind and around it
 4. This is for high-quality printing - create finished artwork that bleeds to all edges
 `;
+      }
 
       const geminiAspectRatio = mapToGeminiAspectRatioStorefront(sizeConfig.aspectRatio);
       fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
 
       // Capture appUrl from request before responding (used for reference image resolution in worker)
       const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-
-      // Determine apparel status for image dimensions (synchronous)
-      let isApparel = productType?.designerType === "apparel";
-      if (!isApparel && stylePreset) {
-        const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
-        if (hardcodedStyle && hardcodedStyle.category === "apparel") {
-          isApparel = true;
-        }
-      }
       let targetDims: TargetDimensions | undefined;
       if (!isApparel) {
         const genWidth = (sizeConfig as any).genWidth || 1024;
