@@ -966,6 +966,7 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
 7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
 8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
       } else {
         // Wall art needs full-bleed edge-to-edge designs
@@ -1287,6 +1288,7 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
 7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
 8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
@@ -4791,7 +4793,7 @@ ${textEdgeRestrictions}
         printifyShopId: merchant.printifyShopId,
         sizeId: sizeId || 'default',
         colorId: colorId || 'default',
-        doubleSided: productType.doubleSidedPrint || false,
+        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
       });
 
       // ========== GENERATE MOCKUP ==========
@@ -4807,7 +4809,8 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        doubleSided: productType.doubleSidedPrint || false,
+        // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
+        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -8171,12 +8174,17 @@ ${textEdgeRestrictions}
         .replace(/<[^>]*>/g, ' ') // Strip HTML tags
         .toLowerCase();
       const hasBackPlaceholder = !!placeholderDimensions["back"];
-      const doubleSidedPrint = hasBackPlaceholder ||
-                               decodedCombined.includes("double sided") || 
-                               decodedCombined.includes("double-sided") || 
-                               decodedCombined.includes("two sided") ||
-                               decodedCombined.includes("two-sided") ||
-                               decodedCombined.includes("both sides");
+      // Apparel (t-shirts, hoodies, etc.) always defaults to front-only print.
+      // Having a "back" placeholder does NOT mean we should print on the back by default.
+      // Only non-apparel products (pillows, tote bags, etc.) should be auto-flagged as double-sided.
+      const doubleSidedPrint = designerType !== "apparel" && (
+        hasBackPlaceholder ||
+        decodedCombined.includes("double sided") ||
+        decodedCombined.includes("double-sided") ||
+        decodedCombined.includes("two sided") ||
+        decodedCombined.includes("two-sided") ||
+        decodedCombined.includes("both sides")
+      );
 
       // Create the product type with parsed data
       const productType = await storage.createProductType({
@@ -9527,7 +9535,8 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1, // Convert from percentage to 0-2 range
         x: x !== undefined ? (x - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
         y: y !== undefined ? (y - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
-        doubleSided: productType.doubleSidedPrint || false, // Send to front and back for pillows, etc.
+        // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
+        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
       });
 
       res.json(result);
@@ -9649,7 +9658,8 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        doubleSided: productType.doubleSidedPrint || false,
+        // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
+        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
       });
 
       console.log("[Shopify Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });
