@@ -5,7 +5,6 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import sharp from "sharp";
-import { removeBackground } from "@imgly/background-removal-node";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
@@ -102,47 +101,86 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove background from an image using ML-based segmentation (ONNX model).
- * 
- * Uses @imgly/background-removal-node which provides production-quality
- * background removal using trained neural networks. This handles:
- * - Anti-aliasing correctly
- * - Preserves thin strokes and details
- * - Works with any background color
- * - No halos or artifacts
- * 
- * @param buffer - The image buffer to process
- * @returns Buffer with transparent background as PNG
+ * Remove background from an image using Replicate's lucataco/remove-bg (BRIA RMBG 2.0).
+ *
+ * Uses the same REPLICATE_API_TOKEN already configured for image generation.
+ * Returns a transparent PNG buffer.
  */
-async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
-  console.log("Starting ML-based background removal...");
-  const startTime = Date.now();
-  
-  try {
-    // Convert buffer to Blob for the library
-    const blob = new Blob([Uint8Array.from(buffer)], { type: "image/png" });
+const REMOVE_BG_VERSION = "95fcc2a26d3899cd6c2691c900465aaeff466285a65c14638cc5f36f34befaf1";
 
-    
-    // Run ML background removal with small model for faster processing
-    const resultBlob = await removeBackground(blob, {
-      model: 'small',  // Use small model (44MB) for faster processing
-      output: {
-        format: 'image/png',
-        quality: 1.0
-      }
+async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
+  console.log("[BG Removal] Starting via Replicate lucataco/remove-bg...");
+  const startTime = Date.now();
+
+  const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
+  if (!token) {
+    console.warn("[BG Removal] No REPLICATE_API_TOKEN, falling back to pixel-based removal");
+    return removeBackgroundFallback(buffer, false);
+  }
+
+  try {
+    const mimeType = "image/png";
+    const base64 = buffer.toString("base64");
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+
+    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        version: REMOVE_BG_VERSION,
+        input: { image: dataUrl },
+      }),
     });
-    
-    // Convert result blob back to buffer
-    const arrayBuffer = await resultBlob.arrayBuffer();
-    const resultBuffer = Buffer.from(arrayBuffer);
-    
+
+    if (!createRes.ok) {
+      const errBody = await createRes.text();
+      throw new Error(`Replicate create failed (${createRes.status}): ${errBody.substring(0, 500)}`);
+    }
+
+    let prediction = await createRes.json() as { id: string; status: string; output?: any; error?: any };
+    console.log(`[BG Removal] Prediction created: ${prediction.id}`);
+
+    for (let i = 0; i < 60; i++) {
+      if (prediction.status === "succeeded") break;
+      if (prediction.status === "failed" || prediction.status === "canceled") {
+        throw new Error(`Prediction ${prediction.status}: ${JSON.stringify(prediction.error)}`);
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+      const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!pollRes.ok) throw new Error(`Poll failed: ${pollRes.status}`);
+      prediction = await pollRes.json() as typeof prediction;
+    }
+
+    if (prediction.status !== "succeeded") {
+      throw new Error(`Prediction timed out (status=${prediction.status})`);
+    }
+
+    const outputUrl = typeof prediction.output === "string"
+      ? prediction.output
+      : Array.isArray(prediction.output) ? prediction.output[0] : null;
+
+    if (!outputUrl) {
+      throw new Error("No output URL from remove-bg prediction");
+    }
+
+    const imgRes = await fetch(outputUrl);
+    if (!imgRes.ok) throw new Error(`Failed to download result: ${imgRes.status}`);
+    const resultBuffer = Buffer.from(await imgRes.arrayBuffer());
+
     const elapsed = Date.now() - startTime;
-    console.log(`ML background removal complete in ${elapsed}ms`);
-    
+    console.log(`[BG Removal] Complete in ${elapsed}ms (${(resultBuffer.length / 1024).toFixed(0)}KB)`);
+
     return resultBuffer;
   } catch (error) {
-    console.error("ML background removal failed, falling back to pixel-based:", error);
-    // Fallback to pixel-based removal if ML fails
+    const elapsed = Date.now() - startTime;
+    console.error(`[BG Removal] Replicate failed after ${elapsed}ms, falling back to pixel-based:`, error);
     return removeBackgroundFallback(buffer, false);
   }
 }
