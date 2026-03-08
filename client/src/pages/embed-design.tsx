@@ -543,6 +543,7 @@ export default function EmbedDesign() {
   const [selectedSize, setSelectedSize] = useState("");
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
   const [selectedPreset, setSelectedPreset] = useState<string>("");
+  const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
   const [referenceImage, setReferenceImage] = useState<File | null>(null);
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
@@ -1831,11 +1832,25 @@ export default function EmbedDesign() {
       return;
     }
 
+    // Validate required style sub-option
+    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    if (activePreset?.options?.required && selectedStyleOption === "") {
+      alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+      return;
+    }
+
+    // Build the prompt: prepend selected option fragment if present
     let fullPrompt = prompt;
+    if (activePreset?.options && selectedStyleOption !== "") {
+      const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
+      if (selectedChoice) {
+        fullPrompt = `${selectedChoice.promptFragment}. ${prompt}`;
+      }
+    }
     if (selectedPreset && selectedPreset !== "") {
       const preset = filteredStylePresets.find((p) => p.id === selectedPreset);
       if (preset?.promptSuffix) {
-        fullPrompt = `${prompt}. ${preset.promptSuffix}`;
+        fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
       }
     }
 
@@ -2996,6 +3011,11 @@ export default function EmbedDesign() {
                         alert("Please select a style before generating");
                         return;
                       }
+                      const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                      if (activePreset?.options?.required && selectedStyleOption === "") {
+                        alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+                        return;
+                      }
                       if (printSizes.length > 0 && selectedSize === "") {
                         alert("Please select a size before generating");
                         return;
@@ -3114,13 +3134,44 @@ export default function EmbedDesign() {
                   <StyleSelector
                     stylePresets={filteredStylePresets}
                     selectedStyle={selectedPreset}
-                    onStyleChange={setSelectedPreset}
+                    onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
                   />
                   {selectedPreset === "" && (
                     <p className="text-xs text-muted-foreground">Please select a style before generating</p>
                   )}
                 </div>
               )}
+
+              {/* Style Sub-Options */}
+              {showPresetsParam && selectedPreset !== "" && (() => {
+                const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                if (!activePreset?.options) return null;
+                const { label, choices } = activePreset.options;
+                return (
+                  <div className="space-y-2">
+                    <Label className="text-sm font-medium">{label}</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {choices.map((choice) => (
+                        <button
+                          key={choice.id}
+                          type="button"
+                          onClick={() => setSelectedStyleOption(choice.id)}
+                          className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                            selectedStyleOption === choice.id
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-background text-foreground border-border hover:border-primary/60"
+                          }`}
+                        >
+                          {choice.name}
+                        </button>
+                      ))}
+                    </div>
+                    {activePreset.options.required && selectedStyleOption === "" && (
+                      <p className="text-xs text-muted-foreground">Please choose a layout to continue</p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Prompt Description */}
               <div className="space-y-2">
@@ -3130,7 +3181,10 @@ export default function EmbedDesign() {
                 <Textarea
                   id="prompt"
                   data-testid="input-prompt"
-                  placeholder="Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'"
+                  placeholder={(() => {
+                    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                    return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
+                  })()}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   className="min-h-[80px]"

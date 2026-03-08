@@ -60,6 +60,7 @@ export default function AdminCreateProduct() {
   const [selectedSize, setSelectedSize] = useState<string>("");
   const [selectedFrameColor, setSelectedFrameColor] = useState<string>("");
   const [selectedStyle, setSelectedStyle] = useState<string>("none");
+  const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -315,15 +316,29 @@ export default function AdminCreateProduct() {
       return;
     }
 
+    // Validate required style sub-option
+    const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+    if ((activeStyle as any)?.options?.required && selectedStyleOption === "") {
+      toast({ title: "Please choose a layout", description: `Select a ${((activeStyle as any).options.label as string).toLowerCase()} before generating`, variant: "destructive" });
+      return;
+    }
+
     setIsGenerating(true);
     setGeneratedImageUrl(null);
     setMockupImages([]);
     setSelectedMockupIndex(null);
     lastAppliedScaleRef.current = null;
 
+    // Build prompt: prepend option fragment if one is selected
+    let finalPrompt = prompt;
+    if (selectedStyleOption !== "" && (activeStyle as any)?.options) {
+      const choice = (activeStyle as any).options.choices.find((c: any) => c.id === selectedStyleOption);
+      if (choice) finalPrompt = `${choice.promptFragment}. ${prompt}`;
+    }
+
     try {
       const response = await apiRequest("POST", "/api/generate", {
-        prompt,
+        prompt: finalPrompt,
         size: selectedSize,
         frameColor: selectedFrameColor,
         stylePreset: selectedStyle,
@@ -904,7 +919,7 @@ export default function AdminCreateProduct() {
                       </Button>
                     </div>
                   </div>
-                  <Select value={selectedStyle} onValueChange={setSelectedStyle}>
+                  <Select value={selectedStyle} onValueChange={(v) => { setSelectedStyle(v); setSelectedStyleOption(""); }}>
                     <SelectTrigger data-testid="select-style">
                       <SelectValue placeholder="Choose a style" />
                     </SelectTrigger>
@@ -937,13 +952,48 @@ export default function AdminCreateProduct() {
                   </TabsList>
                   
                   <TabsContent value="generate" className="space-y-4">
+
+                    {/* Style Sub-Options */}
+                    {(() => {
+                      const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+                      const opts = (activeStyle as any)?.options;
+                      if (!opts) return null;
+                      return (
+                        <div className="space-y-2">
+                          <Label className="text-sm font-medium">{opts.label}</Label>
+                          <div className="flex flex-wrap gap-2">
+                            {opts.choices.map((choice: any) => (
+                              <button
+                                key={choice.id}
+                                type="button"
+                                onClick={() => setSelectedStyleOption(choice.id)}
+                                className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                                  selectedStyleOption === choice.id
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "bg-background text-foreground border-border hover:border-primary/60"
+                                }`}
+                              >
+                                {choice.name}
+                              </button>
+                            ))}
+                          </div>
+                          {opts.required && selectedStyleOption === "" && (
+                            <p className="text-xs text-muted-foreground">Choose a {(opts.label as string).toLowerCase()} before generating</p>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <div className="space-y-2">
                       <Label htmlFor="prompt">Describe Your Artwork</Label>
                       <Textarea
                         id="prompt"
                         value={prompt}
                         onChange={(e) => setPrompt(e.target.value)}
-                        placeholder="A majestic golden retriever wearing a royal crown..."
+                        placeholder={(() => {
+                          const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+                          return (activeStyle as any)?.promptPlaceholder || "A majestic golden retriever wearing a royal crown...";
+                        })()}
                         rows={4}
                         data-testid="input-prompt"
                       />

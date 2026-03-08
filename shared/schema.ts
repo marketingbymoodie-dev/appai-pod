@@ -482,14 +482,66 @@ export const STYLE_PRESETS = [
   { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of", category: "decor" },
   
   // Apparel Artwork - Centered vector graphics for t-shirts, hoodies, etc.
-  // Mask-friendly style: vector art, bold outlines, flat colors, no shadows/gradients/textures, hard edges
-  // Each apparel style has two prompt variants: one for light garments (dark designs) and one for dark garments (light designs)
   { id: "centered-graphic", name: "Centered Graphic", promptPrefix: "T-shirt graphic, vector style illustration, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting. Create a clean vector design of", category: "apparel" },
   { id: "vintage-logo", name: "Vintage Logo", promptPrefix: "T-shirt graphic, vintage logo style, vector illustration, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, distressed retro emblem. Create a vintage badge design of", category: "apparel" },
   { id: "minimalist-icon", name: "Minimalist Icon", promptPrefix: "T-shirt graphic, minimalist icon, vector style, bold clean outlines, flat solid vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, simple geometric shapes. Create a minimal icon of", category: "apparel" },
-  { id: "typography", name: "Typographic Design", promptPrefix: "T-shirt graphic, bold typography, vector lettering, solid flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, clean type design. Create stylized text of", category: "apparel" },
-  { id: "illustration-motif", name: "Illustrated Motif", promptPrefix: "T-shirt graphic, illustrated motif, vector art style, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, clean cartoon style. Create an illustrated design of", category: "apparel" },
-  { id: "retro-badge", name: "Retro Badge", promptPrefix: "T-shirt graphic, retro badge design, vector style, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, circular or shield emblem. Create a retro badge of", category: "apparel" },
+  {
+    id: "typography",
+    name: "Typographic Design",
+    promptPrefix: "T-shirt graphic, bold typography, vector lettering, solid flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, clean type design. Create stylized text of",
+    category: "apparel",
+    promptPlaceholder: "Enter your text here (e.g. Scaredy Cats Rule)",
+    options: {
+      label: "Choose Layout",
+      required: true,
+      choices: [
+        { id: "vintage-badge", name: "Vintage Badge", promptFragment: "vintage badge typography, hand-lettered emblem layout, circular badge composition" },
+        { id: "retro-athletic", name: "Retro Athletic", promptFragment: "retro athletic block lettering, varsity jersey style, arched text layout" },
+        { id: "heavy-streetwear", name: "Heavy Streetwear", promptFragment: "heavy streetwear typography, bold gothic blackletter style, stacked layout" },
+        { id: "tattoo-flash", name: "Tattoo Flash", promptFragment: "tattoo flash lettering style, old school Americana, banner and scroll layout" },
+        { id: "western-poster", name: "Western Poster", promptFragment: "western poster typography, slab serif wanted-poster layout, stacked lines" },
+        { id: "y2k-chrome", name: "Y2K Chrome", promptFragment: "Y2K chrome inflated bubble lettering, glossy metallic 3D text style" },
+        { id: "skate-brand", name: "Skate Brand", promptFragment: "skate brand typography, punk zine DIY lettering, irregular stacked layout" },
+      ],
+    },
+  },
+  {
+    id: "illustration-motif",
+    name: "Illustrated Motif",
+    promptPrefix: "T-shirt graphic, illustrated motif, vector art style, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, clean cartoon style. Create an illustrated design of",
+    category: "apparel",
+    promptPlaceholder: "Describe your subject (e.g. a black cat wearing sunglasses)",
+    options: {
+      label: "Choose Style",
+      required: true,
+      choices: [
+        { id: "bold-cartoon", name: "Bold Cartoon", promptFragment: "bold cartoon illustration, thick outlines, vibrant flat colors, comic book style" },
+        { id: "retro-mascot", name: "Retro Mascot", promptFragment: "retro mascot illustration, 1950s advertising style, exaggerated character design" },
+        { id: "punk-zine", name: "Punk / Zine", promptFragment: "punk zine illustration, raw DIY aesthetic, high contrast black and white graphic" },
+        { id: "japanese-streetwear", name: "Japanese Streetwear", promptFragment: "Japanese streetwear graphic, anime-influenced bold illustration, flat graphic style" },
+        { id: "folk-art", name: "Folk Art", promptFragment: "folk art illustration style, decorative patterns, simplified symbolic shapes" },
+        { id: "grunge-rock", name: "Grunge / Rock", promptFragment: "grunge rock band graphic style, dark aesthetic, skull and distressed elements" },
+      ],
+    },
+  },
+  {
+    id: "retro-badge",
+    name: "Retro Badge",
+    promptPrefix: "T-shirt graphic, retro badge design, vector style, bold outlines, flat vibrant colors (avoid white and light colors in the design), high contrast, centered, isolated on plain white background, no shadow, no texture, no gradient background, hard edges, flat lighting, circular or shield emblem. Create a retro badge of",
+    category: "apparel",
+    promptPlaceholder: "Describe the subject or text for the badge (e.g. Mountain Expedition 1987)",
+    options: {
+      label: "Choose Shape",
+      required: true,
+      choices: [
+        { id: "circular-emblem", name: "Circular Emblem", promptFragment: "circular emblem badge, concentric ring border, text arched around a central icon" },
+        { id: "shield-crest", name: "Shield / Crest", promptFragment: "shield crest badge, heraldic layout, symmetrical design with banner beneath" },
+        { id: "diamond-patch", name: "Diamond Patch", promptFragment: "diamond patch design, angular border, centered icon with text on top and bottom" },
+        { id: "pennant-flag", name: "Pennant / Flag", promptFragment: "pennant flag badge, triangular layout, bold sans-serif text on a banner" },
+        { id: "oval-label", name: "Oval Label", promptFragment: "oval label badge, classic product label layout, fine border detail" },
+      ],
+    },
+  },
 ] as const;
 
 // Apparel prompt variants for dark garments (light/vibrant designs on dark background)

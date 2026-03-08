@@ -12,12 +12,24 @@ export interface FrameColor {
   hex: string;
 }
 
+export interface StylePresetOption {
+  id: string;
+  name: string;
+  promptFragment: string;
+}
+
 export interface StylePreset {
   id: string;
   name: string;
   promptSuffix: string;
   thumbnailUrl?: string;
   category?: "all" | "decor" | "apparel";
+  promptPlaceholder?: string;
+  options?: {
+    label: string;
+    required: boolean;
+    choices: StylePresetOption[];
+  };
 }
 
 export interface DesignerConfig {
