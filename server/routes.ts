@@ -739,8 +739,13 @@ export async function registerRoutes(
         });
       }
 
-      // Check credits
-      if (customer.credits <= 0) {
+      // Owner bypass: app creator gets unlimited generations
+      const ownerShop = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
+      const isOwner = !!(ownerShop && (req as any).shopDomain?.toLowerCase() === ownerShop);
+      if (isOwner) console.log(`[/api/generate] Owner bypass active for shop: ${(req as any).shopDomain}`);
+
+      // Check credits (bypassed for app owner)
+      if (!isOwner && customer.credits <= 0) {
         return res.status(400).json({ 
           error: "No credits remaining. Please purchase more credits.",
           needsCredits: true 
@@ -1145,11 +1150,17 @@ console.log("[api/shopify/generate] saved image", result);
         status: "completed",
       });
 
-      // Deduct credit
-      await storage.updateCustomer(customer.id, {
-        credits: customer.credits - 1,
-        totalGenerations: customer.totalGenerations + 1,
-      });
+      // Deduct credit (skipped for app owner)
+      if (!isOwner) {
+        await storage.updateCustomer(customer.id, {
+          credits: customer.credits - 1,
+          totalGenerations: customer.totalGenerations + 1,
+        });
+      } else {
+        await storage.updateCustomer(customer.id, {
+          totalGenerations: customer.totalGenerations + 1,
+        });
+      }
 
       // Log generation
       await storage.createGenerationLog({
@@ -1162,17 +1173,19 @@ console.log("[api/shopify/generate] saved image", result);
         success: true,
       });
 
-      // Create credit transaction
-      await storage.createCreditTransaction({
-        customerId: customer.id,
-        type: "generation",
-        amount: -1,
-        description: `Generated artwork: ${prompt.substring(0, 50)}...`,
-      });
+      // Create credit transaction (skipped for app owner)
+      if (!isOwner) {
+        await storage.createCreditTransaction({
+          customerId: customer.id,
+          type: "generation",
+          amount: -1,
+          description: `Generated artwork: ${prompt.substring(0, 50)}...`,
+        });
+      }
 
       res.json({
         design,
-        creditsRemaining: customer.credits - 1,
+        creditsRemaining: isOwner ? 999999 : customer.credits - 1,
       });
     } catch (error: any) {
       console.error("Error generating artwork:", error);
@@ -1202,8 +1215,13 @@ console.log("[api/shopify/generate] saved image", result);
         return res.status(400).json({ error: "Design ID and new color tier are required" });
       }
 
-      // Check credits (regeneration costs 1 credit)
-      if (customer.credits < 1) {
+      // Owner bypass: app creator gets unlimited regenerations
+      const ownerShopRegen = process.env.OWNER_SHOP_DOMAIN?.toLowerCase().trim();
+      const isOwnerRegen = !!(ownerShopRegen && (req as any).shopDomain?.toLowerCase() === ownerShopRegen);
+      if (isOwnerRegen) console.log(`[/api/generate/regenerate-tier] Owner bypass active for shop: ${(req as any).shopDomain}`);
+
+      // Check credits (regeneration costs 1 credit; bypassed for app owner)
+      if (!isOwnerRegen && customer.credits < 1) {
         return res.status(402).json({ 
           error: "Insufficient credits", 
           creditsRequired: 1,
@@ -1324,8 +1342,10 @@ const result = await saveImageToStorage(base64Data, finalMimeType, {
       // Update the design with new image and tier
       const updatedDesign = await storage.updateDesign(designId, updateData);
 
-      // Deduct 1 credit for regeneration
-      await storage.updateCustomer(customer.id, { credits: customer.credits - 1 });
+      // Deduct 1 credit for regeneration (skipped for app owner)
+      if (!isOwnerRegen) {
+        await storage.updateCustomer(customer.id, { credits: customer.credits - 1 });
+      }
 
       // Log the regeneration
       await storage.createGenerationLog({
@@ -1338,19 +1358,21 @@ const result = await saveImageToStorage(base64Data, finalMimeType, {
         success: true,
       });
 
-      // Create credit transaction
-      await storage.createCreditTransaction({
-        customerId: customer.id,
-        type: "generation",
-        amount: -1,
-        description: `Regenerated design for ${newColorTier} apparel colors`,
-      });
+      // Create credit transaction (skipped for app owner)
+      if (!isOwnerRegen) {
+        await storage.createCreditTransaction({
+          customerId: customer.id,
+          type: "generation",
+          amount: -1,
+          description: `Regenerated design for ${newColorTier} apparel colors`,
+        });
+      }
 
-      console.log(`[Regenerate-Tier] Successfully regenerated design ${designId} for ${newColorTier} tier (1 credit deducted)`);
+      console.log(`[Regenerate-Tier] Successfully regenerated design ${designId} for ${newColorTier} tier${isOwnerRegen ? " (owner bypass)" : " (1 credit deducted)"}`);
 
       res.json({
         design: updatedDesign,
-        creditsRemaining: customer.credits - 1,
+        creditsRemaining: isOwnerRegen ? 999999 : customer.credits - 1,
         message: `Design regenerated for ${newColorTier} colored apparel`,
       });
     } catch (error) {
