@@ -434,6 +434,7 @@ export default function AdminCreateProduct() {
   const [isDragging, setIsDragging] = useState(false);
   const [isHoveringMockup, setIsHoveringMockup] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const mockupContainerRef = useRef<HTMLDivElement | null>(null);
   
   // Regenerate mockups when zoom scale changes (debounced, queues if currently loading)
   useEffect(() => {
@@ -780,33 +781,28 @@ export default function AdminCreateProduct() {
     if (!mockupImages.length) return;
     e.preventDefault();
     setIsDragging(true);
-    dragStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      startX: imageX,
-      startY: imageY,
-    };
+    dragStartRef.current = { x: e.clientX, y: e.clientY, startX: imageX, startY: imageY };
+    mockupContainerRef.current = e.currentTarget;
   };
 
   const handleDragMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging || !dragStartRef.current) return;
-    
+    if (!isDragging || !dragStartRef.current || !mockupContainerRef.current) return;
+    const rect = mockupContainerRef.current.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     const dx = e.clientX - dragStartRef.current.x;
     const dy = e.clientY - dragStartRef.current.y;
-    
-    // Convert pixel movement to percentage (adjust sensitivity)
-    const sensitivity = 0.25;
-    const newX = Math.max(0, Math.min(100, dragStartRef.current.startX + dx * sensitivity));
-    const newY = Math.max(0, Math.min(100, dragStartRef.current.startY + dy * sensitivity));
-    
-    setImageX(Math.round(newX));
-    setImageY(Math.round(newY));
+    const deltaX = (dx / rect.width) * 100;
+    const deltaY = (dy / rect.height) * 100;
+    setImageX(Math.max(0, Math.min(100, Math.round(imageX + deltaX))));
+    setImageY(Math.max(0, Math.min(100, Math.round(imageY + deltaY))));
+    dragStartRef.current = { ...dragStartRef.current, x: e.clientX, y: e.clientY };
   };
 
   const handleDragEnd = () => {
     if (isDragging) {
       setIsDragging(false);
       dragStartRef.current = null;
+      mockupContainerRef.current = null;
     }
   };
 
