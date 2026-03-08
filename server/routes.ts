@@ -9023,6 +9023,11 @@ ${textEdgeRestrictions}
     const position = await fetchPlaceholderPosition(blueprintId, providerId, firstVid, apiToken);
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
+    // Printify API rejects temp product creation if variant count exceeds 100.
+    // Costs are catalog-level per variant ID, so a subset is sufficient.
+    const VARIANT_CHUNK_SIZE = 50;
+    const variantChunk = variantIds.slice(0, VARIANT_CHUNK_SIZE);
+
     // Strategy 0: read costs from an existing Printify product with the same blueprint + provider (no temp product needed)
     console.log(`[Printify Costs] Strategy 0 — reading costs from existing shop products for blueprint ${blueprintId}`);
     try {
@@ -9075,7 +9080,7 @@ ${textEdgeRestrictions}
 
     // Strategy 1: print_areas with empty images array
     console.log(`[Printify Costs] Strategy 1 — empty images[] for position "${position}"`);
-    const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, null);
+    const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
     diagnostics.push({ strategy: "empty_images", status: s1.status, success: s1.success, error: s1.error });
     if (s1.success) return { costs: s1.costs, strategyUsed: "empty_images", diagnostics };
 
@@ -9085,7 +9090,7 @@ ${textEdgeRestrictions}
     console.log("[Printify Costs] Strategy 2 — reuse existing upload from library");
     const existingId = await getExistingUploadId(apiToken);
     if (existingId) {
-      const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, imageSpec(existingId));
+      const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(existingId));
       diagnostics.push({ strategy: "reuse_existing_upload", status: s2.status, success: s2.success, error: s2.error });
       if (s2.success) return { costs: s2.costs, strategyUsed: "reuse_existing_upload", diagnostics };
       console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
@@ -9101,7 +9106,7 @@ ${textEdgeRestrictions}
       console.log(`[Printify Costs] Strategy 3a — upload product mockup URL: ${mockupUrl.slice(0, 80)}`);
       const uploadedId = await uploadPublicImageToPrintify(apiToken, mockupUrl);
       if (uploadedId) {
-        const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, imageSpec(uploadedId));
+        const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
         diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success, error: s3a.error });
         if (s3a.success) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
         console.warn(`[Printify Costs] Strategy 3a failed (${s3a.status}): ${s3a.error?.slice(0, 200)}`);
@@ -9120,7 +9125,7 @@ ${textEdgeRestrictions}
       console.log(`[Printify Costs] Strategy 3b — upload fallback public URL: ${url}`);
       const uploadedId = await uploadPublicImageToPrintify(apiToken, url);
       if (uploadedId) {
-        const s3b = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, imageSpec(uploadedId));
+        const s3b = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
         diagnostics.push({ strategy: `upload_fallback_url:${url}`, status: s3b.status, success: s3b.success, error: s3b.error });
         if (s3b.success) return { costs: s3b.costs, strategyUsed: `upload_fallback_url`, diagnostics };
         console.warn(`[Printify Costs] Strategy 3b (${url}) failed (${s3b.status}): ${s3b.error?.slice(0, 200)}`);
