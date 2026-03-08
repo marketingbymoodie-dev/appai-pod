@@ -546,8 +546,8 @@ export async function registerRoutes(
       name: s.name,
       promptSuffix: s.promptPrefix,
       category: s.category,
-      promptPlaceholder: s.promptPlaceholder,
-      options: s.options,
+      promptPlaceholder: (s as any).promptPlaceholder,
+      options: (s as any).options,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -580,8 +580,8 @@ export async function registerRoutes(
                 name: s.name,
                 promptSuffix: s.promptPrefix,
                 category: s.category || "all",
-                promptPlaceholder: hardcoded?.promptPlaceholder,
-                options: hardcoded?.options,
+                promptPlaceholder: (hardcoded as any)?.promptPlaceholder,
+                options: (hardcoded as any)?.options,
               };
             })
           : hardcodedFallback;
@@ -9023,6 +9023,56 @@ ${textEdgeRestrictions}
     const position = await fetchPlaceholderPosition(blueprintId, providerId, firstVid, apiToken);
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
+    // Strategy 0: read costs from an existing Printify product with the same blueprint + provider (no temp product needed)
+    console.log(`[Printify Costs] Strategy 0 — reading costs from existing shop products for blueprint ${blueprintId}`);
+    try {
+      let page = 1;
+      let found = false;
+      while (page <= 5) {
+        const listResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json?limit=100&page=${page}`, {
+          headers: { Authorization: `Bearer ${apiToken}` },
+        });
+        if (!listResp.ok) {
+          diagnostics.push({ strategy: "read_existing_product", status: listResp.status, success: false, error: `List products failed: ${listResp.status}` });
+          break;
+        }
+        const listData = await listResp.json();
+        const products: any[] = listData.data || listData || [];
+        if (products.length === 0) break;
+        for (const p of products) {
+          if (p.blueprint_id === blueprintId && p.print_provider_id === providerId) {
+            // Fetch full product to get variant costs
+            const fullResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${p.id}.json`, {
+              headers: { Authorization: `Bearer ${apiToken}` },
+            });
+            if (!fullResp.ok) continue;
+            const fullProduct = await fullResp.json();
+            const costs: Record<string, number> = {};
+            for (const v of (fullProduct.variants || [])) {
+              if (v.id && typeof v.cost === "number") {
+                costs[String(v.id)] = v.cost;
+              }
+            }
+            if (Object.keys(costs).length > 0) {
+              console.log(`[Printify Costs] Strategy 0 succeeded — found ${Object.keys(costs).length} costs from existing product ${p.id}`);
+              diagnostics.push({ strategy: "read_existing_product", success: true });
+              found = true;
+              return { costs, strategyUsed: "read_existing_product", diagnostics };
+            }
+          }
+        }
+        if (!listData.next_page_url && (!listData.last_page || page >= listData.last_page)) break;
+        page++;
+      }
+      if (!found) {
+        diagnostics.push({ strategy: "read_existing_product", success: false, error: "No matching product found in shop" });
+        console.warn("[Printify Costs] Strategy 0 found no matching products");
+      }
+    } catch (s0Err: any) {
+      diagnostics.push({ strategy: "read_existing_product", success: false, error: String(s0Err) });
+      console.warn("[Printify Costs] Strategy 0 error:", s0Err);
+    }
+
     // Strategy 1: print_areas with empty images array
     console.log(`[Printify Costs] Strategy 1 — empty images[] for position "${position}"`);
     const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantIds, position, null);
@@ -10419,15 +10469,20 @@ ${textEdgeRestrictions}
 
     // Fetch style presets so the storefront iframe doesn't need a separate
     // /api/config round-trip (which can fail/timeout in CORS-restricted envs).
-    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string }> = [];
+    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any }> = [];
     try {
       const dbStyles = await storage.getAllActiveStylePresets();
-      stylePresets = dbStyles.map((s: any) => ({
-        id: s.id.toString(),
-        name: s.name,
-        promptSuffix: s.promptPrefix,
-        category: s.category || "all",
-      }));
+      stylePresets = dbStyles.map((s: any) => {
+        const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
+        return {
+          id: s.id.toString(),
+          name: s.name,
+          promptSuffix: s.promptPrefix,
+          category: s.category || "all",
+          promptPlaceholder: (hardcoded as any)?.promptPlaceholder,
+          options: (hardcoded as any)?.options,
+        };
+      });
     } catch (e) {
       console.warn(`[proxy/customizer-page] Failed to load stylePresets:`, e);
     }
