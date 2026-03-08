@@ -101,97 +101,48 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 }
 
 /**
- * Remove background from an image using Replicate's cjwbw/rembg (u2net).
- * u2net handles flat graphic/illustration edges better than BRIA RMBG,
- * producing cleaner results for apparel artwork with fewer stray fragments.
- *
- * Uses the same REPLICATE_API_TOKEN already configured for image generation.
- * Returns a transparent PNG buffer.
+ * Chroma key background removal: replaces all #FF00FF (hot pink) pixels with transparency.
+ * Works like a green screen but with hot pink — fast, local, no API calls, pixel-perfect.
+ * Tolerance handles slight color variations from AI generation.
  */
-const REMOVE_BG_VERSION = "fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003";
-
-async function removeImageBackground(buffer: Buffer): Promise<Buffer> {
-  console.log("[BG Removal] Starting via Replicate cjwbw/rembg (u2net)...");
+async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60): Promise<Buffer> {
+  console.log(`[Chroma Key] Removing #FF00FF background (tolerance=${tolerance})...`);
   const startTime = Date.now();
 
-  const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
-  if (!token) {
-    console.warn("[BG Removal] No REPLICATE_API_TOKEN, falling back to pixel-based removal");
-    return removeBackgroundFallback(buffer, false);
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height, channels } = info;
+  const pixels = new Uint8Array(data);
+  let removed = 0;
+
+  // Target: #FF00FF = R:255, G:0, B:255
+  const targetR = 255, targetG = 0, targetB = 255;
+
+  for (let i = 0; i < pixels.length; i += channels) {
+    const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+    const dist = Math.abs(r - targetR) + Math.abs(g - targetG) + Math.abs(b - targetB);
+    if (dist <= tolerance) {
+      pixels[i + 3] = 0; // set alpha to transparent
+      removed++;
+    }
   }
 
-  try {
-    const mimeType = "image/png";
-    const base64 = buffer.toString("base64");
-    const dataUrl = `data:${mimeType};base64,${base64}`;
+  const total = width * height;
+  const pct = ((removed / total) * 100).toFixed(1);
+  const elapsed = Date.now() - startTime;
+  console.log(`[Chroma Key] Removed ${removed}/${total} pixels (${pct}%) in ${elapsed}ms`);
 
-    const headers = {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    };
-
-    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        version: REMOVE_BG_VERSION,
-        input: { image: dataUrl, model: "u2net" },
-      }),
-    });
-
-    if (!createRes.ok) {
-      const errBody = await createRes.text();
-      throw new Error(`Replicate create failed (${createRes.status}): ${errBody.substring(0, 500)}`);
-    }
-
-    let prediction = await createRes.json() as { id: string; status: string; output?: any; error?: any };
-    console.log(`[BG Removal] Prediction created: ${prediction.id}`);
-
-    for (let i = 0; i < 60; i++) {
-      if (prediction.status === "succeeded") break;
-      if (prediction.status === "failed" || prediction.status === "canceled") {
-        throw new Error(`Prediction ${prediction.status}: ${JSON.stringify(prediction.error)}`);
-      }
-      await new Promise((r) => setTimeout(r, 1000));
-      const pollRes = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!pollRes.ok) throw new Error(`Poll failed: ${pollRes.status}`);
-      prediction = await pollRes.json() as typeof prediction;
-    }
-
-    if (prediction.status !== "succeeded") {
-      throw new Error(`Prediction timed out (status=${prediction.status})`);
-    }
-
-    const outputUrl = typeof prediction.output === "string"
-      ? prediction.output
-      : Array.isArray(prediction.output) ? prediction.output[0] : null;
-
-    if (!outputUrl) {
-      throw new Error("No output URL from remove-bg prediction");
-    }
-
-    const imgRes = await fetch(outputUrl);
-    if (!imgRes.ok) throw new Error(`Failed to download result: ${imgRes.status}`);
-    const resultBuffer = Buffer.from(await imgRes.arrayBuffer());
-
-    const elapsed = Date.now() - startTime;
-    console.log(`[BG Removal] Complete in ${elapsed}ms (${(resultBuffer.length / 1024).toFixed(0)}KB)`);
-
-    return resultBuffer;
-  } catch (error) {
-    const elapsed = Date.now() - startTime;
-    console.error(`[BG Removal] Replicate failed after ${elapsed}ms, falling back to pixel-based:`, error);
-    return removeBackgroundFallback(buffer, false);
-  }
+  return sharp(Buffer.from(pixels), { raw: { width, height, channels } })
+    .png()
+    .toBuffer();
 }
 
 /**
- * Fallback: Simple pixel-based background removal.
- * Used when ML-based removal fails or for legacy compatibility.
- * @param buffer - The image buffer to process
- * @param isDarkBackground - Whether the background is dark (charcoal) instead of white
+ * Legacy pixel-based background removal for white/dark backgrounds.
+ * Used as fallback when chroma key is not applicable.
  */
 async function removeBackgroundFallback(buffer: Buffer, isDarkBackground: boolean = false): Promise<Buffer> {
   const { data, info } = await sharp(buffer)
@@ -259,13 +210,13 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
 
   let buffer: Buffer = Buffer.from(base64Data, "base64");
 
-  // For apparel, remove background using ML-based segmentation
+  // For apparel, remove #FF00FF chroma key background
   if (isApparel) {
-    console.log("Removing background for apparel image using ML...");
-    buffer = (await removeImageBackground(buffer)) as Buffer;
+    console.log("Removing #FF00FF chroma key background for apparel...");
+    buffer = await removeChromaKeyBackground(buffer);
     extension = "png";
     actualMimeType = "image/png";
-    console.log("Background removal complete - image now has transparency");
+    console.log("Chroma key removal complete - image now has transparency");
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -949,23 +900,22 @@ export async function registerRoutes(
       let sizingRequirements: string;
       
       if (isApparel) {
-        // Apparel needs centered isolated designs with contrasting backgrounds (for easy removal)
+        // Apparel uses #FF00FF chroma key background for precise pixel-based removal
         const isDarkTier = colorTier === "dark";
-        const bgColor = isDarkTier ? "DARK CHARCOAL GRAY (#333333)" : "PURE WHITE (#FFFFFF)";
         const designColors = isDarkTier 
-          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark and black colors in the design."
-          : "VIBRANT colors. AVOID white and light colors in the design.";
+          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
+          : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
         
         sizingRequirements = `
 
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID ${bgColor} BACKGROUND: The design MUST be on a ${bgColor} background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The solid background can be easily removed for printing.
-3. DESIGN COLORS: Use ${designColors}
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
-7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
+2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
+3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
 8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
@@ -1074,7 +1024,12 @@ ${textEdgeRestrictions}
 
       // When a reference image is provided, instruct the model to use it
       if (inputImageUrl) {
-        fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
+        // For typography and text-heavy styles, integrate the reference as a mascot element within the composition
+        const isTextStyle = stylePreset && ["typography", "retro-badge"].includes(stylePreset);
+        const refInstruction = isTextStyle
+          ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
+          : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+        fullPrompt = `${refInstruction} ${fullPrompt}`;
       }
 
       // Generate image using Replicate
@@ -1271,23 +1226,22 @@ console.log("[api/shopify/generate] saved image", result);
       const prompt = originalDesign.prompt;
       let fullPrompt = stylePromptPrefix ? `${stylePromptPrefix} ${prompt}` : prompt;
       
-      // Add sizing requirements based on color tier
+      // Add sizing requirements — always use #FF00FF chroma key background for apparel
       const isDarkTier = newColorTier === "dark";
-      const bgColor = isDarkTier ? "DARK CHARCOAL GRAY (#333333)" : "PURE WHITE (#FFFFFF)";
       const designColors = isDarkTier 
-        ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark and black colors in the design."
-        : "VIBRANT colors. AVOID white and light colors in the design.";
+        ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
+        : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
       
       fullPrompt += `
 
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID ${bgColor} BACKGROUND: The design MUST be on a ${bgColor} background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The solid background can be easily removed for printing.
-3. DESIGN COLORS: Use ${designColors}
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
-7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
+2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
+3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
 8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
@@ -1822,7 +1776,11 @@ ${textEdgeRestrictions}
 
       // When a reference image is provided, instruct the model to use it
       if (inputImageUrl) {
-        fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
+        const isTextStyle = stylePreset && ["typography", "retro-badge"].includes(stylePreset);
+        const refInstruction = isTextStyle
+          ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
+          : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+        fullPrompt = `${refInstruction} ${fullPrompt}`;
       }
 
       // Generate image via Replicate
@@ -4311,7 +4269,7 @@ ${textEdgeRestrictions}
       let sizingRequirements: string;
 
       if (isApparel) {
-        // Apparel: centered isolated design with solid background (same rules as admin generate)
+        // Apparel: #FF00FF chroma key background for precise removal
         const frameColor = req.body.frameColor;
         let colorTier: ColorTier = "light";
         if (frameColor && productType) {
@@ -4322,10 +4280,9 @@ ${textEdgeRestrictions}
           }
         }
         const isDarkTier = colorTier === "dark";
-        const bgColor = isDarkTier ? "DARK CHARCOAL GRAY (#333333)" : "PURE WHITE (#FFFFFF)";
         const designColors = isDarkTier
-          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark and black colors in the design."
-          : "VIBRANT colors. AVOID white and light colors in the design.";
+          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
+          : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
 
         // Use dark tier prompt variant if available
         if (isDarkTier && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
@@ -4337,12 +4294,12 @@ ${textEdgeRestrictions}
 
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID ${bgColor} BACKGROUND: The design MUST be on a ${bgColor} background. DO NOT create scenic backgrounds, landscapes, or detailed environments. The solid background can be easily removed for printing.
-3. DESIGN COLORS: Use ${designColors}
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges suitable for printing on fabric. No fuzzy or gradient edges that blend into the background.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid background.
-7. PRINT-READY: This is for t-shirt/apparel printing - create an isolated graphic that can be printed on fabric.
+2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
+3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
 8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
@@ -4477,7 +4434,11 @@ ${textEdgeRestrictions}
 
           // When a reference image is provided, instruct the model to use it
           if (inputImageUrl) {
-            fullPrompt = `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design. ${fullPrompt}`;
+            const isTextStyle = stylePreset && ["typography", "retro-badge"].includes(stylePreset);
+            const refInstruction = isTextStyle
+              ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
+              : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+            fullPrompt = `${refInstruction} ${fullPrompt}`;
           }
 
           // Call AI image generation
