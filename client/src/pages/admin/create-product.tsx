@@ -331,9 +331,16 @@ export default function AdminCreateProduct() {
 
     // Build prompt: prepend option fragment if one is selected
     let finalPrompt = prompt;
+    let resolvedBaseImageUrl: string | undefined;
     if (selectedStyleOption !== "" && (activeStyle as any)?.options) {
       const choice = (activeStyle as any).options.choices.find((c: any) => c.id === selectedStyleOption);
-      if (choice) finalPrompt = `${choice.promptFragment}. ${prompt}`;
+      if (choice) {
+        finalPrompt = `${choice.promptFragment}. ${prompt}`;
+        if (choice.baseImageUrl) resolvedBaseImageUrl = choice.baseImageUrl;
+      }
+    }
+    if (!resolvedBaseImageUrl && (activeStyle as any)?.baseImageUrl) {
+      resolvedBaseImageUrl = (activeStyle as any).baseImageUrl;
     }
 
     try {
@@ -344,6 +351,7 @@ export default function AdminCreateProduct() {
         stylePreset: selectedStyle,
         productTypeId: selectedProductTypeId,
         referenceImage: referenceImage,
+        baseImageUrl: resolvedBaseImageUrl,
       });
 
       const data = await response.json();
@@ -976,6 +984,24 @@ export default function AdminCreateProduct() {
                           {opts.required && selectedStyleOption === "" && (
                             <p className="text-xs text-muted-foreground">Choose a {(opts.label as string).toLowerCase()} before generating</p>
                           )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Style base image preview */}
+                    {(() => {
+                      const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+                      let previewUrl: string | undefined;
+                      if (selectedStyleOption !== "" && (activeStyle as any)?.options) {
+                        const choice = (activeStyle as any).options.choices.find((c: any) => c.id === selectedStyleOption);
+                        if (choice?.baseImageUrl) previewUrl = choice.baseImageUrl;
+                      }
+                      if (!previewUrl && (activeStyle as any)?.baseImageUrl) previewUrl = (activeStyle as any).baseImageUrl;
+                      if (!previewUrl) return null;
+                      return (
+                        <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
+                          <img src={previewUrl} alt="Style reference" className="w-10 h-10 rounded object-cover" />
+                          <span className="text-xs text-muted-foreground">Style reference — AI will use this as visual inspiration</span>
                         </div>
                       );
                     })()}

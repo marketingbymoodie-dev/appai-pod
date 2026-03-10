@@ -23,6 +23,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
+  { table: "style_presets",         column: "base_image_url",              type: "TEXT" },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

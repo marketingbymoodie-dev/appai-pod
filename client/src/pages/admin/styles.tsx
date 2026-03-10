@@ -27,6 +27,8 @@ export default function AdminStyles() {
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
   const [styleCategory, setStyleCategory] = useState<StyleCategory>("all");
+  const [styleBaseImageUrl, setStyleBaseImageUrl] = useState<string>("");
+  const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("show-all");
 
   const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
@@ -34,7 +36,7 @@ export default function AdminStyles() {
   });
 
   const createStyleMutation = useMutation({
-    mutationFn: async (data: { name: string; promptPrefix: string; category: StyleCategory }) => {
+    mutationFn: async (data: { name: string; promptPrefix: string; category: StyleCategory; baseImageUrl?: string }) => {
       const response = await apiRequest("POST", "/api/admin/styles", data);
       return response.json();
     },
@@ -50,7 +52,7 @@ export default function AdminStyles() {
   });
 
   const updateStyleMutation = useMutation({
-    mutationFn: async ({ id, ...data }: { id: number; name: string; promptPrefix: string; category: StyleCategory }) => {
+    mutationFn: async ({ id, ...data }: { id: number; name: string; promptPrefix: string; category: StyleCategory; baseImageUrl?: string }) => {
       const response = await apiRequest("PATCH", `/api/admin/styles/${id}`, data);
       return response.json();
     },
@@ -98,6 +100,7 @@ export default function AdminStyles() {
     setStyleName("");
     setStylePrompt("");
     setStyleCategory("all");
+    setStyleBaseImageUrl("");
   };
 
   const handleEditStyle = (style: StylePresetDB) => {
@@ -105,14 +108,34 @@ export default function AdminStyles() {
     setStyleName(style.name);
     setStylePrompt(style.promptPrefix);
     setStyleCategory((style.category as StyleCategory) || "all");
+    setStyleBaseImageUrl((style as any).baseImageUrl || "");
     setStyleDialogOpen(true);
   };
 
+  const handleBaseImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingBaseImage(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      if (!res.ok) throw new Error("Upload failed");
+      const data = await res.json();
+      setStyleBaseImageUrl(data.url || data.objectUrl || "");
+    } catch (err) {
+      toast({ title: "Upload failed", description: String(err), variant: "destructive" });
+    } finally {
+      setIsUploadingBaseImage(false);
+    }
+  };
+
   const handleSaveStyle = () => {
+    const payload = { name: styleName, promptPrefix: stylePrompt, category: styleCategory, baseImageUrl: styleBaseImageUrl || undefined };
     if (editingStyle) {
-      updateStyleMutation.mutate({ id: editingStyle.id, name: styleName, promptPrefix: stylePrompt, category: styleCategory });
+      updateStyleMutation.mutate({ id: editingStyle.id, ...payload });
     } else {
-      createStyleMutation.mutate({ name: styleName, promptPrefix: stylePrompt, category: styleCategory });
+      createStyleMutation.mutate(payload);
     }
   };
 
@@ -298,6 +321,34 @@ export default function AdminStyles() {
                 />
                 <p className="text-xs text-muted-foreground">
                   This text will be prepended to the customer's prompt
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label>Base Reference Image (optional)</Label>
+                <div className="flex items-center gap-3">
+                  {styleBaseImageUrl && (
+                    <div className="relative shrink-0">
+                      <img src={styleBaseImageUrl} alt="Base" className="w-12 h-12 rounded object-cover border" />
+                      <button
+                        type="button"
+                        onClick={() => setStyleBaseImageUrl("")}
+                        className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
+                      >x</button>
+                    </div>
+                  )}
+                  <div>
+                    <Input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleBaseImageUpload}
+                      disabled={isUploadingBaseImage}
+                      className="text-xs"
+                    />
+                    {isUploadingBaseImage && <p className="text-xs text-muted-foreground mt-1">Uploading...</p>}
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  AI will use this image as a visual foundation alongside the customer's prompt and reference image
                 </p>
               </div>
               <div className="flex justify-end gap-2">

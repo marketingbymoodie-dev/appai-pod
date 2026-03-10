@@ -552,6 +552,7 @@ export async function registerRoutes(
       category: s.category,
       promptPlaceholder: (s as any).promptPlaceholder,
       options: (s as any).options,
+      baseImageUrl: (s as any).baseImageUrl,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -577,7 +578,7 @@ export async function registerRoutes(
       const stylePresets =
         dbStyles.length > 0
           ? dbStyles.map((s) => {
-              // Merge promptPlaceholder and options from the hardcoded STYLE_PRESETS since the DB doesn't store them
+              // Merge promptPlaceholder, options, and baseImageUrl from hardcoded STYLE_PRESETS since DB doesn't store sub-options
               const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
               return {
                 id: s.id.toString(),
@@ -586,6 +587,7 @@ export async function registerRoutes(
                 category: s.category || "all",
                 promptPlaceholder: (hardcoded as any)?.promptPlaceholder,
                 options: (hardcoded as any)?.options,
+                baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
               };
             })
           : hardcodedFallback;
@@ -765,7 +767,7 @@ export async function registerRoutes(
         });
       }
 
-      const { prompt, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -780,15 +782,17 @@ export async function registerRoutes(
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
       let styleCategory = "all"; // Track category for base prompt enforcement
+      let styleBaseImageUrl: string | undefined; // Style-level base reference image
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
         if (merchantId) {
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
-          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null }) => s.id.toString() === stylePreset);
+          const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
           if (selectedStyle && selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
             styleCategory = selectedStyle.category || "all";
+            if (selectedStyle.baseImageUrl) styleBaseImageUrl = selectedStyle.baseImageUrl;
           }
         }
         // Fall back to hardcoded STYLE_PRESETS only if no merchant context or no match
@@ -799,6 +803,10 @@ export async function registerRoutes(
             styleCategory = hardcodedStyle.category || "all";
           }
         }
+      }
+      // Client can pass a resolved baseImageUrl (from sub-option choices); use it if server didn't find one
+      if (!styleBaseImageUrl && clientBaseImageUrl) {
+        styleBaseImageUrl = clientBaseImageUrl;
       }
 
 
@@ -967,7 +975,7 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
       } else {
@@ -1041,7 +1049,7 @@ ${textEdgeRestrictions}
 
       // Build final prompt: CONSTRAINTS FIRST, then style, then user description
       // This ensures Gemini prioritizes our dimensional requirements over style biases
-      const geminiAspectRatio = isApparel ? "1:1" : mapToGeminiAspectRatio(aspectRatioStr);
+      const geminiAspectRatio = mapToGeminiAspectRatio(aspectRatioStr);
       
       // Restructure prompt: constraints first, then style/content
       const constraintsFirst = sizingRequirements;
@@ -1051,35 +1059,47 @@ ${textEdgeRestrictions}
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
       // Resolve reference image for Replicate — pass data URLs directly to avoid URL-accessibility issues
-      let inputImageUrl: string | null = null;
+      let customerImageUrl: string | null = null;
       if (referenceImage) {
         try {
           if (referenceImage.startsWith("data:")) {
-            inputImageUrl = referenceImage;
+            customerImageUrl = referenceImage;
           } else if (referenceImage.startsWith("http")) {
-            inputImageUrl = referenceImage;
+            customerImageUrl = referenceImage;
           } else if (referenceImage.startsWith("/objects/")) {
             const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            inputImageUrl = `${appUrl}${referenceImage}`;
+            customerImageUrl = `${appUrl}${referenceImage}`;
           }
-          if (inputImageUrl) {
-            const urlType = inputImageUrl.startsWith("data:") ? "data-url" : "http-url";
-            const urlSize = inputImageUrl.length;
+          if (customerImageUrl) {
+            const urlType = customerImageUrl.startsWith("data:") ? "data-url" : "http-url";
+            const urlSize = customerImageUrl.length;
             console.log(`[Generate] Reference image: type=${urlType}, size=${urlSize} chars`);
           }
         } catch (refErr) {
           console.warn("[Generate] Could not process reference image, generating without it:", refErr);
-          inputImageUrl = null;
+          customerImageUrl = null;
         }
       }
 
-      // When a reference image is provided, instruct the model to use it
-      if (inputImageUrl) {
-        // For typography and text-heavy styles, integrate the reference as a mascot element within the composition
-        const isTextStyle = stylePreset && ["typography", "retro-badge"].includes(stylePreset);
-        const refInstruction = isTextStyle
-          ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
-          : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+      // Build image input array: style base image + customer reference image
+      const imageInputUrls: string[] = [];
+      if (styleBaseImageUrl) imageInputUrls.push(styleBaseImageUrl);
+      if (customerImageUrl) imageInputUrls.push(customerImageUrl);
+      const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
+
+      // When reference images are provided, instruct the model how to use them
+      if (imageInputUrls.length > 0) {
+        let refInstruction: string;
+        if (styleBaseImageUrl && customerImageUrl) {
+          refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
+        } else if (customerImageUrl) {
+          const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
+          refInstruction = isTextStyle
+            ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
+            : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+        } else {
+          refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
+        }
         fullPrompt = `${refInstruction} ${fullPrompt}`;
       }
 
@@ -1293,7 +1313,7 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
 
@@ -1550,7 +1570,7 @@ console.log("[shopify/session] installation ok", {
   // Requires valid session token from /api/shopify/session
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, sessionToken, bgRemovalSensitivity } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -1634,16 +1654,16 @@ console.log("[shopify/session] installation ok", {
 
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
-      let embedStyleCategory = "all"; // Track category for base prompt enforcement
+      let embedStyleCategory = "all";
+      let embedStyleBaseImageUrl: string | undefined;
       if (stylePreset && installation.merchantId) {
-        // Try to find in database styles first
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null }) => s.id.toString() === stylePreset);
+        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
           embedStyleCategory = selectedStyle.category || "all";
+          if (selectedStyle.baseImageUrl) embedStyleBaseImageUrl = selectedStyle.baseImageUrl;
         }
-        // Fall back to hardcoded STYLE_PRESETS if not found in database
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
@@ -1651,6 +1671,9 @@ console.log("[shopify/session] installation ok", {
             embedStyleCategory = hardcodedStyle.category || "all";
           }
         }
+      }
+      if (!embedStyleBaseImageUrl && clientBaseImageUrlEmbed) {
+        embedStyleBaseImageUrl = clientBaseImageUrlEmbed;
       }
 
       // Load product type config if provided
@@ -1796,26 +1819,24 @@ ${textEdgeRestrictions}
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
-      // Resolve reference image for Replicate — pass data URLs directly to avoid URL-accessibility issues
-      let inputImageUrl: string | null = null;
+      // Resolve customer reference image
+      let embedCustomerImageUrl: string | null = null;
       if (referenceImage) {
         try {
           if (referenceImage.startsWith("data:")) {
-            inputImageUrl = referenceImage;
+            embedCustomerImageUrl = referenceImage;
           } else if (referenceImage.startsWith("http")) {
-            inputImageUrl = referenceImage;
+            embedCustomerImageUrl = referenceImage;
           } else if (referenceImage.startsWith("/objects/")) {
             const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            inputImageUrl = `${appUrl}${referenceImage}`;
+            embedCustomerImageUrl = `${appUrl}${referenceImage}`;
           }
-          if (inputImageUrl) {
-            const urlType = inputImageUrl.startsWith("data:") ? "data-url" : "http-url";
-            const urlSize = inputImageUrl.length;
-            console.log(`[Shopify Generate] Reference image: type=${urlType}, size=${urlSize} chars`);
+          if (embedCustomerImageUrl) {
+            console.log(`[Shopify Generate] Reference image: type=${embedCustomerImageUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${embedCustomerImageUrl.length} chars`);
           }
         } catch (refErr) {
           console.warn("[Shopify Generate] Could not process reference image, generating without it:", refErr);
-          inputImageUrl = null;
+          embedCustomerImageUrl = null;
         }
       }
 
@@ -1825,12 +1846,24 @@ ${textEdgeRestrictions}
         isApparel = true;
       }
 
-      // When a reference image is provided, instruct the model to use it
-      if (inputImageUrl) {
-        const isTextStyle = stylePreset && ["typography", "retro-badge"].includes(stylePreset);
-        const refInstruction = isTextStyle
-          ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
-          : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+      // Build image input array: style base image + customer reference image
+      const embedImageInputUrls: string[] = [];
+      if (embedStyleBaseImageUrl) embedImageInputUrls.push(embedStyleBaseImageUrl);
+      if (embedCustomerImageUrl) embedImageInputUrls.push(embedCustomerImageUrl);
+      const inputImageUrl: string | string[] | null = embedImageInputUrls.length > 1 ? embedImageInputUrls : embedImageInputUrls[0] || null;
+
+      if (embedImageInputUrls.length > 0) {
+        let refInstruction: string;
+        if (embedStyleBaseImageUrl && embedCustomerImageUrl) {
+          refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
+        } else if (embedCustomerImageUrl) {
+          const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
+          refInstruction = isTextStyle
+            ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE element integrated INTO the typographic composition. Do NOT duplicate the subject.`
+            : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+        } else {
+          refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
+        }
         fullPrompt = `${refInstruction} ${fullPrompt}`;
       }
 
@@ -4113,7 +4146,7 @@ ${textEdgeRestrictions}
     }
 
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
 
       if (!shop) {
@@ -4176,17 +4209,19 @@ ${textEdgeRestrictions}
 
       // Look up style preset
       let stylePromptPrefix = "";
-      let sfStyleCategory = "all"; // Track category for base prompt enforcement
+      let sfStyleCategory = "all";
+      let sfStyleBaseImageUrl: string | undefined;
       if (stylePreset && installation.merchantId) {
         t1 = Date.now();
         const dbStyles = await withTimeout(
           storage.getStylePresetsByMerchant(installation.merchantId), 5000, "getStylePresetsByMerchant"
         );
         console.log(P, reqId, `style presets lookup ok in ${Date.now() - t1}ms`);
-        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null }) => s.id.toString() === stylePreset);
+        const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
           sfStyleCategory = selectedStyle.category || "all";
+          if (selectedStyle.baseImageUrl) sfStyleBaseImageUrl = selectedStyle.baseImageUrl;
         }
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
@@ -4195,6 +4230,9 @@ ${textEdgeRestrictions}
             sfStyleCategory = hardcodedStyle.category || "all";
           }
         }
+      }
+      if (!sfStyleBaseImageUrl && clientBaseImageUrlSf) {
+        sfStyleBaseImageUrl = clientBaseImageUrlSf;
       }
 
       // Load product type config
@@ -4351,7 +4389,7 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
 5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
 7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. SQUARE FORMAT: Create a 1:1 square composition with the design centered.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
       } else {
@@ -4460,35 +4498,47 @@ ${textEdgeRestrictions}
           await storage.updateGenerationJob(jobId, { status: "running" });
           console.log(`${W} worker started jobId=${jobId} +${Date.now() - wStart}ms`);
 
-          // Resolve reference image — pass data URLs directly to avoid URL-accessibility issues
-          let inputImageUrl: string | null = null;
+          // Resolve customer reference image
+          let sfCustomerImageUrl: string | null = null;
           if (referenceImage) {
             try {
               if (referenceImage.startsWith("data:")) {
-                inputImageUrl = referenceImage;
+                sfCustomerImageUrl = referenceImage;
               } else if (referenceImage.startsWith("http")) {
-                inputImageUrl = referenceImage;
+                sfCustomerImageUrl = referenceImage;
               } else if (referenceImage.startsWith("/objects/")) {
-                inputImageUrl = `${appUrl}${referenceImage}`;
+                sfCustomerImageUrl = `${appUrl}${referenceImage}`;
               }
-              if (inputImageUrl) {
-                const urlType = inputImageUrl.startsWith("data:") ? "data-url" : "http-url";
-                console.log(`${W} Reference image: type=${urlType}, size=${inputImageUrl.length} chars`);
-                await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : inputImageUrl });
+              if (sfCustomerImageUrl) {
+                const urlType = sfCustomerImageUrl.startsWith("data:") ? "data-url" : "http-url";
+                console.log(`${W} Reference image: type=${urlType}, size=${sfCustomerImageUrl.length} chars`);
+                await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : sfCustomerImageUrl });
               }
             } catch (refErr) {
               console.warn(`${W} Could not process reference image, continuing without it:`, refErr);
-              inputImageUrl = null;
+              sfCustomerImageUrl = null;
             }
           }
-          console.log(`${W} ref image resolved +${Date.now() - wStart}ms inputImageUrl=${inputImageUrl ? "yes" : "none"}`);
+          console.log(`${W} ref image resolved +${Date.now() - wStart}ms`);
 
-          // When a reference image is provided, instruct the model to use it
-          if (inputImageUrl) {
-            const isTextStyle = stylePreset && ["typography", "retro-badge"].includes(stylePreset);
-            const refInstruction = isTextStyle
-              ? `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`
-              : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+          // Build image input array: style base image + customer reference
+          const sfImageInputUrls: string[] = [];
+          if (sfStyleBaseImageUrl) sfImageInputUrls.push(sfStyleBaseImageUrl);
+          if (sfCustomerImageUrl) sfImageInputUrls.push(sfCustomerImageUrl);
+          const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
+
+          if (sfImageInputUrls.length > 0) {
+            let refInstruction: string;
+            if (sfStyleBaseImageUrl && sfCustomerImageUrl) {
+              refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The SECOND is the customer's subject — incorporate it as the focal element. Do NOT duplicate the subject.`;
+            } else if (sfCustomerImageUrl) {
+              const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
+              refInstruction = isTextStyle
+                ? `Using the provided reference image, incorporate its subject as a SINGLE element integrated INTO the typographic composition. Do NOT duplicate.`
+                : `Using the provided reference image as visual inspiration, incorporate its key elements, style, and subject into the design.`;
+            } else {
+              refInstruction = `Using the provided style reference image as visual inspiration and composition guide, create the design following its overall style and layout.`;
+            }
             fullPrompt = `${refInstruction} ${fullPrompt}`;
           }
 
@@ -6503,7 +6553,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -6516,6 +6566,7 @@ ${textEdgeRestrictions}
         category: category || "all",
         isActive: isActive !== undefined ? isActive : true,
         sortOrder: sortOrder || 0,
+        baseImageUrl: baseImageUrl || null,
       });
 
       res.json(preset);
@@ -6541,7 +6592,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -6549,6 +6600,7 @@ ${textEdgeRestrictions}
         category: category !== undefined ? category : preset.category,
         isActive: isActive !== undefined ? isActive : preset.isActive,
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
+        baseImageUrl: baseImageUrl !== undefined ? (baseImageUrl || null) : (preset as any).baseImageUrl,
       });
 
       res.json(updated);
@@ -10559,7 +10611,7 @@ ${textEdgeRestrictions}
 
     // Fetch style presets so the storefront iframe doesn't need a separate
     // /api/config round-trip (which can fail/timeout in CORS-restricted envs).
-    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any }> = [];
+    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string }> = [];
     try {
       const dbStyles = await storage.getAllActiveStylePresets();
       stylePresets = dbStyles.map((s: any) => {
@@ -10571,6 +10623,7 @@ ${textEdgeRestrictions}
           category: s.category || "all",
           promptPlaceholder: (hardcoded as any)?.promptPlaceholder,
           options: (hardcoded as any)?.options,
+          baseImageUrl: s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
         };
       });
     } catch (e) {

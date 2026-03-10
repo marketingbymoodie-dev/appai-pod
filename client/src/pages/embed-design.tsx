@@ -1626,6 +1626,7 @@ export default function EmbedDesign() {
       frameColor: string;
       stylePreset?: string;
       referenceImage?: string;
+      baseImageUrl?: string;
       shop?: string;
       sessionToken?: string;
       productTypeId?: string;
@@ -1841,11 +1842,16 @@ export default function EmbedDesign() {
 
     // Build the prompt: prepend selected option fragment if present
     let fullPrompt = prompt;
+    let resolvedBaseImageUrl: string | undefined;
     if (activePreset?.options && selectedStyleOption !== "") {
       const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
       if (selectedChoice) {
         fullPrompt = `${selectedChoice.promptFragment}. ${prompt}`;
+        if (selectedChoice.baseImageUrl) resolvedBaseImageUrl = selectedChoice.baseImageUrl;
       }
+    }
+    if (!resolvedBaseImageUrl && (activePreset as any)?.baseImageUrl) {
+      resolvedBaseImageUrl = (activePreset as any).baseImageUrl;
     }
     if (selectedPreset && selectedPreset !== "") {
       const preset = filteredStylePresets.find((p) => p.id === selectedPreset);
@@ -1882,6 +1888,7 @@ export default function EmbedDesign() {
       frameColor: selectedFrameColor || "black",
       stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
       referenceImage: referenceImageBase64,
+      baseImageUrl: resolvedBaseImageUrl || undefined,
       shop: (isShopify || isStorefront) ? shopDomain : undefined,
       sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
       productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
@@ -3169,6 +3176,24 @@ export default function EmbedDesign() {
                     {activePreset.options.required && selectedStyleOption === "" && (
                       <p className="text-xs text-muted-foreground">Please choose a layout to continue</p>
                     )}
+                  </div>
+                );
+              })()}
+
+              {/* Style base image preview */}
+              {(() => {
+                const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                let previewUrl: string | undefined;
+                if (selectedStyleOption !== "" && activePreset?.options) {
+                  const choice = activePreset.options.choices.find((c: any) => c.id === selectedStyleOption);
+                  if ((choice as any)?.baseImageUrl) previewUrl = (choice as any).baseImageUrl;
+                }
+                if (!previewUrl && (activePreset as any)?.baseImageUrl) previewUrl = (activePreset as any).baseImageUrl;
+                if (!previewUrl) return null;
+                return (
+                  <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
+                    <img src={previewUrl} alt="Style reference" className="w-10 h-10 rounded object-cover" />
+                    <span className="text-xs text-muted-foreground">Style reference — AI will use this as visual inspiration</span>
                   </div>
                 );
               })()}

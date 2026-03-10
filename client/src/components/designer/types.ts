@@ -16,6 +16,7 @@ export interface StylePresetOption {
   id: string;
   name: string;
   promptFragment: string;
+  baseImageUrl?: string;
 }
 
 export interface StylePreset {
@@ -25,6 +26,7 @@ export interface StylePreset {
   thumbnailUrl?: string;
   category?: "all" | "decor" | "apparel";
   promptPlaceholder?: string;
+  baseImageUrl?: string;
   options?: {
     label: string;
     required: boolean;

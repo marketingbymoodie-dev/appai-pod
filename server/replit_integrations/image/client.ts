@@ -104,7 +104,7 @@ async function urlToBase64(
 export type GenerateImageParams = {
   prompt: string;
   aspectRatio?: string;
-  inputImageUrl?: string | null;
+  inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
 };
 
@@ -293,7 +293,8 @@ export async function generateImageBase64(
     };
 
     if (params.inputImageUrl) {
-      input.image_input = [params.inputImageUrl];
+      const urls = Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl];
+      input.image_input = urls.filter(Boolean);
     }
 
     try {
