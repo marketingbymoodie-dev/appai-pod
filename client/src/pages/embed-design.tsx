@@ -1388,7 +1388,8 @@ export default function EmbedDesign() {
     }
   }, [generatedDesign?.imageUrl]);
 
-  // Fetch Printify mockups for shared designs once product config is loaded
+  // Fetch Printify mockups for shared designs once product config is loaded.
+  // For AOP products: show Pattern Customizer instead of auto-fetching mockups (same as post-generation).
   useEffect(() => {
     if (
       isSharedDesign &&
@@ -1399,20 +1400,26 @@ export default function EmbedDesign() {
       !mockupLoading &&
       !mockupFailed
     ) {
-      fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
-        productTypeConfig.id,
-        selectedSize,
-        selectedFrameColor || 'default',
-        transform.scale,
-        transform.x,
-        transform.y
-      );
+      if (productTypeConfig.isAllOverPrint) {
+        setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+        setAopPatternUrl(null);
+        setShowPatternStep(true);
+      } else {
+        fetchPrintifyMockups(
+          toAbsoluteImageUrl(generatedDesign.imageUrl),
+          productTypeConfig.id,
+          selectedSize,
+          selectedFrameColor || 'default',
+          transform.scale,
+          transform.x,
+          transform.y
+        );
+      }
     }
   }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups]);
 
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
-  // This handles the case where React state batching causes config to arrive after the mutation settles.
+  // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
   useEffect(() => {
     if (
       !isStorefront ||
@@ -1424,6 +1431,13 @@ export default function EmbedDesign() {
       mockupLoading ||
       mockupFailed
     ) return;
+
+    if (productTypeConfig.isAllOverPrint) {
+      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+      setAopPatternUrl(null);
+      setShowPatternStep(true);
+      return;
+    }
 
     console.log('[Mockups] Fallback trigger: config loaded after generation');
     fetchPrintifyMockups(
@@ -2018,14 +2032,20 @@ export default function EmbedDesign() {
         }));
       } catch (e) { /* sessionStorage may be unavailable */ }
 
-      // Clear any existing mockups and fetch Printify composite mockups for imported design
+      // Clear any existing mockups. For AOP: show Pattern Customizer; else fetch Printify mockups.
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+        if (productTypeConfig.isAllOverPrint) {
+          setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
+          setAopPatternUrl(null);
+          setShowPatternStep(true);
+        } else {
+          fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+        }
       }
 
       toast({

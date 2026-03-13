@@ -306,9 +306,15 @@ export default function AdminCreateProduct() {
         description: `Your ${source === "kittl" ? "Kittl" : "custom"} design is ready` 
       });
 
-      // Generate mockups if available
+      // For AOP: show Pattern Customizer; else generate mockups
       if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId) {
-        await generateMockups(importData.imageUrl);
+        if (designerConfig?.isAllOverPrint) {
+          setPendingMotifUrl(importData.imageUrl);
+          setPatternUrl(null);
+          setShowPatternStep(true);
+        } else {
+          await generateMockups(importData.imageUrl);
+        }
       }
     } catch (error: any) {
       setImportError(error.message);
