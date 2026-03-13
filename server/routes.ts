@@ -8361,11 +8361,15 @@ ${textEdgeRestrictions}
         "front_waistband", "back_waistband",
         "left_panel", "right_panel",
         "left_sleeve", "right_sleeve",
+        "left_side", "right_side",
         "all_over", "full_body",
       ]);
       const positionKeys = Object.keys(placeholderDimensions);
       const hasAOPPositions = positionKeys.some(p => AOP_POSITION_NAMES.has(p));
-      const isAllOverPrint = hasAOPPositions || positionKeys.length >= 3;
+      // Also flag as AOP if there are 2+ positions and none of them are the standard front/back pair
+      const isStandardFrontBack = positionKeys.length <= 2 &&
+        positionKeys.every(p => p === "front" || p === "back" || p === "default");
+      const isAllOverPrint = hasAOPPositions || (positionKeys.length >= 2 && !isStandardFrontBack);
 
       // Build the persisted placeholder positions list (all positions with their dimensions)
       const placeholderPositions = positionKeys.map(pos => ({
