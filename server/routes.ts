@@ -3476,6 +3476,10 @@ ${textEdgeRestrictions}
           safeZoneMargin,
         },
         variantMap,
+        isAllOverPrint: productType.isAllOverPrint || false,
+        placeholderPositions: typeof productType.placeholderPositions === "string"
+          ? JSON.parse(productType.placeholderPositions || "[]")
+          : productType.placeholderPositions || [],
       };
 
       console.log(`[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
