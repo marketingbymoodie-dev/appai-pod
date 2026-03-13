@@ -5508,8 +5508,17 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "imageUrl is required" });
       }
 
+      // Convert relative /objects/ paths to absolute public URLs for Picsart
+      let absoluteImageUrl = imageUrl;
+      if (imageUrl.startsWith("/objects/")) {
+        const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
+        const protocol = req.protocol || "https";
+        absoluteImageUrl = `${protocol}://${host}${imageUrl}`;
+        console.log("[Pattern Preview] Converted relative URL:", absoluteImageUrl);
+      }
+
       const result = await generatePattern({
-        imageUrl,
+        imageUrl: absoluteImageUrl,
         pattern,
         scale,
         rotate,
