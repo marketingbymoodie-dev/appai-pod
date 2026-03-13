@@ -387,8 +387,8 @@ export default function AdminCreateProduct() {
     }
   };
 
-  const generateMockups = async (imageUrl: string, appliedPatternUrl?: string): Promise<boolean> => {
-    console.log("[CreateProduct] generateMockups called with:", imageUrl?.substring(0, 50), "patternUrl:", appliedPatternUrl?.substring(0, 50));
+  const generateMockups = async (imageUrl: string, appliedPatternUrl?: string, mirrorLegs?: boolean): Promise<boolean> => {
+    console.log("[CreateProduct] generateMockups called with:", imageUrl?.substring(0, 50), "patternUrl:", appliedPatternUrl?.substring(0, 50), "mirrorLegs:", mirrorLegs);
     if (!selectedProductTypeId || !selectedSize) {
       console.log("[CreateProduct] generateMockups - missing productTypeId or size");
       return false;
@@ -401,6 +401,7 @@ export default function AdminCreateProduct() {
         productTypeId: selectedProductTypeId,
         designImageUrl: imageUrl,
         patternUrl: appliedPatternUrl || undefined,
+        mirrorLegs: mirrorLegs ?? false,
         sizeId: selectedSize,
         colorId: selectedFrameColor || "default",
         scale: imageScale,
@@ -1109,10 +1110,14 @@ export default function AdminCreateProduct() {
                             const positions = designerConfig?.placeholderPositions || [];
                             return positions.reduce((max, p) => Math.max(max, p.height), 2000);
                           })()}
-                          onApply={async (appliedPatternUrl) => {
+                          hasPairedPanels={(() => {
+                            const positions = (designerConfig?.placeholderPositions || []).map((p) => p.position);
+                            return positions.some((p) => p.startsWith("left")) && positions.some((p) => p.startsWith("right"));
+                          })()}
+                          onApply={async (appliedPatternUrl, options) => {
                             setPatternUrl(appliedPatternUrl);
                             setShowPatternStep(false);
-                            const success = await generateMockups(pendingMotifUrl, appliedPatternUrl);
+                            const success = await generateMockups(pendingMotifUrl, appliedPatternUrl, options.mirrorLegs);
                             if (!success) {
                               setShowPatternStep(true);
                             }

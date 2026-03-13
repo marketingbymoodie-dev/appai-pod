@@ -1266,7 +1266,8 @@ export default function EmbedDesign() {
     scale: number = 100,
     x: number = 50,
     y: number = 50,
-    patternUrl?: string
+    patternUrl?: string,
+    mirrorLegs?: boolean
   ) => {
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
@@ -1302,6 +1303,7 @@ export default function EmbedDesign() {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
+        mirrorLegs: mirrorLegs ?? false,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1312,6 +1314,7 @@ export default function EmbedDesign() {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
+        mirrorLegs: mirrorLegs ?? false,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1323,6 +1326,7 @@ export default function EmbedDesign() {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
+        mirrorLegs: mirrorLegs ?? false,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -3279,7 +3283,11 @@ export default function EmbedDesign() {
                     const positions = productTypeConfig?.placeholderPositions || [];
                     return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
                   })()}
-                  onApply={async (appliedPatternUrl: string) => {
+                  hasPairedPanels={(() => {
+                    const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
+                    return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
+                  })()}
+                  onApply={async (appliedPatternUrl: string, options) => {
                     setAopPatternUrl(appliedPatternUrl);
                     setShowPatternStep(false);
                     if (productTypeConfig) {
@@ -3291,7 +3299,8 @@ export default function EmbedDesign() {
                         defaultZoom,
                         50,
                         50,
-                        appliedPatternUrl
+                        appliedPatternUrl,
+                        options.mirrorLegs
                       );
                     }
                   }}

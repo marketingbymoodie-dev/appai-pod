@@ -3,6 +3,7 @@ import pRetry from "p-retry";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import sharp from "sharp";
 import { getStorageDir } from "./replit_integrations/object_storage";
 import { uploadMockupToSupabase, getSupabasePublicUrl } from "./supabaseMockups";
 
@@ -19,6 +20,8 @@ interface MockupRequest {
   doubleSided?: boolean; // Send image to both front and back
   /** AOP: list of all panel positions to fill with the same image */
   aopPositions?: { position: string; width: number; height: number }[];
+  /** AOP: when true, right_* panels will receive a horizontally flipped copy of the pattern */
+  mirrorLegs?: boolean;
 }
 
 interface MockupImage {
@@ -296,7 +299,8 @@ async function createTemporaryProduct(
   x: number = 0,
   y: number = 0,
   doubleSided: boolean = false,
-  aopPositions?: { position: string; width: number; height: number }[]
+  aopPositions?: { position: string; width: number; height: number }[],
+  mirroredImageId?: string
 ): Promise<{ productId: string } | { error: string }> {
   const printifyX = 0.5 + (x * 0.5);
   const printifyY = 0.5 + (y * 0.5);
@@ -305,9 +309,12 @@ async function createTemporaryProduct(
   const placeholders: Array<{ position: string; images: typeof imageEntry[] }> = [];
 
   if (aopPositions && aopPositions.length > 0) {
-    // AOP: apply same image to every panel
+    // AOP: apply same image to every panel, mirrored image to right_* panels if provided
     for (const pos of aopPositions) {
-      placeholders.push({ position: pos.position, images: [imageEntry] });
+      const isRightPanel = pos.position.startsWith("right");
+      const useImageId = isRightPanel && mirroredImageId ? mirroredImageId : imageId;
+      const entry = { ...imageEntry, id: useImageId };
+      placeholders.push({ position: pos.position, images: [entry] });
     }
   } else {
     // Standard single/double-sided
@@ -498,7 +505,54 @@ export async function generatePrintifyMockup(
   let productId: string | null = null;
 
   try {
-    const uploadedImage = await uploadImageToPrintify(imageUrl, printifyApiToken);
+    // For AOP mockups: download the pattern, resize to 1024px for fast upload,
+    // and optionally create a horizontally-flipped copy for right_* panels.
+    const isAop = !!(request.aopPositions && request.aopPositions.length > 0);
+    let uploadUrl: string | Buffer = imageUrl;
+    let mirroredUploadBuffer: Buffer | null = null;
+
+    if (isAop) {
+      try {
+        // Fetch the pattern file (may be an absolute http URL or a data URL)
+        let originalBuffer: Buffer;
+        if (isDataUrl(imageUrl)) {
+          const b64 = extractBase64FromDataUrl(imageUrl);
+          originalBuffer = Buffer.from(b64, "base64");
+        } else {
+          const fetchRes = await fetch(imageUrl);
+          if (fetchRes.ok) {
+            originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
+          } else {
+            console.warn("[Printify AOP] Could not fetch pattern for resize — using original URL");
+            originalBuffer = Buffer.alloc(0);
+          }
+        }
+
+        if (originalBuffer.length > 0) {
+          // Resize to max 1024px for mockup generation speed
+          uploadUrl = await sharp(originalBuffer)
+            .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
+            .png()
+            .toBuffer();
+          console.log(`[Printify AOP] Resized pattern to ≤1024px for mockup upload (${(uploadUrl as Buffer).length} bytes)`);
+
+          // Create mirrored buffer for right panels only when mirrorLegs is requested
+          if (request.mirrorLegs) {
+            mirroredUploadBuffer = await sharp(uploadUrl as Buffer)
+              .flop()
+              .png()
+              .toBuffer();
+            console.log(`[Printify AOP] Created mirrored pattern for right panels (${mirroredUploadBuffer.length} bytes)`);
+          }
+        }
+      } catch (resizeErr: any) {
+        console.warn("[Printify AOP] Resize/mirror failed, falling back to original URL:", resizeErr.message);
+        uploadUrl = imageUrl;
+        mirroredUploadBuffer = null;
+      }
+    }
+
+    const uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
     if (!uploadedImage) {
       return {
         success: false,
@@ -508,6 +562,18 @@ export async function generatePrintifyMockup(
         step: "printify_upload",
         error: "Failed to upload image to Printify after retries",
       };
+    }
+
+    // Upload mirrored copy for AOP right panels if we generated one
+    let resolvedMirroredImageId: string | undefined;
+    if (isAop && mirroredUploadBuffer) {
+      const mirroredImage = await uploadImageToPrintify(mirroredUploadBuffer, printifyApiToken);
+      if (mirroredImage) {
+        resolvedMirroredImageId = mirroredImage.id;
+        console.log(`[Printify AOP] Uploaded mirrored image: ${resolvedMirroredImageId}`);
+      } else {
+        console.warn("[Printify AOP] Mirrored image upload failed — right panels will use original");
+      }
     }
 
     const createResult = await createTemporaryProduct(
@@ -521,7 +587,8 @@ export async function generatePrintifyMockup(
       x,
       y,
       doubleSided,
-      request.aopPositions
+      request.aopPositions,
+      resolvedMirroredImageId
     );
 
     if ("error" in createResult) {

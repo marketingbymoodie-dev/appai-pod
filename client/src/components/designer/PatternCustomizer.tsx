@@ -9,7 +9,8 @@
  *     motifUrl={generatedImageUrl}
  *     productWidth={4500}
  *     productHeight={5400}
- *     onApply={(patternUrl) => triggerMockup(patternUrl)}
+ *     hasPairedPanels={true}
+ *     onApply={(patternUrl, options) => triggerMockup(patternUrl, options)}
  *   />
  */
 
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Loader2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -46,11 +48,19 @@ const PREVIEW_SIZE = 1024;
 const APPLY_CAP = 2048;
 const COUNTDOWN_SECONDS = 5;
 
+export interface PatternApplyOptions {
+  mirrorLegs: boolean;
+}
+
 interface PatternCustomizerProps {
   motifUrl: string;
+  /** Largest panel width in px (used to size Picsart output, capped at APPLY_CAP) */
   productWidth?: number;
+  /** Largest panel height in px (used to size Picsart output, capped at APPLY_CAP) */
   productHeight?: number;
-  onApply: (patternUrl: string) => void | Promise<void>;
+  /** When true, show the "Mirror left/right panels" toggle */
+  hasPairedPanels?: boolean;
+  onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
   isLoading?: boolean;
 }
 
@@ -58,11 +68,13 @@ export function PatternCustomizer({
   motifUrl,
   productWidth = 2000,
   productHeight = 2000,
+  hasPairedPanels = false,
   onApply,
   isLoading = false,
 }: PatternCustomizerProps) {
   const [pattern, setPattern] = useState<PatternType>("tile");
   const [scale, setScale] = useState<number>(1.5);
+  const [mirrorLegs, setMirrorLegs] = useState<boolean>(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
@@ -132,12 +144,10 @@ export function PatternCustomizer({
     setIsApplying(true);
     startCountdown();
     try {
-      const url = previewUrl
-        ? await callPatternApi(applyWidth, applyHeight)
-        : await callPatternApi(applyWidth, applyHeight);
+      const url = await callPatternApi(applyWidth, applyHeight);
       if (url) {
         setPreviewUrl(url);
-        await onApply(url);
+        await onApply(url, { mirrorLegs });
       }
     } finally {
       stopCountdown();
@@ -248,6 +258,26 @@ export function PatternCustomizer({
           </div>
         </div>
       </div>
+
+      {/* Mirror toggle — only shown for products with paired left/right panels */}
+      {hasPairedPanels && (
+        <div className="flex items-center justify-between rounded-md border px-3 py-2 bg-background">
+          <div className="space-y-0.5">
+            <Label htmlFor="mirror-legs-toggle" className="text-xs font-medium cursor-pointer">
+              Mirror left &amp; right panels
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Flips the pattern on one leg for symmetry
+            </p>
+          </div>
+          <Switch
+            id="mirror-legs-toggle"
+            checked={mirrorLegs}
+            onCheckedChange={setMirrorLegs}
+            disabled={busy}
+          />
+        </div>
+      )}
 
       {error && (
         <p className="text-xs text-destructive">{error}</p>
