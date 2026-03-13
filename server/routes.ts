@@ -5528,7 +5528,28 @@ ${textEdgeRestrictions}
         height,
       });
 
-      res.json({ patternUrl: result.url, patternId: result.id });
+      if (!result.url) {
+        return res.status(500).json({ error: "Picsart returned no pattern URL" });
+      }
+
+      // Download the pattern from Picsart CDN and persist locally so
+      // Printify (and our own server) can always reach it.
+      console.log("[Pattern Preview] Downloading pattern from Picsart CDN:", result.url.substring(0, 80));
+      const picsartResponse = await fetch(result.url);
+      if (!picsartResponse.ok) {
+        throw new Error(`Failed to download pattern from Picsart CDN (${picsartResponse.status})`);
+      }
+      const patternBuffer = Buffer.from(await picsartResponse.arrayBuffer());
+      const patternId = crypto.randomUUID();
+      const patternFilename = `pattern_${patternId}.png`;
+      const storageDir = getStorageDir();
+      const designsDir = path.join(storageDir, "designs");
+      await fs.promises.mkdir(designsDir, { recursive: true });
+      await fs.promises.writeFile(path.join(designsDir, patternFilename), patternBuffer);
+      const localPatternUrl = `/objects/designs/${patternFilename}`;
+      console.log("[Pattern Preview] Pattern saved locally:", localPatternUrl, `(${patternBuffer.length} bytes)`);
+
+      res.json({ patternUrl: localPatternUrl, patternId: result.id });
     } catch (error: any) {
       console.error("[Pattern Preview] Error:", error);
       res.status(500).json({ error: error.message ?? "Failed to generate pattern" });
@@ -9675,11 +9696,10 @@ ${textEdgeRestrictions}
       // Convert relative URLs to absolute URLs for Printify
       let absoluteImageUrl = effectiveImageUrl;
       if (effectiveImageUrl.startsWith("/objects/")) {
-        // Get the host from request headers or use REPLIT_DEV_DOMAIN
-        const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
+        const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
         absoluteImageUrl = `${protocol}://${host}${effectiveImageUrl}`;
-        console.log("Converting image URL for Printify:", absoluteImageUrl);
+        console.log("[Mockup Generate] Converting image URL for Printify:", absoluteImageUrl);
       }
 
       const merchant = await storage.getMerchantByUserId(userId);
@@ -9731,6 +9751,12 @@ ${textEdgeRestrictions}
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 
+      const aopPositions = productType.isAllOverPrint && productType.placeholderPositions
+        ? JSON.parse(productType.placeholderPositions as string)
+        : undefined;
+
+      console.log("[Mockup Generate] AOP:", !!aopPositions, "positions:", aopPositions?.length, "imageUrl:", absoluteImageUrl.substring(0, 80));
+
       const result = await generatePrintifyMockup({
         blueprintId: productType.printifyBlueprintId,
         providerId,
@@ -9738,20 +9764,18 @@ ${textEdgeRestrictions}
         imageUrl: absoluteImageUrl,
         printifyApiToken: merchant.printifyApiToken,
         printifyShopId: merchant.printifyShopId,
-        scale: scale ? scale / 100 : 1, // Convert from percentage to 0-2 range
-        x: x !== undefined ? (x - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
-        y: y !== undefined ? (y - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
-        // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
+        scale: scale ? scale / 100 : 1,
+        x: x !== undefined ? (x - 50) / 50 : 0,
+        y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
-        aopPositions: productType.isAllOverPrint && productType.placeholderPositions
-          ? JSON.parse(productType.placeholderPositions as string)
-          : undefined,
+        aopPositions,
       });
 
+      console.log("[Mockup Generate] Result:", result.success, "mockups:", result.mockupImages?.length);
       res.json(result);
-    } catch (error) {
-      console.error("Error generating mockup:", error);
-      res.status(500).json({ error: "Failed to generate mockup" });
+    } catch (error: any) {
+      console.error("[Mockup Generate] Error:", error?.message || error);
+      res.status(500).json({ error: error?.message || "Failed to generate mockup" });
     }
   });
 

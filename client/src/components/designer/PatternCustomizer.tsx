@@ -47,7 +47,7 @@ interface PatternCustomizerProps {
   productWidth?: number;
   /** Largest panel height in px (used to size Picsart output, capped at 4000) */
   productHeight?: number;
-  onApply: (patternUrl: string) => void;
+  onApply: (patternUrl: string) => void | Promise<void>;
   isLoading?: boolean;
 }
 
@@ -105,10 +105,9 @@ export function PatternCustomizer({
   const handleApply = async () => {
     setIsApplying(true);
     try {
-      // Use the existing preview if settings haven't changed, otherwise re-generate
       const url = previewUrl ?? (await callPatternApi());
       if (url) {
-        onApply(url);
+        await onApply(url);
       }
     } finally {
       setIsApplying(false);

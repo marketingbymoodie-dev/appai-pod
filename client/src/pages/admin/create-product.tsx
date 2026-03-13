@@ -387,11 +387,11 @@ export default function AdminCreateProduct() {
     }
   };
 
-  const generateMockups = async (imageUrl: string, appliedPatternUrl?: string) => {
-    console.log("[CreateProduct] generateMockups called with:", imageUrl?.substring(0, 50));
+  const generateMockups = async (imageUrl: string, appliedPatternUrl?: string): Promise<boolean> => {
+    console.log("[CreateProduct] generateMockups called with:", imageUrl?.substring(0, 50), "patternUrl:", appliedPatternUrl?.substring(0, 50));
     if (!selectedProductTypeId || !selectedSize) {
       console.log("[CreateProduct] generateMockups - missing productTypeId or size");
-      return;
+      return false;
     }
 
     setMockupLoading(true);
@@ -410,6 +410,11 @@ export default function AdminCreateProduct() {
 
       const data = await response.json();
       console.log("[CreateProduct] Mockup API response:", data);
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
       const mockups = data.mockupImages || data.mockups || [];
       console.log("[CreateProduct] Mockups found:", mockups.length);
       if (mockups.length > 0) {
@@ -417,11 +422,18 @@ export default function AdminCreateProduct() {
           url: m.url || m,
           label: m.label || "Mockup",
         })));
-        // Auto-select first mockup to show artwork on product
         setSelectedMockupIndex(0);
+        return true;
       }
-    } catch (error) {
+      return false;
+    } catch (error: any) {
       console.error("[CreateProduct] Mockup generation failed:", error);
+      toast({
+        title: "Mockup generation failed",
+        description: error?.message || "Could not generate product mockups. Try again.",
+        variant: "destructive",
+      });
+      return false;
     } finally {
       setMockupLoading(false);
     }
@@ -1100,7 +1112,10 @@ export default function AdminCreateProduct() {
                           onApply={async (appliedPatternUrl) => {
                             setPatternUrl(appliedPatternUrl);
                             setShowPatternStep(false);
-                            await generateMockups(pendingMotifUrl, appliedPatternUrl);
+                            const success = await generateMockups(pendingMotifUrl, appliedPatternUrl);
+                            if (!success) {
+                              setShowPatternStep(true);
+                            }
                           }}
                           isLoading={mockupLoading}
                         />
