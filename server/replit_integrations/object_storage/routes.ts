@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import { ObjectStorageService, ObjectNotFoundError, getStorageDir } from "./objectStorage";
+import { getSupabaseDesignPublicUrl } from "../../supabaseDesigns";
 import path from "path";
 
 function contentTypeToExt(contentType: string): string {
@@ -101,6 +102,15 @@ export function registerObjectStorageRoutes(app: Express): void {
       await objectStorageService.downloadObject(objectFile, res);
     } catch (error) {
       if (error instanceof ObjectNotFoundError) {
+        // For designs/ path: try Supabase redirect (files may be in Supabase Storage)
+        const relativePath = req.params.objectPath as string;
+        if (relativePath?.startsWith("designs/")) {
+          const filename = relativePath.slice("designs/".length);
+          if (filename && !filename.includes("..") && !filename.includes("/")) {
+            const supabaseUrl = getSupabaseDesignPublicUrl(filename);
+            if (supabaseUrl) return res.redirect(302, supabaseUrl);
+          }
+        }
         return res.status(404).json({ error: "Object not found" });
       }
       console.error("Error serving object:", error);

@@ -13,6 +13,12 @@ import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./sho
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
+import {
+  isSupabaseDesignsConfigured,
+  uploadDesignToSupabase,
+  uploadDesignFileToSupabase,
+  getSupabaseDesignPublicUrl,
+} from "./supabaseDesigns";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
   return Uint8Array.from(buf);
@@ -37,16 +43,27 @@ function asyncHandler(fn: (req: any, res: Response, next: NextFunction) => Promi
 
 const THUMBNAIL_SIZE = 256; // Max dimension for thumbnails
 
-// Helper function to fetch an image from local storage and convert to base64
+// Helper function to fetch an image from storage (local or Supabase URL) and convert to base64
 async function fetchImageFromStorageAsBase64(objectPath: string): Promise<{ base64: string; mimeType: string }> {
-  // objectPath is like /objects/designs/abc123.png
-  const relativePath = objectPath.replace(/^\/objects\//, "");
-  const localPath = path.join(getStorageDir(), relativePath);
-  const buffer = await fs.promises.readFile(localPath);
+  let buffer: Buffer;
+  let extension: string;
+
+  if (objectPath.startsWith("http://") || objectPath.startsWith("https://")) {
+    const res = await fetch(objectPath);
+    if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
+    buffer = Buffer.from(await res.arrayBuffer());
+    const contentType = res.headers.get("content-type") || "";
+    extension = contentType.includes("png") ? "png" : "jpg";
+  } else {
+    // Local path: /objects/designs/abc123.png
+    const relativePath = objectPath.replace(/^\/objects\//, "");
+    const localPath = path.join(getStorageDir(), relativePath);
+    buffer = await fs.promises.readFile(localPath);
+    extension = path.extname(localPath).slice(1).toLowerCase();
+  }
+
   const base64 = buffer.toString("base64");
-  const extension = path.extname(localPath).slice(1).toLowerCase();
-  const mimeType =
-    extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
+  const mimeType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : "image/png";
   return { base64, mimeType };
 }
 
@@ -281,14 +298,29 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
   }
 
+  const filename = `${imageId}.${extension}`;
+  const thumbnailBuffer = await generateThumbnail(buffer);
+
+  // Prefer Supabase Storage when configured (persists across Railway redeploys)
+  if (isSupabaseDesignsConfigured()) {
+    try {
+      const result = await uploadDesignToSupabase({
+        imageBuffer: buffer,
+        thumbnailBuffer,
+        imageId,
+        extension: extension as "png" | "jpg",
+      });
+      if (result) return result;
+    } catch (err) {
+      console.warn("[saveImageToStorage] Supabase upload failed, falling back to local:", (err as Error).message);
+    }
+  }
+
+  // Local fallback (ephemeral on Railway unless STORAGE_DIR points to a volume)
   const storageDir = getStorageDir();
   const designsDir = path.join(storageDir, "designs");
   await fs.promises.mkdir(designsDir, { recursive: true });
-
-  const filename = `${imageId}.${extension}`;
   const thumbFilename = `thumb_${imageId}.jpg`;
-  const thumbnailBuffer = await generateThumbnail(buffer);
-
   await fs.promises.writeFile(path.join(designsDir, filename), buffer);
   await fs.promises.writeFile(path.join(designsDir, thumbFilename), thumbnailBuffer);
 
@@ -5543,14 +5575,38 @@ ${textEdgeRestrictions}
       const patternBuffer = Buffer.from(await picsartResponse.arrayBuffer());
       const patternId = crypto.randomUUID();
       const patternFilename = `pattern_${patternId}.png`;
-      const storageDir = getStorageDir();
-      const designsDir = path.join(storageDir, "designs");
-      await fs.promises.mkdir(designsDir, { recursive: true });
-      await fs.promises.writeFile(path.join(designsDir, patternFilename), patternBuffer);
-      const localPatternUrl = `/objects/designs/${patternFilename}`;
-      console.log("[Pattern Preview] Pattern saved locally:", localPatternUrl, `(${patternBuffer.length} bytes)`);
 
-      res.json({ patternUrl: localPatternUrl, patternId: result.id });
+      let patternUrl: string;
+      if (isSupabaseDesignsConfigured()) {
+        try {
+          const supabaseUrl = await uploadDesignFileToSupabase({
+            buffer: patternBuffer,
+            filename: patternFilename,
+            contentType: "image/png",
+          });
+          if (supabaseUrl) {
+            patternUrl = supabaseUrl;
+            console.log("[Pattern Preview] Pattern saved to Supabase:", patternUrl.substring(0, 80));
+          } else {
+            throw new Error("Supabase upload returned null");
+          }
+        } catch (err) {
+          console.warn("[Pattern Preview] Supabase failed, using local:", (err as Error).message);
+          const storageDir = getStorageDir();
+          const designsDir = path.join(storageDir, "designs");
+          await fs.promises.mkdir(designsDir, { recursive: true });
+          await fs.promises.writeFile(path.join(designsDir, patternFilename), patternBuffer);
+          patternUrl = `/objects/designs/${patternFilename}`;
+        }
+      } else {
+        const storageDir = getStorageDir();
+        const designsDir = path.join(storageDir, "designs");
+        await fs.promises.mkdir(designsDir, { recursive: true });
+        await fs.promises.writeFile(path.join(designsDir, patternFilename), patternBuffer);
+        patternUrl = `/objects/designs/${patternFilename}`;
+      }
+
+      res.json({ patternUrl, patternId: result.id });
     } catch (error: any) {
       console.error("[Pattern Preview] Error:", error);
       res.status(500).json({ error: error.message ?? "Failed to generate pattern" });
@@ -6332,9 +6388,10 @@ ${textEdgeRestrictions}
           let buffer: Buffer;
           let imageId: string;
           let newGeneratedImageUrl: string | undefined;
+          let thumbnailUrl: string | undefined;
           
           if (imageUrl.startsWith("data:")) {
-            // Base64 image — extract, decode, and migrate to local storage
+            // Base64 image — extract, decode, and migrate to storage
             const base64Match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/);
             if (!base64Match) {
               errors.push(`Design ${design.id}: Invalid base64 format`);
@@ -6345,8 +6402,30 @@ ${textEdgeRestrictions}
             buffer = Buffer.from(base64Match[2], "base64");
             imageId = crypto.randomUUID();
             const filename = `${imageId}.${extension}`;
-            await fs.promises.writeFile(path.join(designsDir, filename), buffer);
-            newGeneratedImageUrl = `/objects/designs/${filename}`;
+
+            if (isSupabaseDesignsConfigured()) {
+              try {
+                const thumbBuf = await generateThumbnail(buffer);
+                const result = await uploadDesignToSupabase({
+                  imageBuffer: buffer,
+                  thumbnailBuffer: thumbBuf,
+                  imageId,
+                  extension: extension as "png" | "jpg",
+                });
+                if (result) {
+                  newGeneratedImageUrl = result.imageUrl;
+                  // thumbnailUrl set below
+                  thumbnailUrl = result.thumbnailUrl;
+                }
+              } catch (err) {
+                errors.push(`Design ${design.id}: Supabase upload failed: ${(err as Error).message}`);
+                continue;
+              }
+            }
+            if (!newGeneratedImageUrl) {
+              await fs.promises.writeFile(path.join(designsDir, filename), buffer);
+              newGeneratedImageUrl = `/objects/designs/${filename}`;
+            }
             
           } else if (imageUrl.startsWith("/objects/")) {
             // Already in local storage — read the file to generate thumbnail
@@ -6370,12 +6449,16 @@ ${textEdgeRestrictions}
             continue;
           }
 
-          // Generate thumbnail
-          const thumbnailBuffer = await generateThumbnail(buffer);
-          const thumbFilename = `thumb_${imageId}.jpg`;
-          await fs.promises.writeFile(path.join(designsDir, thumbFilename), thumbnailBuffer);
-          const thumbnailUrl = `/objects/designs/${thumbFilename}`;
+          // Generate thumbnail (skip if already set by Supabase upload)
+          if (!thumbnailUrl) {
+            const thumbnailBuffer = await generateThumbnail(buffer);
+            const thumbFilename = `thumb_${imageId}.jpg`;
+            await fs.promises.writeFile(path.join(designsDir, thumbFilename), thumbnailBuffer);
+            thumbnailUrl = `/objects/designs/${thumbFilename}`;
+          }
           
+          if (!thumbnailUrl) continue;
+
           // Update design with new URLs
           const updateData: { thumbnailImageUrl: string; generatedImageUrl?: string } = { 
             thumbnailImageUrl: thumbnailUrl 
@@ -10791,6 +10874,7 @@ ${textEdgeRestrictions}
    * GET /api/proxy/objects/designs/:filename
    * Serves design/mockup images through the App Proxy so storefront JS can load
    * them without CORS issues (Shopify rewrites /apps/appai/objects/designs/… here).
+   * Tries local first; if not found and Supabase configured, redirects to Supabase.
    */
   app.get("/api/proxy/objects/designs/:filename", proxyAuth, (req: Request, res: Response) => {
     const { filename } = req.params;
@@ -10804,16 +10888,25 @@ ${textEdgeRestrictions}
     if (!filePath.startsWith(allowedDir)) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Not found" });
 
-    const ext = path.extname(filename).slice(1).toLowerCase();
-    const ct =
-      ext === "png" ? "image/png" :
-      ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
-      "application/octet-stream";
-    res.setHeader("Content-Type", ct);
-    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-    fs.createReadStream(filePath).pipe(res);
+    if (fs.existsSync(filePath)) {
+      const ext = path.extname(filename).slice(1).toLowerCase();
+      const ct =
+        ext === "png" ? "image/png" :
+        ext === "jpg" || ext === "jpeg" ? "image/jpeg" :
+        "application/octet-stream";
+      res.setHeader("Content-Type", ct);
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      return fs.createReadStream(filePath).pipe(res);
+    }
+
+    // Local file missing — redirect to Supabase if configured (files may have been migrated)
+    const supabaseUrl = getSupabaseDesignPublicUrl(filename);
+    if (supabaseUrl) {
+      return res.redirect(302, supabaseUrl);
+    }
+
+    return res.status(404).json({ error: "Not found" });
   });
 
   /** POST /api/proxy/designs — create a customizer design (async generation) */
