@@ -13,10 +13,11 @@
  *   />
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import { Loader2 } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -41,11 +42,13 @@ const PATTERN_OPTIONS: PatternOption[] = [
   { value: "diamond", label: "Diamond", description: "Diagonal diamond grid" },
 ];
 
+const PREVIEW_SIZE = 1024;
+const APPLY_CAP = 2048;
+const COUNTDOWN_SECONDS = 5;
+
 interface PatternCustomizerProps {
   motifUrl: string;
-  /** Largest panel width in px (used to size Picsart output, capped at 4000) */
   productWidth?: number;
-  /** Largest panel height in px (used to size Picsart output, capped at 4000) */
   productHeight?: number;
   onApply: (patternUrl: string) => void | Promise<void>;
   isLoading?: boolean;
@@ -65,19 +68,40 @@ export function PatternCustomizer({
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Cap output at 4000px to keep Picsart calls fast; leggings panels are ~4500px
-  const outWidth = Math.min(productWidth, 4000);
-  const outHeight = Math.min(productHeight, 4000);
+  // Countdown state
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const callPatternApi = useCallback(async (): Promise<string | null> => {
+  const startCountdown = useCallback(() => {
+    setCountdown(COUNTDOWN_SECONDS);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    const started = Date.now();
+    countdownRef.current = setInterval(() => {
+      const elapsed = (Date.now() - started) / 1000;
+      const remaining = Math.max(0, COUNTDOWN_SECONDS - elapsed);
+      setCountdown(Math.ceil(remaining));
+      if (remaining <= 0 && countdownRef.current) {
+        clearInterval(countdownRef.current);
+      }
+    }, 250);
+  }, []);
+
+  const stopCountdown = useCallback(() => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+    setCountdown(null);
+  }, []);
+
+  useEffect(() => () => { if (countdownRef.current) clearInterval(countdownRef.current); }, []);
+
+  const applyWidth = Math.min(productWidth, APPLY_CAP);
+  const applyHeight = Math.min(productHeight, APPLY_CAP);
+
+  const callPatternApi = useCallback(async (width: number, height: number): Promise<string | null> => {
     setError(null);
-    const body = {
-      imageUrl: motifUrl,
-      pattern,
-      scale,
-      width: outWidth,
-      height: outHeight,
-    };
+    const body = { imageUrl: motifUrl, pattern, scale, width, height };
     const res = await fetch("/api/pattern/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -90,31 +114,40 @@ export function PatternCustomizer({
     }
     const data = await res.json();
     return data.patternUrl ?? null;
-  }, [motifUrl, pattern, scale, outWidth, outHeight]);
+  }, [motifUrl, pattern, scale]);
 
   const handlePreview = async () => {
     setIsPreviewing(true);
+    startCountdown();
     try {
-      const url = await callPatternApi();
+      const url = await callPatternApi(PREVIEW_SIZE, PREVIEW_SIZE);
       if (url) setPreviewUrl(url);
     } finally {
+      stopCountdown();
       setIsPreviewing(false);
     }
   };
 
   const handleApply = async () => {
     setIsApplying(true);
+    startCountdown();
     try {
-      const url = previewUrl ?? (await callPatternApi());
+      const url = previewUrl
+        ? await callPatternApi(applyWidth, applyHeight)
+        : await callPatternApi(applyWidth, applyHeight);
       if (url) {
+        setPreviewUrl(url);
         await onApply(url);
       }
     } finally {
+      stopCountdown();
       setIsApplying(false);
     }
   };
 
   const busy = isPreviewing || isApplying || isLoading;
+  const showSpinner = isPreviewing || isApplying;
+  const spinnerLabel = isApplying ? "Applying pattern to product…" : "Expanding pattern…";
 
   return (
     <div className="space-y-4 p-4 border rounded-lg bg-muted/30">
@@ -139,17 +172,38 @@ export function PatternCustomizer({
         </div>
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground text-center">Pattern preview</p>
-          <div className="aspect-square rounded overflow-hidden border bg-background flex items-center justify-center">
-            {previewUrl ? (
+          <div className="aspect-square rounded overflow-hidden border bg-background flex items-center justify-center relative">
+            {previewUrl && !showSpinner ? (
               <img
                 src={previewUrl}
                 alt="Pattern preview"
                 className="w-full h-full object-cover"
               />
+            ) : showSpinner ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80 z-10 gap-2">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                <p className="text-xs font-medium text-muted-foreground">{spinnerLabel}</p>
+                {countdown !== null && countdown > 0 && (
+                  <span className="text-lg font-semibold tabular-nums text-primary">
+                    {countdown}s
+                  </span>
+                )}
+                {countdown === 0 && (
+                  <span className="text-xs text-muted-foreground">Almost there…</span>
+                )}
+              </div>
             ) : (
               <span className="text-xs text-muted-foreground px-2 text-center">
                 Click "Preview" to see the tiled pattern
               </span>
+            )}
+            {/* Keep previous preview faintly visible behind spinner */}
+            {previewUrl && showSpinner && (
+              <img
+                src={previewUrl}
+                alt="Previous pattern"
+                className="w-full h-full object-cover opacity-30"
+              />
             )}
           </div>
         </div>
@@ -208,7 +262,14 @@ export function PatternCustomizer({
           disabled={busy}
           className="flex-1"
         >
-          {isPreviewing ? "Generating preview…" : "Preview Pattern"}
+          {isPreviewing ? (
+            <span className="flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Generating…
+            </span>
+          ) : (
+            "Preview Pattern"
+          )}
         </Button>
         <Button
           size="sm"
@@ -216,7 +277,14 @@ export function PatternCustomizer({
           disabled={busy}
           className="flex-1"
         >
-          {isApplying ? "Applying…" : "Apply to Product"}
+          {isApplying ? (
+            <span className="flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Applying…
+            </span>
+          ) : (
+            "Apply to Product"
+          )}
         </Button>
       </div>
     </div>
