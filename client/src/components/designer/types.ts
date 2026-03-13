@@ -84,6 +84,9 @@ export interface ProductDesignerConfig {
   sizes: PrintSize[];
   frameColors: FrameColor[];
   canvasConfig: CanvasConfig;
+  doubleSidedPrint?: boolean;
+  isAllOverPrint?: boolean;
+  placeholderPositions?: { position: string; width: number; height: number }[];
 }
 
 export interface DesignerState {

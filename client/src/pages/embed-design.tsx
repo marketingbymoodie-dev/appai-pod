@@ -17,6 +17,7 @@ import {
   FrameColorSelector,
   SizeSelector,
   StyleSelector,
+  PatternCustomizer,
   type ImageTransform,
   type PrintSize,
   type FrameColor,
@@ -50,6 +51,8 @@ interface ProductTypeConfig {
   frameColors: Array<{ id: string; name: string; hex: string }>;
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, string>;
+  isAllOverPrint?: boolean;
+  placeholderPositions?: { position: string; width: number; height: number }[];
 }
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
@@ -648,6 +651,11 @@ export default function EmbedDesign() {
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
 
+  // AOP (All-Over-Print) pattern step state
+  const [showPatternStep, setShowPatternStep] = useState(false);
+  const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
+  const [aopPatternUrl, setAopPatternUrl] = useState<string | null>(null);
+
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
@@ -896,6 +904,8 @@ export default function EmbedDesign() {
             frameColors: dc.frameColors || [],
             hasPrintifyMockups: dc.hasPrintifyMockups || false,
             baseMockupImages: dc.baseMockupImages || undefined,
+            isAllOverPrint: dc.isAllOverPrint || false,
+            placeholderPositions: dc.placeholderPositions || [],
           });
           if (dc.frameColors?.length > 0) {
             setSelectedFrameColor(dc.frameColors[0].id);
@@ -1021,6 +1031,8 @@ export default function EmbedDesign() {
             frameColors: designerConfig.frameColors || [],
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
+            isAllOverPrint: designerConfig.isAllOverPrint || false,
+            placeholderPositions: designerConfig.placeholderPositions || [],
           });
 
           if (designerConfig.frameColors?.length > 0) {
@@ -1253,7 +1265,8 @@ export default function EmbedDesign() {
     colorId: string,
     scale: number = 100,
     x: number = 50,
-    y: number = 50
+    y: number = 50,
+    patternUrl?: string
   ) => {
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
@@ -1288,6 +1301,7 @@ export default function EmbedDesign() {
       const payload = isStorefront ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
+        patternUrl: patternUrl || undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1297,6 +1311,7 @@ export default function EmbedDesign() {
       } : isShopify ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
+        patternUrl: patternUrl || undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1307,6 +1322,7 @@ export default function EmbedDesign() {
       } : {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
+        patternUrl: patternUrl || undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1788,8 +1804,15 @@ export default function EmbedDesign() {
         willFetch: shouldFetchMockups,
       });
       if (shouldFetchMockups) {
-        console.log('[Mockups] Triggering mockup generation');
-        fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig!.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+        if (productTypeConfig?.isAllOverPrint) {
+          // AOP: show pattern customizer step first
+          setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
+          setAopPatternUrl(null);
+          setShowPatternStep(true);
+        } else {
+          console.log('[Mockups] Triggering mockup generation');
+          fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig!.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
+        }
       }
     },
     onError: (err: any) => {
@@ -3242,6 +3265,38 @@ export default function EmbedDesign() {
                     />
                   )}
                 </div>
+              )}
+
+              {/* AOP Pattern Step — shown after generation for all-over-print products */}
+              {showPatternStep && aopPendingMotifUrl && (
+                <PatternCustomizer
+                  motifUrl={aopPendingMotifUrl}
+                  productWidth={(() => {
+                    const positions = productTypeConfig?.placeholderPositions || [];
+                    return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
+                  })()}
+                  productHeight={(() => {
+                    const positions = productTypeConfig?.placeholderPositions || [];
+                    return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
+                  })()}
+                  onApply={async (appliedPatternUrl: string) => {
+                    setAopPatternUrl(appliedPatternUrl);
+                    setShowPatternStep(false);
+                    if (productTypeConfig) {
+                      fetchPrintifyMockups(
+                        aopPendingMotifUrl,
+                        productTypeConfig.id,
+                        selectedSize,
+                        selectedFrameColor || 'default',
+                        defaultZoom,
+                        50,
+                        50,
+                        appliedPatternUrl
+                      );
+                    }
+                  }}
+                  isLoading={mockupLoading}
+                />
               )}
             </div>
           </div>

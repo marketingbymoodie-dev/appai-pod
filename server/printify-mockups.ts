@@ -17,6 +17,8 @@ interface MockupRequest {
   x?: number; // -1 to 1 range, default 0 (center)
   y?: number; // -1 to 1 range, default 0 (center)
   doubleSided?: boolean; // Send image to both front and back
+  /** AOP: list of all panel positions to fill with the same image */
+  aopPositions?: { position: string; width: number; height: number }[];
 }
 
 interface MockupImage {
@@ -293,17 +295,26 @@ async function createTemporaryProduct(
   scale: number = 1,
   x: number = 0,
   y: number = 0,
-  doubleSided: boolean = false
+  doubleSided: boolean = false,
+  aopPositions?: { position: string; width: number; height: number }[]
 ): Promise<{ productId: string } | { error: string }> {
   const printifyX = 0.5 + (x * 0.5);
   const printifyY = 0.5 + (y * 0.5);
 
   const imageEntry = { id: imageId, x: printifyX, y: printifyY, scale: scale, angle: 0 };
-  const placeholders: Array<{ position: string; images: typeof imageEntry[] }> = [
-    { position: "front", images: [imageEntry] },
-  ];
-  if (doubleSided) {
-    placeholders.push({ position: "back", images: [imageEntry] });
+  const placeholders: Array<{ position: string; images: typeof imageEntry[] }> = [];
+
+  if (aopPositions && aopPositions.length > 0) {
+    // AOP: apply same image to every panel
+    for (const pos of aopPositions) {
+      placeholders.push({ position: pos.position, images: [imageEntry] });
+    }
+  } else {
+    // Standard single/double-sided
+    placeholders.push({ position: "front", images: [imageEntry] });
+    if (doubleSided) {
+      placeholders.push({ position: "back", images: [imageEntry] });
+    }
   }
 
   const requestBody = {
@@ -509,7 +520,8 @@ export async function generatePrintifyMockup(
       scale,
       x,
       y,
-      doubleSided
+      doubleSided,
+      request.aopPositions
     );
 
     if ("error" in createResult) {

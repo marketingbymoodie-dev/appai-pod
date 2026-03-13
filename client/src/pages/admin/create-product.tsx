@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
+import { PatternCustomizer } from "@/components/designer/PatternCustomizer";
 import type { ProductType, Merchant } from "@shared/schema";
 
 interface DesignerConfig {
@@ -42,6 +43,8 @@ interface DesignerConfig {
   frameColors: Array<{ id: string; name: string; hex: string }>;
   canvasConfig: { maxDimension: number; width: number; height: number; safeZoneMargin: number };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
+  isAllOverPrint?: boolean;
+  placeholderPositions?: { position: string; width: number; height: number }[];
 }
 
 interface Config {
@@ -95,6 +98,11 @@ export default function AdminCreateProduct() {
 
   // Markup percentage for recommended retail pricing (default 60%)
   const [markupPercent, setMarkupPercent] = useState(60);
+
+  // AOP (All-Over-Print) pattern step
+  const [showPatternStep, setShowPatternStep] = useState(false);
+  const [pendingMotifUrl, setPendingMotifUrl] = useState<string | null>(null);
+  const [patternUrl, setPatternUrl] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -359,13 +367,13 @@ export default function AdminCreateProduct() {
       setGeneratedImageUrl(imageUrl);
       toast({ title: "Design generated!", description: "Your test design is ready" });
 
-      // Generate mockups if available
-      console.log("[CreateProduct] Mockup conditions:", {
-        hasPrintifyMockups: designerConfig?.hasPrintifyMockups,
-        printifyShopId: merchant?.printifyShopId,
-        imageUrl: imageUrl?.substring(0, 50),
-      });
-      if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId && imageUrl) {
+      // For AOP products, show the pattern customizer step before generating mockups
+      if (designerConfig?.isAllOverPrint && designerConfig?.hasPrintifyMockups && merchant?.printifyShopId && imageUrl) {
+        setPendingMotifUrl(imageUrl);
+        setPatternUrl(null);
+        setShowPatternStep(true);
+      } else if (designerConfig?.hasPrintifyMockups && merchant?.printifyShopId && imageUrl) {
+        // Standard flow: generate mockups immediately
         console.log("[CreateProduct] Calling generateMockups...");
         await generateMockups(imageUrl);
       } else {
@@ -378,7 +386,7 @@ export default function AdminCreateProduct() {
     }
   };
 
-  const generateMockups = async (imageUrl: string) => {
+  const generateMockups = async (imageUrl: string, appliedPatternUrl?: string) => {
     console.log("[CreateProduct] generateMockups called with:", imageUrl?.substring(0, 50));
     if (!selectedProductTypeId || !selectedSize) {
       console.log("[CreateProduct] generateMockups - missing productTypeId or size");
@@ -391,6 +399,7 @@ export default function AdminCreateProduct() {
       const response = await apiRequest("POST", "/api/mockup/generate", {
         productTypeId: selectedProductTypeId,
         designImageUrl: imageUrl,
+        patternUrl: appliedPatternUrl || undefined,
         sizeId: selectedSize,
         colorId: selectedFrameColor || "default",
         scale: imageScale,
@@ -1074,6 +1083,29 @@ export default function AdminCreateProduct() {
                       )}
                     </Button>
                   </TabsContent>
+
+                  {/* AOP Pattern Step — shown after generation for all-over-print products */}
+                  {showPatternStep && pendingMotifUrl && (
+                    <div className="mt-4">
+                      <PatternCustomizer
+                        motifUrl={pendingMotifUrl}
+                        productWidth={(() => {
+                          const positions = designerConfig?.placeholderPositions || [];
+                          return positions.reduce((max, p) => Math.max(max, p.width), 2000);
+                        })()}
+                        productHeight={(() => {
+                          const positions = designerConfig?.placeholderPositions || [];
+                          return positions.reduce((max, p) => Math.max(max, p.height), 2000);
+                        })()}
+                        onApply={async (appliedPatternUrl) => {
+                          setPatternUrl(appliedPatternUrl);
+                          setShowPatternStep(false);
+                          await generateMockups(pendingMotifUrl, appliedPatternUrl);
+                        }}
+                        isLoading={mockupLoading}
+                      />
+                    </div>
+                  )}
                   
                   <TabsContent value="import" className="space-y-4">
                     {(!selectedProductTypeId || !selectedSize) && (

@@ -257,6 +257,8 @@ export const productTypes = pgTable("product_types", {
   shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   printifyCosts: text("printify_costs").default("{}"),
+  isAllOverPrint: boolean("is_all_over_print").notNull().default(false),
+  placeholderPositions: text("placeholder_positions").default("[]"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

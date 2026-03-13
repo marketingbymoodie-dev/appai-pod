@@ -1,4 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
+import { generatePattern, type PatternType } from "./picsart-client";
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -249,20 +250,22 @@ async function removeBackgroundFallback(buffer: Buffer, isDarkBackground: boolea
 
 interface SaveImageOptions {
   isApparel?: boolean;
+  isAllOverPrint?: boolean;
   targetDims?: TargetDimensions;
   colorTier?: ColorTier;
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, targetDims } = options || {};
+  const { isApparel = false, isAllOverPrint = false, targetDims } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
 
   let buffer: Buffer = Buffer.from(base64Data, "base64");
 
-  // For apparel, remove #FF00FF chroma key background
-  if (isApparel) {
+  // For apparel, remove #FF00FF chroma key background — UNLESS it's AOP
+  // AOP patterns need to fill the entire canvas with no transparency
+  if (isApparel && !isAllOverPrint) {
     console.log("Removing #FF00FF chroma key background for apparel...");
     buffer = await removeChromaKeyBackground(buffer);
     extension = "png";
@@ -916,7 +919,7 @@ export async function registerRoutes(
         isApparel = true;
       }
 
-      // Determine color tier for apparel products
+      const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
       
       if (isApparel && frameColor) {
@@ -1153,6 +1156,7 @@ console.log("[api/generate] replicate returned", {
        const result = await saveImageToStorage(data, mimeType, {
 
   isApparel,
+  isAllOverPrint,
   targetDims,
 });
 
@@ -1846,7 +1850,7 @@ ${textEdgeRestrictions}
         isApparel = true;
       }
 
-      // Build image input array: style base image + customer reference image
+      const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
       if (embedStyleBaseImageUrl) embedImageInputUrls.push(embedStyleBaseImageUrl);
       if (embedCustomerImageUrl) embedImageInputUrls.push(embedCustomerImageUrl);
@@ -1896,6 +1900,7 @@ ${textEdgeRestrictions}
       try {
         const result = await saveImageToStorage(base64Data, mimeType, {
           isApparel,
+          isAllOverPrint,
           targetDims,
         });
         imageUrl = result.imageUrl;
@@ -1905,6 +1910,7 @@ ${textEdgeRestrictions}
         try {
           const result = await saveImageToStorage(base64Data, mimeType, {
             isApparel,
+            isAllOverPrint,
             targetDims,
           });
           imageUrl = result.imageUrl;
@@ -3600,6 +3606,10 @@ ${textEdgeRestrictions}
       baseMockupImages,
       primaryMockupIndex: productTypeToUse.primaryMockupIndex || 0,
       doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
+      isAllOverPrint: productTypeToUse.isAllOverPrint || false,
+      placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
+        ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
+        : productTypeToUse.placeholderPositions || [],
       sizes: sizes.map((s: any) => {
         let sizeAspectRatio = s.aspectRatio || productTypeToUse.aspectRatio;
         if (sizeType === "dimensional" && s.width && s.height) {
@@ -4350,7 +4360,7 @@ ${textEdgeRestrictions}
         isApparel = true;
       }
 
-      // Build full prompt with shape/orientation requirements (synchronous)
+      const isAllOverPrint = !!(productType?.isAllOverPrint);
       let fullPrompt = stylePromptPrefix
         ? `${stylePromptPrefix} ${prompt}`
         : prompt;
@@ -4566,14 +4576,14 @@ ${textEdgeRestrictions}
           let imageUrl: string;
           let thumbnailUrl: string | undefined;
           try {
-            const result = await saveImageToStorage(base64Data, mimeType, { isApparel, targetDims });
+            const result = await saveImageToStorage(base64Data, mimeType, { isApparel, isAllOverPrint, targetDims });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
             console.log(`${W} storage save OK ${Date.now() - saveStart}ms`);
           } catch (storageError) {
             console.warn(`${W} Storage save failed, retrying once:`, storageError);
             try {
-              const result = await saveImageToStorage(base64Data, mimeType, { isApparel, targetDims });
+              const result = await saveImageToStorage(base64Data, mimeType, { isApparel, isAllOverPrint, targetDims });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
@@ -4749,7 +4759,7 @@ ${textEdgeRestrictions}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -4784,7 +4794,8 @@ ${textEdgeRestrictions}
       }
 
       // Strip Shopify App Proxy prefix if present (client sends /apps/appai/objects/... in proxy mode)
-      let normalizedImageUrl = designImageUrl;
+      // For AOP products, prefer patternUrl (Picsart-tiled) over designImageUrl
+      let normalizedImageUrl = (patternUrl || designImageUrl) as string;
       if (normalizedImageUrl.startsWith("/apps/appai/objects/")) {
         normalizedImageUrl = normalizedImageUrl.replace("/apps/appai", "");
         console.log(`[Storefront Mockup] [${correlationId}] Stripped proxy prefix → ${normalizedImageUrl}`);
@@ -4912,6 +4923,9 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
         doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        aopPositions: productType.isAllOverPrint && productType.placeholderPositions
+          ? JSON.parse(productType.placeholderPositions as string)
+          : undefined,
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -5459,6 +5473,53 @@ ${textEdgeRestrictions}
   app.post("/api/admin/design-sku-cleanup", isAuthenticated, async (_req: any, res: Response) => {
     const result = await runDesignSkuCleanup();
     res.json({ ok: true, ...result });
+  });
+
+  // POST /api/pattern/preview - Generate a tiled AOP pattern via Picsart
+  // Accepts { imageUrl, pattern, scale, rotate, offsetX, offsetY, width, height }
+  // Returns { patternUrl }
+  app.post("/api/pattern/preview", async (req: any, res: Response) => {
+    try {
+      const {
+        imageUrl,
+        pattern = "tile",
+        scale = 1.0,
+        rotate = 0,
+        offsetX = 0,
+        offsetY = 0,
+        width = 1024,
+        height = 1024,
+      } = req.body as {
+        imageUrl: string;
+        pattern?: PatternType;
+        scale?: number;
+        rotate?: number;
+        offsetX?: number;
+        offsetY?: number;
+        width?: number;
+        height?: number;
+      };
+
+      if (!imageUrl) {
+        return res.status(400).json({ error: "imageUrl is required" });
+      }
+
+      const result = await generatePattern({
+        imageUrl,
+        pattern,
+        scale,
+        rotate,
+        offsetX,
+        offsetY,
+        width,
+        height,
+      });
+
+      res.json({ patternUrl: result.url, patternId: result.id });
+    } catch (error: any) {
+      console.error("[Pattern Preview] Error:", error);
+      res.status(500).json({ error: error.message ?? "Failed to generate pattern" });
+    }
   });
 
   // Admin endpoints for product types (requires authentication)
@@ -8289,6 +8350,26 @@ ${textEdgeRestrictions}
         decodedCombined.includes("both sides")
       );
 
+      // Detect All-Over-Print (AOP) products: leggings, swimwear, all-over tees, etc.
+      // AOP products have multiple distinct print panels beyond just front/back.
+      const AOP_POSITION_NAMES = new Set([
+        "left_leg", "right_leg", "gusset",
+        "front_waistband", "back_waistband",
+        "left_panel", "right_panel",
+        "left_sleeve", "right_sleeve",
+        "all_over", "full_body",
+      ]);
+      const positionKeys = Object.keys(placeholderDimensions);
+      const hasAOPPositions = positionKeys.some(p => AOP_POSITION_NAMES.has(p));
+      const isAllOverPrint = hasAOPPositions || positionKeys.length >= 3;
+
+      // Build the persisted placeholder positions list (all positions with their dimensions)
+      const placeholderPositions = positionKeys.map(pos => ({
+        position: pos,
+        width: placeholderDimensions[pos].width,
+        height: placeholderDimensions[pos].height,
+      }));
+
       // Create the product type with parsed data
       const productType = await storage.createProductType({
         merchantId: merchant.id,
@@ -8314,6 +8395,8 @@ ${textEdgeRestrictions}
         baseMockupImages: JSON.stringify(baseMockupImages),
         primaryMockupIndex: 0,
         doubleSidedPrint,
+        isAllOverPrint,
+        placeholderPositions: JSON.stringify(placeholderPositions),
         isActive: true,
         sortOrder: existingTypes.length,
       });
@@ -9563,19 +9646,22 @@ ${textEdgeRestrictions}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, sizeId, colorId, scale, x, y } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      // For AOP products, prefer patternUrl (Picsart-tiled) over designImageUrl
+      const effectiveImageUrl = (patternUrl || designImageUrl) as string;
+
       // Convert relative URLs to absolute URLs for Printify
-      let absoluteImageUrl = designImageUrl;
-      if (designImageUrl.startsWith("/objects/")) {
+      let absoluteImageUrl = effectiveImageUrl;
+      if (effectiveImageUrl.startsWith("/objects/")) {
         // Get the host from request headers or use REPLIT_DEV_DOMAIN
         const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
-        absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
+        absoluteImageUrl = `${protocol}://${host}${effectiveImageUrl}`;
         console.log("Converting image URL for Printify:", absoluteImageUrl);
       }
 
@@ -9640,6 +9726,9 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0, // Convert from 0-100 to -1 to 1 range (0 = center)
         // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
         doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        aopPositions: productType.isAllOverPrint && productType.placeholderPositions
+          ? JSON.parse(productType.placeholderPositions as string)
+          : undefined,
       });
 
       res.json(result);
@@ -9653,7 +9742,7 @@ ${textEdgeRestrictions}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, sizeId, colorId, scale, x, y, shop, sessionToken } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -9694,11 +9783,13 @@ ${textEdgeRestrictions}
       }
 
       // Convert relative URLs to absolute URLs for Printify
-      let absoluteImageUrl = designImageUrl;
-      if (designImageUrl.startsWith("/objects/")) {
+      // For AOP products, prefer patternUrl (Picsart-tiled) over designImageUrl
+      const effectiveShopifyImageUrl = (patternUrl || designImageUrl) as string;
+      let absoluteImageUrl = effectiveShopifyImageUrl;
+      if (effectiveShopifyImageUrl.startsWith("/objects/")) {
         const host = req.get("host") || process.env.REPLIT_DEV_DOMAIN;
         const protocol = req.protocol || "https";
-        absoluteImageUrl = `${protocol}://${host}${designImageUrl}`;
+        absoluteImageUrl = `${protocol}://${host}${effectiveShopifyImageUrl}`;
         console.log("[Shopify Mockup] Converting image URL for Printify:", absoluteImageUrl);
       }
 
@@ -9763,6 +9854,9 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
         doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        aopPositions: productType.isAllOverPrint && productType.placeholderPositions
+          ? JSON.parse(productType.placeholderPositions as string)
+          : undefined,
       });
 
       console.log("[Shopify Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });
