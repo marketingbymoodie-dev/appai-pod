@@ -416,7 +416,9 @@ export default function DesignPage() {
       const fetchKey = `${designerConfig.id}-${selectedSize}-${selectedFrameColor}-${generatedDesign.generatedImageUrl}-${imageScale}-${imagePosition.x}-${imagePosition.y}`;
       if (lastAutoFetchKeyRef.current !== fetchKey) {
         lastAutoFetchKeyRef.current = fetchKey;
-        const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
+        const imageUrl = generatedDesign.generatedImageUrl.startsWith("http")
+          ? generatedDesign.generatedImageUrl
+          : window.location.origin + generatedDesign.generatedImageUrl;
         fetchPrintifyMockups(imageUrl, designerConfig.id, selectedSize, selectedFrameColor, imageScale, imagePosition.x, imagePosition.y);
       }
     }
@@ -477,7 +479,9 @@ export default function DesignPage() {
       lastAutoFetchKeyRef.current = null;
 
       if (designerConfig?.hasPrintifyMockups) {
-        const imageUrl = window.location.origin + design.generatedImageUrl;
+        const imageUrl = design.generatedImageUrl.startsWith("http")
+          ? design.generatedImageUrl
+          : window.location.origin + design.generatedImageUrl;
         fetchPrintifyMockups(imageUrl, designerConfig.id, design.size, design.frameColor, currentDefault, 50, 50);
       }
     },
@@ -581,7 +585,9 @@ export default function DesignPage() {
     if (!generatedDesign?.generatedImageUrl || !designerConfig?.hasPrintifyMockups || !selectedProductTypeId) return;
     if (!selectedSize || !selectedFrameColor) return;
 
-    const imageUrl = window.location.origin + generatedDesign.generatedImageUrl;
+    const imageUrl = generatedDesign.generatedImageUrl.startsWith("http")
+      ? generatedDesign.generatedImageUrl
+      : window.location.origin + generatedDesign.generatedImageUrl;
     fetchPrintifyMockups(imageUrl, selectedProductTypeId, selectedSize, selectedFrameColor, imageScale, imagePosition.x, imagePosition.y);
   }, [
     generatedDesign?.generatedImageUrl,

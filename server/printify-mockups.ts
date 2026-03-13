@@ -55,6 +55,28 @@ function isDataUrl(url: string): boolean {
   return url.startsWith("data:");
 }
 
+/**
+ * Fix accidental double-prefixed URLs (e.g. APP_URL + Supabase URL).
+ * Pattern: "https://railway...https://supabase.../path" → "https://supabase.../path"
+ */
+function normalizeImageUrl(url: string): string {
+  if (!url || typeof url !== "string") return url;
+  // Detect double URL: our origin + absolute URL
+  const secondProto = url.indexOf("https://", 8); // skip first "https://"
+  if (secondProto > 0) {
+    const fixed = url.slice(secondProto);
+    console.warn(`[Printify] Fixed double-prefixed image URL (${url.length} → ${fixed.length} chars)`);
+    return fixed;
+  }
+  const secondHttp = url.indexOf("http://", 7);
+  if (secondHttp > 0) {
+    const fixed = url.slice(secondHttp);
+    console.warn(`[Printify] Fixed double-prefixed image URL (http)`);
+    return fixed;
+  }
+  return url;
+}
+
 function extractBase64FromDataUrl(dataUrl: string): string {
   const base64Match = dataUrl.match(/^data:image\/[^;]+;base64,(.+)$/);
   return base64Match ? base64Match[1] : "";
@@ -460,7 +482,7 @@ export async function generatePrintifyMockup(
     blueprintId,
     providerId,
     variantId,
-    imageUrl,
+    imageUrl: rawImageUrl,
     printifyApiToken,
     printifyShopId,
     scale = 1,
@@ -468,6 +490,9 @@ export async function generatePrintifyMockup(
     y = 0,
     doubleSided = false,
   } = request;
+
+  // Fix accidental double-prefixed URLs (e.g. APP_URL + Supabase URL) before any use
+  const imageUrl = typeof rawImageUrl === "string" ? normalizeImageUrl(rawImageUrl) : rawImageUrl;
 
   if (!printifyApiToken || !printifyShopId) {
     return {
