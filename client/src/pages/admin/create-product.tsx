@@ -369,6 +369,7 @@ export default function AdminCreateProduct() {
 
       // For AOP products, show the pattern customizer step before generating mockups
       if (designerConfig?.isAllOverPrint && designerConfig?.hasPrintifyMockups && merchant?.printifyShopId && imageUrl) {
+        console.log("[CreateProduct] AOP product detected — showing PatternCustomizer");
         setPendingMotifUrl(imageUrl);
         setPatternUrl(null);
         setShowPatternStep(true);
@@ -1082,30 +1083,30 @@ export default function AdminCreateProduct() {
                         </>
                       )}
                     </Button>
-                  </TabsContent>
 
-                  {/* AOP Pattern Step — shown after generation for all-over-print products */}
-                  {showPatternStep && pendingMotifUrl && (
-                    <div className="mt-4">
-                      <PatternCustomizer
-                        motifUrl={pendingMotifUrl}
-                        productWidth={(() => {
-                          const positions = designerConfig?.placeholderPositions || [];
-                          return positions.reduce((max, p) => Math.max(max, p.width), 2000);
-                        })()}
-                        productHeight={(() => {
-                          const positions = designerConfig?.placeholderPositions || [];
-                          return positions.reduce((max, p) => Math.max(max, p.height), 2000);
-                        })()}
-                        onApply={async (appliedPatternUrl) => {
-                          setPatternUrl(appliedPatternUrl);
-                          setShowPatternStep(false);
-                          await generateMockups(pendingMotifUrl, appliedPatternUrl);
-                        }}
-                        isLoading={mockupLoading}
-                      />
-                    </div>
-                  )}
+                    {/* AOP Pattern Step — shown after generation for all-over-print products */}
+                    {showPatternStep && pendingMotifUrl && (
+                      <div className="mt-4">
+                        <PatternCustomizer
+                          motifUrl={pendingMotifUrl}
+                          productWidth={(() => {
+                            const positions = designerConfig?.placeholderPositions || [];
+                            return positions.reduce((max, p) => Math.max(max, p.width), 2000);
+                          })()}
+                          productHeight={(() => {
+                            const positions = designerConfig?.placeholderPositions || [];
+                            return positions.reduce((max, p) => Math.max(max, p.height), 2000);
+                          })()}
+                          onApply={async (appliedPatternUrl) => {
+                            setPatternUrl(appliedPatternUrl);
+                            setShowPatternStep(false);
+                            await generateMockups(pendingMotifUrl, appliedPatternUrl);
+                          }}
+                          isLoading={mockupLoading}
+                        />
+                      </div>
+                    )}
+                  </TabsContent>
                   
                   <TabsContent value="import" className="space-y-4">
                     {(!selectedProductTypeId || !selectedSize) && (
