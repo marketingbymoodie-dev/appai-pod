@@ -1118,6 +1118,73 @@ export default function DesignPage() {
 
   const canDragDesign = !!generatedDesign?.generatedImageUrl && (usePrintifyMockups || showApparelBaseWithArtwork || hasBaseMockup);
 
+  // Lifestyle mockup: Printify second mockup, base lifestyle image, or loading state
+  const hasBaseLifestyleMockup = !!designerConfig?.baseMockupImages?.lifestyle;
+  const hasPrintifyLifestyleMockup = printifyMockups.length > 1;
+  const showLifestyleLoading = reuseWaitingForMockups || (mockupLoading && !hasPrintifyLifestyleMockup);
+
+  const lifestyleMockup = (hasBaseLifestyleMockup || hasPrintifyLifestyleMockup || showLifestyleLoading) ? (
+    <div className="relative w-full flex items-center justify-center">
+      <div className="relative w-full">
+        {showLifestyleLoading && !hasPrintifyLifestyleMockup ? (
+          <div className="w-full h-64 flex items-center justify-center bg-muted rounded-md">
+            <div className="flex flex-col items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-8 w-8 animate-spin" />
+              <span className="text-xs">Generating preview...</span>
+            </div>
+          </div>
+        ) : hasPrintifyLifestyleMockup ? (
+          <div className="relative">
+            <img
+              src={printifyMockups[1]}
+              alt="Lifestyle preview"
+              className="w-full h-auto rounded-md"
+              data-testid="img-printify-lifestyle"
+            />
+            {mockupLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-md">
+                <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                  <span className="text-xs">Updating...</span>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : hasBaseLifestyleMockup ? (
+          <div className="relative">
+            <img
+              src={designerConfig!.baseMockupImages!.lifestyle!}
+              alt="Lifestyle preview"
+              className="w-full h-auto rounded-md"
+              data-testid="img-base-lifestyle"
+            />
+            {generatedDesign?.generatedImageUrl && (
+              <div
+                className={`absolute overflow-hidden ${designerConfig?.designerType === "pillow" && designerConfig?.printShape === "circle" ? "rounded-full" : ""}`}
+                style={designerConfig?.designerType === "pillow" ? {
+                  top: "15%", left: "20%", width: "60%", height: "60%",
+                } : {
+                  top: "20%", left: "25%", width: "50%", height: "50%",
+                }}
+              >
+                <img
+                  src={generatedDesign.generatedImageUrl}
+                  alt="Artwork in lifestyle"
+                  className="w-full h-full object-cover"
+                  style={{
+                    transform: `scale(${imageScale / 100}) translate(${imagePosition.x - 50}%, ${imagePosition.y - 50}%)`,
+                    borderRadius: designerConfig?.designerType === "pillow" && designerConfig?.printShape === "circle" ? "50%" : undefined,
+                  }}
+                  data-testid="img-generated-lifestyle"
+                />
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  ) : null;
+
   // FRONT preview area
   const previewMockup = (
     <div
@@ -1413,10 +1480,377 @@ export default function DesignPage() {
   }
 
  return (
-    <div className="h-screen flex items-center justify-center bg-background">
-      <p className="text-muted-foreground">
-        Design page loaded
-      </p>
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
+      <header className="border-b bg-background z-50 shrink-0">
+        <div className="container mx-auto px-3 py-2 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setSelectedProductTypeId(null)}
+              data-testid="button-back-to-products"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <div>
+              <h1 className="text-base font-semibold">{selectedProductTypeName || "Design"}</h1>
+              <button
+                onClick={() => setSelectedProductTypeId(null)}
+                className="text-xs text-muted-foreground hover:underline"
+                data-testid="link-change-product"
+              >
+                Change product
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <CreditDisplay customer={customer} isLoading={customerLoading} />
+          </div>
+        </div>
+      </header>
+
+      {/* Desktop Layout */}
+      <main className="hidden lg:flex flex-1 overflow-hidden">
+        <div className="w-full max-w-6xl mx-auto px-4 py-3 flex flex-col h-full">
+          <div className="flex-1 flex gap-4 min-h-0">
+            {/* Left column: Controls */}
+            <div className="w-72 shrink-0 space-y-3 overflow-y-auto">
+              {reuseBanner}
+              {styleSelector}
+              {sizeSelector}
+              {frameColorSelector}
+              {promptInput}
+              {isReuseMode ? reuseSaveButton : generateButton}
+            </div>
+
+            {/* Center: Main preview */}
+            <div className="flex-1 flex flex-col items-center min-w-0">
+              <h3 className="text-sm font-medium mb-2">
+                {printifyMockupImages.length > 0 && selectedMockupIndex < printifyMockupImages.length
+                  ? printifyMockupImages[selectedMockupIndex].label.charAt(0).toUpperCase() +
+                    printifyMockupImages[selectedMockupIndex].label.slice(1).replace(/-/g, " ")
+                  : "Front"}
+              </h3>
+              <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
+                <div
+                  key={`front-${selectedSize}-${selectedMockupIndex}`}
+                  className="max-h-full max-w-full"
+                  style={{
+                    aspectRatio: selectedSizeConfig
+                      ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}`
+                      : "3/4",
+                    width:
+                      selectedSizeConfig && selectedSizeConfig.width >= selectedSizeConfig.height
+                        ? "100%"
+                        : "auto",
+                    height:
+                      selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width
+                        ? "100%"
+                        : "auto",
+                  }}
+                >
+                  {printifyMockups.length > 0 && selectedMockupIndex < printifyMockups.length ? (
+                    <div className="relative w-full h-full">
+                      <img
+                        src={printifyMockups[selectedMockupIndex]}
+                        alt={printifyMockupImages[selectedMockupIndex]?.label || "Mockup preview"}
+                        className="w-full h-full object-contain rounded-md"
+                        data-testid="img-selected-mockup"
+                      />
+                      {mockupLoading && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-md">
+                          <div className="flex flex-col items-center gap-2 text-muted-foreground">
+                            <Loader2 className="h-6 w-6 animate-spin" />
+                            <span className="text-xs">Updating...</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    previewMockup
+                  )}
+                </div>
+              </div>
+              <div className="mt-1 h-6 flex items-center justify-center">{tweakLink}</div>
+              {tweakPanel && <div className="mt-2 w-full max-w-xs">{tweakPanel}</div>}
+            </div>
+
+            {/* Right: Secondary view / Mockup gallery */}
+            <div className="flex-1 flex flex-col items-center min-w-0">
+              {printifyMockupImages.length > 2 ? (
+                <>
+                  <h3 className="text-sm font-medium mb-2">All Views ({printifyMockupImages.length})</h3>
+                  <div className="flex-1 w-full overflow-y-auto">
+                    <div className="grid grid-cols-2 gap-2 p-1">
+                      {printifyMockupImages.map((mockup, index) => (
+                        <div
+                          key={index}
+                          onClick={() => setSelectedMockupIndex(index)}
+                          className={`cursor-pointer rounded-lg p-1 transition-all ${
+                            selectedMockupIndex === index
+                              ? "ring-2 ring-primary bg-primary/10"
+                              : "hover-elevate"
+                          }`}
+                          data-testid={`mockup-thumbnail-${index}`}
+                        >
+                          <img
+                            src={mockup.url}
+                            alt={mockup.label}
+                            className="w-full aspect-square object-contain rounded-md border"
+                          />
+                          <p className="text-xs text-center text-muted-foreground mt-1 truncate">
+                            {mockup.label.charAt(0).toUpperCase() +
+                              mockup.label.slice(1).replace(/-/g, " ")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3 className="text-sm font-medium mb-2">
+                    {printifyMockupImages.length > 1
+                      ? printifyMockupImages[1].label.charAt(0).toUpperCase() +
+                        printifyMockupImages[1].label.slice(1).replace(/-/g, " ")
+                      : lifestyleMockup
+                      ? "Lifestyle"
+                      : "Preview"}
+                  </h3>
+                  <div className="flex-1 flex items-center justify-center min-h-0 w-full overflow-hidden">
+                    <div
+                      key={`lifestyle-${selectedSize}-${selectedFrameColor}`}
+                      className="max-h-full max-w-full flex items-center justify-center"
+                      style={{
+                        aspectRatio: selectedSizeConfig
+                          ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}`
+                          : "3/4",
+                        width:
+                          selectedSizeConfig && selectedSizeConfig.width >= selectedSizeConfig.height
+                            ? "100%"
+                            : "auto",
+                        height:
+                          selectedSizeConfig && selectedSizeConfig.height > selectedSizeConfig.width
+                            ? "100%"
+                            : "auto",
+                      }}
+                    >
+                      {lifestyleMockup || (
+                        <div className="h-full w-full flex items-center justify-center bg-muted rounded-md">
+                          <p className="text-xs text-muted-foreground">
+                            Select a size to see lifestyle view
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Bottom: Zoom and action buttons */}
+          <div className="shrink-0 pt-3 flex items-center gap-4">
+            <div className="flex-1">{zoomControls}</div>
+            <div className="w-72">{actionButtons}</div>
+          </div>
+        </div>
+      </main>
+
+      {/* Mobile Layout */}
+      <main className="lg:hidden flex-1 overflow-hidden flex flex-col">
+        <div
+          ref={carouselRef}
+          className="flex-1 relative overflow-hidden"
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
+          <div
+            className="flex h-full transition-transform duration-300 ease-out"
+            style={{ transform: `translateX(-${mobileSlide * 100}%)` }}
+          >
+            {/* Slide 1: Controls */}
+            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-4">
+              {reuseBanner}
+              {styleSelector}
+              {sizeSelector}
+              {frameColorSelector}
+              {promptInput}
+              {isReuseMode ? reuseSaveButton : generateButton}
+            </div>
+
+            {/* Slide 2: Preview */}
+            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-3">
+              {sizeSelector}
+              {frameColorSelector}
+
+              <div className="flex justify-center gap-2">
+                <Button
+                  variant={mobileViewMode === "front" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setMobileViewMode("front")}
+                  data-testid="button-view-front"
+                >
+                  Front
+                </Button>
+                <Button
+                  variant={mobileViewMode === "lifestyle" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setMobileViewMode("lifestyle")}
+                  disabled={!lifestyleMockup && printifyMockupImages.length < 2}
+                  data-testid="button-view-lifestyle"
+                >
+                  {printifyMockupImages.length > 1
+                    ? printifyMockupImages[1].label.charAt(0).toUpperCase() +
+                      printifyMockupImages[1].label.slice(1).replace(/-/g, " ")
+                    : lifestyleMockup
+                    ? "Lifestyle"
+                    : "Preview"}
+                </Button>
+              </div>
+
+              {zoomControls}
+
+              {mobileViewMode === "front" ? (
+                <div className="space-y-1">
+                  <div
+                    key={`mobile-front-${selectedSize}`}
+                    className="w-full"
+                    style={{
+                      aspectRatio: selectedSizeConfig
+                        ? `${selectedSizeConfig.width}/${selectedSizeConfig.height}`
+                        : "3/4",
+                    }}
+                  >
+                    {previewMockup}
+                  </div>
+                  <div className="flex justify-center">{tweakLink}</div>
+                  {tweakPanel}
+                </div>
+              ) : (
+                <div
+                  key={`mobile-lifestyle-${selectedSize}-${selectedFrameColor}`}
+                  className="w-full"
+                >
+                  {lifestyleMockup || (
+                    <div className="w-full aspect-square flex items-center justify-center bg-muted rounded-md">
+                      <p className="text-xs text-muted-foreground">
+                        Select a size to see lifestyle view
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {actionButtons}
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Navigation */}
+        <div className="shrink-0 border-t bg-background p-3 flex items-center justify-center gap-4">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileSlide(0)}
+            disabled={mobileSlide === 0}
+            className={mobileSlide === 0 ? "opacity-30" : ""}
+            data-testid="button-prev-slide"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setMobileSlide(0)}
+              className={`w-2 h-2 rounded-full transition-colors ${
+                mobileSlide === 0 ? "bg-primary" : "bg-muted-foreground/30"
+              }`}
+              data-testid="indicator-controls"
+            />
+            <button
+              onClick={() => setMobileSlide(1)}
+              className={`w-2 h-2 rounded-full transition-colors ${
+                mobileSlide === 1 ? "bg-primary" : "bg-muted-foreground/30"
+              }`}
+              data-testid="indicator-preview"
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setMobileSlide(1)}
+            disabled={mobileSlide === 1}
+            className={mobileSlide === 1 ? "opacity-30" : ""}
+            data-testid="button-next-slide"
+          >
+            <ChevronRight className="h-5 w-5" />
+          </Button>
+        </div>
+      </main>
+
+      {/* Color Tier Mismatch Modal */}
+      <AlertDialog
+        open={showColorTierModal}
+        onOpenChange={(open) => {
+          if (!open && !isRegenerating) handleColorTierKeepOriginal();
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-color-tier">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Design Colors May Not Match</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingColorChange?.newTier === "dark" ? (
+                <>
+                  This design was created with <strong>dark colors</strong> for light-colored apparel.
+                  For best results on <strong>dark-colored</strong> apparel, the design should use
+                  lighter, brighter colors.
+                </>
+              ) : (
+                <>
+                  This design was created with <strong>light/bright colors</strong> for dark-colored
+                  apparel. For best results on <strong>light-colored</strong> apparel, the design
+                  should use darker colors.
+                </>
+              )}
+              <br />
+              <br />
+              Would you like to regenerate this design with optimized colors? This costs{" "}
+              <strong>1 credit</strong> and uses the same prompt.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel
+              onClick={handleColorTierKeepOriginal}
+              disabled={isRegenerating}
+              data-testid="button-cancel-color-change"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <Button
+              variant="outline"
+              onClick={handleColorTierProceedAnyway}
+              disabled={isRegenerating}
+              data-testid="button-proceed-anyway"
+            >
+              Use Anyway
+            </Button>
+            <AlertDialogAction
+              onClick={handleColorTierRegenerate}
+              disabled={isRegenerating}
+              data-testid="button-regenerate-tier"
+            >
+              {isRegenerating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Regenerating...
+                </>
+              ) : (
+                "Regenerate (1 Credit)"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
