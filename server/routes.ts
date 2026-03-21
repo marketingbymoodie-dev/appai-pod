@@ -9754,6 +9754,29 @@ ${textEdgeRestrictions}
     return { costs: {}, strategyUsed: null, diagnostics };
   }
 
+  // POST /api/admin/printify/costs/clear-cache
+  // Clears cached printify_costs for ALL product types belonging to this merchant,
+  // forcing a fresh fetch next time each product type's costs are requested.
+  app.post("/api/admin/printify/costs/clear-cache", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      const productTypes = await storage.getProductTypesByMerchant(merchant.id);
+      let cleared = 0;
+      for (const pt of productTypes) {
+        await storage.updateProductType(pt.id, { printifyCosts: "{}" });
+        cleared++;
+      }
+      console.log(`[Printify Costs] Cache cleared for ${cleared} product types (merchant ${merchant.id})`);
+      return res.json({ success: true, cleared, message: `Cleared costs cache for ${cleared} product types` });
+    } catch (err: any) {
+      console.error("[/api/admin/printify/costs/clear-cache]", err);
+      return res.status(500).json({ error: "Failed to clear costs cache", detail: String(err) });
+    }
+  });
+
   // GET /api/admin/printify/costs/:productTypeId
   // Creates a temporary Printify product to read variant production costs, then deletes it.
   // Returns cached costs if available and less than 24 hours old.
