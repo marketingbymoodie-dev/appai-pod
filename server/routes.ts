@@ -396,25 +396,18 @@ async function shopifyGraphQL(
 }
 
 /**
- * Ensures a navigation menu item pointing to /pages/<pageHandle> exists.
- * Targets the "main-menu" by default. Idempotent — skips if already present.
- * Uses Shopify GraphQL API 2024-07+ (menu APIs not available in 2024-01).
+ * Fetches the full main-menu with nested items (up to 2 levels deep).
  */
-async function ensureNavigationLink(
-  shop: string,
-  accessToken: string,
-  pageHandle: string,
-  label = "Customizer",
-): Promise<{ added: boolean; warning?: string }> {
-  const targetUrl = `/pages/${pageHandle}`;
-
-  try {
-    // Step 1: Query for main-menu
-    const queryRes = await shopifyGraphQL(shop, accessToken, `
-      query GetMainMenu {
-        menu(handle: "main-menu") {
+async function getMainMenu(shop: string, accessToken: string): Promise<any | null> {
+  const queryRes = await shopifyGraphQL(shop, accessToken, `
+    query GetMainMenu {
+      menu(handle: "main-menu") {
+        id
+        title
+        items {
           id
           title
+          url
           items {
             id
             title
@@ -422,30 +415,134 @@ async function ensureNavigationLink(
           }
         }
       }
-    `);
+    }
+  `);
+  return queryRes?.data?.menu ?? null;
+}
 
-    const menu = queryRes?.data?.menu;
+/**
+ * Converts a menu item (with optional nested items) to a MenuItemCreateInput shape.
+ * Used when rebuilding the full menu tree for menuUpdate.
+ */
+function menuItemToInput(item: any): any {
+  const input: any = {
+    title: item.title,
+    type: "HTTP",
+    url: item.url ?? "/",
+  };
+  if (item.items && item.items.length > 0) {
+    input.items = item.items.map(menuItemToInput);
+  }
+  return input;
+}
 
-    // Step 2: If menu exists, check for existing link
-    if (menu?.id) {
-      const alreadyExists = (menu.items ?? []).some(
-        (item: any) => item.url === targetUrl || item.url?.endsWith(targetUrl),
+/**
+ * Ensures a customizer page exists as a sub-item under a "Customizer" parent
+ * in the main-menu. Creates the "Customizer" parent if it doesn't exist.
+ * Idempotent — skips if the sub-item already exists.
+ */
+async function ensureNavigationLink(
+  shop: string,
+  accessToken: string,
+  pageHandle: string,
+  pageTitle: string,
+): Promise<{ added: boolean; warning?: string }> {
+  const targetUrl = `/pages/${pageHandle}`;
+  const PARENT_LABEL = "Customizer";
+
+  try {
+    const menu = await getMainMenu(shop, accessToken);
+
+    if (!menu?.id) {
+      // No main-menu at all — create one with the Customizer parent + sub-item
+      const createRes = await shopifyGraphQL(shop, accessToken, `
+        mutation CreateMenu($title: String!, $handle: String!, $items: [MenuItemCreateInput!]!) {
+          menuCreate(title: $title, handle: $handle, items: $items) {
+            menu { id }
+            userErrors { field message }
+          }
+        }
+      `, {
+        title: "Main menu",
+        handle: "main-menu",
+        items: [{
+          title: PARENT_LABEL,
+          type: "HTTP",
+          url: "/",
+          items: [{ title: pageTitle, type: "HTTP", url: targetUrl }],
+        }],
+      });
+      const errs = createRes?.data?.menuCreate?.userErrors ?? [];
+      if (errs.length > 0) {
+        const msg = errs.map((e: any) => e.message).join("; ");
+        console.warn(`[nav] menuCreate userErrors: ${msg}`);
+        return { added: false, warning: msg };
+      }
+      console.log(`[nav] Created main-menu with Customizer > "${pageTitle}" for ${shop}`);
+      return { added: true };
+    }
+
+    // Menu exists — find the "Customizer" parent item
+    const customizerParent = (menu.items ?? []).find(
+      (item: any) => item.title === PARENT_LABEL
+    );
+
+    if (customizerParent) {
+      // Check if the sub-item already exists
+      const alreadyExists = (customizerParent.items ?? []).some(
+        (sub: any) => sub.url === targetUrl || sub.url?.endsWith(targetUrl)
       );
       if (alreadyExists) {
-        console.log(`[nav] Link to ${targetUrl} already exists in main-menu`);
+        console.log(`[nav] Sub-item ${targetUrl} already exists under Customizer`);
         return { added: false };
       }
 
-      // Step 3: Append new item using menuUpdate
-      // menuUpdate replaces ALL items, so we must include the existing items too
-      const existingItems = (menu.items ?? []).map((item: any) => ({
-        title: item.title,
-        type: "HTTP",
-        url: item.url,
-      }));
-      const newItems = [
+      // Add the new sub-item to the Customizer parent
+      // Rebuild the full menu tree (menuUpdate replaces ALL items)
+      const newMenuItems = (menu.items ?? []).map((item: any) => {
+        if (item.title === PARENT_LABEL) {
+          return {
+            title: item.title,
+            type: "HTTP",
+            url: item.url ?? "/",
+            items: [
+              ...(item.items ?? []).map(menuItemToInput),
+              { title: pageTitle, type: "HTTP", url: targetUrl },
+            ],
+          };
+        }
+        return menuItemToInput(item);
+      });
+
+      const updateRes = await shopifyGraphQL(shop, accessToken, `
+        mutation UpdateMenu($id: ID!, $items: [MenuItemCreateInput!]!) {
+          menuUpdate(id: $id, items: $items) {
+            menu { id }
+            userErrors { field message }
+          }
+        }
+      `, { id: menu.id, items: newMenuItems });
+
+      const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
+      if (userErrors.length > 0) {
+        const msg = userErrors.map((e: any) => e.message).join("; ");
+        console.warn(`[nav] menuUpdate userErrors: ${msg}`);
+        return { added: false, warning: msg };
+      }
+
+      console.log(`[nav] Added "${pageTitle}" under Customizer in main-menu for ${shop}`);
+      return { added: true };
+    } else {
+      // No "Customizer" parent yet — add it with the sub-item
+      const existingItems = (menu.items ?? []).map(menuItemToInput);
+      const newMenuItems = [
         ...existingItems,
-        { title: label, type: "HTTP", url: targetUrl },
+        {
+          title: PARENT_LABEL,
+          type: "HTTP",
+          url: "/",
+          items: [{ title: pageTitle, type: "HTTP", url: targetUrl }],
+        },
       ];
 
       const updateRes = await shopifyGraphQL(shop, accessToken, `
@@ -455,7 +552,7 @@ async function ensureNavigationLink(
             userErrors { field message }
           }
         }
-      `, { id: menu.id, items: newItems });
+      `, { id: menu.id, items: newMenuItems });
 
       const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
       if (userErrors.length > 0) {
@@ -464,36 +561,90 @@ async function ensureNavigationLink(
         return { added: false, warning: msg };
       }
 
-      console.log(`[nav] Added "${label}" link to main-menu for ${shop}`);
+      console.log(`[nav] Created Customizer parent with "${pageTitle}" sub-item in main-menu for ${shop}`);
       return { added: true };
     }
+  } catch (err: any) {
+    console.warn(`[nav] ensureNavigationLink failed for ${shop}: ${err.message}`);
+    return { added: false, warning: err.message };
+  }
+}
 
-    // Step 4: main-menu not found — create it
-    const createRes = await shopifyGraphQL(shop, accessToken, `
-      mutation CreateMenu($title: String!, $handle: String!, $items: [MenuItemCreateInput!]!) {
-        menuCreate(title: $title, handle: $handle, items: $items) {
+/**
+ * Removes a customizer page sub-item from the "Customizer" parent in main-menu.
+ * If removing the sub-item leaves the Customizer parent empty, removes the parent too.
+ * Idempotent — does nothing if the item doesn't exist.
+ */
+async function removeNavigationLink(
+  shop: string,
+  accessToken: string,
+  pageHandle: string,
+): Promise<{ removed: boolean; warning?: string }> {
+  const targetUrl = `/pages/${pageHandle}`;
+
+  try {
+    const menu = await getMainMenu(shop, accessToken);
+    if (!menu?.id) return { removed: false };
+
+    const customizerParent = (menu.items ?? []).find(
+      (item: any) => item.title === "Customizer"
+    );
+    if (!customizerParent) return { removed: false };
+
+    const subItemExists = (customizerParent.items ?? []).some(
+      (sub: any) => sub.url === targetUrl || sub.url?.endsWith(targetUrl)
+    );
+    if (!subItemExists) return { removed: false };
+
+    // Filter out the sub-item
+    const remainingSubItems = (customizerParent.items ?? []).filter(
+      (sub: any) => sub.url !== targetUrl && !sub.url?.endsWith(targetUrl)
+    );
+
+    // Rebuild the full menu tree
+    let newMenuItems: any[];
+    if (remainingSubItems.length === 0) {
+      // Remove the Customizer parent entirely if it has no more children
+      newMenuItems = (menu.items ?? [])
+        .filter((item: any) => item.title !== "Customizer")
+        .map(menuItemToInput);
+      console.log(`[nav] Removed Customizer parent (no sub-items left) from main-menu for ${shop}`);
+    } else {
+      // Keep the Customizer parent with the remaining sub-items
+      newMenuItems = (menu.items ?? []).map((item: any) => {
+        if (item.title === "Customizer") {
+          return {
+            title: item.title,
+            type: "HTTP",
+            url: item.url ?? "/",
+            items: remainingSubItems.map(menuItemToInput),
+          };
+        }
+        return menuItemToInput(item);
+      });
+      console.log(`[nav] Removed "${pageHandle}" sub-item from Customizer in main-menu for ${shop}`);
+    }
+
+    const updateRes = await shopifyGraphQL(shop, accessToken, `
+      mutation UpdateMenu($id: ID!, $items: [MenuItemCreateInput!]!) {
+        menuUpdate(id: $id, items: $items) {
           menu { id }
           userErrors { field message }
         }
       }
-    `, {
-      title: "Main menu",
-      handle: "main-menu",
-      items: [{ title: label, type: "HTTP", url: targetUrl }],
-    });
+    `, { id: menu.id, items: newMenuItems });
 
-    const createErrors = createRes?.data?.menuCreate?.userErrors ?? [];
-    if (createErrors.length > 0) {
-      const msg = createErrors.map((e: any) => e.message).join("; ");
-      console.warn(`[nav] menuCreate userErrors: ${msg}`);
-      return { added: false, warning: msg };
+    const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      const msg = userErrors.map((e: any) => e.message).join("; ");
+      console.warn(`[nav] removeNavigationLink menuUpdate userErrors: ${msg}`);
+      return { removed: false, warning: msg };
     }
 
-    console.log(`[nav] Created main-menu with "${label}" link for ${shop}`);
-    return { added: true };
+    return { removed: true };
   } catch (err: any) {
-    console.warn(`[nav] ensureNavigationLink failed for ${shop}: ${err.message}`);
-    return { added: false, warning: err.message };
+    console.warn(`[nav] removeNavigationLink failed for ${shop}: ${err.message}`);
+    return { removed: false, warning: err.message };
   }
 }
 
@@ -10460,7 +10611,7 @@ ${textEdgeRestrictions}
     // ── Add navigation menu link ──────────────────────────────────────────────
     let navWarning: string | null = null;
     try {
-      const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), "Customizer");
+      const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), title.trim());
       if (navResult.warning) navWarning = navResult.warning;
     } catch (navErr: any) {
       navWarning = navErr.message ?? "Navigation link could not be added";
@@ -10528,6 +10679,18 @@ ${textEdgeRestrictions}
       );
     }
 
+    // Manage navigation menu link on status change (best-effort)
+    if (updates.status === "disabled" && dbPage.status === "active") {
+      // Page is being disabled — remove from menu
+      await removeNavigationLink(shop, installation.accessToken, dbPage.handle)
+        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not remove nav link:", e.message));
+    } else if (updates.status === "active" && dbPage.status === "disabled") {
+      // Page is being re-enabled — add back to menu
+      const pageTitle = updates.title ?? dbPage.title;
+      await ensureNavigationLink(shop, installation.accessToken, dbPage.handle, pageTitle)
+        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not re-add nav link:", e.message));
+    }
+
     const updated = await storage.updateCustomizerPage(dbPage.id, updates);
     return res.json({ page: updated });
   }));
@@ -10561,6 +10724,10 @@ ${textEdgeRestrictions}
         { method: "DELETE" }
       ).catch((e: Error) => console.warn("[Customizer Pages] Could not delete Shopify page:", e.message));
     }
+
+    // Remove navigation menu link (best-effort)
+    await removeNavigationLink(shop, installation.accessToken, dbPage.handle)
+      .catch((e: Error) => console.warn("[Customizer Pages] Could not remove nav link:", e.message));
 
     await storage.deleteCustomizerPage(dbPage.id);
     return res.json({ success: true });
