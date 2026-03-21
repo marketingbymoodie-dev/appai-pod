@@ -49,102 +49,71 @@ export default function AdminSettings() {
     window.open(reinstallUrl, '_blank');
   };
 
-  const handleUninstallInstructions = (shopDomain: string) => {
-    // Open Shopify admin apps page where they can uninstall
-    window.open(`https://${shopDomain}/admin/settings/apps`, '_blank');
+  const handleSyncUrls = async () => {
+    try {
+      const res = await apiRequest("POST", "/api/shopify/sync-urls");
+      const data = await res.json();
+      toast({
+        title: "Success",
+        description: data.message || "App URLs synced with Shopify successfully",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to sync app URLs with Shopify",
+        variant: "destructive",
+      });
+    }
   };
+
+  const handleRegisterScript = async () => {
+    try {
+      const res = await apiRequest("POST", "/api/shopify/register-script");
+      const data = await res.json();
+      toast({
+        title: "Success",
+        description: data.message || "Script tag registered successfully",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to register script tag",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const updateMerchantMutation = useMutation({
+    mutationFn: async (updates: Partial<Merchant>) => {
+      const res = await apiRequest("PUT", "/api/merchant", updates);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/merchant"] });
+      toast({
+        title: "Settings saved",
+        description: "Your integration settings have been updated.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   useEffect(() => {
     if (merchant) {
       setPrintifyToken(merchant.printifyApiToken || "");
       setPrintifyShopId(merchant.printifyShopId || "");
-      setUseBuiltIn(merchant.useBuiltInNanoBanana);
+      setUseBuiltIn(merchant.useBuiltInNanoBanana ?? true);
       setCustomToken(merchant.customNanoBananaToken || "");
     }
   }, [merchant]);
 
-  const updateMerchantMutation = useMutation({
-    mutationFn: async (data: Partial<Merchant>) => {
-      const response = await apiRequest("PUT", "/api/merchant", data);
-      return response.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/merchant"] });
-      toast({ title: "Settings saved", description: "Your settings have been updated." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to save settings", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const registerScriptMutation = useMutation({
-    mutationFn: async (shopDomain: string) => {
-      const response = await apiRequest("POST", "/api/shopify/register-script", { shopDomain });
-      return response.json();
-    },
-    onSuccess: () => {
-      toast({ title: "Cart script registered", description: "The cart image replacement script has been registered with Shopify." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to register script", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const syncMetafieldsMutation = useMutation({
-    mutationFn: async (shopDomain: string) => {
-      const response = await apiRequest("POST", "/api/shopify/sync-metafields", { shopDomain });
-      return response.json();
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "App URLs synced",
-        description: `Updated ${data.updated} products to use the current app URL.${data.failed > 0 ? ` ${data.failed} failed.` : ''}`
-      });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to sync app URLs", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const handleDetectShop = async () => {
-    if (!printifyToken) {
-      setShopDetectResult({ message: "Please enter a Printify API token first", error: true });
-      return;
-    }
-    
-    setDetectShopLoading(true);
-    setShopDetectResult(null);
-    
-    try {
-      const response = await fetch("/api/admin/printify/detect-shop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: printifyToken }),
-        credentials: "include",
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        setShopDetectResult({ message: data.error || "Failed to detect shop", error: true, instructions: data.instructions });
-      } else if (data.shops && data.shops.length > 0) {
-        if (data.shops.length === 1) {
-          setPrintifyShopId(data.shops[0].id);
-          setShopDetectResult({ message: `Found shop: ${data.shops[0].title}`, shops: data.shops });
-        } else {
-          setShopDetectResult({ message: `Found ${data.shops.length} shops. Select one:`, shops: data.shops });
-        }
-      } else {
-        setShopDetectResult({ message: "No shops found for this token", error: true, instructions: data.instructions });
-      }
-    } catch (error) {
-      setShopDetectResult({ message: "Failed to detect shop", error: true });
-    } finally {
-      setDetectShopLoading(false);
-    }
-  };
-
-  const handleSaveSettings = () => {
+  const handleSave = () => {
     updateMerchantMutation.mutate({
       printifyApiToken: printifyToken,
       printifyShopId: printifyShopId,
@@ -153,40 +122,78 @@ export default function AdminSettings() {
     });
   };
 
+  const handleDetectShop = async () => {
+    if (!printifyToken) {
+      toast({
+        title: "Token required",
+        description: "Please enter your Printify API token first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setDetectShopLoading(true);
+    setShopDetectResult(null);
+    try {
+      const res = await fetch("/api/printify/detect-shop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: printifyToken }),
+      });
+      const data = await res.json();
+      setShopDetectResult(data);
+      
+      if (data.shopId) {
+        setPrintifyShopId(data.shopId);
+        toast({
+          title: "Shop detected",
+          description: `Found shop: ${data.shopName || data.shopId}`,
+        });
+      }
+    } catch (error) {
+      toast({
+        title: "Detection failed",
+        description: "Could not connect to Printify API.",
+        variant: "destructive",
+      });
+    } finally {
+      setDetectShopLoading(false);
+    }
+  };
+
   if (merchantLoading) {
     return (
-      <AdminLayout>
-        <div className="space-y-4">
-          <Skeleton className="h-8 w-48" />
-          <Skeleton className="h-64 w-full" />
+      <AdminLayout title="Settings">
+        <div className="space-y-6">
+          <Skeleton className="h-[200px] w-full" />
+          <Skeleton className="h-[200px] w-full" />
         </div>
       </AdminLayout>
     );
   }
 
   return (
-    <AdminLayout>
-      <div className="space-y-6 max-w-2xl">
-        <div>
-          <h1 className="text-2xl font-bold" data-testid="text-settings-title">Settings</h1>
-          <p className="text-muted-foreground">Configure your AI Art Studio integrations</p>
-        </div>
-
+    <AdminLayout title="Settings">
+      <div className="space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>Printify Integration</CardTitle>
-            <CardDescription>Connect to Printify for print-on-demand fulfillment</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <Store className="h-5 w-5" />
+              Printify Integration
+            </CardTitle>
+            <CardDescription>
+              Connect to Printify for print-on-demand fulfillment
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="printify-token">Printify API Token</Label>
+              <Label htmlFor="printify-token">PRINTIFY API TOKEN</Label>
               <Input
                 id="printify-token"
                 type="password"
+                placeholder="Enter your Printify API token"
                 value={printifyToken}
                 onChange={(e) => setPrintifyToken(e.target.value)}
-                placeholder="Enter your Printify API token"
-                data-testid="input-printify-token"
               />
               <p className="text-xs text-muted-foreground">
                 Get your API token from Printify Dashboard &gt; Settings &gt; API
@@ -194,89 +201,60 @@ export default function AdminSettings() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="printify-shop">Shop ID</Label>
+              <Label htmlFor="printify-shop">SHOP ID</Label>
               <div className="flex gap-2">
                 <Input
                   id="printify-shop"
+                  placeholder="Shop ID (auto-detected)"
                   value={printifyShopId}
                   onChange={(e) => setPrintifyShopId(e.target.value)}
-                  placeholder="Shop ID (auto-detected)"
-                  data-testid="input-printify-shop"
                 />
                 <Button 
                   variant="outline" 
                   onClick={handleDetectShop}
-                  disabled={detectShopLoading || !printifyToken}
-                  data-testid="button-detect-shop"
+                  disabled={detectShopLoading}
                 >
                   {detectShopLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Detect"}
                 </Button>
               </div>
-              {shopDetectResult && (
-                <div className={`text-sm flex items-start gap-2 ${shopDetectResult.error ? 'text-red-600' : 'text-green-600'}`}>
-                  {shopDetectResult.error ? <AlertCircle className="h-4 w-4 mt-0.5" /> : <CheckCircle className="h-4 w-4 mt-0.5" />}
-                  <div>
-                    <span>{shopDetectResult.message}</span>
-                    {shopDetectResult.shops && shopDetectResult.shops.length > 1 && (
-                      <div className="mt-2 space-y-1">
-                        {shopDetectResult.shops.map((shop) => (
-                          <Button
-                            key={shop.id}
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setPrintifyShopId(shop.id);
-                              setShopDetectResult({ message: `Selected: ${shop.title}` });
-                            }}
-                          >
-                            {shop.title} ({shop.id})
-                          </Button>
-                        ))}
-                      </div>
-                    )}
-                    {shopDetectResult.instructions && (
-                      <ul className="mt-2 list-disc list-inside text-xs text-muted-foreground">
-                        {shopDetectResult.instructions.map((instruction, i) => (
-                          <li key={i}>{instruction}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>AI Integration</CardTitle>
-            <CardDescription>Configure AI image generation settings</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <FileCode className="h-5 w-5" />
+              AI Integration
+            </CardTitle>
+            <CardDescription>
+              Configure AI image generation settings
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
-              <div>
-                <Label htmlFor="use-builtin">Use Built-in AI</Label>
-                <p className="text-xs text-muted-foreground">Use the default AI provider (recommended)</p>
+              <div className="space-y-0.5">
+                <Label htmlFor="use-builtin">USE BUILT-IN AI</Label>
+                <p className="text-xs text-muted-foreground">
+                  Use the default AI provider (recommended)
+                </p>
               </div>
               <Switch
                 id="use-builtin"
                 checked={useBuiltIn}
                 onCheckedChange={setUseBuiltIn}
-                data-testid="switch-use-builtin"
               />
             </div>
 
             {!useBuiltIn && (
-              <div className="space-y-2">
-                <Label htmlFor="custom-token">Custom API Token</Label>
+              <div className="space-y-2 pt-2">
+                <Label htmlFor="custom-token">CUSTOM API TOKEN</Label>
                 <Input
                   id="custom-token"
                   type="password"
+                  placeholder="Enter your custom API token"
                   value={customToken}
                   onChange={(e) => setCustomToken(e.target.value)}
-                  placeholder="Enter your custom API token"
-                  data-testid="input-custom-token"
                 />
               </div>
             )}
@@ -289,124 +267,68 @@ export default function AdminSettings() {
               <Store className="h-5 w-5" />
               Shopify Integration
             </CardTitle>
-            <CardDescription>Manage your connected Shopify stores</CardDescription>
+            <CardDescription>
+              Manage your connected Shopify stores
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {installationsLoading ? (
-              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-20 w-full" />
             ) : shopifyInstallations && shopifyInstallations.length > 0 ? (
-              <div className="space-y-3">
-                {shopifyInstallations.map((installation) => {
-                  const hasWriteProducts = installation.scope?.includes('write_products');
-                  const needsPermissionFix = !hasWriteProducts && installation.status === 'active';
-                  return (
-                    <div 
-                      key={installation.id}
-                      className="space-y-2"
-                    >
-                      <div className="flex items-center justify-between p-3 border rounded-md">
-                        <div className="flex items-center gap-3">
-                          <Store className="h-5 w-5 text-muted-foreground" />
-                          <div>
-                            <p className="font-medium">{installation.shopDomain}</p>
-                            <div className="flex items-center gap-2 text-xs">
-                              {installation.status === 'active' ? (
-                                <span className="text-green-600 flex items-center gap-1">
-                                  <CheckCircle className="h-3 w-3" /> Active
-                                </span>
-                              ) : (
-                                <span className="text-yellow-600 flex items-center gap-1">
-                                  <AlertCircle className="h-3 w-3" /> {installation.status}
-                                </span>
-                              )}
-                              {needsPermissionFix && (
-                                <span className="text-orange-600 flex items-center gap-1">
-                                  <AlertCircle className="h-3 w-3" /> Missing product permissions
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => syncMetafieldsMutation.mutate(installation.shopDomain)}
-                            disabled={syncMetafieldsMutation.isPending}
-                            title="Update all AI Art Studio products to use the current app URL"
-                            data-testid={`button-sync-urls-${installation.shopDomain}`}
-                          >
-                            {syncMetafieldsMutation.isPending ? (
-                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                            ) : (
-                              <Link2 className="h-4 w-4 mr-1" />
-                            )}
-                            Sync URLs
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => registerScriptMutation.mutate(installation.shopDomain)}
-                            disabled={registerScriptMutation.isPending}
-                            data-testid={`button-register-script-${installation.shopDomain}`}
-                          >
-                            {registerScriptMutation.isPending ? (
-                              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                            ) : (
-                              <FileCode className="h-4 w-4 mr-1" />
-                            )}
-                            Register Script
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleReconnectStore(installation.shopDomain)}
-                            data-testid={`button-reconnect-${installation.shopDomain}`}
-                          >
-                            <RefreshCw className="h-4 w-4 mr-1" />
-                            Reconnect
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => window.open(`https://${installation.shopDomain}/admin`, '_blank')}
-                            data-testid={`button-open-store-${installation.shopDomain}`}
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </Button>
-                        </div>
+              <div className="space-y-4">
+                {shopifyInstallations.map((inst) => (
+                  <div key={inst.id} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-primary/10 rounded-full">
+                        <Store className="h-4 w-4 text-primary" />
                       </div>
-                      {needsPermissionFix && (
-                        <div className="bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-900 rounded-md p-3 text-sm">
-                          <p className="font-medium text-orange-800 dark:text-orange-200 mb-2">
-                            To enable "Send to Store", you need to grant product permissions:
-                          </p>
-                          <ol className="list-decimal list-inside space-y-1 text-orange-700 dark:text-orange-300 text-xs">
-                            <li>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-auto p-0 text-xs text-orange-700 dark:text-orange-300 underline"
-                                onClick={() => handleUninstallInstructions(installation.shopDomain)}
-                              >
-                                Open your Shopify Apps settings
-                              </Button>
-                              {" "}and uninstall this app
-                            </li>
-                            <li>Click "Reconnect" above to reinstall with the correct permissions</li>
-                            <li>Approve all requested permissions when prompted</li>
-                          </ol>
-                        </div>
-                      )}
+                      <div>
+                        <p className="font-medium">{inst.shopDomain}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{inst.status}</p>
+                      </div>
                     </div>
-                  );
-                })}
+                    <div className="flex gap-2">
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="gap-2"
+                        onClick={handleSyncUrls}
+                        title="Update all AI Art Studio products to use the current app URL"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Sync URLs
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="gap-2"
+                        onClick={handleRegisterScript}
+                      >
+                        <FileCode className="h-3.5 w-3.5" />
+                        Register Script
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="gap-2"
+                        onClick={() => handleReconnectStore(inst.shopDomain)}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Reconnect
+                      </Button>
+                      <Button size="sm" variant="ghost" asChild>
+                        <a href={`https://${inst.shopDomain}/admin/apps/ai-art-studio`} target="_blank" rel="noreferrer">
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : (
-              <div className="text-center py-6 text-muted-foreground">
-                <Store className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                <p>No Shopify stores connected yet</p>
-                <p className="text-xs mt-1">Install the app on your Shopify store to get started</p>
+              <div className="text-center py-6 border-2 border-dashed rounded-lg">
+                <Link2 className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                <p className="text-sm text-muted-foreground">No Shopify stores connected yet.</p>
               </div>
             )}
           </CardContent>
@@ -414,18 +336,21 @@ export default function AdminSettings() {
 
         <BrandingSettingsComponent />
 
-        <Button 
-          onClick={handleSaveSettings}
-          disabled={updateMerchantMutation.isPending}
-          data-testid="button-save-settings"
-        >
-          {updateMerchantMutation.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin mr-2" />
-          ) : (
-            <Save className="h-4 w-4 mr-2" />
-          )}
-          Save Settings
-        </Button>
+        <div className="flex justify-end pt-4">
+          <Button 
+            size="lg" 
+            className="gap-2" 
+            onClick={handleSave}
+            disabled={updateMerchantMutation.isPending}
+          >
+            {updateMerchantMutation.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            Save Settings
+          </Button>
+        </div>
       </div>
     </AdminLayout>
   );
