@@ -737,19 +737,7 @@ export default function AdminCustomizerPages() {
                 <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
                   <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
                     <DialogHeader>
-                      <div className="flex items-center justify-between">
-                        <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => clearCostsMutation.mutate()}
-                          disabled={clearCostsMutation.isPending || costsLoading}
-                          className="ml-2 shrink-0"
-                        >
-                          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
-                          Refresh
-                        </Button>
-                      </div>
+                      <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
                     </DialogHeader>
                     <Tabs value={costsActiveTab} onValueChange={(v) => setCostsActiveTab(v as "production" | "shipping")} className="w-full">
                       <TabsList className="grid w-full grid-cols-2">
@@ -831,7 +819,7 @@ export default function AdminCustomizerPages() {
                           </div>
                         ) : shippingData?.tiers && shippingData.shipping ? (
                           <>
-                            <div className="flex gap-2 flex-wrap">
+                            <div className="flex gap-2 flex-wrap items-center">
                               {shippingData.tiers.map((tier) => (
                                 <Button
                                   key={tier}
@@ -843,6 +831,16 @@ export default function AdminCustomizerPages() {
                                   {tier}
                                 </Button>
                               ))}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => clearCostsMutation.mutate()}
+                                disabled={clearCostsMutation.isPending || costsLoading}
+                                className="ml-auto shrink-0"
+                              >
+                                <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                                Refresh Pricing
+                              </Button>
                             </div>
                             {shippingData.countries && shippingData.countries.length > 0 && (
                               <Select value={costsShippingCountry} onValueChange={setCostsShippingCountry}>
