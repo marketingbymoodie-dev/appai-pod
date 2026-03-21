@@ -757,6 +757,18 @@ export default function AdminCustomizerPages() {
 
                       {/* Production tab */}
                       <TabsContent value="production" className="space-y-3 pt-2">
+                        <div className="flex justify-end">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => clearCostsMutation.mutate()}
+                            disabled={clearCostsMutation.isPending || costsLoading}
+                            className="shrink-0"
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                            Refresh Pricing
+                          </Button>
+                        </div>
                         {costsLoading ? (
                           <div className="flex items-center justify-center py-8">
                             <Loader2 className="h-5 w-5 animate-spin mr-2" />
