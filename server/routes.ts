@@ -268,6 +268,26 @@ async function removeBackgroundFallback(buffer: Buffer, isDarkBackground: boolea
     .toBuffer();
 }
 
+/**
+ * Determines whether a product should be printed double-sided.
+ * Checks both the stored doubleSidedPrint flag AND the placeholderPositions
+ * (in case the product was imported before the flag was auto-detected).
+ * Apparel is always front-only regardless.
+ */
+function resolveDoubleSided(productType: any): boolean {
+  if (productType.designerType === "apparel") return false;
+  if (productType.doubleSidedPrint) return true;
+  // Defensive fallback: check if a "back" placeholder exists in stored positions
+  try {
+    const positions: { position: string }[] = typeof productType.placeholderPositions === "string"
+      ? JSON.parse(productType.placeholderPositions || "[]")
+      : (productType.placeholderPositions || []);
+    return positions.some((p) => p.position === "back");
+  } catch {
+    return false;
+  }
+}
+
 interface SaveImageOptions {
   isApparel?: boolean;
   isAllOverPrint?: boolean;
@@ -5193,7 +5213,7 @@ ${textEdgeRestrictions}
         printifyShopId: merchant.printifyShopId,
         sizeId: sizeId || 'default',
         colorId: colorId || 'default',
-        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        doubleSided: resolveDoubleSided(productType),
       });
 
       // ========== GENERATE MOCKUP ==========
@@ -5210,7 +5230,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
-        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        doubleSided: resolveDoubleSided(productType),
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
@@ -10151,7 +10171,7 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        doubleSided: resolveDoubleSided(productType),
         aopPositions,
         mirrorLegs: !!mirrorLegs,
       });
@@ -10279,7 +10299,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
-        doubleSided: productType.designerType !== "apparel" && (productType.doubleSidedPrint || false),
+        doubleSided: resolveDoubleSided(productType),
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
