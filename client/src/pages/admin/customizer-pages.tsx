@@ -534,7 +534,7 @@ export default function AdminCustomizerPages() {
                               return (
                                 <SelectItem key={val} value={val}>
                                   {blank.title}
-                                  {blank.needsShopifySync ? " (not yet sent to store)" : ""}
+                                  {blank.needsShopifySync ? " (new — will be sent to store)" : ""}
                                 </SelectItem>
                               );
                             })}
@@ -542,8 +542,8 @@ export default function AdminCustomizerPages() {
                         </Select>
                       )}
                       {selectedBlank?.needsShopifySync ? (
-                        <p className="text-xs text-amber-600 mt-1">
-                          This product hasn't been sent to your store yet. It will be automatically sent as a draft when you create this page. You'll need to set pricing in Shopify Admin before publishing it live.
+                        <p className="text-xs text-muted-foreground mt-1">
+                          This product will be automatically created on your store when you finish setting up this page.
                         </p>
                       ) : selectedBlank ? (
                         <p className="text-xs text-muted-foreground mt-1">

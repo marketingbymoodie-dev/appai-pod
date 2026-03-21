@@ -1130,59 +1130,6 @@ export default function AdminCreateProduct() {
               </div>
             )}
 
-            {/* Import Design section */}
-            {designerConfig && (
-              <Card className="border-dashed">
-                <CardContent className="pt-4 space-y-3">
-                  <div className="text-center space-y-1">
-                    <h4 className="font-medium text-sm">Import Design</h4>
-                    <p className="text-xs text-muted-foreground">
-                      Upload a PNG/JPG design or import from Kittl
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <input
-                      ref={importFileInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp"
-                      onChange={(e) => handleImportFile(e, "kittl")}
-                      className="hidden"
-                      data-testid="input-import-kittl"
-                    />
-                    <input
-                      ref={customUploadInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/jpg,image/webp"
-                      onChange={(e) => handleImportFile(e, "upload")}
-                      className="hidden"
-                      data-testid="input-import-custom"
-                    />
-                    <Button
-                      variant="outline"
-                      onClick={() => customUploadInputRef.current?.click()}
-                      disabled={isImporting || !selectedProductTypeId || !selectedSize}
-                      className="flex-1"
-                      data-testid="button-import-custom"
-                    >
-                      <Upload className="h-4 w-4 mr-2" />
-                      Upload Design
-                    </Button>
-                    <a
-                      href="https://www.kittl.com/editor"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline px-2"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      Kittl
-                    </a>
-                  </div>
-                  {importError && (
-                    <p className="text-sm text-destructive text-center">{importError}</p>
-                  )}
-                </CardContent>
-              </Card>
-            )}
           </div>
 
           <div className="space-y-4">
