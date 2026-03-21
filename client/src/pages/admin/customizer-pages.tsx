@@ -24,7 +24,7 @@ import {
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
-  CheckCircle2, ChevronRight, DollarSign, Info,
+  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
@@ -238,6 +238,23 @@ export default function AdminCustomizerPages() {
       return res.json();
     },
     enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
+  });
+
+  // Mutation: clear all cached costs and refetch for current product
+  const clearCostsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/admin/printify/costs/clear-cache");
+      if (!res.ok) throw new Error("Failed to clear costs cache");
+      return res.json();
+    },
+    onSuccess: () => {
+      // Invalidate the costs query so it re-fetches fresh data
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/printify/costs"] });
+      toast({ title: "Costs refreshed", description: "Production costs cache cleared. Fetching fresh data…" });
+    },
+    onError: () => {
+      toast({ title: "Refresh failed", description: "Could not clear costs cache. Please try again.", variant: "destructive" });
+    },
   });
 
   // Printify shipping query -- fetches per-tier, per-country shipping costs
@@ -608,7 +625,19 @@ export default function AdminCustomizerPages() {
                 <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
                   <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
                     <DialogHeader>
-                      <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
+                      <div className="flex items-center justify-between">
+                        <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => clearCostsMutation.mutate()}
+                          disabled={clearCostsMutation.isPending || costsLoading}
+                          className="ml-2 shrink-0"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                          Refresh
+                        </Button>
+                      </div>
                     </DialogHeader>
                     <Tabs defaultValue="production" className="w-full">
                       <TabsList className="grid w-full grid-cols-2">
@@ -654,7 +683,7 @@ export default function AdminCustomizerPages() {
                             </div>
                             <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
                             {costsData.cached && (
-                              <p className="text-xs text-muted-foreground">Cached data. Production costs are refreshed every 24 hours.</p>
+                              <p className="text-xs text-muted-foreground">Cached data. Use the Refresh button above to fetch the latest costs.</p>
                             )}
                           </>
                         ) : (
