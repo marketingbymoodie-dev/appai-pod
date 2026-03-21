@@ -9,6 +9,14 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
+// Cross-environment directory resolution.
+// In production (esbuild CJS): __dirname is natively available and equals dist/.
+// In development (tsx ESM, package.json type:module): __dirname is undefined;
+// we fall back to process.cwd() which is the project root — dist/ doesn't exist
+// in dev anyway so the static asset middleware just logs a warning and skips.
+declare const __dirname: string | undefined;
+const _dirname: string = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+
 // ============================================================
 // STARTUP BANNER - Identify deployed version
 // ============================================================
@@ -304,8 +312,8 @@ app.use((req, res, next) => {
   // This static middleware serves them from dist/public.
   // ────────────────────────────────────────────────────────────
   {
-    const candidateA = path.resolve(__dirname, "public");
-    const candidateB = path.resolve(__dirname, "../public");
+    const candidateA = path.resolve(_dirname, "public");
+    const candidateB = path.resolve(_dirname, "../public");
     const publicDir = fs.existsSync(path.join(candidateA, "index.html")) ? candidateA
                     : fs.existsSync(path.join(candidateB, "index.html")) ? candidateB
                     : candidateA;

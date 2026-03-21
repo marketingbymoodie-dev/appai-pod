@@ -9535,12 +9535,37 @@ ${textEdgeRestrictions}
     }
     const product = await createResp.json();
     const tempProductId: string = product.id;
-    const costs: Record<string, number> = {};
+    let costs: Record<string, number> = {};
     for (const v of (product.variants || [])) {
       if (v.id && typeof v.cost === "number") {
         costs[String(v.id)] = v.cost;
       }
     }
+
+    // Some blueprints don't include v.cost in the creation response.
+    // If costs are empty, fetch the product again to get fully populated variant data.
+    if (Object.keys(costs).length === 0) {
+      console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
+      try {
+        const fetchResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
+          headers: { Authorization: `Bearer ${apiToken}` },
+        });
+        if (fetchResp.ok) {
+          const fetchedProduct = await fetchResp.json();
+          for (const v of (fetchedProduct.variants || [])) {
+            if (v.id && typeof v.cost === "number") {
+              costs[String(v.id)] = v.cost;
+            }
+          }
+          console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
+        } else {
+          console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
+        }
+      } catch (fetchErr) {
+        console.warn(`[Printify Costs] Re-fetch error for product ${tempProductId}:`, fetchErr);
+      }
+    }
+
     // Clean up immediately
     try {
       await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {

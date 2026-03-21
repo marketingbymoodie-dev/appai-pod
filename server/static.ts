@@ -5,14 +5,21 @@ import fs from "fs";
 
 let staticInitialized = false;
 
-export function serveStatic(app: Express) {
-  // Resolve dist/public relative to the built server file location using __dirname
-  // Support both build layouts:
-  // Case A: dist/index.cjs + dist/public -> publicDir = __dirname/public
-  // Case B: dist/server/index.cjs + dist/public -> publicDir = __dirname/../public
+// Cross-environment directory resolution.
+// In production (esbuild CJS): __dirname is natively available and equals dist/.
+// In development (tsx ESM, package.json type:module): __dirname is undefined;
+// we fall back to process.cwd() which is the project root.
+declare const __dirname: string | undefined;
+const _dirname: string = typeof __dirname !== "undefined" ? __dirname : process.cwd();
 
-  const candidateA = path.resolve(__dirname, "public");
-  const candidateB = path.resolve(__dirname, "../public");
+export function serveStatic(app: Express) {
+  // Resolve dist/public relative to the built server file location using _dirname
+  // Support both build layouts:
+  // Case A: dist/index.cjs + dist/public -> publicDir = _dirname/public
+  // Case B: dist/server/index.cjs + dist/public -> publicDir = _dirname/../public
+
+  const candidateA = path.resolve(_dirname, "public");
+  const candidateB = path.resolve(_dirname, "../public");
 
   const indexExistsA = fs.existsSync(path.join(candidateA, "index.html"));
   const indexExistsB = fs.existsSync(path.join(candidateB, "index.html"));
@@ -36,7 +43,7 @@ export function serveStatic(app: Express) {
     console.log("[serveStatic] Startup diagnostics:");
     console.log(`  NODE_ENV: ${process.env.NODE_ENV}`);
     console.log(`  cwd: ${process.cwd()}`);
-    console.log(`  __dirname: ${__dirname}`);
+    console.log(`  _dirname: ${_dirname}`);
     console.log(`  candidateA: ${candidateA} (exists: ${indexExistsA})`);
     console.log(`  candidateB: ${candidateB} (exists: ${indexExistsB})`);
     console.log(`  chosen publicDir: ${publicDir}`);
@@ -47,7 +54,7 @@ export function serveStatic(app: Express) {
       console.error("===========================================================");
       console.error("[serveStatic] CRITICAL ERROR: index.html NOT FOUND!");
       console.error(`  Expected at: ${indexPath}`);
-      console.error(`  __dirname: ${__dirname}`);
+      console.error(`  _dirname: ${_dirname}`);
       console.error(`  cwd: ${process.cwd()}`);
       console.error("  SPA routes will fail with 404!");
       console.error("===========================================================");
