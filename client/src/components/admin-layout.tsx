@@ -33,8 +33,9 @@ import {
   ShoppingCart,
   LayoutTemplate,
   TrendingUp,
+  Globe,
 } from "lucide-react";
-import type { Merchant } from "@shared/schema";
+import type { Merchant, CustomizerPage } from "@shared/schema";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
@@ -66,6 +67,12 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
     enabled: isAuthenticated || embedded,
+  });
+
+  const { data: customizerPagesData } = useQuery<{ pages: CustomizerPage[] }>({
+    queryKey: ["/api/appai/customizer-pages"],
+    enabled: isAuthenticated || embedded,
+    staleTime: 30_000,
   });
 
   // Show skeleton while auth or (in embedded mode) merchant data is loading
@@ -129,6 +136,29 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
+            {customizerPagesData?.pages && customizerPagesData.pages.length > 0 && (
+              <SidebarGroup>
+                <SidebarGroupLabel>Customizer Pages</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {customizerPagesData.pages.map((page) => {
+                      const pageUrl = `/admin/customizer-pages`;
+                      const isActive = location === pageUrl;
+                      return (
+                        <SidebarMenuItem key={page.id}>
+                          <SidebarMenuButton asChild data-active={isActive}>
+                            <Link href={pageUrl} onClick={() => handleNavClick(pageUrl)}>
+                              <Globe className="h-4 w-4" />
+                              <span>{page.title}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      );
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
             <SidebarGroup>
               <SidebarGroupLabel>Customer Pages</SidebarGroupLabel>
               <SidebarGroupContent>
