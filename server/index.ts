@@ -5,7 +5,13 @@ import cookieParser from "cookie-parser";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { fileURLToPath } from "url";
+
+// ESM-compatible __dirname polyfill
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { registerRoutes } from "./routes";
+import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
@@ -140,10 +146,13 @@ app.get("/api/storefront/ping", (req, res) => {
  */
 app.set("trust proxy", 1);
 app.use((req, res, next) => {
-  res.setHeader(
-    "Content-Security-Policy",
-    "frame-ancestors https://*.myshopify.com https://admin.shopify.com"
-  );
+  // In development, also allow the Manus sandbox tunnel domain so the storefront
+  // preview launcher (port 5001) can embed the designer in an iframe.
+  const isDev = process.env.NODE_ENV === "development";
+  const frameAncestors = isDev
+    ? "frame-ancestors https://*.myshopify.com https://admin.shopify.com https://*.manus.computer 'self'"
+    : "frame-ancestors https://*.myshopify.com https://admin.shopify.com";
+  res.setHeader("Content-Security-Policy", frameAncestors);
   next();
 });
 
@@ -227,6 +236,9 @@ app.use((req, res, next) => {
 
   // ✅ 1) Register API + server routes FIRST
   await registerRoutes(httpServer, app);
+  
+  // ✅ 1b) Register admin branding routes
+  registerAdminBrandingRoutes(app);
 
   // ✅ Route registration sanity check — list all storefront routes
   const storefrontRoutes: string[] = [];

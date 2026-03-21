@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2 } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
+import BrandingSettingsComponent from "@/components/admin/branding-settings";
 import type { Merchant } from "@shared/schema";
 
 interface ShopifyInstallation {
@@ -410,6 +411,8 @@ export default function AdminSettings() {
             )}
           </CardContent>
         </Card>
+
+        <BrandingSettingsComponent />
 
         <Button 
           onClick={handleSaveSettings}

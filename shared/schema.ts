@@ -39,6 +39,7 @@ export const merchants = pgTable("merchants", {
   subscriptionTier: text("subscription_tier").notNull().default("free"),
   monthlyGenerationLimit: integer("monthly_generation_limit").notNull().default(100),
   generationsThisMonth: integer("generations_this_month").notNull().default(0),
+  brandingSettings: json("branding_settings"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
