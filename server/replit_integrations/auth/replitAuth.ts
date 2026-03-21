@@ -63,7 +63,6 @@ function getShopifyApiSecret() {
     process.env.SHOPIFY_API_SECRET ||
     process.env.SHOPIFY_API_SECRET_KEY ||
     process.env.SHOPIFY_API_SECRET_SECRET;
-
   if (!secret) {
     throw new Error("Missing env SHOPIFY_API_SECRET (or SHOPIFY_API_SECRET_KEY)");
   }
@@ -73,11 +72,9 @@ function getShopifyApiSecret() {
 function getBearerToken(req: any): string | null {
   const header = req.headers?.authorization || req.headers?.Authorization;
   if (!header || typeof header !== "string") return null;
-
   const parts = header.split(" ");
   if (parts.length !== 2) return null;
   if (parts[0].toLowerCase() !== "bearer") return null;
-
   return parts[1] || null;
 }
 
@@ -96,7 +93,6 @@ function parseShopFromDest(dest?: string): { shopDomain?: string; shopOrigin?: s
  */
 const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
   const token = getBearerToken(req);
-
   if (!token) {
     return res.status(401).json({ message: "Unauthorized: missing session token" });
   }
@@ -145,10 +141,30 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
 };
 
 /**
- * Export name used by your app.
- * This makes the middleware plug-in simple: app.use("/api", isAuthenticated)
+ * DEV-ONLY bypass middleware.
+ * Injects a fake merchant user so all isAuthenticated-guarded routes work
+ * without a real Shopify session token. NEVER active in production.
  */
-export const isAuthenticated: RequestHandler = verifyShopifySessionToken;
+const devBypassAuth: RequestHandler = (req, _res, next) => {
+  req.shopDomain = "dev.localhost";
+  req.shopOrigin = "http://localhost";
+  req.user = {
+    claims: {
+      sub: "dev:merchant:localhost",
+    },
+  };
+  return next();
+};
+
+/**
+ * Export name used by your app.
+ * In development: skips token verification entirely.
+ * In production: enforces Shopify JWT verification.
+ */
+export const isAuthenticated: RequestHandler =
+  process.env.NODE_ENV === "development"
+    ? devBypassAuth
+    : verifyShopifySessionToken;
 
 /**
  * Legacy hook: some codebases call setupAuth(app).

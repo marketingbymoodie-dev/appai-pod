@@ -23,9 +23,9 @@ export function StyleSelector({
 }: StyleSelectorProps) {
   return (
     <div className="space-y-2">
-      {showLabel && <Label className="text-sm font-medium">Style</Label>}
+      {showLabel && <Label>Style</Label>}
       <Select value={selectedStyle} onValueChange={onStyleChange}>
-        <SelectTrigger data-testid="select-style" className="h-9">
+        <SelectTrigger data-testid="select-style" className="h-11">
           <SelectValue placeholder="Choose a style" />
         </SelectTrigger>
         <SelectContent>

@@ -25,9 +25,9 @@ export function FrameColorSelector({
 
   return (
     <div className="space-y-2">
-      {showLabel && <Label className="text-sm font-medium">Color</Label>}
+      {showLabel && <Label>Color</Label>}
       <Select value={selectedFrameColor} onValueChange={onFrameColorChange}>
-        <SelectTrigger data-testid="select-frame-color">
+        <SelectTrigger data-testid="select-frame-color" className="h-11">
           <SelectValue placeholder="Select a color">
             {selected && (
               <span className="flex items-center gap-2">

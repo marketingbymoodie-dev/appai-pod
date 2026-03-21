@@ -23,9 +23,9 @@ export function SizeSelector({
 }: SizeSelectorProps) {
   return (
     <div className="space-y-2">
-      {showLabel && <Label className="text-sm font-medium">Size</Label>}
+      {showLabel && <Label>Size</Label>}
       <Select value={selectedSize} onValueChange={onSizeChange}>
-        <SelectTrigger data-testid="select-size">
+        <SelectTrigger data-testid="select-size" className="h-11">
           <SelectValue placeholder="Select a size" />
         </SelectTrigger>
         <SelectContent>

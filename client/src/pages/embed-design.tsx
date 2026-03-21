@@ -567,6 +567,7 @@ export default function EmbedDesign() {
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
+  const [brandingSettings, setBrandingSettings] = useState<any>(null);
 
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
@@ -1096,6 +1097,56 @@ export default function EmbedDesign() {
       masterAbort.abort();
     };
   }, [productTypeId, productHandle]);
+
+  // Fetch merchant's branding settings and apply to designer
+  useEffect(() => {
+    if (!shopDomain) return;
+
+    const fetchBranding = async () => {
+      try {
+        const res = await safeFetch(`${API_BASE}/api/admin/branding`);
+        if (res.ok) {
+          const data = await res.json();
+          setBrandingSettings(data.brandingSettings);
+          
+          // Apply branding to CSS variables
+          if (data.brandingSettings) {
+            const root = document.documentElement.style;
+            const bs = data.brandingSettings;
+            
+            // Convert hex colors to HSL for CSS variables
+            const primaryHSL = cssColorToHSL(bs.primaryColor);
+            const textHSL = cssColorToHSL(bs.textColor);
+            const bgHSL = cssColorToHSL(bs.backgroundColor);
+            const borderHSL = cssColorToHSL(bs.borderColor);
+            
+            if (primaryHSL) {
+              root.setProperty('--primary', primaryHSL);
+              root.setProperty('--ring', primaryHSL);
+            }
+            if (textHSL) {
+              root.setProperty('--foreground', textHSL);
+              root.setProperty('--card-foreground', textHSL);
+            }
+            if (bgHSL) {
+              root.setProperty('--background', bgHSL);
+            }
+            if (borderHSL) {
+              root.setProperty('--border', borderHSL);
+              root.setProperty('--input', borderHSL);
+            }
+            if (bs.fontFamily) {
+              root.setProperty('--font-sans', bs.fontFamily);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[EmbedDesign] Failed to fetch branding settings:', err);
+      }
+    };
+
+    fetchBranding();
+  }, [shopDomain]);
 
   // Load shared design if sharedDesignId is present in URL
   useEffect(() => {
@@ -3054,7 +3105,7 @@ export default function EmbedDesign() {
                 })()}
               </div>
             )}
-            <div className="space-y-4">
+            <div className="space-y-4 mt-4">
               {/* Row 1: Generate + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Generate button — left, wider */}
@@ -3077,7 +3128,7 @@ export default function EmbedDesign() {
                       handleGenerate();
                     }}
                     disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
-                    className="w-full h-12 text-base font-medium"
+                    className="w-full h-11 text-base font-medium"
                     data-testid="button-generate"
                   >
                     {generateMutation.isPending ? (
@@ -3141,7 +3192,7 @@ export default function EmbedDesign() {
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full h-12"
+                    className="w-full h-11"
                     onClick={() => fileInputRef.current?.click()}
                     data-testid="button-upload-reference"
                   >
@@ -3203,7 +3254,7 @@ export default function EmbedDesign() {
                 const { label, choices } = activePreset.options;
                 return (
                   <div className="space-y-2">
-                    <Label className="text-sm font-medium">{label}</Label>
+                    <Label>{label}</Label>
                     <div className="flex flex-wrap gap-2">
                       {choices.map((choice) => (
                         <button
@@ -3518,7 +3569,7 @@ export default function EmbedDesign() {
                     <Button
                       onClick={handleAddToCart}
                       disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
-                      className="w-full h-12 text-base font-medium"
+                      className="w-full h-11 text-base font-medium"
                       data-testid="button-add-to-cart"
                     >
                       {isAddingToCart ? (

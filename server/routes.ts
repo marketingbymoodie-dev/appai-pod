@@ -1,5 +1,6 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import { generatePattern, type PatternType } from "./picsart-client";
+import pg from "pg";
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
@@ -7,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import sharp from "sharp";
 import { storage } from "./storage";
+import { pool } from "./db";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
@@ -508,26 +510,55 @@ export async function registerRoutes(
   const configCache = new Map<string, ConfigCacheEntry>();
   const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-  // Test DB connection asynchronously (non-blocking)
+  // Test DB connection asynchronously (non-blocking).
+  // Uses a dedicated fresh pg.Client (not the shared pool) so a failed attempt
+  // never leaves a dangling checked-out connection that exhausts the pool.
   (async () => {
-    try {
-      // Simple query to test DB
-      await storage.getActiveProductTypes();
-      dbReady = true;
-      console.log(`[Health] Database ready after ${Date.now() - serverStartTime}ms`);
-    } catch (err) {
-      console.error("[Health] Database connection test failed:", err);
-      // Retry after 2s
-      setTimeout(async () => {
+    const maxAttempts = 20;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const testClient = new pg.Client({
+        connectionString: process.env.DATABASE_URL,
+        connectionTimeoutMillis: 6000,
+        statement_timeout: 5000,
+      });
+      try {
+        await testClient.connect();
+        await testClient.query("SELECT 1");
+        await testClient.end();
+        dbReady = true;
+        console.log(`[Health] Database ready after ${Date.now() - serverStartTime}ms (attempt ${attempt})`);
+        // Pre-warm the shared pool: acquire and release several connections so they
+        // are alive and idle when the first real requests arrive. Without this, the
+        // first few requests hit cold/dead pool connections and time out.
         try {
-          await storage.getActiveProductTypes();
-          dbReady = true;
-          console.log(`[Health] Database ready (retry) after ${Date.now() - serverStartTime}ms`);
-        } catch (e) {
-          console.error("[Health] Database still not ready:", e);
+          const warmupCount = Math.min(5, pool.options.max || 5);
+          const warmupClients = await Promise.all(
+            Array.from({ length: warmupCount }, () => pool.connect())
+          );
+          warmupClients.forEach(c => c.release());
+          console.log(`[Health] Pool pre-warmed with ${warmupCount} connections`);
+          // Keep-alive ping every 25s to prevent Railway's ~30s TCP idle timeout
+          // from silently terminating pool connections.
+          setInterval(async () => {
+            try {
+              const c = await pool.connect();
+              await c.query("SELECT 1");
+              c.release();
+            } catch (_) { /* non-fatal */ }
+          }, 25000);
+        } catch (warmupErr: any) {
+          console.warn(`[Health] Pool pre-warm failed (non-fatal): ${warmupErr?.message}`);
         }
-      }, 2000);
+        return;
+      } catch (err: any) {
+        try { await testClient.end(); } catch (_) { /* ignore */ }
+        console.error(`[Health] Database connection test failed (attempt ${attempt}/${maxAttempts}): ${err?.message ?? err}`);
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
     }
+    console.error("[Health] Database never became ready after all retries — some routes may be degraded");
   })();
 
   // Storefront request logging middleware
@@ -658,6 +689,41 @@ export async function registerRoutes(
   registerAuthRoutes(app);
   registerShopifyRoutes(app);
   registerObjectStorageRoutes(app);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DEV-ONLY: list all product types for the storefront preview launcher.
+  // Only active in development — never reachable in production.
+  // ─────────────────────────────────────────────────────────────────────────
+  if (process.env.NODE_ENV === "development") {
+    app.get("/api/dev/product-types", async (_req: Request, res: Response) => {
+      // Use a fresh client (not the shared pool) to avoid pool exhaustion issues in dev
+      const client = new pg.Client({
+        connectionString: process.env.DATABASE_URL,
+        connectionTimeoutMillis: 8000,
+        statement_timeout: 8000,
+        keepAlive: true,
+      });
+      try {
+        await client.connect();
+        const result = await client.query(
+          "SELECT id, name, designer_type FROM product_types ORDER BY sort_order, id"
+        );
+        await client.end();
+        return res.json(
+          result.rows.map((pt: any) => ({
+            id: pt.id,
+            name: pt.name,
+            designerType: pt.designer_type ?? null,
+          }))
+        );
+      } catch (err: any) {
+        try { await client.end(); } catch (_) { /* ignore */ }
+        console.error("[dev/product-types] Error:", err);
+        return res.status(500).json({ error: err?.message || String(err) });
+      }
+    });
+    console.log("[dev] /api/dev/product-types endpoint registered");
+  }
 
   // Get or create customer profile
   app.get("/api/customer", isAuthenticated, async (req: any, res: Response) => {
@@ -11463,6 +11529,73 @@ ${textEdgeRestrictions}
     } as any);
 
     return res.json({ success: true });
+  }));
+
+  // ==================== BRANDING & STYLING ====================
+
+  // GET branding settings for current merchant
+  app.get("/api/admin/branding", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    
+    if (!merchant) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+
+    res.json({
+      brandingSettings: merchant.brandingSettings || {
+        primaryColor: "#000000",
+        secondaryColor: "#f5f5f5",
+        textColor: "#000000",
+        borderColor: "#000000",
+        backgroundColor: "#ffffff",
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      }
+    });
+  }));
+
+  // POST sync theme - detect colors and fonts from Shopify theme
+  app.post("/api/admin/branding/sync-theme", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const { sniffThemeColors } = await import("./theme-sniffer");
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    
+    if (!merchant) {
+      return res.status(404).json({ error: "Merchant not found" });
+    }
+
+    // Get the first connected Shopify store
+    const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
+    if (!installations || installations.length === 0) {
+      return res.status(400).json({ error: "No Shopify store connected" });
+    }
+
+    const installation = installations[0];
+    
+    try {
+      // Fetch theme CSS from Shopify store to sniff colors and fonts
+      const themeSettings = await sniffThemeColors(installation.shopDomain);
+      
+      if (!themeSettings) {
+        return res.status(400).json({ error: "Could not detect theme settings" });
+      }
+
+      // Update merchant branding settings
+      const updatedMerchant = await storage.updateMerchant(merchant.id, {
+        brandingSettings: {
+          ...themeSettings,
+          syncedAt: new Date().toISOString(),
+        }
+      });
+
+      res.json({
+        message: "Theme synced successfully",
+        brandingSettings: updatedMerchant.brandingSettings
+      });
+    } catch (error) {
+      console.error("Error syncing theme:", error);
+      res.status(500).json({ error: "Failed to sync theme" });
+    }
   }));
 
   return httpServer;

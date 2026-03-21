@@ -23,6 +23,9 @@ import AdminCreateProduct from "@/pages/admin/create-product";
 import AdminCustomizerPages from "@/pages/admin/customizer-pages";
 import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 
+// DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
+import DevStorefrontPreview from "@/pages/dev-storefront-preview";
+
 function AppRouter() {
   return (
     <Switch>
@@ -49,6 +52,11 @@ function AppRouter() {
       <Route path="/admin/customizer-pages" component={AdminCustomizerPages} />
       <Route path="/admin/plan" component={AdminPlanPicker} />
       <Route path="/admin" component={AdminDashboard} />
+
+      {/* DEV-ONLY: Storefront preview launcher */}
+      {import.meta.env.DEV && (
+        <Route path="/dev/storefront" component={DevStorefrontPreview} />
+      )}
 
       {/* Fallback */}
       <Route component={NotFound} />
