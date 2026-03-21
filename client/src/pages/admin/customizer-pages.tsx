@@ -306,12 +306,45 @@ export default function AdminCustomizerPages() {
     return price <= dollars + 0.95 ? dollars + 0.95 : dollars + 1.95;
   }
 
-  // Recommended retail prices keyed by Shopify variant ID, computed from costs + markup
+  // Recommended retail prices keyed by Shopify variant ID, computed from costs + markup.
+  // Uses shopifyVariantCosts when available (direct Shopify ID bridge),
+  // otherwise falls back to label-matching against printifyVariantLabels.
   const recommendedPrices = useMemo(() => {
-    if (!costsData?.shopifyVariantCosts) return {} as Record<string, string>;
+    if (!costsData) return {} as Record<string, string>;
     const result: Record<string, string> = {};
+
+    // Build a normalised-label → cost-in-cents lookup from Printify variant labels
+    // e.g. { "14x14" → 850, "18x18" → 950, ... }
+    const labelToCost: Record<string, number> = {};
+    if (costsData.printifyVariantLabels && costsData.costs) {
+      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+        const costCents = costsData.costs[printifyVid];
+        if (costCents != null) {
+          labelToCost[label.toLowerCase().trim()] = costCents;
+        }
+      }
+    }
+
     for (const v of selectedVariants) {
-      const costCents = costsData.shopifyVariantCosts[v.id];
+      // 1) Direct Shopify variant ID bridge
+      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
+
+      // 2) Label-based fallback: match variant title against Printify variant labels
+      if (costCents == null && v.title) {
+        const normTitle = v.title.toLowerCase().trim();
+        // Try exact match first
+        costCents = labelToCost[normTitle];
+        // Try partial match: check if any label is contained in the variant title or vice versa
+        if (costCents == null) {
+          for (const [label, cost] of Object.entries(labelToCost)) {
+            if (normTitle.includes(label) || label.includes(normTitle)) {
+              costCents = cost;
+              break;
+            }
+          }
+        }
+      }
+
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
