@@ -357,6 +357,9 @@ async function createTemporaryProduct(
     print_areas: [{ variant_ids: [variantId], placeholders }],
   };
 
+  console.log(`[Printify CreateProduct] doubleSided=${doubleSided}, aopPositions=${JSON.stringify(aopPositions || null)}, placeholders=${JSON.stringify(placeholders.map(p => p.position))}`);
+  console.log(`[Printify CreateProduct] Full print_areas:`, JSON.stringify(requestBody.print_areas, null, 2));
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       console.log(`[Printify] Creating temp product (attempt ${attempt}/${MAX_RETRIES}):`, {

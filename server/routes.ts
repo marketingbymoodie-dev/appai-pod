@@ -5217,6 +5217,8 @@ ${textEdgeRestrictions}
       });
 
       // ========== GENERATE MOCKUP ==========
+      const resolvedDoubleSided = resolveDoubleSided(productType);
+      console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { generatePrintifyMockup } = await import("./printify-mockups.js");
 
       const result = await generatePrintifyMockup({
@@ -5229,8 +5231,7 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
-        doubleSided: resolveDoubleSided(productType),
+        doubleSided: resolvedDoubleSided,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
