@@ -735,11 +735,11 @@ export default function AdminCustomizerPages() {
 
                 {/* ── Printify Costs Dialog ── */}
                 <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
-                  <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+                  <DialogContent className="max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
                     <DialogHeader>
                       <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
                     </DialogHeader>
-                    <Tabs value={costsActiveTab} onValueChange={(v) => setCostsActiveTab(v as "production" | "shipping")} className="w-full">
+                    <Tabs value={costsActiveTab} onValueChange={(v) => setCostsActiveTab(v as "production" | "shipping")} className="w-full flex flex-col min-h-0 flex-1 overflow-y-auto">
                       <TabsList className="grid w-full grid-cols-2">
                         <TabsTrigger value="production" className="flex items-center gap-1.5">
                           <Factory className="h-3.5 w-3.5 shrink-0" />
@@ -855,18 +855,30 @@ export default function AdminCustomizerPages() {
                               </Button>
                             </div>
                             {shippingData.countries && shippingData.countries.length > 0 && (
-                              <Select value={costsShippingCountry} onValueChange={setCostsShippingCountry}>
-                                <SelectTrigger className="w-full">
-                                  <SelectValue placeholder="Select country" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {shippingData.countries.map((c) => (
-                                    <SelectItem key={c} value={c}>
-                                      {c === "REST_OF_THE_WORLD" ? "Rest of the World" : c}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium whitespace-nowrap">Country</span>
+                                <Select value={costsShippingCountry} onValueChange={setCostsShippingCountry}>
+                                  <SelectTrigger className="flex-1">
+                                    <SelectValue placeholder="Select country" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {(() => {
+                                      const sorted = [...shippingData.countries].sort((a, b) => {
+                                        if (a === "US") return -1;
+                                        if (b === "US") return 1;
+                                        if (a === "REST_OF_THE_WORLD") return -1;
+                                        if (b === "REST_OF_THE_WORLD") return 1;
+                                        return a.localeCompare(b);
+                                      });
+                                      return sorted.map((c) => (
+                                        <SelectItem key={c} value={c}>
+                                          {c === "REST_OF_THE_WORLD" ? "Rest of the World" : c}
+                                        </SelectItem>
+                                      ));
+                                    })()}
+                                  </SelectContent>
+                                </Select>
+                              </div>
                             )}
                             {(() => {
                               const tierEntries = (shippingData.shipping[costsShippingTier] ?? [])
