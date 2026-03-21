@@ -661,7 +661,14 @@ export default function AdminCustomizerPages() {
                                 <span className="text-right text-emerald-600">Premium (est.)</span>
                               </div>
                               {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                const costCents = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
+                                // Try Shopify variant ID first, then fall back to label-based matching
+                                // (label matching handles cases where shopifyVariantCosts is not populated)
+                                let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
+                                if (costCents == null && costsData.printifyVariantLabels) {
+                                  const matchingPrintifyId = Object.entries(costsData.printifyVariantLabels)
+                                    .find(([, label]) => label === v.title)?.[0];
+                                  if (matchingPrintifyId) costCents = costsData.costs?.[matchingPrintifyId];
+                                }
                                 return (
                                   <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                     <span>{v.title}</span>
