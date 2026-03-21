@@ -533,7 +533,7 @@ async function findCustomizerParent(
     );
     if (hasKnownChild) return item;
   }
-  // Strategy 2: fall back to title match (first publish, no existing children yet)
+  // Strategy 2: fall back to title match
   return menuItems.find((item: any) => item.title === "Customizer") ?? null;
 }
 
@@ -719,7 +719,7 @@ async function removeNavigationLink(
       newMenuItems = (menu.items ?? [])
         .filter((item: any) => item.id !== customizerParent.id)
         .map(menuItemToInput);
-      console.log(`[nav] Removed "${customizerParent.title}" parent (empty) from main-menu for ${shop}`);
+      console.log(`[nav] Removed "${customizerParent.title}" parent (empty) from menu for ${shop}`);
     } else {
       // Keep the parent with the remaining sub-items (preserve any rename)
       newMenuItems = (menu.items ?? []).map((item: any) => {
