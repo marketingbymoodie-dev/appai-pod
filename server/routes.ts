@@ -470,25 +470,31 @@ async function shopifyGraphQL(
  * Fetches the full main-menu with nested items (up to 2 levels deep).
  */
 async function getMainMenu(shop: string, accessToken: string): Promise<any | null> {
-  const queryRes = await shopifyGraphQL(shop, accessToken, `
-    query GetMainMenu {
-      menu(handle: "main-menu") {
-        id
-        title
-        items {
+  // Try "main-menu" first, then "customizer"
+  const handles = ["main-menu", "customizer"];
+  for (const handle of handles) {
+    const queryRes = await shopifyGraphQL(shop, accessToken, `
+      query GetMenu($handle: String!) {
+        menu(handle: $handle) {
           id
           title
-          url
           items {
             id
             title
             url
+            items {
+              id
+              title
+              url
+            }
           }
         }
       }
-    }
-  `);
-  return queryRes?.data?.menu ?? null;
+    `, { handle });
+    const menu = queryRes?.data?.menu;
+    if (menu?.id) return menu;
+  }
+  return null;
 }
 
 /**
@@ -11158,6 +11164,34 @@ ${textEdgeRestrictions}
       } catch (restErr: any) {
         console.warn(`[ensurePublished] REST fallback error: ${restErr.message}`);
       }
+    }
+
+    // --- Attempt 3: Set seo.hidden metafield to hide from search/collections (Unlisted) ---
+    try {
+      console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
+      const metafieldRes = await fetch(
+        `https://${shop}/admin/api/2024-01/products/${productId}/metafields.json`,
+        {
+          method: "POST",
+          headers: restHeaders,
+          body: JSON.stringify({
+            metafield: {
+              namespace: "seo",
+              key: "hidden",
+              value: 1,
+              type: "integer"
+            }
+          }),
+        }
+      );
+      if (metafieldRes.ok) {
+        console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
+      } else {
+        const errText = await metafieldRes.text().catch(() => "");
+        console.warn(`[ensurePublished] Failed to set seo.hidden metafield: ${metafieldRes.status} ${errText.slice(0, 200)}`);
+      }
+    } catch (metaErr: any) {
+      console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
     }
   }
 
