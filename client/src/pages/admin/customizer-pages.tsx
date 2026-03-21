@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -100,6 +100,7 @@ export default function AdminCustomizerPages() {
   const [formHandle, setFormHandle] = useState("");
   const [formProductId, setFormProductId] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
+  const [titleTouched, setTitleTouched] = useState(false);
 
   // Wizard state
   const [formStep, setFormStep] = useState<1 | 2 | 3 | 4>(1);
@@ -208,6 +209,7 @@ export default function AdminCustomizerPages() {
     setFormHandle("");
     setFormProductId("");
     setHandleTouched(false);
+    setTitleTouched(false);
     setFormStep(1);
     setVariantPrices({});
     setPriceErrors({});
@@ -215,8 +217,27 @@ export default function AdminCustomizerPages() {
   }
 
   function handleTitleChange(val: string) {
+    setTitleTouched(true);
     setFormTitle(val);
     if (!handleTouched) setFormHandle(slugify(val));
+  }
+
+  /** Simplify a Printify product name to a short page title.
+   *  e.g. "Custom Spun Polyester Square Pillow" → "Square Pillow"
+   *       "Premium Unisex Crewneck Sweatshirt" → "Crewneck Sweatshirt"
+   */
+  function simplifyProductName(name: string): string {
+    const STRIP_WORDS = [
+      "custom", "spun", "polyester", "premium", "unisex", "classic",
+      "basic", "standard", "all-over", "all over", "print",
+      "sublimation", "sublimated", "dye", "digital",
+    ];
+    let words = name.split(/\s+/);
+    // Remove leading words that match the strip list
+    while (words.length > 1 && STRIP_WORDS.includes(words[0].toLowerCase().replace(/[^a-z]/g, ""))) {
+      words = words.slice(1);
+    }
+    return words.join(" ");
   }
 
   /** Derive variants for the currently-selected product (Step 2 pricing) */
@@ -297,6 +318,33 @@ export default function AdminCustomizerPages() {
     }
     return result;
   }, [costsData, selectedVariants, markupPercent]);
+
+  // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
+  useEffect(() => {
+    if (formStep !== 2) return;
+    if (Object.keys(recommendedPrices).length === 0) return;
+    setVariantPrices((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [id, price] of Object.entries(recommendedPrices)) {
+        // Only fill in if the field is currently empty or zero
+        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
+          next[id] = price;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [recommendedPrices, formStep]);
+
+  // Auto-populate page title from product name when product is selected (if title not manually edited)
+  useEffect(() => {
+    if (!selectedBlank) return;
+    if (titleTouched) return; // user has manually typed a title — don't overwrite
+    const simplified = simplifyProductName(selectedBlank.title);
+    setFormTitle(simplified);
+    if (!handleTouched) setFormHandle(slugify(simplified));
+  }, [selectedBlank?.title, titleTouched]);
 
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
@@ -432,35 +480,7 @@ export default function AdminCustomizerPages() {
                 {/* ── STEP 1: Page info ── */}
                 {formStep === 1 && (
                   <div className="space-y-4 pt-2">
-                    <div>
-                      <Label>Page Title</Label>
-                      <Input
-                        placeholder="Customize Your Tumbler"
-                        value={formTitle}
-                        onChange={(e) => handleTitleChange(e.target.value)}
-                        className="mt-1"
-                      />
-                    </div>
-                    <div>
-                      <Label>URL Handle</Label>
-                      <div className="flex items-center mt-1">
-                        <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
-                          /pages/
-                        </span>
-                        <Input
-                          placeholder="customize-tumbler"
-                          value={formHandle}
-                          onChange={(e) => {
-                            setHandleTouched(true);
-                            setFormHandle(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
-                          }}
-                          className="rounded-l-none"
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Storefront URL: /pages/{formHandle || "…"}
-                      </p>
-                    </div>
+                    {/* Product first */}
                     <div>
                       <Label>Product</Label>
                       {blanksLoading ? (
@@ -470,7 +490,7 @@ export default function AdminCustomizerPages() {
                           No products found. Import products from Printify first.
                         </p>
                       ) : (
-                        <Select value={formProductId} onValueChange={setFormProductId}>
+                        <Select value={formProductId} onValueChange={(val) => { setFormProductId(val); }}>
                           <SelectTrigger className="mt-1">
                             <SelectValue placeholder="Select a product…" />
                           </SelectTrigger>
@@ -491,11 +511,45 @@ export default function AdminCustomizerPages() {
                         <p className="text-xs text-amber-600 mt-1">
                           This product hasn't been sent to your store yet. It will be automatically sent as a draft when you create this page. You'll need to set pricing in Shopify Admin before publishing it live.
                         </p>
-                      ) : (
+                      ) : selectedBlank ? (
                         <p className="text-xs text-muted-foreground mt-1">
                           All variants will be available to customers on the storefront.
                         </p>
-                      )}
+                      ) : null}
+                    </div>
+                    {/* Page Title — auto-populated from product name, still editable */}
+                    <div>
+                      <Label>Page Title</Label>
+                      <Input
+                        placeholder="e.g. Square Pillow"
+                        value={formTitle}
+                        onChange={(e) => handleTitleChange(e.target.value)}
+                        className="mt-1"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Auto-filled from product name — feel free to edit.
+                      </p>
+                    </div>
+                    {/* URL Handle — mirrors title, still editable */}
+                    <div>
+                      <Label>URL Handle</Label>
+                      <div className="flex items-center mt-1">
+                        <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
+                          /pages/
+                        </span>
+                        <Input
+                          placeholder="square-pillow"
+                          value={formHandle}
+                          onChange={(e) => {
+                            setHandleTouched(true);
+                            setFormHandle(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+                          }}
+                          className="rounded-l-none"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Storefront URL: /pages/{formHandle || "…"}
+                      </p>
                     </div>
                     <Button
                       className="w-full"
