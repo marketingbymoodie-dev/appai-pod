@@ -288,6 +288,57 @@ function resolveDoubleSided(productType: any): boolean {
   }
 }
 
+/**
+ * Detect wrap-around products: double-sided products whose "front" placeholder
+ * is significantly wider than tall (ratio > 1.5), indicating a single continuous
+ * wrap area (e.g. pillows) rather than separate front/back print areas.
+ * For these, we duplicate the artwork side-by-side to fill the full wrap.
+ */
+function resolveWrapAround(productType: any): boolean {
+  if (productType.designerType === "apparel") return false;
+  if (!resolveDoubleSided(productType)) return false;
+  try {
+    const positions: { position: string; width?: number; height?: number }[] =
+      typeof productType.placeholderPositions === "string"
+        ? JSON.parse(productType.placeholderPositions || "[]")
+        : (productType.placeholderPositions || []);
+    // If there's a "back" placeholder with its own dimensions, it's truly separate front/back
+    const hasBackWithDims = positions.some(
+      (p) => p.position === "back" && p.width && p.height && p.width > 0 && p.height > 0
+    );
+    if (hasBackWithDims) return false;
+    // Check if "front" placeholder is wider than tall (wrap-around)
+    const front = positions.find((p) => p.position === "front" || p.position === "default");
+    if (front && front.width && front.height) {
+      const ratio = front.width / front.height;
+      if (ratio > 1.5) {
+        console.log(`[resolveWrapAround] Detected wrap-around: front placeholder ${front.width}x${front.height} ratio=${ratio.toFixed(2)}`);
+        return true;
+      }
+    }
+    // Fallback: if doubleSidedPrint=true but no back placeholder exists at all, it's likely wrap-around
+    const hasBack = positions.some((p) => p.position === "back");
+    if (!hasBack && positions.length > 0) {
+      console.log(`[resolveWrapAround] Detected wrap-around: doubleSided=true but no back placeholder`);
+      return true;
+    }
+    // Extra fallback: check stored aspectRatio — if wider than tall (e.g. "2:1"), it's wrap-around
+    if (positions.length === 0 && productType.aspectRatio) {
+      const parts = String(productType.aspectRatio).split(":").map(Number);
+      if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
+        const ratio = parts[0] / parts[1];
+        if (ratio > 1.5) {
+          console.log(`[resolveWrapAround] Detected wrap-around from aspectRatio=${productType.aspectRatio} (ratio=${ratio.toFixed(2)})`);
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 interface SaveImageOptions {
   isApparel?: boolean;
   isAllOverPrint?: boolean;
@@ -5218,7 +5269,8 @@ ${textEdgeRestrictions}
 
       // ========== GENERATE MOCKUP ==========
       const resolvedDoubleSided = resolveDoubleSided(productType);
-      console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
+      const resolvedWrapAround = resolveWrapAround(productType);
+      console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { generatePrintifyMockup } = await import("./printify-mockups.js");
 
       const result = await generatePrintifyMockup({
@@ -5232,6 +5284,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: resolvedDoubleSided,
+        wrapAround: resolvedWrapAround,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
@@ -10173,6 +10226,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: resolveDoubleSided(productType),
+        wrapAround: resolveWrapAround(productType),
         aopPositions,
         mirrorLegs: !!mirrorLegs,
       });
@@ -10299,8 +10353,8 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        // Apparel always front-only — never print on back even if DB has doubleSidedPrint=true
         doubleSided: resolveDoubleSided(productType),
+        wrapAround: resolveWrapAround(productType),
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,

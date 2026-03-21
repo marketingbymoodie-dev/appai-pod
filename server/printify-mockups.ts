@@ -18,6 +18,9 @@ interface MockupRequest {
   x?: number; // -1 to 1 range, default 0 (center)
   y?: number; // -1 to 1 range, default 0 (center)
   doubleSided?: boolean; // Send image to both front and back
+  /** Wrap-around: product uses a single print area that wraps both sides (e.g. pillows).
+   *  When true, the image is duplicated side-by-side to fill the 2:1 wrap area. */
+  wrapAround?: boolean;
   /** AOP: list of all panel positions to fill with the same image */
   aopPositions?: { position: string; width: number; height: number }[];
   /** AOP: when true, right_* panels will receive a horizontally flipped copy of the pattern */
@@ -494,6 +497,7 @@ export async function generatePrintifyMockup(
     x = 0,
     y = 0,
     doubleSided = false,
+    wrapAround = false,
   } = request;
 
   // Fix accidental double-prefixed URLs (e.g. APP_URL + Supabase URL) before any use
@@ -511,7 +515,7 @@ export async function generatePrintifyMockup(
 
   // --- Cache-first: check if all preferred views are already cached ---
   const preferredCacheKeys = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map(
-    (label) => buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, label, scale, x, y, doubleSided)
+    (label) => buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, label, scale, x, y, doubleSided || wrapAround)
   );
   const cachedPaths = preferredCacheKeys.map(getCachedMockup);
   const allCached = cachedPaths.every((p) => p !== null);
@@ -535,10 +539,59 @@ export async function generatePrintifyMockup(
   let productId: string | null = null;
 
   try {
-    // For AOP mockups: download the pattern, resize to 1024px for fast upload,
-    // and optionally create a horizontally-flipped copy for right_* panels.
+    // For wrap-around products (e.g. pillows): the "front" placeholder covers both
+    // sides as a single continuous 2:1 area. Duplicate the 1:1 image side-by-side
+    // so both front and back show the same artwork.
     const isAop = !!(request.aopPositions && request.aopPositions.length > 0);
     let uploadUrl: string | Buffer = imageUrl;
+
+    if (wrapAround && !isAop) {
+      try {
+        let originalBuffer: Buffer;
+        if (isDataUrl(imageUrl)) {
+          const b64 = extractBase64FromDataUrl(imageUrl);
+          originalBuffer = Buffer.from(b64, "base64");
+        } else {
+          const fetchRes = await fetch(imageUrl);
+          if (fetchRes.ok) {
+            originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
+          } else {
+            console.warn("[Printify Wrap] Could not fetch image for duplication — using original");
+            originalBuffer = Buffer.alloc(0);
+          }
+        }
+
+        if (originalBuffer.length > 0) {
+          // Get the image dimensions
+          const metadata = await sharp(originalBuffer).metadata();
+          const w = metadata.width || 1024;
+          const h = metadata.height || 1024;
+
+          // Create a 2:1 canvas with the image duplicated side-by-side
+          // Left half = front, Right half = back (both show same artwork)
+          const wideBuffer = await sharp({
+            create: {
+              width: w * 2,
+              height: h,
+              channels: 4,
+              background: { r: 255, g: 255, b: 255, alpha: 1 },
+            },
+          })
+            .composite([
+              { input: originalBuffer, left: 0, top: 0 },
+              { input: originalBuffer, left: w, top: 0 },
+            ])
+            .png()
+            .toBuffer();
+
+          uploadUrl = wideBuffer;
+          console.log(`[Printify Wrap] Duplicated ${w}x${h} image to ${w * 2}x${h} wrap-around (${wideBuffer.length} bytes)`);
+        }
+      } catch (wrapErr: any) {
+        console.warn("[Printify Wrap] Image duplication failed, falling back to original:", wrapErr.message);
+        uploadUrl = imageUrl;
+      }
+    }
     let mirroredUploadBuffer: Buffer | null = null;
 
     if (isAop) {
@@ -606,6 +659,10 @@ export async function generatePrintifyMockup(
       }
     }
 
+    // When wrapAround is active, the image is already duplicated side-by-side,
+    // so we only need the single "front" placeholder (doubleSided=false).
+    const effectiveDoubleSided = wrapAround ? false : doubleSided;
+
     const createResult = await createTemporaryProduct(
       printifyShopId,
       blueprintId,
@@ -616,7 +673,7 @@ export async function generatePrintifyMockup(
       scale,
       x,
       y,
-      doubleSided,
+      effectiveDoubleSided,
       request.aopPositions,
       resolvedMirroredImageId
     );
@@ -663,7 +720,7 @@ export async function generatePrintifyMockup(
 
     // Build cache keys for the selected views
     const cacheKeys = selected.map((img) =>
-      buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label, scale, x, y, doubleSided)
+      buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label, scale, x, y, doubleSided || wrapAround)
     );
 
     const cached = await cacheMockupImages(selectedData, cacheKeys);
