@@ -3846,6 +3846,9 @@ ${textEdgeRestrictions}
           ]);
           const hasAnyColor = frameColors.some((c: any) => {
             const lower = (c.name || "").toLowerCase();
+            // If it contains material terms, it's likely an option, not a color
+            const materialTerms = ["fleece", "microfiber", "polyester", "cotton", "canvas", "paper", "metal", "wood", "plastic", "glass", "ceramic"];
+            if (materialTerms.some(m => lower.includes(m))) return false;
             return knownColors.has(lower) || [...knownColors].some(k => lower.includes(k));
           });
           return hasAnyColor ? "Color" : "Option";
@@ -4031,6 +4034,9 @@ ${textEdgeRestrictions}
         ]);
         const hasAnyColor = frameColors.some((c: any) => {
           const lower = (c.name || "").toLowerCase();
+          // If it contains material terms, it's likely an option, not a color
+          const materialTerms = ["fleece", "microfiber", "polyester", "cotton", "canvas", "paper", "metal", "wood", "plastic", "glass", "ceramic"];
+          if (materialTerms.some(m => lower.includes(m))) return false;
           return knownColors.has(lower) || [...knownColors].some(k => lower.includes(k));
         });
         return hasAnyColor ? "Color" : "Option";

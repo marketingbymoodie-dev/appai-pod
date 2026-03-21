@@ -1079,7 +1079,7 @@ export default function AdminCreateProduct() {
                   )}
                   {filteredColors.length > 0 && (
                     <div className="space-y-2">
-                      <Label>{designerConfig.colorLabel || "Color"}</Label>
+                      <Label className="uppercase">{designerConfig.colorLabel || "Color"}</Label>
                       {designerConfig.colorLabel === "Option" ? (
                         /* Non-color options (e.g., filler type) — show as text buttons */
                         <div className="flex flex-wrap gap-2">

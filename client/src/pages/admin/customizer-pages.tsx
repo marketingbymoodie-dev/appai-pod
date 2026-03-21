@@ -672,7 +672,7 @@ export default function AdminCustomizerPages() {
                           >
                             Printify Costs → Shipping
                           </button>
-                          {" "}to find the rate for your target market and add it to the RRP above.
+                          {" "}to find the rate for your target market and add it to the RRP below.
                         </>
                       )}
                     </p>
