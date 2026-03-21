@@ -3337,6 +3337,7 @@ export default function EmbedDesign() {
                       frameColors={frameColorObjects}
                       selectedFrameColor={selectedFrameColor}
                       onFrameColorChange={setSelectedFrameColor}
+                      colorLabel={productTypeConfig?.colorLabel || "Color"}
                     />
                   )}
                 </div>

@@ -3829,6 +3829,27 @@ ${textEdgeRestrictions}
           name: c.name,
           hex: c.hex,
         })),
+        // Determine the label for the color/option selector
+        // If none of the frameColors match known color names, use "Option" instead of "Color"
+        colorLabel: (() => {
+          if (productType.designerType === "framed-print") return "Frame Color";
+          if (frameColors.length === 0) return "Color";
+          const knownColors = new Set([
+            "black", "white", "red", "blue", "navy", "green", "yellow", "orange",
+            "pink", "purple", "gray", "grey", "brown", "beige", "cream", "tan",
+            "walnut", "natural", "gold", "silver", "oak", "cherry", "mahogany",
+            "charcoal", "burgundy", "maroon", "coral", "teal", "cyan", "aqua",
+            "turquoise", "ivory", "khaki", "olive", "sage", "mint", "lavender",
+            "violet", "plum", "indigo", "rose", "peach", "rust", "sand", "slate",
+            "heather", "ash", "royal", "forest", "kelly", "mustard", "chocolate",
+            "espresso", "mocha", "camel", "nude", "champagne", "pearl", "oatmeal",
+          ]);
+          const hasAnyColor = frameColors.some((c: any) => {
+            const lower = (c.name || "").toLowerCase();
+            return knownColors.has(lower) || [...knownColors].some(k => lower.includes(k));
+          });
+          return hasAnyColor ? "Color" : "Option";
+        })(),
         canvasConfig: {
           maxDimension,
           width: canvasWidth,
@@ -3994,6 +4015,26 @@ ${textEdgeRestrictions}
         name: c.name,
         hex: c.hex,
       })),
+      // Determine the label for the color/option selector
+      colorLabel: (() => {
+        if (productTypeToUse.designerType === "framed-print") return "Frame Color";
+        if (frameColors.length === 0) return "Color";
+        const knownColors = new Set([
+          "black", "white", "red", "blue", "navy", "green", "yellow", "orange",
+          "pink", "purple", "gray", "grey", "brown", "beige", "cream", "tan",
+          "walnut", "natural", "gold", "silver", "oak", "cherry", "mahogany",
+          "charcoal", "burgundy", "maroon", "coral", "teal", "cyan", "aqua",
+          "turquoise", "ivory", "khaki", "olive", "sage", "mint", "lavender",
+          "violet", "plum", "indigo", "rose", "peach", "rust", "sand", "slate",
+          "heather", "ash", "royal", "forest", "kelly", "mustard", "chocolate",
+          "espresso", "mocha", "camel", "nude", "champagne", "pearl", "oatmeal",
+        ]);
+        const hasAnyColor = frameColors.some((c: any) => {
+          const lower = (c.name || "").toLowerCase();
+          return knownColors.has(lower) || [...knownColors].some(k => lower.includes(k));
+        });
+        return hasAnyColor ? "Color" : "Option";
+      })(),
       canvasConfig: {
         maxDimension,
         width: canvasWidth,

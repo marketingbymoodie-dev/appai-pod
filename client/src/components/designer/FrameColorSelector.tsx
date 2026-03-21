@@ -13,6 +13,7 @@ interface FrameColorSelectorProps {
   selectedFrameColor: string;
   onFrameColorChange: (colorId: string) => void;
   showLabel?: boolean;
+  colorLabel?: string;
 }
 
 export function FrameColorSelector({
@@ -20,21 +21,25 @@ export function FrameColorSelector({
   selectedFrameColor,
   onFrameColorChange,
   showLabel = true,
+  colorLabel = "Color",
 }: FrameColorSelectorProps) {
   const selected = frameColors.find((c) => c.id === selectedFrameColor);
+  const isColorOption = colorLabel !== "Option";
 
   return (
     <div className="space-y-2">
-      {showLabel && <Label>Color</Label>}
+      {showLabel && <Label>{colorLabel}</Label>}
       <Select value={selectedFrameColor} onValueChange={onFrameColorChange}>
         <SelectTrigger data-testid="select-frame-color" className="h-11">
-          <SelectValue placeholder="Select a color">
+          <SelectValue placeholder={`Select ${colorLabel.toLowerCase()}`}>
             {selected && (
               <span className="flex items-center gap-2">
-                <span
-                  className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
-                  style={{ backgroundColor: selected.hex }}
-                />
+                {isColorOption && (
+                  <span
+                    className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
+                    style={{ backgroundColor: selected.hex }}
+                  />
+                )}
                 {selected.name}
               </span>
             )}
@@ -48,10 +53,12 @@ export function FrameColorSelector({
               data-testid={`option-frame-${color.id}`}
             >
               <span className="flex items-center gap-2">
-                <span
-                  className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
-                  style={{ backgroundColor: color.hex }}
-                />
+                {isColorOption && (
+                  <span
+                    className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
+                    style={{ backgroundColor: color.hex }}
+                  />
+                )}
                 {color.name}
               </span>
             </SelectItem>

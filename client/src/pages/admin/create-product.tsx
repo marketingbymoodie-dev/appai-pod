@@ -41,6 +41,7 @@ interface DesignerConfig {
   baseMockupImages: { front?: string; lifestyle?: string };
   sizes: Array<{ id: string; name: string; width: number; height: number; aspectRatio?: string }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
+  colorLabel?: string;
   canvasConfig: { maxDimension: number; width: number; height: number; safeZoneMargin: number };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
   isAllOverPrint?: boolean;
@@ -1078,22 +1079,43 @@ export default function AdminCreateProduct() {
                   )}
                   {filteredColors.length > 0 && (
                     <div className="space-y-2">
-                      <Label>{designerConfig.designerType === "framed-print" ? "Frame Color" : "Color"}</Label>
-                      <div className="flex flex-wrap gap-2">
-                        {filteredColors.map((color) => (
-                          <button
-                            key={color.id}
-                            className={`w-10 h-10 rounded-md border-2 transition-all ${
-                              selectedFrameColor === color.id
-                                ? "border-primary ring-2 ring-primary ring-offset-2"
-                                : "border-muted"
-                            }`}
-                            style={{ backgroundColor: color.hex }}
-                            onClick={() => setSelectedFrameColor(color.id)}
-                            title={color.name}
-                          />
-                        ))}
-                      </div>
+                      <Label>{designerConfig.colorLabel || "Color"}</Label>
+                      {designerConfig.colorLabel === "Option" ? (
+                        /* Non-color options (e.g., filler type) — show as text buttons */
+                        <div className="flex flex-wrap gap-2">
+                          {filteredColors.map((color) => (
+                            <button
+                              key={color.id}
+                              type="button"
+                              onClick={() => setSelectedFrameColor(color.id)}
+                              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                                selectedFrameColor === color.id
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "bg-background text-foreground border-border hover:border-primary/60"
+                              }`}
+                            >
+                              {color.name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        /* Actual colors — show as color swatches */
+                        <div className="flex flex-wrap gap-2">
+                          {filteredColors.map((color) => (
+                            <button
+                              key={color.id}
+                              className={`w-10 h-10 rounded-md border-2 transition-all ${
+                                selectedFrameColor === color.id
+                                  ? "border-primary ring-2 ring-primary ring-offset-2"
+                                  : "border-muted"
+                              }`}
+                              style={{ backgroundColor: color.hex }}
+                              onClick={() => setSelectedFrameColor(color.id)}
+                              title={color.name}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
