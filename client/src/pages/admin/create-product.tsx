@@ -852,82 +852,104 @@ export default function AdminCreateProduct() {
         </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
+          {/* Left column: controls — matches customizer page layout order */}
           <div className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Product Configuration</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Product Type</Label>
-                  {productTypesLoading ? (
-                    <Skeleton className="h-10 w-full" />
-                  ) : (
-                    <Select 
-                      value={selectedProductTypeId?.toString() || ""} 
-                      onValueChange={(v) => {
-                        setSelectedProductTypeId(parseInt(v));
-                        setSelectedSize("");
-                        setSelectedFrameColor("");
-                        setGeneratedImageUrl(null);
-                        setMockupImages([]);
-                      }}
+            {/* Product Type selector */}
+            <div className="space-y-2">
+              <Label>Product Type</Label>
+              {productTypesLoading ? (
+                <Skeleton className="h-10 w-full" />
+              ) : (
+                <Select 
+                  value={selectedProductTypeId?.toString() || ""} 
+                  onValueChange={(v) => {
+                    setSelectedProductTypeId(parseInt(v));
+                    setSelectedSize("");
+                    setSelectedFrameColor("");
+                    setGeneratedImageUrl(null);
+                    setMockupImages([]);
+                  }}
+                >
+                  <SelectTrigger data-testid="select-product-type">
+                    <SelectValue placeholder="Select a product type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {productTypes?.map((pt) => (
+                      <SelectItem key={pt.id} value={pt.id.toString()}>
+                        {pt.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+
+            {designerConfig && (
+              <div className="space-y-4">
+                {/* Row 1: Generate + Upload side-by-side (matches customizer page) */}
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="flex-[3] min-w-0">
+                    <Button
+                      onClick={handleGenerate}
+                      disabled={isGenerating || !prompt || !selectedProductTypeId || !selectedSize}
+                      className="w-full h-11 text-base font-medium"
+                      data-testid="button-generate"
                     >
-                      <SelectTrigger data-testid="select-product-type">
-                        <SelectValue placeholder="Select a product type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {productTypes?.map((pt) => (
-                          <SelectItem key={pt.id} value={pt.id.toString()}>
-                            {pt.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
-
-                {designerConfig && (
-                  <>
-                    <div className="space-y-2">
-                      <Label>Size</Label>
-                      <Select value={selectedSize} onValueChange={setSelectedSize}>
-                        <SelectTrigger data-testid="select-size">
-                          <SelectValue placeholder="Select size" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {filteredSizes.map((size) => (
-                            <SelectItem key={size.id} value={size.id}>
-                              {size.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {filteredColors.length > 0 && (
-                      <div className="space-y-2">
-                        <Label>{designerConfig.designerType === "framed-print" ? "Frame Color" : "Color"}</Label>
-                        <div className="flex flex-wrap gap-2">
-                          {filteredColors.map((color) => (
-                            <button
-                              key={color.id}
-                              className={`w-10 h-10 rounded-md border-2 transition-all ${
-                                selectedFrameColor === color.id
-                                  ? "border-primary ring-2 ring-primary ring-offset-2"
-                                  : "border-muted"
-                              }`}
-                              style={{ backgroundColor: color.hex }}
-                              onClick={() => setSelectedFrameColor(color.id)}
-                              title={color.name}
-                            />
-                          ))}
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-4 w-4 mr-2" />
+                          Generate Test Design
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <div className="flex-[2] min-w-0">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileChange}
+                      accept="image/*"
+                      className="hidden"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full h-11"
+                      onClick={() => fileInputRef.current?.click()}
+                      data-testid="button-upload-reference"
+                    >
+                      <Upload className="h-4 w-4 mr-2 shrink-0" />
+                      Upload
+                    </Button>
+                    <p className="text-xs text-muted-foreground mt-1 text-center">
+                      Reference Image (optional)
+                    </p>
+                    {referenceImage && (
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="relative shrink-0">
+                          <img src={referenceImage} alt="Reference" className="w-8 h-8 object-cover rounded" />
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="icon"
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                            onClick={() => setReferenceImage(null)}
+                          >
+                            <span className="text-[8px]">✕</span>
+                          </Button>
                         </div>
+                        <span className="text-xs text-muted-foreground truncate">Image selected</span>
                       </div>
                     )}
-                  </>
-                )}
+                  </div>
+                </div>
 
+                {/* Style selector with Decor/Apparel tabs */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <Label>Style</Label>
@@ -967,266 +989,200 @@ export default function AdminCreateProduct() {
                   </Select>
                 </div>
 
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="pt-6">
-                <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "generate" | "import")}>
-                  <TabsList className="grid w-full grid-cols-2 mb-4">
-                    <TabsTrigger value="generate" data-testid="tab-ai-generate">
-                      <Sparkles className="h-4 w-4 mr-2" />
-                      AI Generate
-                    </TabsTrigger>
-                    <TabsTrigger value="import" data-testid="tab-import-design">
-                      <Upload className="h-4 w-4 mr-2" />
-                      Import Design
-                    </TabsTrigger>
-                  </TabsList>
-                  
-                  <TabsContent value="generate" className="space-y-4">
-
-                    {/* Style Sub-Options */}
-                    {(() => {
-                      const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
-                      const opts = (activeStyle as any)?.options;
-                      if (!opts) return null;
-                      return (
-                        <div className="space-y-2">
-                          <Label className="text-sm font-medium">{opts.label}</Label>
-                          <div className="flex flex-wrap gap-2">
-                            {opts.choices.map((choice: any) => (
-                              <button
-                                key={choice.id}
-                                type="button"
-                                onClick={() => setSelectedStyleOption(choice.id)}
-                                className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                                  selectedStyleOption === choice.id
-                                    ? "bg-primary text-primary-foreground border-primary"
-                                    : "bg-background text-foreground border-border hover:border-primary/60"
-                                }`}
-                              >
-                                {choice.name}
-                              </button>
-                            ))}
-                          </div>
-                          {opts.required && selectedStyleOption === "" && (
-                            <p className="text-xs text-muted-foreground">Choose a {(opts.label as string).toLowerCase()} before generating</p>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {/* Style base image preview */}
-                    {(() => {
-                      const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
-                      let previewUrl: string | undefined;
-                      if (selectedStyleOption !== "" && (activeStyle as any)?.options) {
-                        const choice = (activeStyle as any).options.choices.find((c: any) => c.id === selectedStyleOption);
-                        if (choice?.baseImageUrl) previewUrl = choice.baseImageUrl;
-                      }
-                      if (!previewUrl && (activeStyle as any)?.baseImageUrl) previewUrl = (activeStyle as any).baseImageUrl;
-                      if (!previewUrl) return null;
-                      return (
-                        <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
-                          <img src={previewUrl} alt="Style reference" className="w-10 h-10 rounded object-cover" />
-                          <span className="text-xs text-muted-foreground">Style reference — AI will use this as visual inspiration</span>
-                        </div>
-                      );
-                    })()}
-
+                {/* Style Sub-Options */}
+                {(() => {
+                  const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+                  const opts = (activeStyle as any)?.options;
+                  if (!opts) return null;
+                  return (
                     <div className="space-y-2">
-                      <Label htmlFor="prompt">Describe Your Artwork</Label>
-                      <Textarea
-                        id="prompt"
-                        value={prompt}
-                        onChange={(e) => setPrompt(e.target.value)}
-                        placeholder={(() => {
-                          const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
-                          return (activeStyle as any)?.promptPlaceholder || "A majestic golden retriever wearing a royal crown...";
-                        })()}
-                        rows={4}
-                        data-testid="input-prompt"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label>Reference Image (optional)</Label>
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        onChange={handleFileChange}
-                        accept="image/*"
-                        className="hidden"
-                      />
-                      {referenceImage ? (
-                        <div className="relative">
-                          <img src={referenceImage} alt="Reference" className="w-full h-32 object-contain rounded-lg border" />
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="absolute top-2 right-2"
-                            onClick={() => setReferenceImage(null)}
+                      <Label className="text-sm font-medium">{opts.label}</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {opts.choices.map((choice: any) => (
+                          <button
+                            key={choice.id}
+                            type="button"
+                            onClick={() => setSelectedStyleOption(choice.id)}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                              selectedStyleOption === choice.id
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-background text-foreground border-border hover:border-primary/60"
+                            }`}
                           >
-                            Remove
-                          </Button>
-                        </div>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="w-full"
-                          data-testid="button-upload-reference"
-                        >
-                          <Upload className="h-4 w-4 mr-2" />
-                          Upload Reference Image
-                        </Button>
+                            {choice.name}
+                          </button>
+                        ))}
+                      </div>
+                      {opts.required && selectedStyleOption === "" && (
+                        <p className="text-xs text-muted-foreground">Choose a {(opts.label as string).toLowerCase()} before generating</p>
                       )}
                     </div>
+                  );
+                })()}
 
+                {/* Style base image preview */}
+                {(() => {
+                  const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+                  let previewUrl: string | undefined;
+                  if (selectedStyleOption !== "" && (activeStyle as any)?.options) {
+                    const choice = (activeStyle as any).options.choices.find((c: any) => c.id === selectedStyleOption);
+                    if (choice?.baseImageUrl) previewUrl = choice.baseImageUrl;
+                  }
+                  if (!previewUrl && (activeStyle as any)?.baseImageUrl) previewUrl = (activeStyle as any).baseImageUrl;
+                  if (!previewUrl) return null;
+                  return (
+                    <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
+                      <img src={previewUrl} alt="Style reference" className="w-10 h-10 rounded object-cover" />
+                      <span className="text-xs text-muted-foreground">Style reference — AI will use this as visual inspiration</span>
+                    </div>
+                  );
+                })()}
+
+                {/* Prompt textarea */}
+                <div className="space-y-2">
+                  <Label htmlFor="prompt">Describe your artwork</Label>
+                  <Textarea
+                    id="prompt"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder={(() => {
+                      const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
+                      return (activeStyle as any)?.promptPlaceholder || "A majestic golden retriever wearing a royal crown...";
+                    })()}
+                    className="min-h-[80px]"
+                    data-testid="input-prompt"
+                  />
+                </div>
+
+                {/* Size + Color on same row (matches customizer page) */}
+                <div className={`grid gap-3 ${filteredSizes.length > 0 && filteredColors.length > 0 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+                  {filteredSizes.length > 0 && (
+                    <div className="space-y-2">
+                      <Label>Size</Label>
+                      <Select value={selectedSize} onValueChange={setSelectedSize}>
+                        <SelectTrigger data-testid="select-size">
+                          <SelectValue placeholder="Select size" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {filteredSizes.map((size) => (
+                            <SelectItem key={size.id} value={size.id}>
+                              {size.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {selectedSize === "" && (
+                        <p className="text-xs text-muted-foreground">Please select a size</p>
+                      )}
+                    </div>
+                  )}
+                  {filteredColors.length > 0 && (
+                    <div className="space-y-2">
+                      <Label>{designerConfig.designerType === "framed-print" ? "Frame Color" : "Color"}</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {filteredColors.map((color) => (
+                          <button
+                            key={color.id}
+                            className={`w-10 h-10 rounded-md border-2 transition-all ${
+                              selectedFrameColor === color.id
+                                ? "border-primary ring-2 ring-primary ring-offset-2"
+                                : "border-muted"
+                            }`}
+                            style={{ backgroundColor: color.hex }}
+                            onClick={() => setSelectedFrameColor(color.id)}
+                            title={color.name}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* AOP Pattern Step — shown after generation for all-over-print products */}
+            {showPatternStep && pendingMotifUrl && designerConfig && (
+              <div className="mt-2">
+                <PatternCustomizer
+                  motifUrl={pendingMotifUrl}
+                  productWidth={(() => {
+                    const positions = designerConfig?.placeholderPositions || [];
+                    return positions.reduce((max, p) => Math.max(max, p.width), 2000);
+                  })()}
+                  productHeight={(() => {
+                    const positions = designerConfig?.placeholderPositions || [];
+                    return positions.reduce((max, p) => Math.max(max, p.height), 2000);
+                  })()}
+                  hasPairedPanels={(() => {
+                    const positions = (designerConfig?.placeholderPositions || []).map((p) => p.position);
+                    return positions.some((p) => p.startsWith("left")) && positions.some((p) => p.startsWith("right"));
+                  })()}
+                  onApply={async (appliedPatternUrl, options) => {
+                    setPatternUrl(appliedPatternUrl);
+                    setShowPatternStep(false);
+                    const success = await generateMockups(pendingMotifUrl, appliedPatternUrl, options.mirrorLegs);
+                    if (!success) {
+                      setShowPatternStep(true);
+                    }
+                  }}
+                  isLoading={mockupLoading}
+                />
+              </div>
+            )}
+
+            {/* Import Design section */}
+            {designerConfig && (
+              <Card className="border-dashed">
+                <CardContent className="pt-4 space-y-3">
+                  <div className="text-center space-y-1">
+                    <h4 className="font-medium text-sm">Import Design</h4>
+                    <p className="text-xs text-muted-foreground">
+                      Upload a PNG/JPG design or import from Kittl
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      ref={importFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      onChange={(e) => handleImportFile(e, "kittl")}
+                      className="hidden"
+                      data-testid="input-import-kittl"
+                    />
+                    <input
+                      ref={customUploadInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      onChange={(e) => handleImportFile(e, "upload")}
+                      className="hidden"
+                      data-testid="input-import-custom"
+                    />
                     <Button
-                      onClick={handleGenerate}
-                      disabled={isGenerating || !prompt || !selectedProductTypeId || !selectedSize}
-                      className="w-full"
-                      data-testid="button-generate"
+                      variant="outline"
+                      onClick={() => customUploadInputRef.current?.click()}
+                      disabled={isImporting || !selectedProductTypeId || !selectedSize}
+                      className="flex-1"
+                      data-testid="button-import-custom"
                     >
-                      {isGenerating ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Generating...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-4 w-4 mr-2" />
-                          Generate Test Design
-                        </>
-                      )}
+                      <Upload className="h-4 w-4 mr-2" />
+                      Upload Design
                     </Button>
-
-                    {/* AOP Pattern Step — shown after generation for all-over-print products */}
-                    {showPatternStep && pendingMotifUrl && (
-                      <div className="mt-4">
-                        <PatternCustomizer
-                          motifUrl={pendingMotifUrl}
-                          productWidth={(() => {
-                            const positions = designerConfig?.placeholderPositions || [];
-                            return positions.reduce((max, p) => Math.max(max, p.width), 2000);
-                          })()}
-                          productHeight={(() => {
-                            const positions = designerConfig?.placeholderPositions || [];
-                            return positions.reduce((max, p) => Math.max(max, p.height), 2000);
-                          })()}
-                          hasPairedPanels={(() => {
-                            const positions = (designerConfig?.placeholderPositions || []).map((p) => p.position);
-                            return positions.some((p) => p.startsWith("left")) && positions.some((p) => p.startsWith("right"));
-                          })()}
-                          onApply={async (appliedPatternUrl, options) => {
-                            setPatternUrl(appliedPatternUrl);
-                            setShowPatternStep(false);
-                            const success = await generateMockups(pendingMotifUrl, appliedPatternUrl, options.mirrorLegs);
-                            if (!success) {
-                              setShowPatternStep(true);
-                            }
-                          }}
-                          isLoading={mockupLoading}
-                        />
-                      </div>
-                    )}
-                  </TabsContent>
-                  
-                  <TabsContent value="import" className="space-y-4">
-                    {(!selectedProductTypeId || !selectedSize) && (
-                      <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground text-center">
-                        Please select a product type and size above before importing
-                      </div>
-                    )}
-                    <Card className="border-dashed">
-                      <CardContent className="pt-4 space-y-4">
-                        <div className="text-center space-y-2">
-                          <h4 className="font-medium">Import from Kittl</h4>
-                          <p className="text-sm text-muted-foreground">
-                            Design in Kittl, then export as PNG to upload here
-                          </p>
-                        </div>
-                        
-                        <a
-                          href="https://www.kittl.com/editor"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center justify-center gap-2 text-sm text-primary hover:underline"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          Open Kittl Designer
-                        </a>
-                        
-                        <input
-                          ref={importFileInputRef}
-                          type="file"
-                          accept="image/png,image/jpeg,image/jpg,image/webp"
-                          onChange={(e) => handleImportFile(e, "kittl")}
-                          className="hidden"
-                          data-testid="input-import-kittl"
-                        />
-                        
-                        <Button
-                          variant="default"
-                          onClick={() => importFileInputRef.current?.click()}
-                          disabled={isImporting || !selectedProductTypeId || !selectedSize}
-                          className="w-full"
-                          data-testid="button-import-kittl"
-                        >
-                          {isImporting ? (
-                            <>
-                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                              Importing...
-                            </>
-                          ) : (
-                            <>
-                              <Upload className="h-4 w-4 mr-2" />
-                              Upload Kittl Design
-                            </>
-                          )}
-                        </Button>
-                      </CardContent>
-                    </Card>
-
-                    <div className="border-t pt-4">
-                      <p className="text-xs text-muted-foreground text-center mb-3">
-                        Or upload any custom design
-                      </p>
-                      <input
-                        ref={customUploadInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/jpg,image/webp"
-                        onChange={(e) => handleImportFile(e, "upload")}
-                        className="hidden"
-                        data-testid="input-import-custom"
-                      />
-                      <Button
-                        variant="outline"
-                        onClick={() => customUploadInputRef.current?.click()}
-                        disabled={isImporting || !selectedProductTypeId || !selectedSize}
-                        className="w-full"
-                        data-testid="button-import-custom"
-                      >
-                        <Upload className="h-4 w-4 mr-2" />
-                        Upload Custom Design
-                      </Button>
-                    </div>
-                    
-                    {importError && (
-                      <p className="text-sm text-destructive text-center">{importError}</p>
-                    )}
-
-                    <div className="text-xs text-muted-foreground space-y-1">
-                      <p>Supported formats: PNG, JPG, WebP</p>
-                      <p>Maximum file size: 10MB</p>
-                      <p>For best results, export from Kittl as high-resolution PNG</p>
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
+                    <a
+                      href="https://www.kittl.com/editor"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline px-2"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      Kittl
+                    </a>
+                  </div>
+                  {importError && (
+                    <p className="text-sm text-destructive text-center">{importError}</p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           <div className="space-y-4">
@@ -1423,30 +1379,7 @@ export default function AdminCreateProduct() {
               </CardContent>
             </Card>
 
-            {/* Show "Send to Store" card when a product type is selected */}
-            {selectedProductTypeId && designerConfig && (
-              <Card>
-                <CardHeader>
-          <CardTitle className="text-lg">Send to Store</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    Ready to send this product to your store? You'll set retail prices before sending.
-                  </p>
-                  <Button 
-                    className="w-full" 
-                    onClick={() => setShowPublishDialog(true)}
-                    data-testid="button-send-to-store"
-                  >
-                    <Store className="h-4 w-4 mr-2" />
-                    Send to Store
-                  </Button>
-                  <p className="text-xs text-muted-foreground">
-                    Creates your product on Shopify with variants, mockup images, and the design studio ready for your customizer page.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
+
           </div>
         </div>
       </div>

@@ -2715,8 +2715,13 @@ ${textEdgeRestrictions}
         shopifyVariantIds[key] = v.id;
       }
 
-      // Product is active but not published to any sales channel — only accessible via the customizer page
-      console.log(`Product ${shopifyProductId} created as active, not published to any sales channel`);
+      // Publish to Online Store so /cart/add.js accepts the variant IDs
+      try {
+        await ensureProductPublishedToOnlineStore(shopDomain, accessToken, shopifyProductId);
+        console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
+      } catch (pubErr: any) {
+        console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
+      }
 
       // Save Shopify product ID, handle, shop domain, and variant IDs to the product type for future updates
       await storage.updateProductType(productType.id, {
@@ -10711,18 +10716,28 @@ ${textEdgeRestrictions}
       }
     }
 
-    // ── Ensure product is active (but NOT published to Online Store) ──────────
-    // The product must be active for the customizer cart flow, but should not
-    // appear on any sales channel — customers access it only via the customizer page.
+    // ── Ensure product is active AND published to Online Store ──────────────
+    // The product must be active AND published to the Online Store sales channel
+    // for Shopify's /cart/add.js to accept the variant ID.  Without this,
+    // customers get a 422 "Cannot find variant" error when adding to cart.
     {
       const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
       if (productIdNum) {
+        // Step 1: Set status to active
         const activateResult = await shopifyApiCall(shop, installation.accessToken, `products/${productIdNum}.json`, {
           method: "PUT",
           body: JSON.stringify({ product: { id: productIdNum, status: "active" } }),
         });
         if (!activateResult.ok) {
           console.warn(`[customizer-pages] Failed to activate product ${productIdNum}: ${activateResult.error}`);
+        }
+
+        // Step 2: Publish to Online Store sales channel so /cart/add.js works
+        try {
+          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+          console.log(`[customizer-pages] Product ${productIdNum} published to Online Store`);
+        } catch (pubErr: any) {
+          console.warn(`[customizer-pages] Failed to publish product ${productIdNum} to Online Store: ${pubErr.message}`);
         }
       }
     }
@@ -11213,8 +11228,17 @@ ${textEdgeRestrictions}
             }
           }
 
-          // Base product should NOT be published to Online Store — only active for API access.
-          // The customizer page's shadow product handles the actual cart add.
+          // Step 2: Ensure product is published to Online Store so /cart/add.js works.
+          // Without this, customers get 422 "Cannot find variant" when adding to cart.
+          if (productIdNum) {
+            try {
+              await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+              productPublished = true;
+              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store`);
+            } catch (pubErr: any) {
+              console.warn(`[proxy/customizer-page] Failed to publish product ${productIdNum}: ${pubErr.message}`);
+            }
+          }
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
@@ -11527,6 +11551,14 @@ ${textEdgeRestrictions}
     if (!shopifyVariantId) {
       console.error(`[PublishDesign] Created product has no variant:`, createdProduct);
       return res.status(500).json({ error: "Created product has no purchasable variant" });
+    }
+
+    // Publish to Online Store so /cart/add.js accepts the variant
+    try {
+      await ensureProductPublishedToOnlineStore(shop, accessToken, parseInt(shopifyProductId, 10));
+      console.log(`[PublishDesign] Product ${shopifyProductId} published to Online Store`);
+    } catch (pubErr: any) {
+      console.warn(`[PublishDesign] Failed to publish product ${shopifyProductId}: ${pubErr.message}`);
     }
 
     // Redirect the shadow product's storefront URL to homepage so customers

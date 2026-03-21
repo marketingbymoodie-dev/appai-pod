@@ -3378,6 +3378,72 @@ export default function EmbedDesign() {
                   isLoading={mockupLoading}
                 />
               )}
+
+              {/* Add to Cart — moved above fold in the form panel (right column on desktop) */}
+              {(isShopify || isStorefront) && generatedDesign && (
+                <div className="flex flex-col gap-2">
+                  {addedToCart ? (
+                    <>
+                      <Button
+                        className="w-full h-12 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
+                        onClick={() => { window.parent.location.href = '/cart'; }}
+                        data-testid="button-view-cart"
+                      >
+                        <CheckCircle className="w-5 h-5 mr-2" />
+                        Added to Cart — View Cart
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => { setAddedToCart(false); setGeneratedDesign(null); setPrompt(""); }}
+                      >
+                        Create Another Design
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        onClick={handleAddToCart}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
+                        className="w-full h-11 text-base font-medium"
+                        data-testid="button-add-to-cart"
+                      >
+                        {isAddingToCart ? (
+                          <>
+                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                            Adding to Cart...
+                          </>
+                        ) : atcWaitingForMockups ? (
+                          <>
+                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                            Generating preview…
+                          </>
+                        ) : mockupsStale ? (
+                          <>
+                            <ShoppingCart className="w-5 h-5 mr-2" />
+                            Refresh Mockups to Continue
+                          </>
+                        ) : isStorefront && bridgeError ? (
+                          <>
+                            <ShoppingCart className="w-5 h-5 mr-2" />
+                            Add to Cart (unavailable)
+                          </>
+                        ) : (
+                          <>
+                            <ShoppingCart className="w-5 h-5 mr-2" />
+                            Add to Cart
+                          </>
+                        )}
+                      </Button>
+                      {isStorefront && bridgeError && (
+                        <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
+                          {bridgeError}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -3577,72 +3643,6 @@ export default function EmbedDesign() {
                   </div>
                 }
               />
-            )}
-
-            {/* Add to Cart — shown in both admin embed and storefront after design is ready */}
-            {(isShopify || isStorefront) && generatedDesign && (
-              <div className="flex flex-col gap-2">
-                {addedToCart ? (
-                  <>
-                    <Button
-                      className="w-full h-12 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-                      onClick={() => { window.parent.location.href = '/cart'; }}
-                      data-testid="button-view-cart"
-                    >
-                      <CheckCircle className="w-5 h-5 mr-2" />
-                      Added to Cart — View Cart
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full"
-                      onClick={() => { setAddedToCart(false); setGeneratedDesign(null); setPrompt(""); }}
-                    >
-                      Create Another Design
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button
-                      onClick={handleAddToCart}
-                      disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
-                      className="w-full h-11 text-base font-medium"
-                      data-testid="button-add-to-cart"
-                    >
-                      {isAddingToCart ? (
-                        <>
-                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                          Adding to Cart...
-                        </>
-                      ) : atcWaitingForMockups ? (
-                        <>
-                          <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                          Generating preview…
-                        </>
-                      ) : mockupsStale ? (
-                        <>
-                          <ShoppingCart className="w-5 h-5 mr-2" />
-                          Refresh Mockups to Continue
-                        </>
-                      ) : isStorefront && bridgeError ? (
-                        <>
-                          <ShoppingCart className="w-5 h-5 mr-2" />
-                          Add to Cart (unavailable)
-                        </>
-                      ) : (
-                        <>
-                          <ShoppingCart className="w-5 h-5 mr-2" />
-                          Add to Cart
-                        </>
-                      )}
-                    </Button>
-                    {isStorefront && bridgeError && (
-                      <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
-                        {bridgeError}
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
             )}
 
             {/* Mockup error status */}
