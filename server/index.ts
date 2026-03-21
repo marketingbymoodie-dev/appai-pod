@@ -11,7 +11,6 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import { registerRoutes } from "./routes";
-import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
@@ -236,9 +235,6 @@ app.use((req, res, next) => {
 
   // ✅ 1) Register API + server routes FIRST
   await registerRoutes(httpServer, app);
-  
-  // ✅ 1b) Register admin branding routes
-  registerAdminBrandingRoutes(app);
 
   // ✅ Route registration sanity check — list all storefront routes
   const storefrontRoutes: string[] = [];
@@ -297,11 +293,11 @@ app.use((req, res, next) => {
     const status = err.status || err.statusCode || 500;
     const payload: Record<string, any> = { error: "Internal server error" };
     if (process.env.NODE_ENV !== "production") {
-      payload.details = err.message;
+      payload.message = err.message;
+      payload.stack = err.stack;
     }
     res.status(status).json(payload);
   });
-
 
   // ────────────────────────────────────────────────────────────
   // Proxy-aware static assets + SPA HTML for /s/designer
@@ -337,46 +333,23 @@ app.use((req, res, next) => {
       let html = fs.readFileSync(indexPath, "utf-8");
 
       // Rewrite absolute /assets/ refs to proxy path (handles base:"/" builds)
-      html = html.replace(/((?:src|href)=")\/assets\//g, `$1${P}/assets/`);
-      html = html.replace(/((?:src|href)=")\/favicon/g, `$1${P}/favicon`);
+      html = html.replace(/src="\/assets\//g, `src="${P}/s/assets/`);
+      html = html.replace(/href="\/assets\//g, `href="${P}/s/assets/`);
 
       // Rewrite relative ./assets/ refs to proxy path (handles base:"./" builds)
-      html = html.replace(/((?:src|href)=")\.\/assets\//g, `$1${P}/assets/`);
+      html = html.replace(/src="\.\/assets\//g, `src="${P}/s/assets/`);
+      html = html.replace(/href="\.\/assets\//g, `href="${P}/s/assets/`);
 
-      // Inject globals: API base + router base
-      const injection = `<script>window.__APPAI_API_BASE__="${P}";window.__APPAI_ROUTER_BASE__="${P}";</script>`;
-      html = html.replace("<head>", `<head>\n  ${injection}`);
-
-      console.log(`[APP PROXY HTML] Serving proxied designer HTML — assets+api via ${P}`);
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.setHeader("X-Frame-Options", "ALLOWALL");
-      res.send(html);
+      res.setHeader("Content-Type", "text/html");
+      return res.send(html);
     });
   }
 
-  // ✅ 3) Vite in dev, static in prod (LAST)
-  if (process.env.NODE_ENV === "production") {
-    console.log("[server/index.ts] Production mode detected, initializing static serving...");
-    console.log(`  NODE_ENV: ${process.env.NODE_ENV}`);
-    console.log(`  app.get("env"): ${app.get("env")}`);
-    console.log(`  cwd: ${process.cwd()}`);
-    serveStatic(app);
-  } else {
-    const { setupVite } = await import("./vite");
-    await setupVite(httpServer, app);
-  }
+  // ✅ 3) Serve static files LAST
+  serveStatic(app);
 
-  // Port binding
-  const port = parseInt(process.env.PORT || "5000", 10);
-
-  // ✅ Windows fix: reusePort is Linux-only
-  const listenOptions: any = {
-    port,
-    host: "0.0.0.0",
-    ...(process.platform === "linux" ? { reusePort: true } : {}),
-  };
-
-  httpServer.listen(listenOptions, () => {
-    log(`serving on port ${port}`);
+  const PORT = process.env.PORT || 5000;
+  httpServer.listen(PORT, () => {
+    log(`serving on port ${PORT}`);
   });
 })();
