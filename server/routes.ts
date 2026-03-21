@@ -437,8 +437,34 @@ function menuItemToInput(item: any): any {
 }
 
 /**
- * Ensures a customizer page exists as a sub-item under a "Customizer" parent
- * in the main-menu. Creates the "Customizer" parent if it doesn't exist.
+ * Finds the parent menu item that "owns" our customizer pages.
+ * Detection strategy (rename-proof):
+ *   1. Look for any top-level item whose children contain at least one URL
+ *      matching a known customizer page handle (/pages/<handle>).
+ *   2. Fall back to title === "Customizer" only when no URL match is found
+ *      (e.g., the very first page being added).
+ */
+async function findCustomizerParent(
+  menuItems: any[],
+  knownHandles: string[],
+): Promise<any | null> {
+  // Strategy 1: find by child URL matching a known handle
+  for (const item of menuItems) {
+    if (!item.items?.length) continue;
+    const hasKnownChild = item.items.some((sub: any) =>
+      knownHandles.some(h => sub.url === `/pages/${h}` || sub.url?.endsWith(`/pages/${h}`))
+    );
+    if (hasKnownChild) return item;
+  }
+  // Strategy 2: fall back to title match (first publish, no existing children yet)
+  return menuItems.find((item: any) => item.title === "Customizer") ?? null;
+}
+
+/**
+ * Ensures a customizer page exists as a sub-item under the app's Customizer
+ * parent in the main-menu. Creates the "Customizer" parent if it doesn't exist.
+ * Parent detection is URL-based (rename-proof) — falls back to title only on
+ * first publish when no children exist yet.
  * Idempotent — skips if the sub-item already exists.
  */
 async function ensureNavigationLink(
@@ -482,27 +508,28 @@ async function ensureNavigationLink(
       return { added: true };
     }
 
-    // Menu exists — find the "Customizer" parent item
-    const customizerParent = (menu.items ?? []).find(
-      (item: any) => item.title === PARENT_LABEL
-    );
+    // Fetch all known customizer page handles for this shop to enable URL-based detection
+    const knownPages = await storage.listCustomizerPages(shop);
+    const knownHandles = knownPages.map((p: any) => p.handle);
+
+    // Find the parent item (rename-proof: URL-based, falls back to title)
+    const customizerParent = await findCustomizerParent(menu.items ?? [], knownHandles);
 
     if (customizerParent) {
-      // Check if the sub-item already exists
+      // Check if the sub-item already exists (by URL)
       const alreadyExists = (customizerParent.items ?? []).some(
         (sub: any) => sub.url === targetUrl || sub.url?.endsWith(targetUrl)
       );
       if (alreadyExists) {
-        console.log(`[nav] Sub-item ${targetUrl} already exists under Customizer`);
+        console.log(`[nav] Sub-item ${targetUrl} already exists under "${customizerParent.title}"`);
         return { added: false };
       }
 
-      // Add the new sub-item to the Customizer parent
-      // Rebuild the full menu tree (menuUpdate replaces ALL items)
+      // Add the new sub-item — rebuild full menu tree
       const newMenuItems = (menu.items ?? []).map((item: any) => {
-        if (item.title === PARENT_LABEL) {
+        if (item.id === customizerParent.id) {
           return {
-            title: item.title,
+            title: item.title,  // preserve any rename the merchant made
             type: "HTTP",
             url: item.url ?? "/",
             items: [
@@ -530,10 +557,10 @@ async function ensureNavigationLink(
         return { added: false, warning: msg };
       }
 
-      console.log(`[nav] Added "${pageTitle}" under Customizer in main-menu for ${shop}`);
+      console.log(`[nav] Added "${pageTitle}" under "${customizerParent.title}" in main-menu for ${shop}`);
       return { added: true };
     } else {
-      // No "Customizer" parent yet — add it with the sub-item
+      // No parent found — create the "Customizer" parent with the sub-item
       const existingItems = (menu.items ?? []).map(menuItemToInput);
       const newMenuItems = [
         ...existingItems,
@@ -571,8 +598,9 @@ async function ensureNavigationLink(
 }
 
 /**
- * Removes a customizer page sub-item from the "Customizer" parent in main-menu.
- * If removing the sub-item leaves the Customizer parent empty, removes the parent too.
+ * Removes a customizer page sub-item from the app's Customizer parent in main-menu.
+ * Parent detection is URL-based (rename-proof).
+ * If removing the sub-item leaves the parent empty, removes the parent too.
  * Idempotent — does nothing if the item doesn't exist.
  */
 async function removeNavigationLink(
@@ -586,9 +614,15 @@ async function removeNavigationLink(
     const menu = await getMainMenu(shop, accessToken);
     if (!menu?.id) return { removed: false };
 
-    const customizerParent = (menu.items ?? []).find(
-      (item: any) => item.title === "Customizer"
-    );
+    // Fetch all known handles (excluding the one being removed) for URL-based detection
+    const knownPages = await storage.listCustomizerPages(shop);
+    const knownHandles = knownPages
+      .map((p: any) => p.handle)
+      .filter((h: string) => h !== pageHandle);
+
+    // Find the parent — use all known handles plus the one being removed for detection
+    const allHandles = [...knownHandles, pageHandle];
+    const customizerParent = await findCustomizerParent(menu.items ?? [], allHandles);
     if (!customizerParent) return { removed: false };
 
     const subItemExists = (customizerParent.items ?? []).some(
@@ -604,15 +638,15 @@ async function removeNavigationLink(
     // Rebuild the full menu tree
     let newMenuItems: any[];
     if (remainingSubItems.length === 0) {
-      // Remove the Customizer parent entirely if it has no more children
+      // Remove the parent entirely — no more customizer sub-items
       newMenuItems = (menu.items ?? [])
-        .filter((item: any) => item.title !== "Customizer")
+        .filter((item: any) => item.id !== customizerParent.id)
         .map(menuItemToInput);
-      console.log(`[nav] Removed Customizer parent (no sub-items left) from main-menu for ${shop}`);
+      console.log(`[nav] Removed "${customizerParent.title}" parent (empty) from main-menu for ${shop}`);
     } else {
-      // Keep the Customizer parent with the remaining sub-items
+      // Keep the parent with the remaining sub-items (preserve any rename)
       newMenuItems = (menu.items ?? []).map((item: any) => {
-        if (item.title === "Customizer") {
+        if (item.id === customizerParent.id) {
           return {
             title: item.title,
             type: "HTTP",
@@ -622,7 +656,7 @@ async function removeNavigationLink(
         }
         return menuItemToInput(item);
       });
-      console.log(`[nav] Removed "${pageHandle}" sub-item from Customizer in main-menu for ${shop}`);
+      console.log(`[nav] Removed "${pageHandle}" sub-item from "${customizerParent.title}" in main-menu for ${shop}`);
     }
 
     const updateRes = await shopifyGraphQL(shop, accessToken, `
