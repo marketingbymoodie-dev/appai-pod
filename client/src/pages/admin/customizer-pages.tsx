@@ -106,6 +106,7 @@ export default function AdminCustomizerPages() {
   const [formStep, setFormStep] = useState<1 | 2 | 3 | 4>(1);
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
+  const [confirmedVariants, setConfirmedVariants] = useState<BlankVariant[]>([]);
   const [createdPageResult, setCreatedPageResult] = useState<any>(null);
 
   // Costs popup state
@@ -385,6 +386,7 @@ export default function AdminCustomizerPages() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
     // If the product isn't on Shopify yet, skip pricing step (no Shopify variants to price yet)
     if (selectedBlank?.needsShopifySync) {
+      setConfirmedVariants(selectedVariants);
       setFormStep(3);
       return;
     }
@@ -412,6 +414,7 @@ export default function AdminCustomizerPages() {
       return;
     }
     setPriceErrors({});
+    setConfirmedVariants(selectedVariants);
     setFormStep(3);
   }
 
@@ -957,10 +960,10 @@ export default function AdminCustomizerPages() {
                         <span className="text-muted-foreground">Product</span>
                         <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
                       </div>
-                      {selectedVariants.length > 0 && (
+                      {confirmedVariants.length > 0 && (
                         <div className="border-t pt-2 mt-1 space-y-1">
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                          {selectedVariants.map((v) => (
+                          {confirmedVariants.map((v) => (
                             <div key={v.id} className="flex justify-between">
                               <span>{v.title}</span>
                               <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
