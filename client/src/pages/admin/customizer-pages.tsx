@@ -960,15 +960,18 @@ export default function AdminCustomizerPages() {
                         <span className="text-muted-foreground">Product</span>
                         <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
                       </div>
-                      {confirmedVariants.length > 0 && (
+                      {Object.keys(variantPrices).length > 0 && (
                         <div className="border-t pt-2 mt-1 space-y-1">
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                          {confirmedVariants.map((v) => (
-                            <div key={v.id} className="flex justify-between">
-                              <span>{v.title}</span>
-                              <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
-                            </div>
-                          ))}
+                          {Object.entries(variantPrices).map(([vid, price]) => {
+                            const v = confirmedVariants.find(cv => cv.id === vid) || selectedVariants.find(sv => sv.id === vid);
+                            return (
+                              <div key={vid} className="flex justify-between">
+                                <span>{v?.title || `Variant ${vid}`}</span>
+                                <span className="font-medium">${parseFloat(price || "0").toFixed(2)}</span>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
