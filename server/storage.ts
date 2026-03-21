@@ -129,6 +129,7 @@ export interface IStorage {
   updateCustomizerPage(id: string, updates: Partial<CustomizerPage>): Promise<CustomizerPage | undefined>;
   deleteCustomizerPage(id: string): Promise<void>;
   countCustomizerPages(shop: string): Promise<number>;
+  countActiveCustomizerPages(shop: string): Promise<number>;
 
   // Published Products (design → native Shopify product)
   getPublishedProduct(shop: string, designId: string): Promise<PublishedProduct | undefined>;
@@ -689,6 +690,14 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .select({ count: sql<number>`count(*)::int` })
       .from(customizerPages)
       .where(eq(customizerPages.shop, shop));
+    return result?.count ?? 0;
+  }
+
+  async countActiveCustomizerPages(shop: string): Promise<number> {
+    const [result] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(customizerPages)
+      .where(and(eq(customizerPages.shop, shop), eq(customizerPages.status, "active")));
     return result?.count ?? 0;
   }
 

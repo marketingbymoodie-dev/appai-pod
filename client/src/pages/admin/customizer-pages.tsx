@@ -280,73 +280,31 @@ export default function AdminCustomizerPages() {
     },
   });
 
-  // Printify shipping query -- fetches per-tier, per-country shipping costs
+  // Shipping rates query
   const { data: shippingData, isLoading: shippingLoading } = useQuery<{
-    version: string;
-    tiers?: string[];
-    shipping?: Record<string, Array<{
-      variantId: number;
-      country: string;
-      firstItem: number;
-      additionalItems: number;
-      currency: string;
-      handlingTime?: { from: number; to: number };
-    }>>;
-    countries?: string[];
+    shipping: Record<string, any[]>;
+    tiers: string[];
+    countries: string[];
   }>({
-    queryKey: ["/api/admin/printify/shipping", selectedBlank?.printifyBlueprintId, selectedBlank?.printifyProviderId],
+    queryKey: ["/api/admin/printify/shipping", selectedBlank?.productTypeId],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/printify/shipping/${selectedBlank!.printifyBlueprintId}/${selectedBlank!.printifyProviderId}`);
+      const res = await apiRequest("GET", `/api/admin/printify/shipping/${selectedBlank!.productTypeId}`);
       return res.json();
     },
-    enabled: costsOpen && !!selectedBlank?.printifyBlueprintId && !!selectedBlank?.printifyProviderId,
+    enabled: costsOpen && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
   });
 
-  /** Round a price up to the nearest .95 ending */
-  function roundUpTo95(price: number): number {
-    const dollars = Math.floor(price);
-    return price <= dollars + 0.95 ? dollars + 0.95 : dollars + 1.95;
+  // Helper to round up to .95
+  function roundUpTo95(num: number): number {
+    return Math.ceil(num) - 0.05;
   }
 
-  // Recommended retail prices keyed by Shopify variant ID, computed from costs + markup.
-  // Uses shopifyVariantCosts when available (direct Shopify ID bridge),
-  // otherwise falls back to label-matching against printifyVariantLabels.
+  // Recommended retail prices based on production costs + markup
   const recommendedPrices = useMemo(() => {
-    if (!costsData) return {} as Record<string, string>;
+    if (!costsData?.costs || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
-
-    // Build a normalised-label → cost-in-cents lookup from Printify variant labels
-    // e.g. { "14x14" → 850, "18x18" → 950, ... }
-    const labelToCost: Record<string, number> = {};
-    if (costsData.printifyVariantLabels && costsData.costs) {
-      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
-        const costCents = costsData.costs[printifyVid];
-        if (costCents != null) {
-          labelToCost[label.toLowerCase().trim()] = costCents;
-        }
-      }
-    }
-
     for (const v of selectedVariants) {
-      // 1) Direct Shopify variant ID bridge
-      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
-
-      // 2) Label-based fallback: match variant title against Printify variant labels
-      if (costCents == null && v.title) {
-        const normTitle = v.title.toLowerCase().trim();
-        // Try exact match first
-        costCents = labelToCost[normTitle];
-        // Try partial match: check if any label is contained in the variant title or vice versa
-        if (costCents == null) {
-          for (const [label, cost] of Object.entries(labelToCost)) {
-            if (normTitle.includes(label) || label.includes(normTitle)) {
-              costCents = cost;
-              break;
-            }
-          }
-        }
-      }
-
+      const costCents = costsData.costs[v.id] ?? costsData.shopifyVariantCosts[v.id];
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
@@ -438,10 +396,7 @@ export default function AdminCustomizerPages() {
   const planStatus = pagesData?.planStatus ?? null;
   const requiresPlan = pagesData?.requiresPlan ?? false;
   const overLimit = pagesData?.overLimit ?? false;
-  const atLimit = count >= limit && limit > 0;
-
-  const activePagesCount = pages.filter((p) => p.status === "active").length;
-  const overLimitActiveCount = Math.max(0, activePagesCount - limit);
+  const atLimit = false; // We allow unlimited creation now, only restrict activation
 
   if (reauthData) {
     return (
@@ -483,7 +438,7 @@ export default function AdminCustomizerPages() {
           {!requiresPlan && (
             <Dialog open={createOpen} onOpenChange={(v) => { setCreateOpen(v); if (!v) resetForm(); }}>
               <DialogTrigger asChild>
-                <Button disabled={atLimit}>
+                <Button onClick={() => setCreateOpen(true)}>
                   <Plus className="h-4 w-4 mr-2" />
                   Create Page
                 </Button>
@@ -548,17 +503,14 @@ export default function AdminCustomizerPages() {
                         <p className="text-xs text-muted-foreground mt-1">
                           This product will be automatically created on your store when you finish setting up this page.
                         </p>
-                      ) : selectedBlank ? (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          All variants will be available to customers on the storefront.
-                        </p>
                       ) : null}
                     </div>
-                    {/* Page Title — auto-populated from product name, still editable */}
+
                     <div>
-                      <Label>Page Title</Label>
+                      <Label htmlFor="title">Page Title</Label>
                       <Input
-                        placeholder="e.g. Square Pillow"
+                        id="title"
+                        placeholder="e.g. Custom Pillow"
                         value={formTitle}
                         onChange={(e) => handleTitleChange(e.target.value)}
                         className="mt-1"
@@ -567,34 +519,32 @@ export default function AdminCustomizerPages() {
                         Auto-filled from product name — feel free to edit.
                       </p>
                     </div>
-                    {/* URL Handle — mirrors title, still editable */}
+
                     <div>
-                      <Label>URL Handle</Label>
+                      <Label htmlFor="handle">URL Handle</Label>
                       <div className="flex items-center mt-1">
-                        <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
+                        <div className="bg-muted px-3 py-2 rounded-l-md border border-r-0 text-sm text-muted-foreground">
                           /pages/
-                        </span>
+                        </div>
                         <Input
-                          placeholder="square-pillow"
+                          id="handle"
+                          placeholder="custom-pillow"
                           value={formHandle}
-                          onChange={(e) => {
-                            setHandleTouched(true);
-                            setFormHandle(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
-                          }}
+                          onChange={(e) => { setHandleTouched(true); setFormHandle(slugify(e.target.value)); }}
                           className="rounded-l-none"
                         />
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Storefront URL: /pages/{formHandle || "…"}
+                        Storefront URL: /pages/{formHandle || "..."}
                       </p>
                     </div>
+
                     <Button
-                      className="w-full"
-                      onClick={advanceToStep2}
+                      className="w-full mt-2"
                       disabled={!formTitle.trim() || !formHandle.trim() || !formProductId}
+                      onClick={advanceToStep2}
                     >
-                      Next: Set Pricing
-                      <ChevronRight className="h-4 w-4 ml-2" />
+                      Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" />
                     </Button>
                   </div>
                 )}
@@ -603,346 +553,298 @@ export default function AdminCustomizerPages() {
                 {formStep === 2 && (
                   <div className="space-y-4 pt-2">
                     <div className="flex items-center justify-between">
-                      <p className="text-sm text-muted-foreground">
-                        Set a retail price for each variant.
-                      </p>
-                      {selectedBlank?.printifyBlueprintId && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="flex-shrink-0 ml-2"
-                          onClick={() => { setCostsOpen(true); setCostsShippingTier("standard"); setCostsShippingCountry("US"); }}
-                        >
-                          <Info className="h-3.5 w-3.5 mr-1" />
-                          Printify Costs
-                        </Button>
-                      )}
+                      <p className="text-sm text-muted-foreground">Set a retail price for each variant.</p>
+                      <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline" size="sm">
+                            <Info className="h-4 w-4 mr-2" />
+                            Printify Costs
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                          <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2">
+                              <DollarSign className="h-5 w-5 text-emerald-600" />
+                              Production & Shipping Costs
+                            </DialogTitle>
+                            <p className="text-sm text-muted-foreground">
+                              Estimated costs for <strong>{selectedBlank?.title}</strong>.
+                            </p>
+                          </DialogHeader>
+
+                          <Tabs value={costsActiveTab} onValueChange={(v: any) => setCostsActiveTab(v)} className="mt-2">
+                            <TabsList className="grid w-full grid-cols-2">
+                              <TabsTrigger value="production">
+                                <Factory className="h-4 w-4 mr-2" />
+                                Production
+                              </TabsTrigger>
+                              <TabsTrigger value="shipping">
+                                <Truck className="h-4 w-4 mr-2" />
+                                Shipping
+                              </TabsTrigger>
+                            </TabsList>
+
+                            {/* Production tab */}
+                            <TabsContent value="production" className="space-y-4 pt-2">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <Label htmlFor="markup" className="text-sm font-medium">Global Markup</Label>
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      id="markup"
+                                      type="number"
+                                      className="w-16 h-8"
+                                      value={markupPercent}
+                                      onChange={(e) => setMarkupPercent(Number(e.target.value))}
+                                    />
+                                    <span className="text-sm text-muted-foreground">%</span>
+                                  </div>
+                                </div>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => clearCostsMutation.mutate()}
+                                  disabled={clearCostsMutation.isPending || costsLoading}
+                                >
+                                  <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                                  Refresh Costs
+                                </Button>
+                              </div>
+
+                              {costsLoading ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                                  <span className="text-sm text-muted-foreground">Fetching Printify costs...</span>
+                                </div>
+                              ) : costsData?.costs || costsData?.shopifyVariantCosts ? (
+                                <>
+                                  <div className="rounded-md border text-sm">
+                                    <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
+                                      <span>Variant</span>
+                                      <span className="text-right">Standard Cost</span>
+                                      <span className="text-right text-emerald-700">Premium Cost</span>
+                                    </div>
+                                    {selectedVariants.length > 0 ? selectedVariants.map((v) => {
+                                      const costCents = costsData.costs[v.id] ?? costsData.shopifyVariantCosts[v.id];
+                                      return (
+                                        <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                          <span className="truncate">{v.title}</span>
+                                          <span className="text-right font-mono">
+                                            {costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}
+                                          </span>
+                                          <span className="text-right font-mono text-emerald-600">
+                                            {costCents != null ? `$${(costCents * 0.8 / 100).toFixed(2)}` : "—"}
+                                          </span>
+                                        </div>
+                                      );
+                                    }) : Object.entries(costsData.costs).map(([vid, costCents]) => (
+                                      <div key={vid} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                        <span className="text-muted-foreground">Variant {vid}</span>
+                                        <span className="text-right font-mono">${(Number(costCents) / 100).toFixed(2)}</span>
+                                        <span className="text-right font-mono text-emerald-600">${(Number(costCents) * 0.8 / 100).toFixed(2)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
+                                  {costsData.cached && (
+                                    <p className="text-xs text-muted-foreground">Cached data. Use the Refresh button above to fetch the latest costs.</p>
+                                  )}
+                                </>
+                              ) : (
+                                <p className="text-sm text-muted-foreground py-4 text-center">
+                                  Production cost data is not available for this product. Ensure your Printify API token and Shop ID are configured in Settings.
+                                </p>
+                              )}
+                            </TabsContent>
+
+                            {/* Shipping tab */}
+                            <TabsContent value="shipping" className="space-y-3 pt-2">
+                              {shippingLoading ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                                  <span className="text-sm text-muted-foreground">Loading shipping rates...</span>
+                                </div>
+                              ) : shippingData?.tiers && shippingData.shipping ? (
+                                <>
+                                  <div className="flex gap-2 flex-wrap items-center">
+                                    {shippingData.tiers.map((tier) => (
+                                      <Button
+                                        key={tier}
+                                        variant={costsShippingTier === tier ? "default" : "outline"}
+                                        size="sm"
+                                        onClick={() => setCostsShippingTier(tier)}
+                                        className="capitalize"
+                                      >
+                                        {tier}
+                                      </Button>
+                                    ))}
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => clearCostsMutation.mutate()}
+                                      disabled={clearCostsMutation.isPending || costsLoading}
+                                      className="ml-auto shrink-0"
+                                    >
+                                      <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
+                                      Refresh Pricing
+                                    </Button>
+                                  </div>
+                                  {shippingData.countries && shippingData.countries.length > 0 && (
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-medium whitespace-nowrap">Country</span>
+                                      <Select value={costsShippingCountry} onValueChange={setCostsShippingCountry}>
+                                        <SelectTrigger className="flex-1">
+                                          <SelectValue placeholder="Select country" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {(() => {
+                                            const sorted = [...shippingData.countries].sort((a, b) => {
+                                              if (a === "US") return -1;
+                                              if (b === "US") return 1;
+                                              if (a === "REST_OF_THE_WORLD") return -1;
+                                              if (b === "REST_OF_THE_WORLD") return 1;
+                                              return a.localeCompare(b);
+                                            });
+                                            return sorted.map((c) => (
+                                              <SelectItem key={c} value={c}>
+                                                {c === "REST_OF_THE_WORLD" ? "Rest of the World" : c}
+                                              </SelectItem>
+                                            ));
+                                          })()}
+                                        </SelectContent>
+                                      </Select>
+                                    </div>
+                                  )}
+                                  {(() => {
+                                    const tierEntries = (shippingData.shipping[costsShippingTier] ?? [])
+                                      .filter((e) => e.country === costsShippingCountry);
+                                    if (tierEntries.length === 0) {
+                                      return <p className="text-sm text-muted-foreground text-center py-4">No shipping data for this tier/country combination.</p>;
+                                    }
+                                    const handlingTime = tierEntries[0]?.handlingTime;
+                                    return (
+                                      <>
+                                        {handlingTime && (
+                                          <p className="text-xs text-muted-foreground">
+                                            Handling time: {handlingTime.from}–{handlingTime.to} business days
+                                          </p>
+                                        )}
+                                        <div className="rounded-md border text-sm">
+                                          <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
+                                            <span>Variant</span>
+                                            <span className="text-right">1st Item</span>
+                                            <span className="text-right">Additional</span>
+                                          </div>
+                                          {(() => {
+                                            const seen = new Set<string>();
+                                            return tierEntries.filter((entry) => {
+                                              const label = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
+                                                ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
+                                                ?? `Variant ${entry.variantId}`;
+                                              const key = `${label}|${entry.firstItem}|${entry.additionalItems}`;
+                                              if (seen.has(key)) return false;
+                                              seen.add(key);
+                                              return true;
+                                            }).map((entry) => {
+                                              const variantTitle = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
+                                                ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
+                                                ?? `Variant ${entry.variantId}`;
+                                              return (
+                                                <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
+                                                  <span className="truncate">{variantTitle}</span>
+                                                  <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
+                                                  <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
+                                                </div>
+                                              );
+                                            });
+                                          })()}
+                                        </div>
+                                      </>
+                                    );
+                                  })()}
+                                </>
+                              ) : (
+                                <p className="text-sm text-muted-foreground py-4 text-center">
+                                  Shipping data is not available for this product.
+                                </p>
+                              )}
+                            </TabsContent>
+                          </Tabs>
+                          <p className="text-xs text-muted-foreground border-t pt-3">
+                            Set your retail price above production + shipping costs to ensure profitability.
+                          </p>
+                        </DialogContent>
+                      </Dialog>
                     </div>
 
-                    {/* Markup % control + Apply All */}
-                    {selectedBlank?.printifyBlueprintId && (
-                      <div className="flex items-center gap-2 p-3 rounded-md bg-muted/50 border">
-                        <span className="text-sm text-muted-foreground whitespace-nowrap">Markup:</span>
-                        <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg border">
+                      <div className="flex-1">
+                        <Label htmlFor="markup-main" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Markup</Label>
+                        <div className="flex items-center gap-2 mt-1">
                           <Input
+                            id="markup-main"
                             type="number"
-                            min="1"
-                            max="999"
-                            step="1"
+                            className="w-20"
                             value={markupPercent}
-                            onChange={(e) => setMarkupPercent(Math.max(1, parseInt(e.target.value) || 60))}
-                            className="w-16 h-8 text-center text-sm"
+                            onChange={(e) => setMarkupPercent(Number(e.target.value))}
                           />
-                          <span className="text-sm text-muted-foreground">%</span>
+                          <span className="text-sm font-medium">%</span>
                         </div>
-                        {costsLoading && <span className="text-xs text-muted-foreground ml-1">Loading costs…</span>}
-                        {Object.keys(recommendedPrices).length > 0 && (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            className="ml-auto text-xs h-8"
-                            onClick={() => {
-                              const filled: Record<string, string> = { ...variantPrices };
-                              for (const [id, price] of Object.entries(recommendedPrices)) {
-                                filled[id] = price;
-                              }
-                              setVariantPrices(filled);
-                              setPriceErrors({});
-                            }}
-                          >
-                            Apply All Suggested
-                          </Button>
-                        )}
                       </div>
-                    )}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="h-10"
+                        onClick={() => {
+                          const next: Record<string, string> = {};
+                          for (const [id, price] of Object.entries(recommendedPrices)) {
+                            next[id] = price;
+                          }
+                          setVariantPrices(next);
+                        }}
+                      >
+                        Apply All Suggested
+                      </Button>
+                    </div>
 
-                    {/* Shipping cost note */}
-                    <p className="text-xs font-semibold shimmer-text">
-                      Shipping rates vary by destination and are automatically calculated by Shopify
-                      once the customer enters their delivery address at checkout — no action needed.
-                      {selectedBlank?.printifyBlueprintId && (
-                        <>
-                          {" "}To offer free shipping, open{" "}
-                          <button
-                            type="button"
-                            className="underline"
-                            onClick={() => {
-                              setCostsActiveTab("shipping");
-                              setCostsShippingTier("standard");
-                              setCostsShippingCountry("US");
-                              setCostsOpen(true);
-                            }}
-                          >
-                            Printify Costs → Shipping
-                          </button>
-                          {" "}to find the rate for your target market and add it to the RRP below.
-                        </>
-                      )}
-                    </p>
-
-                    <div className="space-y-3">
+                    <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
+                      </p>
                       {selectedVariants.map((v) => (
-                        <div key={v.id}>
-                          <div className="flex items-center justify-between">
-                            <Label className="flex items-center gap-1">
-                              <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
-                              {v.title}
-                            </Label>
+                        <div key={v.id} className="space-y-1.5">
+                          <div className="flex justify-between items-end">
+                            <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
                             {recommendedPrices[v.id] && (
-                              <button
-                                type="button"
-                                className="text-xs text-primary hover:underline cursor-pointer"
-                                onClick={() => {
-                                  setVariantPrices((prev) => ({ ...prev, [v.id]: recommendedPrices[v.id] }));
-                                  if (priceErrors[v.id]) setPriceErrors((prev) => { const n = { ...prev }; delete n[v.id]; return n; });
-                                }}
-                              >
-                                Suggested: ${recommendedPrices[v.id]}
-                              </button>
+                              <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
                             )}
                           </div>
-                          <div className="flex items-center mt-1">
-                            <span className="text-sm text-muted-foreground border border-r-0 rounded-l-md px-3 py-2 bg-muted h-10 flex items-center">
-                              $
-                            </span>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
                             <Input
-                              type="number"
-                              min="0.01"
-                              step="0.01"
+                              className={`pl-7 ${priceErrors[v.id] ? "border-destructive" : ""}`}
                               placeholder="0.00"
                               value={variantPrices[v.id] ?? ""}
-                              onChange={(e) => {
-                                setVariantPrices((prev) => ({ ...prev, [v.id]: e.target.value }));
-                                if (priceErrors[v.id]) setPriceErrors((prev) => { const n = { ...prev }; delete n[v.id]; return n; });
-                              }}
-                              className={`rounded-l-none ${priceErrors[v.id] ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                              onChange={(e) => setVariantPrices({ ...variantPrices, [v.id]: e.target.value })}
                             />
                           </div>
                           {priceErrors[v.id] && (
-                            <p className="text-xs text-destructive mt-1">{priceErrors[v.id]}</p>
+                            <p className="text-[10px] text-destructive font-medium">{priceErrors[v.id]}</p>
                           )}
                         </div>
                       ))}
                     </div>
-                    <div className="flex gap-2">
+
+                    <div className="flex gap-2 pt-2">
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(1)}>
                         Back
                       </Button>
                       <Button className="flex-1" onClick={advanceToStep3}>
-                        Review & Create
-                        <ChevronRight className="h-4 w-4 ml-2" />
+                        Review & Create <ChevronRight className="h-4 w-4 ml-1" />
                       </Button>
                     </div>
                   </div>
                 )}
-
-                {/* ── Printify Costs Dialog ── */}
-                <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
-                  <DialogContent className="max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
-                    <DialogHeader>
-                      <DialogTitle>Printify Costs — {selectedBlank?.title}</DialogTitle>
-                    </DialogHeader>
-                    <Tabs value={costsActiveTab} onValueChange={(v) => setCostsActiveTab(v as "production" | "shipping")} className="w-full flex flex-col min-h-0 flex-1 overflow-y-auto">
-                      <TabsList className="grid w-full grid-cols-2">
-                        <TabsTrigger value="production" className="flex items-center gap-1.5">
-                          <Factory className="h-3.5 w-3.5 shrink-0" />
-                          <span className={costsActiveTab === "production" ? "shimmer-text" : ""}>
-                            Production
-                          </span>
-                        </TabsTrigger>
-                        <TabsTrigger value="shipping" className="flex items-center gap-1.5">
-                          <Truck className="h-3.5 w-3.5 shrink-0" />
-                          <span className={costsActiveTab === "shipping" ? "shimmer-text" : ""}>
-                            Shipping
-                          </span>
-                        </TabsTrigger>
-                      </TabsList>
-
-                      {/* Production tab */}
-                      <TabsContent value="production" className="space-y-3 pt-2">
-                        <div className="flex justify-end">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => clearCostsMutation.mutate()}
-                            disabled={clearCostsMutation.isPending || costsLoading}
-                            className="shrink-0"
-                          >
-                            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
-                            Refresh Pricing
-                          </Button>
-                        </div>
-                        {costsLoading ? (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                            <span className="text-sm text-muted-foreground">Fetching production costs from Printify...</span>
-                          </div>
-                        ) : costsData?.costs ? (
-                          <>
-                            <div className="rounded-md border text-sm">
-                              <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
-                                <span>Variant</span>
-                                <span className="text-right">Standard</span>
-                                <span className="text-right text-emerald-600">Premium (est.)</span>
-                              </div>
-                              {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                // Try Shopify variant ID first, then fall back to label-based matching
-                                // (label matching handles cases where shopifyVariantCosts is not populated)
-                                let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
-                                if (costCents == null && costsData.printifyVariantLabels) {
-                                  const matchingPrintifyId = Object.entries(costsData.printifyVariantLabels)
-                                    .find(([, label]) => label === v.title)?.[0];
-                                  if (matchingPrintifyId) costCents = costsData.costs?.[matchingPrintifyId];
-                                }
-                                return (
-                                  <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
-                                    <span>{v.title}</span>
-                                    <span className="text-right font-mono">
-                                      {costCents != null ? `$${(costCents / 100).toFixed(2)}` : "—"}
-                                    </span>
-                                    <span className="text-right font-mono text-emerald-600">
-                                      {costCents != null ? `$${(costCents * 0.8 / 100).toFixed(2)}` : "—"}
-                                    </span>
-                                  </div>
-                                );
-                              }) : Object.entries(costsData.costs).map(([vid, costCents]) => (
-                                <div key={vid} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
-                                  <span className="text-muted-foreground">Variant {vid}</span>
-                                  <span className="text-right font-mono">${(Number(costCents) / 100).toFixed(2)}</span>
-                                  <span className="text-right font-mono text-emerald-600">${(Number(costCents) * 0.8 / 100).toFixed(2)}</span>
-                                </div>
-                              ))}
-                            </div>
-                            <p className="text-xs text-muted-foreground">Premium estimates based on up to 20% Printify Premium discount. Shipping costs are separate.</p>
-                            {costsData.cached && (
-                              <p className="text-xs text-muted-foreground">Cached data. Use the Refresh button above to fetch the latest costs.</p>
-                            )}
-                          </>
-                        ) : (
-                          <p className="text-sm text-muted-foreground py-4 text-center">
-                            Production cost data is not available for this product. Ensure your Printify API token and Shop ID are configured in Settings.
-                          </p>
-                        )}
-                      </TabsContent>
-
-                      {/* Shipping tab */}
-                      <TabsContent value="shipping" className="space-y-3 pt-2">
-                        {shippingLoading ? (
-                          <div className="flex items-center justify-center py-8">
-                            <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                            <span className="text-sm text-muted-foreground">Loading shipping rates...</span>
-                          </div>
-                        ) : shippingData?.tiers && shippingData.shipping ? (
-                          <>
-                            <div className="flex gap-2 flex-wrap items-center">
-                              {shippingData.tiers.map((tier) => (
-                                <Button
-                                  key={tier}
-                                  variant={costsShippingTier === tier ? "default" : "outline"}
-                                  size="sm"
-                                  onClick={() => setCostsShippingTier(tier)}
-                                  className="capitalize"
-                                >
-                                  {tier}
-                                </Button>
-                              ))}
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => clearCostsMutation.mutate()}
-                                disabled={clearCostsMutation.isPending || costsLoading}
-                                className="ml-auto shrink-0"
-                              >
-                                <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${clearCostsMutation.isPending ? 'animate-spin' : ''}`} />
-                                Refresh Pricing
-                              </Button>
-                            </div>
-                            {shippingData.countries && shippingData.countries.length > 0 && (
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium whitespace-nowrap">Country</span>
-                                <Select value={costsShippingCountry} onValueChange={setCostsShippingCountry}>
-                                  <SelectTrigger className="flex-1">
-                                    <SelectValue placeholder="Select country" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {(() => {
-                                      const sorted = [...shippingData.countries].sort((a, b) => {
-                                        if (a === "US") return -1;
-                                        if (b === "US") return 1;
-                                        if (a === "REST_OF_THE_WORLD") return -1;
-                                        if (b === "REST_OF_THE_WORLD") return 1;
-                                        return a.localeCompare(b);
-                                      });
-                                      return sorted.map((c) => (
-                                        <SelectItem key={c} value={c}>
-                                          {c === "REST_OF_THE_WORLD" ? "Rest of the World" : c}
-                                        </SelectItem>
-                                      ));
-                                    })()}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            )}
-                            {(() => {
-                              const tierEntries = (shippingData.shipping[costsShippingTier] ?? [])
-                                .filter((e) => e.country === costsShippingCountry);
-                              if (tierEntries.length === 0) {
-                                return <p className="text-sm text-muted-foreground text-center py-4">No shipping data for this tier/country combination.</p>;
-                              }
-                              const handlingTime = tierEntries[0]?.handlingTime;
-                              return (
-                                <>
-                                  {handlingTime && (
-                                    <p className="text-xs text-muted-foreground">
-                                      Handling time: {handlingTime.from}–{handlingTime.to} business days
-                                    </p>
-                                  )}
-                                  <div className="rounded-md border text-sm">
-                                    <div className="grid grid-cols-3 gap-2 px-3 py-2 bg-muted font-medium">
-                                      <span>Variant</span>
-                                      <span className="text-right">1st Item</span>
-                                      <span className="text-right">Additional</span>
-                                    </div>
-                                    {(() => {
-                                      const seen = new Set<string>();
-                                      return tierEntries.filter((entry) => {
-                                        const label = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
-                                          ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
-                                          ?? `Variant ${entry.variantId}`;
-                                        const key = `${label}|${entry.firstItem}|${entry.additionalItems}`;
-                                        if (seen.has(key)) return false;
-                                        seen.add(key);
-                                        return true;
-                                      }).map((entry) => {
-                                        const variantTitle = selectedBlank?.printifyVariantLabels?.[String(entry.variantId)]
-                                          ?? costsData?.printifyVariantLabels?.[String(entry.variantId)]
-                                          ?? `Variant ${entry.variantId}`;
-                                        return (
-                                          <div key={entry.variantId} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
-                                            <span className="truncate">{variantTitle}</span>
-                                            <span className="text-right font-mono">${(entry.firstItem / 100).toFixed(2)}</span>
-                                            <span className="text-right font-mono">${(entry.additionalItems / 100).toFixed(2)}</span>
-                                          </div>
-                                        );
-                                      });
-                                    })()}
-                                  </div>
-                                </>
-                              );
-                            })()}
-                          </>
-                        ) : (
-                          <p className="text-sm text-muted-foreground py-4 text-center">
-                            Shipping data is not available for this product.
-                          </p>
-                        )}
-                      </TabsContent>
-                    </Tabs>
-                    <p className="text-xs text-muted-foreground border-t pt-3">
-                      Set your retail price above production + shipping costs to ensure profitability.
-                    </p>
-                  </DialogContent>
-                </Dialog>
 
                 {/* ── STEP 3: Confirm ── */}
                 {formStep === 3 && (
@@ -995,63 +897,35 @@ export default function AdminCustomizerPages() {
                 )}
 
                 {/* ── STEP 4: Success ── */}
-                {formStep === 4 && (
-                  <div className="space-y-5 pt-2">
-                    <div className="flex flex-col items-center text-center gap-3 py-4">
-                      <CheckCircle2 className="h-14 w-14 text-green-500" />
-                      <div>
-                        <p className="text-lg font-semibold">Your customizer page is live!</p>
-                        <p className="text-sm text-muted-foreground mt-1">
-                          Pricing has been saved to Shopify. The product is now published on your Online Store.
-                        </p>
+                {formStep === 4 && createdPageResult && (
+                  <div className="space-y-6 py-4 text-center">
+                    <div className="flex flex-col items-center space-y-2">
+                      <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+                        <CheckCircle2 className="h-6 w-6 text-primary" />
+                      </div>
+                      <h3 className="text-lg font-semibold">Customizer Page Created!</h3>
+                      <p className="text-sm text-muted-foreground">
+                        Your page is now live on your storefront.
+                      </p>
+                    </div>
+
+                    <div className="bg-muted/50 rounded-lg p-4 space-y-3 text-left">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">Storefront URL</span>
+                        <a
+                          href={`https://${shopDomain}/pages/${createdPageResult.page.handle}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-primary flex items-center hover:underline"
+                        >
+                          View Page <ExternalLink className="h-3 w-3 ml-1" />
+                        </a>
+                      </div>
+                      <div className="p-2 bg-background rounded border font-mono text-xs break-all">
+                        https://{shopDomain}/pages/{createdPageResult.page.handle}
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <Button
-                        className="w-full"
-                        variant="outline"
-                        asChild
-                      >
-                        <a
-                          href={`https://${createdPageResult?.page?.shop ?? shopDomain}/pages/${createdPageResult?.page?.handle ?? formHandle}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          Open customizer page
-                        </a>
-                      </Button>
-                      {createdPageResult?.page?.baseProductId && (
-                        <Button className="w-full" variant="outline" asChild>
-                          <a
-                            href={`https://${createdPageResult?.page?.shop ?? shopDomain}/admin/products/${createdPageResult.page.baseProductId}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >
-                            <ExternalLink className="h-4 w-4 mr-2" />
-                            Open product in Shopify
-                          </a>
-                        </Button>
-                      )}
-                      <Button className="w-full" variant="outline" asChild>
-                        <a
-                          href={`https://${createdPageResult?.page?.shop ?? shopDomain}/admin/menus`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          Edit menu link
-                        </a>
-                      </Button>
-                    </div>
-                    <p className="text-xs text-center text-muted-foreground">
-                      To update pricing in the future, edit the product directly in Shopify Products.
-                    </p>
-                    {createdPageResult?.navWarning && (
-                      <p className="text-xs text-amber-600 text-center">
-                        Note: Could not auto-add nav link — please add it manually in Shopify Navigation.
-                      </p>
-                    )}
+
                     <Button className="w-full" onClick={() => { setCreateOpen(false); resetForm(); }}>
                       Done
                     </Button>
@@ -1062,42 +936,52 @@ export default function AdminCustomizerPages() {
           )}
         </div>
 
-        {/* ── PLAN GATE: show PlanPicker inline when no active plan ── */}
+        {/* Reauth Banner */}
+        {reauthData && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-yellow-600 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-yellow-800">Shopify connection needs to be refreshed</h3>
+              <p className="text-sm text-yellow-700 mt-1">
+                Your app's Shopify access token has expired or been revoked. Click below to reconnect
+                your store — this only takes a moment.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-3 border-yellow-300 text-yellow-800 hover:bg-yellow-100"
+                onClick={() => window.open(reauthData.reinstallUrl, "_top")}
+              >
+                Reconnect Shopify
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Main Content */}
         {pagesLoading ? (
-          <Skeleton className="h-48 w-full rounded-lg" />
-        ) : requiresPlan ? (
-          <Card className="border-dashed">
-            <CardContent className="p-0">
-              <PlanPicker
-                inline
-                onActivated={() => {
-                  queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
-                }}
-              />
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <Skeleton className="h-32 w-full" />
+            <Skeleton className="h-64 w-full" />
+          </div>
         ) : (
           <>
-            {/* ── OVER-LIMIT BANNER (downgrade scenario) ── */}
+            {/* ── UPGRADE PROMPT (if over limit) ── */}
             {overLimit && (
-              <Card className="border-amber-400 bg-amber-50 dark:bg-amber-950/20">
-                <CardContent className="pt-4 pb-4">
-                  <div className="flex items-start gap-3">
-                    <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
-                    <div>
-                      <p className="font-semibold text-amber-800 dark:text-amber-300">
-                        Over plan limit
-                      </p>
-                      <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">
-                        Your <strong>{PLAN_DISPLAY[planName ?? ""] ?? planName}</strong> plan
-                        allows {limit} active page{limit !== 1 ? "s" : ""}. You have{" "}
-                        {activePagesCount} active. Disable {overLimitActiveCount} page
-                        {overLimitActiveCount !== 1 ? "s" : ""} to comply with your plan,
-                        or upgrade to unlock more.
+              <Card className="border-amber-200 bg-amber-50">
+                <CardContent className="pt-6">
+                  <div className="flex items-start gap-4">
+                    <div className="h-10 w-10 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                      <TrendingUp className="h-5 w-5 text-amber-600" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-base font-semibold text-amber-900">Unlock more customizer pages</h3>
+                      <p className="text-sm text-amber-800 mt-1">
+                        You've reached the limit of <strong>{limit} active pages</strong> on your current plan.
+                        Upgrade to activate more pages and grow your custom product catalog.
                       </p>
                       <Button
                         size="sm"
-                        variant="outline"
                         className="mt-3 border-amber-600 text-amber-700"
                         onClick={() => navigate("/admin/plan")}
                       >
@@ -1144,10 +1028,10 @@ export default function AdminCustomizerPages() {
                     style={{ width: limit > 0 ? `${Math.min((count / limit) * 100, 100)}%` : "0%" }}
                   />
                 </div>
-                {atLimit && !overLimit && (
+                {count >= limit && limit > 0 && (
                   <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
                     <AlertTriangle className="h-3 w-3" />
-                    Plan limit reached. Upgrade to create more pages.
+                    Active page limit reached ({limit}). Deactivate a page or upgrade to activate more.
                   </p>
                 )}
               </CardContent>
@@ -1166,7 +1050,7 @@ export default function AdminCustomizerPages() {
                   <p className="text-sm text-muted-foreground mt-1 mb-6">
                     Create your first page to let customers design custom products on your storefront.
                   </p>
-                  <Button onClick={() => setCreateOpen(true)} disabled={atLimit}>
+                  <Button onClick={() => setCreateOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
                     Create first page
                   </Button>

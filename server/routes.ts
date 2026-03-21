@@ -10556,9 +10556,9 @@ ${textEdgeRestrictions}
     const { installation } = resolved;
     const shop: string = installation.shopDomain;
 
-    const [pages, currentCount] = await Promise.all([
+    const [pages, activeCount] = await Promise.all([
       storage.listCustomizerPages(shop),
-      storage.countCustomizerPages(shop),
+      storage.countActiveCustomizerPages(shop),
     ]);
 
     // Backfill any pages that are missing baseProductHandle or productTypeId.
@@ -10614,12 +10614,12 @@ ${textEdgeRestrictions}
     return res.json({
       pages,
       limit: plan.pageLimit,
-      count: currentCount,
+      count: activeCount,
       planTier: plan.planName ?? "none",
       planName: plan.planName,
       planStatus: plan.planStatus,
       requiresPlan: plan.requiresPlan,
-      overLimit: currentCount > plan.pageLimit && plan.isActive,
+      overLimit: activeCount > plan.pageLimit && plan.isActive,
     });
   }));
 
@@ -10699,17 +10699,12 @@ ${textEdgeRestrictions}
       }
     }
 
-    // Plan limit check
-    const currentCount = await storage.countCustomizerPages(shop);
-    const { allowed, limit } = canCreatePage(plan.planName, currentCount);
-    if (!allowed) {
-      return res.status(402).json({
-        error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} customizer page${limit === 1 ? "" : "s"}. Upgrade to create more.`,
-        limit,
-        currentCount,
-        planName: plan.planName,
-      });
-    }
+    // Plan limit check - only for ACTIVE pages
+    const activeCount = await storage.countActiveCustomizerPages(shop);
+    const { allowed, limit } = canCreatePage(plan.planName, activeCount);
+    
+    // We allow creating INACTIVE pages even if over limit
+    const initialStatus = allowed ? "active" : "disabled";
 
     // Resolve variant + product info via Admin API.
     // New flow: merchant selects a product → fetch product and use its first variant.
@@ -10862,17 +10857,19 @@ ${textEdgeRestrictions}
       baseVariantTitle: variant.title ?? "",
       baseProductPrice: variant.price ?? "",
       productTypeId: resolvedProductTypeId,
-      status: "active",
+      status: initialStatus,
     });
 
-    // ── Add navigation menu link ──────────────────────────────────────────────
+    // ── Add navigation menu link (only if active) ──────────────────────────────
     let navWarning: string | null = null;
-    try {
-      const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), title.trim());
-      if (navResult.warning) navWarning = navResult.warning;
-    } catch (navErr: any) {
-      navWarning = navErr.message ?? "Navigation link could not be added";
-      console.warn(`[customizer-pages] Nav link step failed: ${navWarning}`);
+    if (initialStatus === "active") {
+      try {
+        const navResult = await ensureNavigationLink(shop, installation.accessToken, handle.trim(), title.trim());
+        if (navResult.warning) navWarning = navResult.warning;
+      } catch (navErr: any) {
+        navWarning = navErr.message ?? "Navigation link could not be added";
+        console.warn(`[customizer-pages] Nav link step failed: ${navWarning}`);
+      }
     }
 
     return res.status(201).json({
@@ -10906,6 +10903,22 @@ ${textEdgeRestrictions}
       if (s !== "active" && s !== "disabled") {
         return res.status(400).json({ error: 'Status must be "active" or "disabled"' });
       }
+      
+      if (s === "active" && dbPage.status !== "active") {
+        // Plan limit check
+        const plan = getEffectivePlan(installation as any, shop);
+        const activeCount = await storage.countActiveCustomizerPages(shop);
+        const { allowed, limit } = canCreatePage(plan.planName, activeCount);
+        if (!allowed) {
+          return res.status(402).json({
+            error: `Plan limit reached. Your ${plan.displayName} plan allows ${limit} active customizer page${limit === 1 ? "" : "s"}. Upgrade to activate more.`,
+            limit,
+            activeCount,
+            planName: plan.planName,
+          });
+        }
+      }
+      
       updates.status = s;
     }
     if (req.body.baseVariantId !== undefined) {
