@@ -289,8 +289,8 @@
 
 /* ── Shimmer text effect ─────────────────────────────────────────────────── */
 @keyframes shimmer-sweep {
-  0%   { background-position: -200% center; }
-  100% { background-position:  200% center; }
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
 }
 
 .shimmer-text {
@@ -305,5 +305,5 @@
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: shimmer-sweep 3s linear infinite;
+  animation: shimmer-sweep 4s linear infinite;
 }
