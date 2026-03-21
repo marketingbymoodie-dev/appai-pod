@@ -3478,6 +3478,42 @@ export default function EmbedDesign() {
               )}
             </div>
 
+            {/* Carousel indicators with labels — directly under image */}
+            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (() => {
+              const galleryMockups: Array<{ url: string; label: string }> =
+                printifyMockupImages.length > 0
+                  ? printifyMockupImages
+                  : printifyMockups.map((url, i) => ({ url, label: i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}` }));
+              const hasMockups = galleryMockups.length > 0;
+              if (!hasMockups) return null;
+              const totalItems = 1 + galleryMockups.slice(0, 3).length;
+              const getLabel = (idx: number) => idx === 0 ? "Artwork" : (galleryMockups[idx - 1]?.label || `View ${idx}`);
+              return (
+                <div className="flex justify-center gap-3 mt-1">
+                  {Array.from({ length: totalItems }).map((_, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setSelectedMockupIndex(idx)}
+                      aria-label={getLabel(idx)}
+                      className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                        selectedMockupIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                      }`}
+                    >
+                      <span className={`rounded-full transition-all duration-200 ${
+                        selectedMockupIndex === idx
+                          ? "w-4 h-2 bg-foreground"
+                          : "w-2 h-2 bg-foreground/60"
+                      }`} />
+                      <span className={`text-[10px] leading-tight font-medium ${
+                        selectedMockupIndex === idx ? "text-foreground" : "text-muted-foreground"
+                      }`}>{getLabel(idx)}</span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
+
             {generatedDesign?.imageUrl && (
               <ZoomControls
                 transform={transform}
@@ -3609,65 +3645,32 @@ export default function EmbedDesign() {
               </div>
             )}
 
-            {/* Mockup gallery / status */}
-            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (
+            {/* Mockup error status */}
+            {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
-                {mockupError ? (
-                  <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
-                    <span className="text-sm text-destructive flex-1">Preview unavailable — you can still add to cart</span>
-                    <button
-                      type="button"
-                      className="text-xs text-destructive underline shrink-0"
-                      onClick={() => {
-                        if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                          setMockupError(null);
-                          fetchPrintifyMockups(
-                            toAbsoluteImageUrl(generatedDesign.imageUrl),
-                            productTypeConfig.id,
-                            selectedSize,
-                            selectedFrameColor || 'default',
-                            transform.scale,
-                            50,
-                            50
-                          );
-                        }
-                      }}
-                    >
-                      Retry
-                    </button>
-                  </div>
-                ) : (() => {
-                  const galleryMockups: Array<{ url: string; label: string }> =
-                    printifyMockupImages.length > 0
-                      ? printifyMockupImages
-                      : printifyMockups.map((url, i) => ({ url, label: i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}` }));
-
-                  const hasMockups = galleryMockups.length > 0;
-                  if (!hasMockups) return null;
-
-                  const totalItems = 1 + galleryMockups.slice(0, 3).length;
-
-                  return (
-                    <div data-testid="container-mockup-gallery">
-                      {/* Dot indicators */}
-                      <div className="flex justify-center gap-1.5 mt-2">
-                        {Array.from({ length: totalItems }).map((_, idx) => (
-                          <button
-                            key={idx}
-                            type="button"
-                            onClick={() => setSelectedMockupIndex(idx)}
-                            aria-label={`View ${idx === 0 ? "Artwork" : galleryMockups[idx - 1]?.label || `Mockup ${idx}`}`}
-                            className={`rounded-full transition-all duration-200 ${
-                              selectedMockupIndex === idx
-                                ? "w-4 h-2 bg-foreground"
-                                : "w-2 h-2 bg-foreground/30 hover:bg-foreground/60"
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })()}
+                <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
+                  <span className="text-sm text-destructive flex-1">Preview unavailable — you can still add to cart</span>
+                  <button
+                    type="button"
+                    className="text-xs text-destructive underline shrink-0"
+                    onClick={() => {
+                      if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                        setMockupError(null);
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || 'default',
+                          transform.scale,
+                          50,
+                          50
+                        );
+                      }
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
               </div>
             )}
 

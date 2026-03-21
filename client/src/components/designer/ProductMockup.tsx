@@ -359,15 +359,20 @@ export function ProductMockup({
     }
   };
 
+  const isDragActive = !!displayUrl && enableDrag && !mockupUrl;
+
   return (
     <div
       className={`relative bg-muted rounded-md w-full h-full ${
-        displayUrl && enableDrag && !mockupUrl ? "cursor-move select-none" : ""
+        isDragActive ? "cursor-move select-none" : ""
       }`}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      style={{ touchAction: isDragActive ? "none" : "pan-y" }}
+      {...(isDragActive ? {
+        onMouseDown: handleMouseDown,
+        onMouseMove: handleMouseMove,
+        onMouseUp: handleMouseUp,
+        onMouseLeave: handleMouseUp,
+      } : {})}
       data-testid="product-mockup"
     >
       {renderProductMockup()}
