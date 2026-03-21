@@ -24,7 +24,7 @@ import {
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
-  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw,
+  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
@@ -110,6 +110,7 @@ export default function AdminCustomizerPages() {
 
   // Costs popup state
   const [costsOpen, setCostsOpen] = useState(false);
+  const [costsActiveTab, setCostsActiveTab] = useState<"production" | "shipping">("production");
   const [costsShippingCountry, setCostsShippingCountry] = useState("US");
   const [costsShippingTier, setCostsShippingTier] = useState("standard");
 
@@ -653,22 +654,27 @@ export default function AdminCustomizerPages() {
                     )}
 
                     {/* Shipping cost note */}
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs font-semibold shimmer-text">
                       Shipping rates vary by destination and are automatically calculated by Shopify
                       once the customer enters their delivery address at checkout — no action needed.
-                      If you'd prefer to offer free shipping, use{" "}
-                      {selectedBlank?.printifyBlueprintId ? (
-                        <button
-                          type="button"
-                          className="underline hover:text-foreground transition-colors"
-                          onClick={() => { setCostsOpen(true); setCostsShippingTier("standard"); setCostsShippingCountry("US"); }}
-                        >
-                          Printify Costs
-                        </button>
-                      ) : (
-                        "Printify Costs"
-                      )}{" "}
-                      to look up the shipping cost for your target market and factor it into the RRP above.
+                      {selectedBlank?.printifyBlueprintId && (
+                        <>
+                          {" "}To offer free shipping, open{" "}
+                          <button
+                            type="button"
+                            className="underline"
+                            onClick={() => {
+                              setCostsActiveTab("shipping");
+                              setCostsShippingTier("standard");
+                              setCostsShippingCountry("US");
+                              setCostsOpen(true);
+                            }}
+                          >
+                            Printify Costs → Shipping
+                          </button>
+                          {" "}to find the rate for your target market and add it to the RRP above.
+                        </>
+                      )}
                     </p>
 
                     <div className="space-y-3">
@@ -745,10 +751,20 @@ export default function AdminCustomizerPages() {
                         </Button>
                       </div>
                     </DialogHeader>
-                    <Tabs defaultValue="production" className="w-full">
+                    <Tabs value={costsActiveTab} onValueChange={(v) => setCostsActiveTab(v as "production" | "shipping")} className="w-full">
                       <TabsList className="grid w-full grid-cols-2">
-                        <TabsTrigger value="production">Production</TabsTrigger>
-                        <TabsTrigger value="shipping">Shipping</TabsTrigger>
+                        <TabsTrigger value="production" className="flex items-center gap-1.5">
+                          <Factory className="h-3.5 w-3.5 shrink-0" />
+                          <span className={costsActiveTab === "production" ? "shimmer-text" : ""}>
+                            Production
+                          </span>
+                        </TabsTrigger>
+                        <TabsTrigger value="shipping" className="flex items-center gap-1.5">
+                          <Truck className="h-3.5 w-3.5 shrink-0" />
+                          <span className={costsActiveTab === "shipping" ? "shimmer-text" : ""}>
+                            Shipping
+                          </span>
+                        </TabsTrigger>
                       </TabsList>
 
                       {/* Production tab */}
