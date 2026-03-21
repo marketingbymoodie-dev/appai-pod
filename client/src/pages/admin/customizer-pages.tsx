@@ -957,21 +957,15 @@ export default function AdminCustomizerPages() {
                         <span className="text-muted-foreground">Product</span>
                         <span className="font-medium">{selectedBlank?.title ?? formProductId}</span>
                       </div>
-                      {selectedBlank?.needsShopifySync ? (
-                        <div className="border-t pt-2 mt-1">
-                          <p className="text-xs text-amber-600">This product will be automatically sent to your store as a draft. Set pricing in Shopify Admin → Products before publishing it live.</p>
-                        </div>
-                      ) : (
-                        <div className="border-t pt-2 mt-1 space-y-1">
-                          <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                          {selectedVariants.map((v) => (
-                            <div key={v.id} className="flex justify-between">
-                              <span>{v.title}</span>
-                              <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <div className="border-t pt-2 mt-1 space-y-1">
+                        <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
+                        {selectedVariants.map((v) => (
+                          <div key={v.id} className="flex justify-between">
+                            <span>{v.title}</span>
+                            <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                     <p className="text-xs text-muted-foreground">
                       This will create the customizer page on your Online Store.
