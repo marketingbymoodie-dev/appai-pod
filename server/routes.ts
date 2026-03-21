@@ -12,6 +12,7 @@ import { pool } from "./db";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
+import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
@@ -11554,49 +11555,8 @@ ${textEdgeRestrictions}
     });
   }));
 
-  // POST sync theme - detect colors and fonts from Shopify theme
-  app.post("/api/admin/branding/sync-theme", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const { sniffThemeColors } = await import("./theme-sniffer");
-    const userId = req.user.claims.sub;
-    const merchant = await storage.getMerchantByUserId(userId);
-    
-    if (!merchant) {
-      return res.status(404).json({ error: "Merchant not found" });
-    }
-
-    // Get the first connected Shopify store
-    const installations = await storage.getShopifyInstallationsByMerchant(merchant.id);
-    if (!installations || installations.length === 0) {
-      return res.status(400).json({ error: "No Shopify store connected" });
-    }
-
-    const installation = installations[0];
-    
-    try {
-      // Fetch theme CSS from Shopify store to sniff colors and fonts
-      const themeSettings = await sniffThemeColors(installation.shopDomain);
-      
-      if (!themeSettings) {
-        return res.status(400).json({ error: "Could not detect theme settings" });
-      }
-
-      // Update merchant branding settings
-      const updatedMerchant = await storage.updateMerchant(merchant.id, {
-        brandingSettings: {
-          ...themeSettings,
-          syncedAt: new Date().toISOString(),
-        }
-      });
-
-      res.json({
-        message: "Theme synced successfully",
-        brandingSettings: updatedMerchant.brandingSettings
-      });
-    } catch (error) {
-      console.error("Error syncing theme:", error);
-      res.status(500).json({ error: "Failed to sync theme" });
-    }
-  }));
+  // Register admin branding routes
+  registerAdminBrandingRoutes(app);
 
   return httpServer;
 }
