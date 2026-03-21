@@ -287,10 +287,8 @@ export default function AdminProducts() {
   });
 
   const handleUpdateShopifyProduct = (productType: ProductType) => {
-    if (!productType.shopifyProductId) {
-      toast({ title: "Not published", description: "This product hasn't been sent to Shopify yet.", variant: "destructive" });
-      return;
-    }
+    // If not published, we'll send it to Shopify for the first time
+    const isNew = !productType.shopifyProductId;
     
     // Extract shop domain from the stored shopifyProductUrl (e.g., https://shop.myshopify.com/admin/products/123)
     let shopDomain = "";
@@ -316,6 +314,15 @@ export default function AdminProducts() {
     updateShopifyProductMutation.mutate({ 
       productTypeId: productType.id, 
       shopDomain: shopDomain 
+    }, {
+      onSuccess: () => {
+        toast({
+          title: isNew ? "Product sent to Shopify" : "Shopify product refreshed",
+          description: isNew 
+            ? "The product has been created on your Shopify store."
+            : "Product description and metafields updated."
+        });
+      }
     });
   };
 
@@ -578,18 +585,25 @@ export default function AdminProducts() {
                           Refresh Colors
                         </Button>
                       )}
-                      {pt.shopifyProductId && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleUpdateShopifyProduct(pt)}
-                          disabled={updateShopifyProductMutation.isPending}
-                          data-testid={`button-refresh-shopify-${pt.id}`}
-                        >
-                          <RefreshCw className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-spin' : ''}`} />
-                          Refresh Shopify
-                        </Button>
-                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleUpdateShopifyProduct(pt)}
+                        disabled={updateShopifyProductMutation.isPending}
+                        data-testid={`button-refresh-shopify-${pt.id}`}
+                      >
+                        {pt.shopifyProductId ? (
+                          <>
+                            <RefreshCw className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-spin' : ''}`} />
+                            Refresh Shopify
+                          </>
+                        ) : (
+                          <>
+                            <Upload className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-pulse' : ''}`} />
+                            Send to Shopify
+                          </>
+                        )}
+                      </Button>
                       <Button 
                         variant="ghost" 
                         size="icon"

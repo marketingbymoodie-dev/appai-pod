@@ -2798,12 +2798,44 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Check if product was pushed to Shopify
+      // If product was not pushed to Shopify, we'll create it now
       if (!productType.shopifyProductId) {
-        return res.status(400).json({ 
-          error: "Product not yet published to Shopify",
-          details: "Use 'Send to Store' first to create the product in Shopify"
-        });
+        console.log(`[Update Shopify] Product ${productTypeId} not yet in Shopify. Creating now...`);
+        
+        // Get installation
+        const installation = await storage.getShopifyInstallationByShop(shopDomain);
+        if (!installation || installation.status !== "active") {
+          return res.status(400).json({ error: "Shopify store not connected" });
+        }
+
+        // Import the createShopifyProduct function
+        const { createShopifyProduct } = await import("./shopify-products.js");
+        
+        try {
+          const result = await createShopifyProduct(shopDomain, installation.accessToken, productType);
+          
+          // Update product type with the new Shopify IDs
+          await storage.updateProductType(productTypeId, {
+            shopifyProductId: String(result.id),
+            shopifyProductUrl: `https://${shopDomain}/admin/products/${result.id}`,
+            shopifyProductHandle: result.handle,
+          });
+          
+          // Ensure it's published and unlisted
+          await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, result.id);
+          
+          return res.json({ 
+            success: true, 
+            message: "Product created in Shopify",
+            shopifyProductId: result.id 
+          });
+        } catch (err: any) {
+          console.error("[Update Shopify] Failed to create product:", err);
+          return res.status(500).json({ 
+            error: "Failed to create Shopify product", 
+            details: err.message 
+          });
+        }
       }
 
       // Get installation
