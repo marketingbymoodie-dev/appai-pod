@@ -654,17 +654,21 @@ export default function AdminCustomizerPages() {
 
                     {/* Shipping cost note */}
                     <p className="text-xs text-muted-foreground">
-                      Shipping costs are charged separately at the customer's cart.{" "}
-                      {selectedBlank?.printifyBlueprintId && (
+                      Shipping rates vary by destination and are automatically calculated by Shopify
+                      once the customer enters their delivery address at checkout — no action needed.
+                      If you'd prefer to offer free shipping, use{" "}
+                      {selectedBlank?.printifyBlueprintId ? (
                         <button
                           type="button"
                           className="underline hover:text-foreground transition-colors"
                           onClick={() => { setCostsOpen(true); setCostsShippingTier("standard"); setCostsShippingCountry("US"); }}
                         >
-                          View Printify Costs
+                          Printify Costs
                         </button>
+                      ) : (
+                        "Printify Costs"
                       )}{" "}
-                      to include shipping in the RRP and offer free shipping on your store.
+                      to look up the shipping cost for your target market and factor it into the RRP above.
                     </p>
 
                     <div className="space-y-3">
