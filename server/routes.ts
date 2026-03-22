@@ -11297,17 +11297,34 @@ ${textEdgeRestrictions}
             continue;
           }
         }
-        // Not on Shopify (or Shopify fetch failed) — include without variant data
+        // Not on Shopify (or Shopify fetch failed)
+        // If we have stored shopifyVariantIds, generate variants from them so pricing step still works
+        const storedSvIds = (typeof pt.shopifyVariantIds === "string"
+          ? JSON.parse(pt.shopifyVariantIds || "{}")
+          : pt.shopifyVariantIds || {}) as Record<string, number>;
+        const fallbackVariants: any[] = [];
+        if (pt.shopifyProductId && Object.keys(storedSvIds).length > 0) {
+          for (const [key, variantId] of Object.entries(storedSvIds)) {
+            const [sizeName, colorName] = key.split(":");
+            const title = colorName && colorName !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+            fallbackVariants.push({
+              id: String(variantId),
+              title,
+              price: "0.00",
+              sku: "",
+            });
+          }
+        }
         enriched.push({
           productTypeId: pt.id,
           productId: pt.shopifyProductId ?? null,
           title: pt.name,
           imageUrl: (pt as any).mockupImageUrl ?? null,
-          needsShopifySync: true,
+          needsShopifySync: !pt.shopifyProductId,
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
           printifyVariantLabels: buildPrintifyVariantLabels(pt),
-          variants: [],
+          variants: fallbackVariants,
         });
       }
       return res.json({ blanks: enriched });
