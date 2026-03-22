@@ -4368,12 +4368,28 @@ ${textEdgeRestrictions}
     requestedId: number,
     resolvedFrom?: string
   ): Record<string, any> {
-    const sizes = typeof productTypeToUse.sizes === "string"
+    const allSizes = typeof productTypeToUse.sizes === "string"
       ? JSON.parse(productTypeToUse.sizes)
       : productTypeToUse.sizes || [];
-    const frameColors = typeof productTypeToUse.frameColors === "string"
+    const allFrameColors = typeof productTypeToUse.frameColors === "string"
       ? JSON.parse(productTypeToUse.frameColors)
       : productTypeToUse.frameColors || [];
+
+    // Filter sizes and colors to only those the merchant has selected.
+    // If the selection arrays are empty (legacy / never set), fall back to showing all.
+    const savedSizeIds: string[] = typeof productTypeToUse.selectedSizeIds === "string"
+      ? JSON.parse(productTypeToUse.selectedSizeIds || "[]")
+      : productTypeToUse.selectedSizeIds || [];
+    const savedColorIds: string[] = typeof productTypeToUse.selectedColorIds === "string"
+      ? JSON.parse(productTypeToUse.selectedColorIds || "[]")
+      : productTypeToUse.selectedColorIds || [];
+
+    const sizes = savedSizeIds.length > 0
+      ? allSizes.filter((s: any) => savedSizeIds.includes(s.id))
+      : allSizes;
+    const frameColors = savedColorIds.length > 0
+      ? allFrameColors.filter((c: any) => savedColorIds.includes(c.id))
+      : allFrameColors;
 
     const [aspectW, aspectH] = (productTypeToUse.aspectRatio || "1:1").split(":").map(Number);
     const aspectRatio = aspectW / aspectH;
