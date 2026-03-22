@@ -2328,6 +2328,28 @@ ${textEdgeRestrictions}
   });
 
   // ==================== SHOPIFY PRODUCT CREATION ====================
+
+  /**
+   * Returns the correct Shopify option name for the "color" dimension.
+   * For phone cases, frameColors contains device models (iPhone 14, Galaxy S23, etc.)
+   * so we label the option "Model" instead of "Color".
+   */
+  function getColorOptionName(colors: Array<{ id: string; name: string; hex?: string }>): string {
+    if (!colors || colors.length === 0) return "Color";
+    const phoneModelPatterns = [
+      /^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i,
+      /^samsung\s+(galaxy|note)/i,
+      /^galaxy\s+/i,
+      /^pixel\s+\d/i,
+      /^for\s+(iphone|galaxy|pixel|samsung)/i,
+      /^(iphone|samsung|galaxy|pixel|oneplus|motorola|lg|htc)\b/i,
+    ];
+    const isPhoneModel = colors.some((c) =>
+      phoneModelPatterns.some((p) => p.test((c.name || "").trim()))
+    );
+    return isPhoneModel ? "Model" : "Color";
+  }
+
   // Create a draft product in merchant's Shopify store with design studio widget
   app.post("/api/shopify/products", isAuthenticated, async (req: any, res: Response) => {
     try {
@@ -2585,7 +2607,7 @@ ${textEdgeRestrictions}
       
       if (allColors.length > 0) {
         productOptions.push({
-          name: "Color",
+          name: getColorOptionName(allColors),
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
         });
       }
@@ -2859,7 +2881,7 @@ ${textEdgeRestrictions}
 
           const productOptions: Array<{ name: string; values: string[] }> = [];
           if (allSizes.length > 0) productOptions.push({ name: "Size", values: Array.from(new Set(shopifyVariants.map(v => v.option1))) });
-          if (allColors.length > 0) productOptions.push({ name: "Color", values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))) });
+          if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors), values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))) });
 
           const images: Array<{ src: string; alt: string }> = [];
           if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
@@ -3040,7 +3062,7 @@ ${textEdgeRestrictions}
       
       if (allColors.length > 0) {
         productOptions.push({
-          name: "Color",
+          name: getColorOptionName(allColors),
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
         });
       }
@@ -3146,7 +3168,7 @@ ${textEdgeRestrictions}
 
           const reOptions: Array<{ name: string; values: string[] }> = [];
           if (allSizesR.length > 0) reOptions.push({ name: "Size", values: Array.from(new Set(reVariants.map(v => v.option1))) });
-          if (allColorsR.length > 0) reOptions.push({ name: "Color", values: Array.from(new Set(reVariants.filter(v => v.option2).map(v => v.option2!))) });
+          if (allColorsR.length > 0) reOptions.push({ name: getColorOptionName(allColorsR), values: Array.from(new Set(reVariants.filter(v => v.option2).map(v => v.option2!))) });
 
           const reImages: Array<{ src: string; alt: string }> = [];
           if (baseMockupsR.front) reImages.push({ src: baseMockupsR.front, alt: `${dName} - Front` });
@@ -11079,26 +11101,19 @@ ${textEdgeRestrictions}
       }
     }
 
-    // ── Ensure product is active AND published to Online Store ──────────────
-    // The product must be active AND published to the Online Store sales channel
-    // for Shopify's /cart/add.js to accept the variant ID.  Without this,
-    // customers get a 422 "Cannot find variant" error when adding to cart.
+    // ── Ensure product is published to Online Store (but keep status as unlisted) ──
+    // Shopify's "unlisted" status keeps the product hidden from collections/search
+    // but still accessible via direct URL and purchasable via /cart/add.js.
+    // We do NOT force status: "active" here — that would make the product visible
+    // in the storefront catalog, which is not desired.
     {
       const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
       if (productIdNum) {
-        // Step 1: Set status to active
-        const activateResult = await shopifyApiCall(shop, installation.accessToken, `products/${productIdNum}.json`, {
-          method: "PUT",
-          body: JSON.stringify({ product: { id: productIdNum, status: "active" } }),
-        });
-        if (!activateResult.ok) {
-          console.warn(`[customizer-pages] Failed to activate product ${productIdNum}: ${activateResult.error}`);
-        }
-
-        // Step 2: Publish to Online Store sales channel so /cart/add.js works
+        // Ensure the product is published to the Online Store sales channel
+        // (required for the customizer page URL to resolve and for /cart/add.js)
         try {
           await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
-          console.log(`[customizer-pages] Product ${productIdNum} published to Online Store`);
+          console.log(`[customizer-pages] Product ${productIdNum} published to Online Store (unlisted)`);
         } catch (pubErr: any) {
           console.warn(`[customizer-pages] Failed to publish product ${productIdNum} to Online Store: ${pubErr.message}`);
         }
@@ -11644,36 +11659,24 @@ ${textEdgeRestrictions}
             price: v.price || "0.00",
           }));
 
-          // Ensure the product is active and published to Online Store.
-          // /cart/add.js returns 422 "Cannot find variant" for variants on draft/unpublished products.
+          // Ensure the product is published to the Online Store channel.
+          // Shopify "unlisted" products are accessible via direct URL and purchasable
+          // via /cart/add.js — we do NOT force status: "active" which would make the
+          // product visible in the storefront catalog.
           const productStatus: string = prodResult.data?.product?.status ?? "";
           const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
           console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
-          productPublished = productStatus === "active" && !!publishedAt;
+          productPublished = (productStatus === "active" || productStatus === "unlisted") && !!publishedAt;
 
           const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
 
-          // Step 1: Activate draft products via REST API
-          if (productStatus !== "active" && productIdNum) {
-            console.log(`[proxy/customizer-page] Activating draft product ${productIdNum}`);
-            const activateResult = await shopifyApiCall(
-              shop, installation.accessToken, `products/${productIdNum}.json`,
-              { method: "PUT", body: JSON.stringify({ product: { id: productIdNum, status: "active" } }) }
-            );
-            if (!activateResult.ok) {
-              console.warn(`[proxy/customizer-page] Failed to activate product ${productIdNum}: ${activateResult.error}`);
-            } else {
-              console.log(`[proxy/customizer-page] Activated product ${productIdNum}`);
-            }
-          }
-
-          // Step 2: Ensure product is published to Online Store so /cart/add.js works.
-          // Without this, customers get 422 "Cannot find variant" when adding to cart.
+          // Ensure product is published to Online Store so /cart/add.js works.
+          // "unlisted" products still work with /cart/add.js when published to Online Store.
           if (productIdNum) {
             try {
               await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
               productPublished = true;
-              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store`);
+              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
             } catch (pubErr: any) {
               console.warn(`[proxy/customizer-page] Failed to publish product ${productIdNum}: ${pubErr.message}`);
             }

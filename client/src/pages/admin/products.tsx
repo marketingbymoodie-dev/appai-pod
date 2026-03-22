@@ -25,6 +25,23 @@ interface VariantOption {
   height?: number;
 }
 
+/** Returns "Models" for phone case products, "Colors" otherwise. */
+function getColorOptionLabel(colors: VariantOption[]): string {
+  if (!colors || colors.length === 0) return "Colors";
+  const phoneModelPatterns = [
+    /^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i,
+    /^samsung\s+(galaxy|note)/i,
+    /^galaxy\s+/i,
+    /^pixel\s+\d/i,
+    /^for\s+(iphone|galaxy|pixel|samsung)/i,
+    /^(iphone|samsung|galaxy|pixel|oneplus|motorola|lg|htc)\b/i,
+  ];
+  const isPhoneModel = colors.some((c) =>
+    phoneModelPatterns.some((p) => p.test((c.name || "").trim()))
+  );
+  return isPhoneModel ? "Models" : "Colors";
+}
+
 interface PrintifyBlueprint {
   id: number;
   title: string;
@@ -868,11 +885,11 @@ export default function AdminProducts() {
                     </div>
                   )}
                   
-                  {/* Colors Section */}
+                  {/* Colors/Models Section */}
                   {availableColors.length > 0 && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <Label className="text-sm font-medium">Colors ({selectedColorIds.size}/{availableColors.length})</Label>
+                        <Label className="text-sm font-medium">{getColorOptionLabel(availableColors)} ({selectedColorIds.size}/{availableColors.length})</Label>
                         <div className="flex gap-2">
                           <Button 
                             variant="ghost" 
@@ -1004,11 +1021,11 @@ export default function AdminProducts() {
                   </div>
                 )}
                 
-                {/* Colors Section */}
+                {/* Colors/Models Section */}
                 {availableColors.length > 0 && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label className="text-sm font-medium">Colors ({selectedColorIds.size}/{availableColors.length})</Label>
+                      <Label className="text-sm font-medium">{getColorOptionLabel(availableColors)} ({selectedColorIds.size}/{availableColors.length})</Label>
                       <div className="flex gap-2">
                         <Button 
                           variant="ghost" 
