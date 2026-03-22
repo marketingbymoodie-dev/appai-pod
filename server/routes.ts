@@ -2723,7 +2723,7 @@ ${textEdgeRestrictions}
 
       // Publish to Online Store so /cart/add.js accepts the variant IDs
       try {
-        await ensureProductPublishedToOnlineStore(shopDomain, accessToken, shopifyProductId);
+        await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
         console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
       } catch (pubErr: any) {
         console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
@@ -2808,33 +2808,125 @@ ${textEdgeRestrictions}
           return res.status(400).json({ error: "Shopify store not connected" });
         }
 
-        // Import the createShopifyProduct function
-        const { createShopifyProduct } = await import("./shopify-products.js");
-        
         try {
-          const result = await createShopifyProduct(shopDomain, installation.accessToken, productType);
-          
-          // Update product type with the new Shopify IDs
-          await storage.updateProductType(productTypeId, {
-            shopifyProductId: String(result.id),
-            shopifyProductUrl: `https://${shopDomain}/admin/products/${result.id}`,
-            shopifyProductHandle: result.handle,
+          // Build product creation payload inline (same logic as POST /api/shopify/products)
+          const allSizes = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes || [];
+          const allColors = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors || [];
+          const baseMockupImages = typeof productType.baseMockupImages === 'string' ? JSON.parse(productType.baseMockupImages) : productType.baseMockupImages || {};
+          const variantMap = typeof productType.variantMap === 'string' ? JSON.parse(productType.variantMap) : productType.variantMap || {};
+          const savedSizeIds: string[] = typeof productType.selectedSizeIds === 'string' ? JSON.parse(productType.selectedSizeIds || "[]") : productType.selectedSizeIds || [];
+          const savedColorIds: string[] = typeof productType.selectedColorIds === 'string' ? JSON.parse(productType.selectedColorIds || "[]") : productType.selectedColorIds || [];
+
+          const shopifyVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
+          const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: { id: string }) => s.id);
+          const colorIdsToUse = savedColorIds.length > 0 ? savedColorIds : allColors.map((c: { id: string }) => c.id);
+          const sizesToUse = allSizes.filter((s: { id: string }) => sizeIdsToUse.includes(s.id));
+          const colorsToUse = allColors.filter((c: { id: string }) => colorIdsToUse.includes(c.id));
+
+          if (colorsToUse.length > 0) {
+            for (const size of sizesToUse) {
+              for (const color of colorsToUse) {
+                const variantKey = `${size.id}:${color.id}`;
+                if (variantMap[variantKey]) {
+                  shopifyVariants.push({ option1: size.name, option2: color.name, price: "0.00", sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: "continue" });
+                }
+              }
+            }
+          } else if (allColors.length === 0) {
+            for (const size of sizesToUse) {
+              const variantKey = `${size.id}:default`;
+              if (variantMap[variantKey]) {
+                shopifyVariants.push({ option1: size.name, price: "0.00", sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: "continue" });
+              }
+            }
+          }
+
+          const productOptions: Array<{ name: string; values: string[] }> = [];
+          if (allSizes.length > 0) productOptions.push({ name: "Size", values: Array.from(new Set(shopifyVariants.map(v => v.option1))) });
+          if (allColors.length > 0) productOptions.push({ name: "Color", values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))) });
+
+          const images: Array<{ src: string; alt: string }> = [];
+          if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
+          if (baseMockupImages.lifestyle) images.push({ src: baseMockupImages.lifestyle, alt: `${productType.name} - Lifestyle` });
+
+          const cleanDescription = (productType.description || "").replace(/<[^>]*>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+          const displayName = productType.name;
+          const appUrl = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") || `http://localhost:${process.env.PORT || 5000}`;
+
+          const shopifyProduct = {
+            product: {
+              title: `Custom ${productType.name}`,
+              body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
+              vendor: merchant.storeName || "AI Art Studio",
+              product_type: productType.designerType,
+              status: "active",
+              published: false,
+              tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
+              options: productOptions.length > 0 ? productOptions : undefined,
+              variants: shopifyVariants.length > 0 ? shopifyVariants : [{ price: "0.00" }],
+              images: images.length > 0 ? images : undefined,
+              metafields: [
+                { namespace: "ai_art_studio", key: "enable", value: "true", type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "product_type_id", value: String(productType.id), type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "app_url", value: appUrl, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "display_name", value: displayName, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "description", value: `Use AI to generate a unique artwork for your ${displayName.toLowerCase()}. Describe your vision and our AI will bring it to life.`, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "design_studio_url", value: `${appUrl}/embed/design?productTypeId=${productType.id}`, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "hide_add_to_cart", value: "true", type: "single_line_text_field" },
+              ],
+            },
+          };
+
+          const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/2024-01/products.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+            body: JSON.stringify(shopifyProduct),
           });
-          
-          // Ensure it's published and unlisted
-          await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, result.id);
-          
-          return res.json({ 
-            success: true, 
+
+          if (!shopifyResponse.ok) {
+            const errorText = await shopifyResponse.text();
+            console.error("[Update Shopify] Create product API error:", shopifyResponse.status, errorText);
+            return res.status(shopifyResponse.status).json({ error: "Failed to create Shopify product", details: errorText });
+          }
+
+          const createdProduct = await shopifyResponse.json();
+          const shopifyProductId = createdProduct.product.id;
+          const shopifyHandle = createdProduct.product.handle;
+          const createdVariants = createdProduct.product.variants || [];
+
+          const shopifyVariantIds: Record<string, number> = {};
+          for (const v of createdVariants) {
+            const key = `${v.option1 || 'default'}:${v.option2 || 'default'}`;
+            shopifyVariantIds[key] = v.id;
+          }
+
+          // Publish to Online Store so /cart/add.js accepts the variant IDs
+          try {
+            await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+            console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
+          } catch (pubErr: any) {
+            console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
+          }
+
+          // Save Shopify product ID, handle, shop domain, and variant IDs
+          await storage.updateProductType(productTypeId, {
+            shopifyProductId: String(shopifyProductId),
+            shopifyProductHandle: shopifyHandle,
+            shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
+            shopifyShopDomain: shopDomain,
+            shopifyVariantIds: shopifyVariantIds,
+            lastPushedToShopify: new Date(),
+          });
+
+          return res.json({
+            success: true,
             message: "Product created in Shopify",
-            shopifyProductId: result.id 
+            shopifyProductId: shopifyProductId,
+            adminUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
           });
         } catch (err: any) {
           console.error("[Update Shopify] Failed to create product:", err);
-          return res.status(500).json({ 
-            error: "Failed to create Shopify product", 
-            details: err.message 
-          });
+          return res.status(500).json({ error: "Failed to create Shopify product", details: err.message });
         }
       }
 
