@@ -2723,7 +2723,7 @@ ${textEdgeRestrictions}
 
       // Publish to Online Store so /cart/add.js accepts the variant IDs
       try {
-        await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+        await ensureProductPublishedToOnlineStore(shopDomain, accessToken, shopifyProductId);
         console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
       } catch (pubErr: any) {
         console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
@@ -2798,134 +2798,43 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // If product was not pushed to Shopify, or was deleted from Shopify, create it now
-      let needsCreate = !productType.shopifyProductId;
-      
-      if (productType.shopifyProductId && !needsCreate) {
-        // Check if the product still exists in Shopify
-        const checkInstallation = await storage.getShopifyInstallationByShop(shopDomain);
-        if (checkInstallation && checkInstallation.status === "active") {
-          try {
-            const checkRes = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`,
-              {
-                method: "GET",
-                headers: { "X-Shopify-Access-Token": checkInstallation.accessToken },
-              }
-            );
-            if (!checkRes.ok) {
-              console.warn(`[Update Shopify] Product ${productType.shopifyProductId} not found in Shopify (${checkRes.status}). Will re-create.`);
-              needsCreate = true;
-            }
-          } catch (checkErr) {
-            console.warn(`[Update Shopify] Error checking product existence:`, checkErr);
-            needsCreate = true;
-          }
-        }
-      }
-
-      if (needsCreate) {
-        console.log(`[Update Shopify] Product ${productTypeId} not in Shopify. Creating now...`);
+      // If product was not pushed to Shopify, we'll create it now
+      if (!productType.shopifyProductId) {
+        console.log(`[Update Shopify] Product ${productTypeId} not yet in Shopify. Creating now...`);
         
+        // Get installation
         const installation = await storage.getShopifyInstallationByShop(shopDomain);
         if (!installation || installation.status !== "active") {
           return res.status(400).json({ error: "Shopify store not connected" });
         }
 
+        // Import the createShopifyProduct function
+        const { createShopifyProduct } = await import("./shopify-products.js");
+        
         try {
-          // Build variants inline
-          const allSizes = JSON.parse(productType.sizes || "[]");
-          const allColors = JSON.parse(productType.frameColors || "[]");
-          const savedSizeIds: string[] = JSON.parse(productType.selectedSizeIds || "[]");
-          const savedColorIds: string[] = JSON.parse(productType.selectedColorIds || "[]");
-          const variantMap = JSON.parse(productType.variantMap || "{}");
-          const baseMockupImages = JSON.parse(productType.baseMockupImages || "{}");
-
-          const createVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
-          const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
-          const colorIdsToUse = savedColorIds.length > 0 ? savedColorIds : allColors.map((c: any) => c.id);
-          const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
-          const colorsToUse = allColors.filter((c: any) => colorIdsToUse.includes(c.id));
-
-          if (colorsToUse.length > 0) {
-            for (const size of sizesToUse) {
-              for (const color of colorsToUse) {
-                if (variantMap[`${size.id}:${color.id}`]) {
-                  createVariants.push({ option1: size.name, option2: color.name, price: "0.00", sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: "continue" });
-                }
-              }
-            }
-          } else {
-            for (const size of sizesToUse) {
-              if (variantMap[`${size.id}:default`]) {
-                createVariants.push({ option1: size.name, price: "0.00", sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: "continue" });
-              }
-            }
-          }
-
-          const createOptions: Array<{ name: string; values: string[] }> = [];
-          if (allSizes.length > 0) createOptions.push({ name: "Size", values: Array.from(new Set(createVariants.map(v => v.option1))) });
-          if (allColors.length > 0) createOptions.push({ name: "Color", values: Array.from(new Set(createVariants.filter(v => v.option2).map(v => v.option2!))) });
-
-          const createImages: Array<{ src: string; alt: string }> = [];
-          if (baseMockupImages.front) createImages.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
-          if (baseMockupImages.lifestyle) createImages.push({ src: baseMockupImages.lifestyle, alt: `${productType.name} - Lifestyle` });
-
-          const cleanDesc = (productType.description || "").replace(/<[^>]*>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
-          const createAppUrl = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") || `http://localhost:${process.env.PORT || 5000}`;
-
-          const createPayload = {
-            product: {
-              title: productType.name,
-              body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDesc}</p></div>`,
-              vendor: "App-AI",
-              product_type: productType.designerType || "",
-              status: "active",
-              published_at: new Date().toISOString(),
-              variants: createVariants.length > 0 ? createVariants : [{ option1: "Default", price: "0.00", inventory_management: null, inventory_policy: "continue" }],
-              options: createOptions.length > 0 ? createOptions : undefined,
-              images: createImages.length > 0 ? createImages : undefined,
-              metafields: [
-                { namespace: "ai_art_studio", key: "enable", value: "true", type: "single_line_text_field" },
-                { namespace: "ai_art_studio", key: "product_type_id", value: String(productType.id), type: "single_line_text_field" },
-                { namespace: "ai_art_studio", key: "app_url", value: createAppUrl, type: "single_line_text_field" },
-                { namespace: "ai_art_studio", key: "design_studio_url", value: `${createAppUrl}/embed/design?productTypeId=${productType.id}`, type: "single_line_text_field" },
-                { namespace: "ai_art_studio", key: "hide_add_to_cart", value: "true", type: "single_line_text_field" },
-                { namespace: "seo", key: "hidden", value: 1, type: "integer" },
-              ],
-            },
-          };
-
-          const createRes = await fetch(
-            `https://${shopDomain}/admin/api/2024-01/products.json`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
-              body: JSON.stringify(createPayload),
-            }
-          );
-
-          if (!createRes.ok) {
-            const errText = await createRes.text();
-            console.error("[Update Shopify] Create product error:", createRes.status, errText);
-            return res.status(createRes.status).json({ error: "Failed to create Shopify product", details: errText });
-          }
-
-          const created = await createRes.json();
-          const result = created.product;
-
+          const result = await createShopifyProduct(shopDomain, installation.accessToken, productType);
+          
+          // Update product type with the new Shopify IDs
           await storage.updateProductType(productTypeId, {
             shopifyProductId: String(result.id),
             shopifyProductUrl: `https://${shopDomain}/admin/products/${result.id}`,
             shopifyProductHandle: result.handle,
           });
-
+          
+          // Ensure it's published and unlisted
           await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, result.id);
-
-          return res.json({ success: true, message: "Product created in Shopify", shopifyProductId: result.id });
+          
+          return res.json({ 
+            success: true, 
+            message: "Product created in Shopify",
+            shopifyProductId: result.id 
+          });
         } catch (err: any) {
           console.error("[Update Shopify] Failed to create product:", err);
-          return res.status(500).json({ error: "Failed to create Shopify product", details: err.message });
+          return res.status(500).json({ 
+            error: "Failed to create Shopify product", 
+            details: err.message 
+          });
         }
       }
 
