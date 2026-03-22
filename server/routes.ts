@@ -4242,18 +4242,28 @@ ${textEdgeRestrictions}
       : productTypeToUse.frameColors || [];
 
     // Filter sizes and colors to only those the merchant has selected.
-    // If the selection arrays are empty (legacy / never set), fall back to showing all.
-    const savedSizeIds: string[] = typeof productTypeToUse.selectedSizeIds === "string"
-      ? JSON.parse(productTypeToUse.selectedSizeIds || "[]")
-      : productTypeToUse.selectedSizeIds || [];
-    const savedColorIds: string[] = typeof productTypeToUse.selectedColorIds === "string"
-      ? JSON.parse(productTypeToUse.selectedColorIds || "[]")
-      : productTypeToUse.selectedColorIds || [];
+    // Empty array means the merchant deliberately cleared the selection (e.g. no color option).
+    // null/undefined means never configured — fall back to showing all.
+    const rawSizeIds = typeof productTypeToUse.selectedSizeIds === "string"
+      ? productTypeToUse.selectedSizeIds
+      : JSON.stringify(productTypeToUse.selectedSizeIds ?? null);
+    const rawColorIds = typeof productTypeToUse.selectedColorIds === "string"
+      ? productTypeToUse.selectedColorIds
+      : JSON.stringify(productTypeToUse.selectedColorIds ?? null);
 
-    const sizes = savedSizeIds.length > 0
+    // Parse — treat null JSON as "never set"
+    const savedSizeIds: string[] | null = rawSizeIds && rawSizeIds !== "null"
+      ? JSON.parse(rawSizeIds)
+      : null;
+    const savedColorIds: string[] | null = rawColorIds && rawColorIds !== "null"
+      ? JSON.parse(rawColorIds)
+      : null;
+
+    // null = never configured → show all; [] = deliberately cleared → show none
+    const sizes = savedSizeIds !== null
       ? allSizes.filter((s: any) => savedSizeIds.includes(s.id))
       : allSizes;
-    const frameColors = savedColorIds.length > 0
+    const frameColors = savedColorIds !== null
       ? allFrameColors.filter((c: any) => savedColorIds.includes(c.id))
       : allFrameColors;
 
