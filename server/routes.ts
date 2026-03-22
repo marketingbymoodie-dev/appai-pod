@@ -9453,6 +9453,13 @@ ${textEdgeRestrictions}
         if (apparelSizesLower.includes(lower)) return true;
         if (namedSizes.includes(lower)) return true;
         if (lower.match(/^\d+\s*oz$/i)) return true;
+        // Phone/device models
+        if (lower.match(/^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i)) return true;
+        if (lower.match(/^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i)) return true;
+        if (lower.match(/^pixel\s+(\d|fold|pro)/i)) return true;
+        if (lower.match(/^samsung\s+(galaxy|note)/i)) return true;
+        if (lower.match(/^oneplus\s+\d/i)) return true;
+        if (lower.match(/^for\s+(iphone|galaxy|pixel|samsung)/i)) return true;
         return false;
       };
 
@@ -9514,6 +9521,27 @@ ${textEdgeRestrictions}
             }
             if (apparelSizesLower.includes(part.toLowerCase())) {
               extractedSizeId = part.toLowerCase();
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
+              }
+              break;
+            }
+            // Named sizes (Small, Medium, Large, King, Queen, One Size, etc.)
+            if (namedSizes.includes(part.toLowerCase())) {
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
+              }
+              break;
+            }
+            // Phone/device models (iPhone 14, Galaxy S23, Pixel 7, etc.)
+            if (part.match(/^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i) ||
+                part.match(/^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i) ||
+                part.match(/^pixel\s+(\d|fold|pro)/i) ||
+                part.match(/^samsung\s+(galaxy|note)/i) ||
+                part.match(/^oneplus\s+\d/i) ||
+                part.match(/^for\s+(iphone|galaxy|pixel|samsung)/i)) {
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
