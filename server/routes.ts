@@ -10913,7 +10913,7 @@ ${textEdgeRestrictions}
           },
           body: JSON.stringify({
             productTypeId: incomingProductTypeId,
-            shopDomain: shop.replace(".myshopify.com", ""),
+            shopDomain: shop,
             selectedColorIds: [],
           }),
         });
