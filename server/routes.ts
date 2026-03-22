@@ -8609,28 +8609,14 @@ ${textEdgeRestrictions}
         
         // 3. Try to extract from title for other patterns
         if (!extractedSizeId && title) {
-          // Pre-process: detect combined phone model names like "iPhone 12/12 Pro / Black"
-          // Printify sometimes combines two models into one variant title using a slash.
-          // We need to identify the full model name before splitting on slashes.
-          // Pattern: title starts with a phone brand, and the second slash-part is a model suffix
-          // (number, Pro, Mini, Max, Plus, SE, XR, XS, etc.) without a brand prefix.
-          const isPhoneModelSuffix = (s: string): boolean => {
-            const t = s.trim();
-            // Pure model suffixes: "12 Pro", "Pro Max", "Mini", "Plus", "SE", "XR", "XS", "14", etc.
-            return /^(\d{1,2}(\s+(pro|max|mini|plus|ultra))*|pro\s+max|pro|mini|plus|se|xr|xs|xs\s+max|x|ultra)$/i.test(t);
-          };
-          const rawParts = title.split("/").map((p: string) => p.trim());
-          // If first part is a phone model AND second part is a model suffix, merge them
-          let effectiveTitle = title;
-          if (rawParts.length >= 2 &&
-              rawParts[0].match(/^(iphone|samsung|galaxy|pixel|oneplus)\s+/i) &&
-              isPhoneModelSuffix(rawParts[1])) {
-            // Merge first two parts as the combined model name, keep rest as-is
-            const combinedModel = `${rawParts[0]}/${rawParts[1]}`;
-            const remaining = rawParts.slice(2);
-            effectiveTitle = remaining.length > 0 ? `${combinedModel} / ${remaining.join(" / ")}` : combinedModel;
-          }
-          const parts = effectiveTitle.split("/").map((p: string) => p.trim());
+          // Printify uses " / " (space-slash-space) as the separator between size and color/option.
+          // Combined phone model names like "iPhone 12/12 Pro" use a bare "/" without spaces.
+          // So splitting on " / " correctly preserves combined model names as a single token.
+          // Fall back to "/" split only if no " / " separator exists (e.g. "8x10" alone).
+          const hasSeparator = title.includes(" / ");
+          const parts = hasSeparator
+            ? title.split(" / ").map((p: string) => p.trim())
+            : title.split("/").map((p: string) => p.trim());
           
           for (const part of parts) {
             // Check for volume sizes (11oz, 15oz for mugs)
@@ -8740,28 +8726,16 @@ ${textEdgeRestrictions}
           colorName = options.Color;
         } else if (options.Colour) {
           colorName = options.Colour;
-        } else {
-          // For titles like "S / Black", "8x10 / White", or "iPhone 12/12 Pro / Black",
-          // color is usually the last slash-part that doesn't look like a size.
-          // Re-derive effectiveTitle here to handle combined model names.
-          const _rawPartsC = title.split("/").map((p: string) => p.trim());
-          const _isPhoneModelSuffixC = (s: string) =>
-            /^(\d{1,2}(\s+(pro|max|mini|plus|ultra))*|pro\s+max|pro|mini|plus|se|xr|xs|xs\s+max|x|ultra)$/i.test(s.trim());
-          let _effectiveTitleC = title;
-          if (_rawPartsC.length >= 2 &&
-              _rawPartsC[0].match(/^(iphone|samsung|galaxy|pixel|oneplus)\s+/i) &&
-              _isPhoneModelSuffixC(_rawPartsC[1])) {
-            const _combinedC = `${_rawPartsC[0]}/${_rawPartsC[1]}`;
-            const _remainingC = _rawPartsC.slice(2);
-            _effectiveTitleC = _remainingC.length > 0 ? `${_combinedC} / ${_remainingC.join(" / ")}` : _combinedC;
-          }
-          if (_effectiveTitleC.includes("/")) {
-            const parts = _effectiveTitleC.split("/").map((p: string) => p.trim());
-            for (let i = parts.length - 1; i >= 0; i--) {
-              if (looksLikeSize(parts[i])) continue;
-              colorName = parts[i];
-              break;
-            }
+        } else if (title.includes(" / ") || title.includes("/")) {
+          // Use " / " (space-slash-space) split to preserve combined model names like "iPhone 12/12 Pro".
+          // Fall back to "/" split only if no " / " separator exists.
+          const _cParts = title.includes(" / ")
+            ? title.split(" / ").map((p: string) => p.trim())
+            : title.split("/").map((p: string) => p.trim());
+          for (let i = _cParts.length - 1; i >= 0; i--) {
+            if (looksLikeSize(_cParts[i])) continue;
+            colorName = _cParts[i];
+            break;
           }
         }
 
@@ -9540,21 +9514,13 @@ ${textEdgeRestrictions}
 
         // Extract from title patterns
         if (!extractedSizeId && title) {
-          // Pre-process: detect combined phone model names like "iPhone 12/12 Pro / Black"
-          const isPhoneModelSuffix = (s: string): boolean => {
-            const t = s.trim();
-            return /^(\d{1,2}(\s+(pro|max|mini|plus|ultra))*|pro\s+max|pro|mini|plus|se|xr|xs|xs\s+max|x|ultra)$/i.test(t);
-          };
-          const rawParts = title.split("/").map((p: string) => p.trim());
-          let effectiveTitle = title;
-          if (rawParts.length >= 2 &&
-              rawParts[0].match(/^(iphone|samsung|galaxy|pixel|oneplus)\s+/i) &&
-              isPhoneModelSuffix(rawParts[1])) {
-            const combinedModel = `${rawParts[0]}/${rawParts[1]}`;
-            const remaining = rawParts.slice(2);
-            effectiveTitle = remaining.length > 0 ? `${combinedModel} / ${remaining.join(" / ")}` : combinedModel;
-          }
-          const parts = effectiveTitle.split("/").map((p: string) => p.trim());
+          // Printify uses " / " (space-slash-space) as the separator between size and color/option.
+          // Combined phone model names like "iPhone 12/12 Pro" use a bare "/" without spaces.
+          // Splitting on " / " correctly preserves combined model names as a single token.
+          const hasSeparator = title.includes(" / ");
+          const parts = hasSeparator
+            ? title.split(" / ").map((p: string) => p.trim())
+            : title.split("/").map((p: string) => p.trim());
           for (const part of parts) {
             const volumeMatch = part.match(/^(\d+)\s*oz$/i);
             if (volumeMatch) {
@@ -9609,31 +9575,16 @@ ${textEdgeRestrictions}
         }
 
         // If no color in options, try to extract from title
-        // Use effectiveTitle (with combined model names merged) if it was computed above,
-        // otherwise fall back to raw title. Since effectiveTitle is scoped inside the
-        // size-extraction block above, we re-derive it here.
         if (!colorName) {
-          const _rawParts2 = title.split("/").map((p: string) => p.trim());
-          const _isPhoneModelSuffix2 = (s: string) =>
-            /^(\d{1,2}(\s+(pro|max|mini|plus|ultra))*|pro\s+max|pro|mini|plus|se|xr|xs|xs\s+max|x|ultra)$/i.test(s.trim());
-          let _effectiveTitle2 = title;
-          if (_rawParts2.length >= 2 &&
-              _rawParts2[0].match(/^(iphone|samsung|galaxy|pixel|oneplus)\s+/i) &&
-              _isPhoneModelSuffix2(_rawParts2[1])) {
-            const _combined2 = `${_rawParts2[0]}/${_rawParts2[1]}`;
-            const _remaining2 = _rawParts2.slice(2);
-            _effectiveTitle2 = _remaining2.length > 0 ? `${_combined2} / ${_remaining2.join(" / ")}` : _combined2;
-          }
-          if (_effectiveTitle2.includes("/")) {
-            const parts = _effectiveTitle2.split("/").map((p: string) => p.trim());
-            for (let i = parts.length - 1; i >= 0; i--) {
-              if (!looksLikeSize(parts[i])) {
-                colorName = parts[i];
-                break;
-              }
+          // Use " / " split to preserve combined model names like "iPhone 12/12 Pro"
+          const _cParts = title.includes(" / ")
+            ? title.split(" / ").map((p: string) => p.trim())
+            : title.split("/").map((p: string) => p.trim());
+          for (let i = _cParts.length - 1; i >= 0; i--) {
+            if (!looksLikeSize(_cParts[i])) {
+              colorName = _cParts[i];
+              break;
             }
-          } else if (_effectiveTitle2 && !looksLikeSize(_effectiveTitle2)) {
-            colorName = _effectiveTitle2;
           }
         }
 
