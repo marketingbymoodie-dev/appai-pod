@@ -10974,58 +10974,63 @@ ${textEdgeRestrictions}
       if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
 
       if (ptForSync.shopifyProductId) {
-        // Already sent to Shopify previously — check if Shopify variants are up to date.
-        // If the merchant ran Refresh Variants, the DB may have more sizes than Shopify.
-        // In that case, re-sync the Shopify product so all variants exist before writing prices.
+        // Already sent to Shopify previously — verify the product still exists and has all variants.
+        // If the product was deleted from Shopify or has fewer variants than expected (e.g. after
+        // Refresh Variants), clear the stale ID so the create-new-product path below handles it.
         try {
-          const allSizes = typeof ptForSync.sizes === 'string' ? JSON.parse(ptForSync.sizes || '[]') : (ptForSync.sizes || []);
-          const allColors = typeof ptForSync.frameColors === 'string' ? JSON.parse(ptForSync.frameColors || '[]') : (ptForSync.frameColors || []);
-          const savedSizeIds: string[] = typeof ptForSync.selectedSizeIds === 'string' ? JSON.parse(ptForSync.selectedSizeIds || '[]') : (ptForSync.selectedSizeIds || []);
-          const savedColorIds: string[] = typeof ptForSync.selectedColorIds === 'string' ? JSON.parse(ptForSync.selectedColorIds || '[]') : (ptForSync.selectedColorIds || []);
-          const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
-          const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
-          const expectedVariantCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
-
           const shopifyProdCheck = await shopifyApiCall(
             shop, installation.accessToken,
             `products/${ptForSync.shopifyProductId}.json?fields=id,variants`,
           );
-          const shopifyVariantCount = shopifyProdCheck.data?.product?.variants?.length ?? 0;
 
-          if (shopifyVariantCount < expectedVariantCount) {
-            console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Re-syncing...`);
-            const resyncResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products/${incomingProductTypeId}`, {
-              method: "PUT",
-              headers: {
-                "Content-Type": "application/json",
-                "Cookie": req.headers["cookie"] ?? "",
-                "Authorization": req.headers["authorization"] ?? "",
-              },
-              body: JSON.stringify({ shopDomain: shop }),
+          if (!shopifyProdCheck.ok || !shopifyProdCheck.data?.product) {
+            // Product no longer exists in Shopify — clear stale ID so we re-create it below
+            console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} not found in Shopify (deleted?). Clearing stale ID.`);
+            await storage.updateProductType(incomingProductTypeId!, {
+              shopifyProductId: null,
+              shopifyProductHandle: null,
+              shopifyProductUrl: null,
+              shopifyShopDomain: null,
+              shopifyVariantIds: null,
             });
-            if (!resyncResp.ok) {
-              console.warn(`[customizer-pages] Re-sync failed: ${resyncResp.status}`);
-            } else {
-              console.log(`[customizer-pages] Re-sync complete for product ${ptForSync.shopifyProductId}`);
-              // Re-fetch the product type to get the updated shopifyProductId
-              // (the PUT may have deleted the old product and created a new one with a different ID)
-              const refreshedPt = await storage.getProductType(incomingProductTypeId!);
-              if (refreshedPt?.shopifyProductId) {
-                ptForSync.shopifyProductId = refreshedPt.shopifyProductId;
-              }
+            ptForSync.shopifyProductId = null;
+          } else {
+            // Product exists — check if variant count matches
+            const allSizes = typeof ptForSync.sizes === 'string' ? JSON.parse(ptForSync.sizes || '[]') : (ptForSync.sizes || []);
+            const allColors = typeof ptForSync.frameColors === 'string' ? JSON.parse(ptForSync.frameColors || '[]') : (ptForSync.frameColors || []);
+            const savedSizeIds: string[] = typeof ptForSync.selectedSizeIds === 'string' ? JSON.parse(ptForSync.selectedSizeIds || '[]') : (ptForSync.selectedSizeIds || []);
+            const savedColorIds: string[] = typeof ptForSync.selectedColorIds === 'string' ? JSON.parse(ptForSync.selectedColorIds || '[]') : (ptForSync.selectedColorIds || []);
+            const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
+            const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
+            const expectedVariantCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
+            const shopifyVariantCount = shopifyProdCheck.data.product.variants?.length ?? 0;
+
+            if (shopifyVariantCount < expectedVariantCount) {
+              // Fewer variants than expected (e.g. after Refresh Variants) — clear and re-create
+              console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Clearing for re-creation.`);
+              await storage.updateProductType(incomingProductTypeId!, {
+                shopifyProductId: null,
+                shopifyProductHandle: null,
+                shopifyProductUrl: null,
+                shopifyShopDomain: null,
+                shopifyVariantIds: null,
+              });
+              ptForSync.shopifyProductId = null;
             }
           }
         } catch (syncCheckErr: any) {
           console.warn(`[customizer-pages] Variant count check failed: ${syncCheckErr.message}`);
         }
-        resolvedBaseProductId = ptForSync.shopifyProductId;
-      } else {
-        // Need to auto-send to Shopify; make an internal call to the existing publish logic
+        resolvedBaseProductId = ptForSync.shopifyProductId ?? undefined;
+      }
+
+      // If resolvedBaseProductId is still unset (either never sent to Shopify, or stale ID was cleared above),
+      // auto-publish the product to Shopify now.
+      if (!resolvedBaseProductId) {
         const publishResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            // Forward the session cookie / auth token from the original request
             "Cookie": req.headers["cookie"] ?? "",
             "Authorization": req.headers["authorization"] ?? "",
           },
