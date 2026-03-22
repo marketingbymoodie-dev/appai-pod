@@ -492,7 +492,7 @@ export default function AdminCustomizerPages() {
                   Create Page
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-lg">
+              <DialogContent className="max-w-lg flex flex-col" style={{maxHeight: 'min(90vh, 700px)'}}>
                 <DialogHeader>
                   <DialogTitle>
                     {formStep === 4 ? "Page Created!" : "Create Customizer Page"}
@@ -600,7 +600,7 @@ export default function AdminCustomizerPages() {
 
                 {/* ── STEP 2: Pricing ── */}
                 {formStep === 2 && (
-                  <div className="space-y-4 pt-2">
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
                     {blanksLoading ? (
                       <div className="flex flex-col items-center justify-center py-12 gap-3">
                         <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -885,7 +885,7 @@ export default function AdminCustomizerPages() {
                       </Button>
                     </div>
 
-                    <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
+                    <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0" style={{maxHeight: '240px'}}>
                       <p className="text-xs font-semibold shimmer-text">
                         Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
                       </p>
@@ -913,7 +913,7 @@ export default function AdminCustomizerPages() {
                       ))}
                     </div>
 
-                    <div className="flex gap-2 pt-2">
+                    <div className="flex gap-2 pt-2 shrink-0">
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(1)}>
                         Back
                       </Button>
