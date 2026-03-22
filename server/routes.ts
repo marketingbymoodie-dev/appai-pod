@@ -11333,119 +11333,118 @@ ${textEdgeRestrictions}
   async function ensureProductPublishedToOnlineStore(shop: string, accessToken: string, productId: number) {
     const gqlEndpoint = `https://${shop}/admin/api/2024-01/graphql.json`;
     const gqlHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
-    const restHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
+    const productGid = `gid://shopify/Product/${productId}`;
 
-    let gqlSuccess = false;
-
-    // --- Attempt 1: GraphQL publishablePublish (most reliable if scope is granted) ---
     try {
+      // Step 1: Get all publications (sales channels)
       const pubQuery = JSON.stringify({
         query: `{ publications(first: 20) { edges { node { id name } } } }`,
       });
       const pubRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: pubQuery });
-      if (pubRes.ok) {
-        const pubData = await pubRes.json() as any;
-        const gqlErrors = pubData?.errors;
-        if (gqlErrors) {
-          console.warn(`[ensurePublished] GraphQL publications query errors:`, JSON.stringify(gqlErrors).slice(0, 300));
-        } else {
-          const publications = pubData?.data?.publications?.edges ?? [];
-          const onlineStore = publications.find((e: any) => /online store/i.test(e.node.name));
-          if (onlineStore) {
-            const publicationId = onlineStore.node.id;
-            console.log(`[ensurePublished] Online Store publication: ${publicationId}`);
+      if (!pubRes.ok) {
+        console.warn(`[ensurePublished] Failed to fetch publications: ${pubRes.status}`);
+        return;
+      }
+      const pubData = await pubRes.json() as any;
+      if (pubData?.errors) {
+        console.warn(`[ensurePublished] GraphQL errors:`, JSON.stringify(pubData.errors).slice(0, 300));
+        return;
+      }
 
-            const publishMutation = JSON.stringify({
-              query: `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
-                publishablePublish(id: $id, input: $input) {
-                  publishable { ... on Product { id title } }
-                  userErrors { field message }
-                }
-              }`,
-              variables: {
-                id: `gid://shopify/Product/${productId}`,
-                input: [{ publicationId }],
-              },
-            });
-            const publishRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: publishMutation });
-            if (publishRes.ok) {
-              const publishData = await publishRes.json() as any;
-              const mutationErrors = publishData?.errors;
-              const userErrors = publishData?.data?.publishablePublish?.userErrors ?? [];
-              if (mutationErrors) {
-                console.warn(`[ensurePublished] GraphQL mutation errors:`, JSON.stringify(mutationErrors).slice(0, 300));
-              } else if (userErrors.length > 0) {
-                const alreadyPublished = userErrors.some((e: any) => /already/i.test(e.message));
-                if (alreadyPublished) {
-                  console.log(`[ensurePublished] Product ${productId} already published to Online Store`);
-                  gqlSuccess = true;
-                } else {
-                  console.warn(`[ensurePublished] userErrors for product ${productId}:`, JSON.stringify(userErrors));
-                }
-              } else {
-                console.log(`[ensurePublished] GraphQL published product ${productId} to Online Store`);
-                gqlSuccess = true;
-              }
+      const publications = pubData?.data?.publications?.edges ?? [];
+      const onlineStore = publications.find((e: any) => /online store/i.test(e.node.name));
+      const otherChannels = publications.filter((e: any) => !/online store/i.test(e.node.name));
+
+      console.log(`[ensurePublished] Found ${publications.length} channels. Online Store: ${onlineStore ? 'yes' : 'no'}, Others: ${otherChannels.map((e: any) => e.node.name).join(', ')}`);
+
+      // Step 2: Publish to Online Store only
+      if (onlineStore) {
+        const publishMutation = JSON.stringify({
+          query: `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+            publishablePublish(id: $id, input: $input) {
+              publishable { ... on Product { id title } }
+              userErrors { field message }
             }
+          }`,
+          variables: {
+            id: productGid,
+            input: [{ publicationId: onlineStore.node.id }],
+          },
+        });
+        const publishRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: publishMutation });
+        if (publishRes.ok) {
+          const publishData = await publishRes.json() as any;
+          const userErrors = publishData?.data?.publishablePublish?.userErrors ?? [];
+          if (userErrors.length > 0 && !userErrors.some((e: any) => /already/i.test(e.message))) {
+            console.warn(`[ensurePublished] Publish userErrors:`, JSON.stringify(userErrors));
           } else {
-            console.warn(`[ensurePublished] No "Online Store" publication found. Available: ${publications.map((e: any) => e.node.name).join(", ")}`);
+            console.log(`[ensurePublished] Published product ${productId} to Online Store`);
           }
         }
+      } else {
+        console.warn(`[ensurePublished] No Online Store publication found`);
       }
-    } catch (gqlErr: any) {
-      console.warn(`[ensurePublished] GraphQL attempt failed: ${gqlErr.message}`);
-    }
 
-    // --- Attempt 2: REST fallback (always runs if GraphQL didn't confirm success) ---
-    if (!gqlSuccess) {
-      console.log(`[ensurePublished] REST fallback: setting status=active + published_at for product ${productId}`);
+      // Step 3: Unpublish from all OTHER channels (Point of Sale, etc.)
+      for (const channel of otherChannels) {
+        try {
+          const unpublishMutation = JSON.stringify({
+            query: `mutation publishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
+              publishableUnpublish(id: $id, input: $input) {
+                publishable { ... on Product { id } }
+                userErrors { field message }
+              }
+            }`,
+            variables: {
+              id: productGid,
+              input: [{ publicationId: channel.node.id }],
+            },
+          });
+          const unpubRes = await fetch(gqlEndpoint, { method: "POST", headers: gqlHeaders, body: unpublishMutation });
+          if (unpubRes.ok) {
+            const unpubData = await unpubRes.json() as any;
+            const ue = unpubData?.data?.publishableUnpublish?.userErrors ?? [];
+            if (ue.length > 0) {
+              console.warn(`[ensurePublished] Unpublish from ${channel.node.name} errors:`, JSON.stringify(ue));
+            } else {
+              console.log(`[ensurePublished] Unpublished product ${productId} from ${channel.node.name}`);
+            }
+          }
+        } catch (unpubErr: any) {
+          console.warn(`[ensurePublished] Failed to unpublish from ${channel.node.name}: ${unpubErr.message}`);
+        }
+      }
+
+      // Step 4: Set seo.hidden=1 metafield to make it "Unlisted" (hidden from search/collections)
       try {
-        const restRes = await fetch(
-          `https://${shop}/admin/api/2024-01/products/${productId}.json`,
+        console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
+        const metafieldRes = await fetch(
+          `https://${shop}/admin/api/2024-01/products/${productId}/metafields.json`,
           {
-            method: "PUT",
-            headers: restHeaders,
-            body: JSON.stringify({ product: { id: productId, status: "active", published_at: new Date().toISOString() } }),
+            method: "POST",
+            headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              metafield: {
+                namespace: "seo",
+                key: "hidden",
+                value: 1,
+                type: "integer"
+              }
+            }),
           }
         );
-        if (restRes.ok) {
-          const restData = await restRes.json() as any;
-          console.log(`[ensurePublished] REST result: status="${restData?.product?.status}" published_at="${restData?.product?.published_at}"`);
+        if (metafieldRes.ok) {
+          console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
         } else {
-          const errText = await restRes.text().catch(() => "");
-          console.warn(`[ensurePublished] REST fallback failed: ${restRes.status} ${errText.slice(0, 200)}`);
+          const errText = await metafieldRes.text().catch(() => "");
+          console.warn(`[ensurePublished] Failed to set seo.hidden: ${metafieldRes.status} ${errText.slice(0, 200)}`);
         }
-      } catch (restErr: any) {
-        console.warn(`[ensurePublished] REST fallback error: ${restErr.message}`);
+      } catch (metaErr: any) {
+        console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
       }
-    }
 
-    // --- Attempt 3: Set seo.hidden metafield to hide from search/collections (Unlisted) ---
-    try {
-      console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
-      const metafieldRes = await fetch(
-        `https://${shop}/admin/api/2024-01/products/${productId}/metafields.json`,
-        {
-          method: "POST",
-          headers: restHeaders,
-          body: JSON.stringify({
-            metafield: {
-              namespace: "seo",
-              key: "hidden",
-              value: 1,
-              type: "integer"
-            }
-          }),
-        }
-      );
-      if (metafieldRes.ok) {
-        console.log(`[ensurePublished] Successfully set seo.hidden=1 for product ${productId}`);
-      } else {
-        const errText = await metafieldRes.text().catch(() => "");
-        console.warn(`[ensurePublished] Failed to set seo.hidden metafield: ${metafieldRes.status} ${errText.slice(0, 200)}`);
-      }
-    } catch (metaErr: any) {
-      console.warn(`[ensurePublished] Metafield error: ${metaErr.message}`);
+    } catch (err: any) {
+      console.warn(`[ensurePublished] Overall error: ${err.message}`);
     }
   }
 
