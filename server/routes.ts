@@ -10974,7 +10974,44 @@ ${textEdgeRestrictions}
       if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
 
       if (ptForSync.shopifyProductId) {
-        // Already sent to Shopify previously — use it
+        // Already sent to Shopify previously — check if Shopify variants are up to date.
+        // If the merchant ran Refresh Variants, the DB may have more sizes than Shopify.
+        // In that case, re-sync the Shopify product so all variants exist before writing prices.
+        try {
+          const allSizes = typeof ptForSync.sizes === 'string' ? JSON.parse(ptForSync.sizes || '[]') : (ptForSync.sizes || []);
+          const allColors = typeof ptForSync.frameColors === 'string' ? JSON.parse(ptForSync.frameColors || '[]') : (ptForSync.frameColors || []);
+          const savedSizeIds: string[] = typeof ptForSync.selectedSizeIds === 'string' ? JSON.parse(ptForSync.selectedSizeIds || '[]') : (ptForSync.selectedSizeIds || []);
+          const savedColorIds: string[] = typeof ptForSync.selectedColorIds === 'string' ? JSON.parse(ptForSync.selectedColorIds || '[]') : (ptForSync.selectedColorIds || []);
+          const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
+          const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
+          const expectedVariantCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
+
+          const shopifyProdCheck = await shopifyApiCall(
+            shop, installation.accessToken,
+            `products/${ptForSync.shopifyProductId}.json?fields=id,variants`,
+          );
+          const shopifyVariantCount = shopifyProdCheck.data?.product?.variants?.length ?? 0;
+
+          if (shopifyVariantCount < expectedVariantCount) {
+            console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Re-syncing...`);
+            const resyncResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products/${incomingProductTypeId}`, {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+                "Cookie": req.headers["cookie"] ?? "",
+                "Authorization": req.headers["authorization"] ?? "",
+              },
+              body: JSON.stringify({ shopDomain: shop }),
+            });
+            if (!resyncResp.ok) {
+              console.warn(`[customizer-pages] Re-sync failed: ${resyncResp.status}`);
+            } else {
+              console.log(`[customizer-pages] Re-sync complete for product ${ptForSync.shopifyProductId}`);
+            }
+          }
+        } catch (syncCheckErr: any) {
+          console.warn(`[customizer-pages] Variant count check failed: ${syncCheckErr.message}`);
+        }
         resolvedBaseProductId = ptForSync.shopifyProductId;
       } else {
         // Need to auto-send to Shopify; make an internal call to the existing publish logic
@@ -11375,75 +11412,56 @@ ${textEdgeRestrictions}
       }
 
       for (const pt of productTypes) {
+        // Build the variant list from the DB variantMap (source of truth for sizes/colors).
+        // This ensures the pricing step always reflects the latest Refresh Variants result,
+        // without requiring the merchant to re-send the product to Shopify.
+        // The Shopify product is only fetched to get the image URL and current prices.
+        const pvLabels = buildPrintifyVariantLabels(pt);
 
+        // Build variants from DB variantMap — deduplicated by size (for products where color
+        // is not a meaningful customer-facing dimension, e.g. phone cases where we only
+        // want one price per model, not per model+color combination).
+        const seenSizes = new Set<string>();
+        const dbVariants: any[] = [];
+        for (const [printifyVariantId, label] of Object.entries(pvLabels)) {
+          // Deduplicate: if label contains " / ", the part before is the size.
+          // Only add one entry per unique size label.
+          const sizeLabel = (label as string).includes(" / ") ? (label as string).split(" / ")[0] : (label as string);
+          if (seenSizes.has(sizeLabel)) continue;
+          seenSizes.add(sizeLabel);
+          dbVariants.push({
+            id: `printify:${printifyVariantId}`,
+            title: sizeLabel,
+            price: "0.00",
+            sku: "",
+          });
+        }
+
+        // Fetch image and current prices from Shopify if the product is already there.
+        let imageUrl: string | null = (pt as any).mockupImageUrl ?? null;
+        let needsShopifySync = !pt.shopifyProductId;
         if (pt.shopifyProductId) {
           const pResult = await shopifyApiCall(
             shop,
             installation.accessToken,
-            `products/${pt.shopifyProductId}.json?fields=id,title,variants,images`,
+            `products/${pt.shopifyProductId}.json?fields=id,title,images`,
           );
-          console.log(`[blanks] Shopify fetch for "${pt.name}": ok=${pResult.ok} error=${pResult.error ?? 'none'} variantCount=${pResult.data?.product?.variants?.length ?? 'N/A'}`);
           if (pResult.ok && pResult.data?.product) {
-            const p = pResult.data.product;
-            enriched.push({
-              productTypeId: pt.id,
-              productId: pt.shopifyProductId,
-              title: p.title,
-              imageUrl: p.images?.[0]?.src ?? pt.mockupImageUrl ?? null,
-              needsShopifySync: false,
-              printifyBlueprintId: pt.printifyBlueprintId ?? null,
-              printifyProviderId: pt.printifyProviderId ?? null,
-              printifyVariantLabels: buildPrintifyVariantLabels(pt),
-              variants: (p.variants ?? []).map((v: any) => ({
-                id: String(v.id),
-                title: v.title,
-                price: v.price,
-                sku: v.sku,
-              })),
-            });
-            continue;
+            imageUrl = pResult.data.product.images?.[0]?.src ?? imageUrl;
+            needsShopifySync = false;
           }
         }
-        // Not on Shopify (or Shopify fetch failed)
-        // Priority 1: use stored shopifyVariantIds (product was on Shopify but API failed)
-        const storedSvIds = (typeof pt.shopifyVariantIds === "string"
-          ? JSON.parse(pt.shopifyVariantIds || "{}")
-          : pt.shopifyVariantIds || {}) as Record<string, number>;
-        const fallbackVariants: any[] = [];
-        if (pt.shopifyProductId && Object.keys(storedSvIds).length > 0) {
-          for (const [key, variantId] of Object.entries(storedSvIds)) {
-            const [sizeName, colorName] = key.split(":");
-            const title = colorName && colorName !== "default" ? `${sizeName} / ${colorName}` : sizeName;
-            fallbackVariants.push({
-              id: String(variantId),
-              title,
-              price: "0.00",
-              sku: "",
-            });
-          }
-        } else if (!pt.shopifyProductId) {
-          // Priority 2: product not yet on Shopify — generate variants from printifyVariantLabels
-          // so the pricing step can be shown before the product is sent to Shopify at page creation
-          const pvLabels = buildPrintifyVariantLabels(pt);
-          for (const [printifyVariantId, label] of Object.entries(pvLabels)) {
-            fallbackVariants.push({
-              id: `printify:${printifyVariantId}`,
-              title: label,
-              price: "0.00",
-              sku: "",
-            });
-          }
-        }
+
         enriched.push({
           productTypeId: pt.id,
           productId: pt.shopifyProductId ?? null,
           title: pt.name,
-          imageUrl: (pt as any).mockupImageUrl ?? null,
-          needsShopifySync: !pt.shopifyProductId,
+          imageUrl,
+          needsShopifySync,
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
-          printifyVariantLabels: buildPrintifyVariantLabels(pt),
-          variants: fallbackVariants,
+          printifyVariantLabels: pvLabels,
+          variants: dbVariants,
         });
       }
       return res.json({ blanks: enriched });
