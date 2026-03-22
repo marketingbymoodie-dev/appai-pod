@@ -3084,7 +3084,124 @@ ${textEdgeRestrictions}
 
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
-        console.error("Shopify API error:", errorText);
+        console.error("Shopify API error:", shopifyResponse.status, errorText);
+
+        // If product was deleted from Shopify, clear stale ID and re-create it
+        if (shopifyResponse.status === 404) {
+          console.log(`[Update Shopify] Product ${productType.shopifyProductId} not found in Shopify (deleted?). Clearing and re-creating...`);
+          await storage.updateProductType(productTypeId, {
+            shopifyProductId: null,
+            shopifyProductHandle: null,
+            shopifyProductUrl: null,
+            shopifyShopDomain: null,
+            shopifyVariantIds: null,
+          });
+
+          // Re-create the product using the same logic as the !shopifyProductId block above
+          const cleanDesc = (productType.description || "").replace(/<[^>]*>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+          const dName = productType.name;
+          const aUrl = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") || `http://localhost:${process.env.PORT || 5000}`;
+          const allSizesR = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes || [];
+          const allColorsR = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors || [];
+          const baseMockupsR = typeof productType.baseMockupImages === 'string' ? JSON.parse(productType.baseMockupImages) : productType.baseMockupImages || {};
+          const variantMapR = typeof productType.variantMap === 'string' ? JSON.parse(productType.variantMap) : productType.variantMap || {};
+          const savedSizeIdsR: string[] = typeof productType.selectedSizeIds === 'string' ? JSON.parse(productType.selectedSizeIds || "[]") : productType.selectedSizeIds || [];
+          const savedColorIdsR: string[] = typeof productType.selectedColorIds === 'string' ? JSON.parse(productType.selectedColorIds || "[]") : productType.selectedColorIds || [];
+
+          const reVariants: Array<{ option1: string; option2?: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
+          const sizeIdsR = savedSizeIdsR.length > 0 ? savedSizeIdsR : allSizesR.map((s: { id: string }) => s.id);
+          const colorIdsR = savedColorIdsR.length > 0 ? savedColorIdsR : allColorsR.map((c: { id: string }) => c.id);
+          const sizesR = allSizesR.filter((s: { id: string }) => sizeIdsR.includes(s.id));
+          const colorsR = allColorsR.filter((c: { id: string }) => colorIdsR.includes(c.id));
+
+          if (colorsR.length > 0) {
+            for (const size of sizesR) {
+              for (const color of colorsR) {
+                const vk = `${size.id}:${color.id}`;
+                if (variantMapR[vk]) reVariants.push({ option1: size.name, option2: color.name, price: "0.00", sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: "continue" });
+              }
+            }
+          } else if (allColorsR.length === 0) {
+            for (const size of sizesR) {
+              const vk = `${size.id}:default`;
+              if (variantMapR[vk]) reVariants.push({ option1: size.name, price: "0.00", sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: "continue" });
+            }
+          }
+
+          const reOptions: Array<{ name: string; values: string[] }> = [];
+          if (allSizesR.length > 0) reOptions.push({ name: "Size", values: Array.from(new Set(reVariants.map(v => v.option1))) });
+          if (allColorsR.length > 0) reOptions.push({ name: "Color", values: Array.from(new Set(reVariants.filter(v => v.option2).map(v => v.option2!))) });
+
+          const reImages: Array<{ src: string; alt: string }> = [];
+          if (baseMockupsR.front) reImages.push({ src: baseMockupsR.front, alt: `${dName} - Front` });
+          if (baseMockupsR.lifestyle) reImages.push({ src: baseMockupsR.lifestyle, alt: `${dName} - Lifestyle` });
+
+          const reProduct = {
+            product: {
+              title: `Custom ${dName}`,
+              body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDesc}</p></div>`,
+              vendor: merchant.storeName || "AI Art Studio",
+              product_type: productType.designerType,
+              status: "active",
+              published: false,
+              tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
+              options: reOptions.length > 0 ? reOptions : undefined,
+              variants: reVariants.length > 0 ? reVariants : [{ price: "0.00" }],
+              images: reImages.length > 0 ? reImages : undefined,
+              metafields: [
+                { namespace: "ai_art_studio", key: "enable", value: "true", type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "product_type_id", value: String(productType.id), type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "app_url", value: aUrl, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "display_name", value: dName, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "description", value: `Use AI to generate a unique artwork for your ${dName.toLowerCase()}. Describe your vision and our AI will bring it to life.`, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "design_studio_url", value: `${aUrl}/embed/design?productTypeId=${productType.id}`, type: "single_line_text_field" },
+                { namespace: "ai_art_studio", key: "hide_add_to_cart", value: "true", type: "single_line_text_field" },
+              ],
+            },
+          };
+
+          const reCreateResp = await fetch(`https://${shopDomain}/admin/api/2024-01/products.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+            body: JSON.stringify(reProduct),
+          });
+
+          if (!reCreateResp.ok) {
+            const reErr = await reCreateResp.text();
+            console.error("[Update Shopify] Re-create failed:", reCreateResp.status, reErr);
+            return res.status(reCreateResp.status).json({ error: "Failed to re-create Shopify product", details: reErr });
+          }
+
+          const reCreated = await reCreateResp.json();
+          const newId = reCreated.product.id;
+          const newHandle = reCreated.product.handle;
+          const newVariants = reCreated.product.variants || [];
+          const newVariantIds: Record<string, number> = {};
+          for (const v of newVariants) { newVariantIds[`${v.option1 || 'default'}:${v.option2 || 'default'}`] = v.id; }
+
+          try {
+            await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, newId);
+          } catch (pubErr: any) {
+            console.warn(`Failed to publish re-created product ${newId}: ${pubErr.message}`);
+          }
+
+          await storage.updateProductType(productTypeId, {
+            shopifyProductId: String(newId),
+            shopifyProductHandle: newHandle,
+            shopifyProductUrl: `https://${shopDomain}/admin/products/${newId}`,
+            shopifyShopDomain: shopDomain,
+            shopifyVariantIds: newVariantIds,
+            lastPushedToShopify: new Date(),
+          });
+
+          return res.json({
+            success: true,
+            message: "Product was deleted from Shopify and has been re-created",
+            shopifyProductId: newId,
+            adminUrl: `https://${shopDomain}/admin/products/${newId}`,
+          });
+        }
+
         return res.status(shopifyResponse.status).json({
           error: "Failed to update Shopify product",
           details: errorText
