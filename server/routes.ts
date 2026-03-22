@@ -2351,6 +2351,138 @@ ${textEdgeRestrictions}
   }
 
   // Create a draft product in merchant's Shopify store with design studio widget
+  /**
+   * Shared helper: create (or re-create) a Shopify product for a given product type.
+   * Called directly (no HTTP) so it works inside other route handlers.
+   * Returns { shopifyProductId, shopifyHandle } on success, throws on failure.
+   */
+  async function createShopifyProductForType(
+    shop: string,
+    accessToken: string,
+    productType: any,
+    merchant: any,
+    selectedColorIds?: string[],
+    variantPrices?: Record<string, string>,
+  ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
+    const allSizes = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes || [];
+    const allColors = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors || [];
+    const baseMockupImages = typeof productType.baseMockupImages === 'string' ? JSON.parse(productType.baseMockupImages) : productType.baseMockupImages || {};
+    const variantMap = typeof productType.variantMap === 'string' ? JSON.parse(productType.variantMap) : productType.variantMap || {};
+
+    const savedSizeIds: string[] = typeof productType.selectedSizeIds === 'string' ? JSON.parse(productType.selectedSizeIds || '[]') : productType.selectedSizeIds || [];
+    const savedColorIds: string[] = typeof productType.selectedColorIds === 'string' ? JSON.parse(productType.selectedColorIds || '[]') : productType.selectedColorIds || [];
+
+    const sizeIdsToUse = savedSizeIds.length > 0 ? savedSizeIds : allSizes.map((s: any) => s.id);
+    const colorIdsToUse = selectedColorIds && selectedColorIds.length > 0 ? selectedColorIds : savedColorIds.length > 0 ? savedColorIds : allColors.map((c: any) => c.id);
+
+    const sizesToUse = allSizes.filter((s: any) => sizeIdsToUse.includes(s.id));
+    const colorsToUse = allColors.filter((c: any) => colorIdsToUse.includes(c.id));
+    const priceMap: Record<string, string> = variantPrices && typeof variantPrices === 'object' ? variantPrices : {};
+
+    const shopifyVariants: any[] = [];
+    if (colorsToUse.length > 0) {
+      for (const size of sizesToUse) {
+        for (const color of colorsToUse) {
+          const variantKey = `${size.id}:${color.id}`;
+          if (variantMap[variantKey]) {
+            const p = priceMap[variantKey];
+            shopifyVariants.push({ option1: size.name, option2: color.name, price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: 'continue' });
+          }
+        }
+      }
+    } else if (allColors.length === 0) {
+      for (const size of sizesToUse) {
+        const variantKey = `${size.id}:default`;
+        if (variantMap[variantKey]) {
+          const p = priceMap[variantKey];
+          shopifyVariants.push({ option1: size.name, price: p && parseFloat(p) > 0 ? parseFloat(p).toFixed(2) : '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: 'continue' });
+        }
+      }
+    }
+
+    if (shopifyVariants.length === 0) throw new Error('No variants to create — check size/color selections.');
+    if (shopifyVariants.length > 100) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max 100.`);
+
+    const productOptions: any[] = [];
+    if (allSizes.length > 0) productOptions.push({ name: 'Size', values: Array.from(new Set(shopifyVariants.map((v: any) => v.option1))) });
+    if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors), values: Array.from(new Set(shopifyVariants.filter((v: any) => v.option2).map((v: any) => v.option2!))) });
+
+    const images: any[] = [];
+    if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
+    if (baseMockupImages.lifestyle) images.push({ src: baseMockupImages.lifestyle, alt: `${productType.name} - Lifestyle` });
+
+    const cleanDescription = (productType.description || '').replace(/<[^>]*>/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+    const appUrl = (process.env.PUBLIC_APP_URL || process.env.APP_URL || '').replace(/\/$/, '') || `http://localhost:${process.env.PORT || 5000}`;
+    const displayName = productType.name;
+
+    const shopifyProduct = {
+      product: {
+        title: `Custom ${productType.name}`,
+        body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
+        vendor: merchant.storeName || 'AI Art Studio',
+        product_type: productType.name,
+        status: 'unlisted',
+        published: false,
+        tags: ['custom-design', 'ai-artwork', 'design-studio', 'ai-art-studio-enabled'],
+        options: productOptions.length > 0 ? productOptions : undefined,
+        variants: shopifyVariants.length > 0 ? shopifyVariants : [{ price: '0.00' }],
+        images: images.length > 0 ? images : undefined,
+        metafields: [
+          { namespace: 'ai_art_studio', key: 'enable', value: 'true', type: 'single_line_text_field' },
+          { namespace: 'ai_art_studio', key: 'product_type_id', value: String(productType.id), type: 'single_line_text_field' },
+          { namespace: 'ai_art_studio', key: 'app_url', value: appUrl, type: 'single_line_text_field' },
+          { namespace: 'ai_art_studio', key: 'display_name', value: displayName, type: 'single_line_text_field' },
+          { namespace: 'ai_art_studio', key: 'description', value: `Use AI to generate a unique artwork for your ${displayName.toLowerCase()}. Describe your vision and our AI will bring it to life.`, type: 'single_line_text_field' },
+          { namespace: 'ai_art_studio', key: 'design_studio_url', value: `${appUrl}/embed/design?productTypeId=${productType.id}`, type: 'single_line_text_field' },
+          { namespace: 'ai_art_studio', key: 'hide_add_to_cart', value: 'true', type: 'single_line_text_field' },
+        ],
+      },
+    };
+
+    // Delete existing Shopify product if present (re-publish scenario)
+    if (productType.shopifyProductId) {
+      try {
+        await fetch(`https://${shop}/admin/api/2025-10/products/${productType.shopifyProductId}.json`, { method: 'DELETE', headers: { 'X-Shopify-Access-Token': accessToken } });
+      } catch (_) { /* ignore delete errors */ }
+    }
+
+    const shopifyResponse = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
+      body: JSON.stringify(shopifyProduct),
+    });
+
+    if (!shopifyResponse.ok) {
+      const errorText = await shopifyResponse.text();
+      throw new Error(`Shopify API error ${shopifyResponse.status}: ${errorText}`);
+    }
+
+    const createdProduct = await shopifyResponse.json();
+    const newShopifyProductId = String(createdProduct.product.id);
+    const shopifyHandle = createdProduct.product.handle;
+    const createdVariants = createdProduct.product.variants || [];
+
+    const shopifyVariantIds: Record<string, number> = {};
+    for (const v of createdVariants) {
+      const sizeOption = v.option1 || 'default';
+      const colorOption = v.option2 || 'default';
+      shopifyVariantIds[`${sizeOption}:${colorOption}`] = v.id;
+    }
+
+    try { await ensureProductPublishedToOnlineStore(shop, accessToken, newShopifyProductId); } catch (_) { /* non-fatal */ }
+
+    await storage.updateProductType(productType.id, {
+      shopifyProductId: newShopifyProductId,
+      shopifyProductHandle: shopifyHandle,
+      shopifyProductUrl: `https://${shop}/admin/products/${newShopifyProductId}`,
+      shopifyShopDomain: shop,
+      shopifyVariantIds: shopifyVariantIds,
+      lastPushedToShopify: new Date(),
+    });
+
+    return { shopifyProductId: newShopifyProductId, shopifyHandle };
+  }
+
   app.post("/api/shopify/products", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -11027,25 +11159,12 @@ ${textEdgeRestrictions}
       // If resolvedBaseProductId is still unset (either never sent to Shopify, or stale ID was cleared above),
       // auto-publish the product to Shopify now.
       if (!resolvedBaseProductId) {
-        const publishResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Cookie": req.headers["cookie"] ?? "",
-            "Authorization": req.headers["authorization"] ?? "",
-          },
-          body: JSON.stringify({
-            productTypeId: incomingProductTypeId,
-            shopDomain: shop,
-            selectedColorIds: [],
-          }),
-        });
-        if (!publishResp.ok) {
-          const errBody = await publishResp.json().catch(() => ({}));
-          return res.status(400).json({ error: errBody.error ?? "Failed to send product to Shopify. Try using Generator Tester to send it first." });
+        try {
+          const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, ptForSync, merchant, []);
+          resolvedBaseProductId = shopifyProductId;
+        } catch (e: any) {
+          return res.status(400).json({ error: e.message || "Failed to send product to Shopify. Try using Generator Tester to send it first." });
         }
-        const publishData = await publishResp.json();
-        resolvedBaseProductId = publishData.shopifyProductId ? String(publishData.shopifyProductId) : undefined;
         if (!resolvedBaseProductId) {
           return res.status(400).json({ error: "Product was sent to Shopify but no product ID was returned. Try again." });
         }
@@ -11087,21 +11206,12 @@ ${textEdgeRestrictions}
             shopifyShopDomain: null as any,
             shopifyVariantIds: null as any,
           });
-          const republishResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Cookie": req.headers["cookie"] ?? "",
-              "Authorization": req.headers["authorization"] ?? "",
-            },
-            body: JSON.stringify({ productTypeId: incomingProductTypeId, shopDomain: shop, selectedColorIds: [] }),
-          });
-          if (!republishResp.ok) {
-            const errBody = await republishResp.json().catch(() => ({}));
-            return res.status(400).json({ error: errBody.error ?? `Product ${resolvedBaseProductId} not found in Shopify. Please send it to Shopify first.` });
+          try {
+            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, ptForSync, merchant, []);
+            resolvedBaseProductId = shopifyProductId;
+          } catch (e: any) {
+            return res.status(400).json({ error: e.message || `Product ${resolvedBaseProductId} not found in Shopify. Please send it to Shopify first.` });
           }
-          const republishData = await republishResp.json();
-          resolvedBaseProductId = republishData.shopifyProductId ? String(republishData.shopifyProductId) : undefined;
           if (!resolvedBaseProductId) {
             return res.status(400).json({ error: "Product was re-created on Shopify but no product ID was returned. Try again." });
           }
