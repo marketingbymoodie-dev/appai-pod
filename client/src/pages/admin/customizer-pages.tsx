@@ -587,6 +587,7 @@ export default function AdminCustomizerPages() {
                         <p className="text-sm text-muted-foreground">Loading variant prices…</p>
                       </div>
                     ) : (
+                    <>
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-muted-foreground">Set a retail price for each variant.</p>
                       <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
@@ -900,6 +901,7 @@ export default function AdminCustomizerPages() {
                         Review & Create <ChevronRight className="h-4 w-4 ml-1" />
                       </Button>
                     </div>
+                    </>
                     )}
                   </div>
                 )}
