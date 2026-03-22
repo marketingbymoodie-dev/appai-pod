@@ -10183,22 +10183,34 @@ ${textEdgeRestrictions}
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
         const vm = JSON.parse(productType.variantMap || "{}");
-        const cachedShopifyCosts: Record<string, number> = {};
-        for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-          const vmEntry = vm[mapKey] as any;
-          if (vmEntry?.printifyVariantId && cachedCosts[String(vmEntry.printifyVariantId)] !== undefined) {
-            cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
-          }
-        }
-        const cachedLabels: Record<string, string> = {};
         const sizes = JSON.parse(productType.sizes || "[]");
         const frameColors = JSON.parse(productType.frameColors || "[]");
+        // Build sizeId:colorId → printifyVariantId label lookup
+        // AND a sizeName:colorName → printifyVariantId bridge for shopifyVariantIds matching
+        const nameToVmKey: Record<string, string> = {};
+        const cachedLabels: Record<string, string> = {};
         for (const [key, entry] of Object.entries(vm) as [string, any][]) {
           if (entry?.printifyVariantId) {
             const [sizeId, colorId] = key.split(":");
             const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
             const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
-            cachedLabels[String(entry.printifyVariantId)] = colorName ? `${sizeName} / ${colorName}` : sizeName;
+            cachedLabels[String(entry.printifyVariantId)] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+            // Build reverse lookup: sizeName:colorName → variantMap key
+            const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
+            nameToVmKey[nameKey] = key;
+          }
+        }
+        const cachedShopifyCosts: Record<string, number> = {};
+        for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
+          // Try direct lookup first (in case keys happen to match)
+          let vmEntry = vm[mapKey] as any;
+          // If no match, try bridging via name → id lookup
+          if (!vmEntry?.printifyVariantId) {
+            const bridgedKey = nameToVmKey[mapKey];
+            if (bridgedKey) vmEntry = vm[bridgedKey] as any;
+          }
+          if (vmEntry?.printifyVariantId && cachedCosts[String(vmEntry.printifyVariantId)] !== undefined) {
+            cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
           }
         }
         return res.json({ costs: cachedCosts, shopifyVariantCosts: cachedShopifyCosts, printifyVariantLabels: cachedLabels, cached: true });
@@ -10247,20 +10259,9 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Build Shopify variant ID → cost mapping
-      const shopifyVariantCosts: Record<string, number> = {};
-      const svIds = (typeof productType.shopifyVariantIds === "string"
-        ? JSON.parse(productType.shopifyVariantIds || "{}")
-        : productType.shopifyVariantIds || {}) as Record<string, number>;
-      for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
-        const vmEntry = variantMap[mapKey] as any;
-        if (vmEntry?.printifyVariantId && costs[String(vmEntry.printifyVariantId)] !== undefined) {
-          shopifyVariantCosts[String(shopifyVid)] = costs[String(vmEntry.printifyVariantId)];
-        }
-      }
-
-      // Build printifyVariantId → label mapping
+       // Build printifyVariantId → label mapping AND name-based bridge for shopifyVariantIds
       const printifyVariantLabels: Record<string, string> = {};
+      const nameToVmKey: Record<string, string> = {};
       const sizes = JSON.parse(productType.sizes || "[]");
       const frameColors = JSON.parse(productType.frameColors || "[]");
       for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
@@ -10268,7 +10269,27 @@ ${textEdgeRestrictions}
           const [sizeId, colorId] = key.split(":");
           const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
           const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
-          printifyVariantLabels[String(entry.printifyVariantId)] = colorName ? `${sizeName} / ${colorName}` : sizeName;
+          printifyVariantLabels[String(entry.printifyVariantId)] = colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+          // Build reverse lookup: sizeName:colorName → variantMap key
+          const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
+          nameToVmKey[nameKey] = key;
+        }
+      }
+      // Build Shopify variant ID → cost mapping (bridge sizeName:colorName → sizeId:colorId)
+      const shopifyVariantCosts: Record<string, number> = {};
+      const svIds = (typeof productType.shopifyVariantIds === "string"
+        ? JSON.parse(productType.shopifyVariantIds || "{}")
+        : productType.shopifyVariantIds || {}) as Record<string, number>;
+      for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
+        // Try direct lookup first (in case keys happen to match)
+        let vmEntry = variantMap[mapKey] as any;
+        // If no match, try bridging via name → id lookup
+        if (!vmEntry?.printifyVariantId) {
+          const bridgedKey = nameToVmKey[mapKey];
+          if (bridgedKey) vmEntry = variantMap[bridgedKey] as any;
+        }
+        if (vmEntry?.printifyVariantId && costs[String(vmEntry.printifyVariantId)] !== undefined) {
+          shopifyVariantCosts[String(shopifyVid)] = costs[String(vmEntry.printifyVariantId)];
         }
       }
 

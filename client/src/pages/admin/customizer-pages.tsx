@@ -303,8 +303,37 @@ export default function AdminCustomizerPages() {
   const recommendedPrices = useMemo(() => {
     if (!costsData?.costs || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
+    // Build a normalised-label → cost-in-cents lookup from Printify variant labels
+    // e.g. { "14x14" → 850, "18x18" → 950, ... }
+    const labelToCost: Record<string, number> = {};
+    if (costsData.printifyVariantLabels && costsData.costs) {
+      for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+        const costCents = costsData.costs[printifyVid];
+        if (costCents != null) {
+          labelToCost[label.toLowerCase().trim()] = costCents;
+        }
+      }
+    }
     for (const v of selectedVariants) {
-      const costCents = costsData.costs[v.id] ?? costsData.shopifyVariantCosts[v.id];
+      // 1) Direct Shopify variant ID bridge
+      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
+      // 2) Direct Printify variant ID lookup (fallback)
+      if (costCents == null) costCents = costsData.costs?.[v.id];
+      // 3) Label-based fallback: match variant title against Printify variant labels
+      if (costCents == null && v.title) {
+        const normTitle = v.title.toLowerCase().trim();
+        // Try exact match first
+        costCents = labelToCost[normTitle];
+        // Try partial match: check if any label is contained in the variant title or vice versa
+        if (costCents == null) {
+          for (const [label, cost] of Object.entries(labelToCost)) {
+            if (normTitle.includes(label) || label.includes(normTitle)) {
+              costCents = cost;
+              break;
+            }
+          }
+        }
+      }
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
@@ -574,13 +603,17 @@ export default function AdminCustomizerPages() {
 
                           <Tabs value={costsActiveTab} onValueChange={(v: any) => setCostsActiveTab(v)} className="mt-2">
                             <TabsList className="grid w-full grid-cols-2">
-                              <TabsTrigger value="production">
-                                <Factory className="h-4 w-4 mr-2" />
-                                Production
+                              <TabsTrigger value="production" className="flex items-center gap-1.5">
+                                <Factory className="h-3.5 w-3.5 shrink-0" />
+                                <span className={costsActiveTab === "production" ? "shimmer-text" : ""}>
+                                  Production
+                                </span>
                               </TabsTrigger>
-                              <TabsTrigger value="shipping">
-                                <Truck className="h-4 w-4 mr-2" />
-                                Shipping
+                              <TabsTrigger value="shipping" className="flex items-center gap-1.5">
+                                <Truck className="h-3.5 w-3.5 shrink-0" />
+                                <span className={costsActiveTab === "shipping" ? "shimmer-text" : ""}>
+                                  Shipping
+                                </span>
                               </TabsTrigger>
                             </TabsList>
 
@@ -625,7 +658,25 @@ export default function AdminCustomizerPages() {
                                       <span className="text-right text-emerald-700">Premium Cost</span>
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                      const costCents = costsData.costs[v.id] ?? costsData.shopifyVariantCosts[v.id];
+                                      // Try Shopify variant ID first, then fall back to label-based matching
+                                      // (label matching handles cases where shopifyVariantCosts is not populated)
+                                      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
+                                      if (costCents == null && costsData.printifyVariantLabels) {
+                                        const matchingPrintifyId = Object.entries(costsData.printifyVariantLabels)
+                                          .find(([, label]) => label === v.title)?.[0];
+                                        if (matchingPrintifyId) costCents = costsData.costs?.[matchingPrintifyId];
+                                        // Partial match fallback
+                                        if (costCents == null && v.title) {
+                                          const normTitle = v.title.toLowerCase().trim();
+                                          for (const [pid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                                            const normLabel = label.toLowerCase().trim();
+                                            if (normTitle.includes(normLabel) || normLabel.includes(normTitle)) {
+                                              costCents = costsData.costs?.[pid];
+                                              if (costCents != null) break;
+                                            }
+                                          }
+                                        }
+                                      }
                                       return (
                                         <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                           <span className="truncate">{v.title}</span>
@@ -808,7 +859,7 @@ export default function AdminCustomizerPages() {
                     </div>
 
                     <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
-                      <p className="text-xs text-muted-foreground leading-relaxed">
+                      <p className="text-xs font-semibold shimmer-text">
                         Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
                       </p>
                       {selectedVariants.map((v) => (

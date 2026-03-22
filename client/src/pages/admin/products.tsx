@@ -70,6 +70,10 @@ export default function AdminProducts() {
   // Edit variants for existing product
   const [editVariantsOpen, setEditVariantsOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<ProductType | null>(null);
+  // Track which specific product is currently being refreshed/sent to Shopify
+  const [shopifyMutatingProductId, setShopifyMutatingProductId] = useState<number | null>(null);
+  const [refreshVariantsMutatingId, setRefreshVariantsMutatingId] = useState<number | null>(null);
+  const [refreshColorsMutatingId, setRefreshColorsMutatingId] = useState<number | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -227,10 +231,12 @@ export default function AdminProducts() {
 
   const refreshColorsMutation = useMutation({
     mutationFn: async (id: number) => {
+      setRefreshColorsMutatingId(id);
       const response = await apiRequest("POST", `/api/admin/product-types/${id}/refresh-colors`);
       return response.json();
     },
     onSuccess: (data) => {
+      setRefreshColorsMutatingId(null);
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       toast({
         title: "Colors refreshed",
@@ -240,16 +246,19 @@ export default function AdminProducts() {
       });
     },
     onError: (error: Error) => {
+      setRefreshColorsMutatingId(null);
       toast({ title: "Failed to refresh colors", description: error.message, variant: "destructive" });
     },
   });
 
   const refreshVariantsMutation = useMutation({
     mutationFn: async (id: number) => {
+      setRefreshVariantsMutatingId(id);
       const response = await apiRequest("POST", `/api/admin/product-types/${id}/refresh-variants`);
       return response.json();
     },
     onSuccess: (data) => {
+      setRefreshVariantsMutatingId(null);
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       toast({
         title: "Variants refreshed",
@@ -257,6 +266,7 @@ export default function AdminProducts() {
       });
     },
     onError: (error: Error) => {
+      setRefreshVariantsMutatingId(null);
       toast({ title: "Failed to refresh variants", description: error.message, variant: "destructive" });
     },
   });
@@ -275,6 +285,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: (data) => {
+      setShopifyMutatingProductId(null);
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
       toast({
         title: "Shopify product refreshed",
@@ -282,6 +293,7 @@ export default function AdminProducts() {
       });
     },
     onError: (error: Error) => {
+      setShopifyMutatingProductId(null);
       toast({ title: "Failed to update Shopify product", description: error.message, variant: "destructive" });
     },
   });
@@ -311,6 +323,7 @@ export default function AdminProducts() {
       shopDomain = shop.shopDomain;
     }
     
+    setShopifyMutatingProductId(productType.id);
     updateShopifyProductMutation.mutate({ 
       productTypeId: productType.id, 
       shopDomain: shopDomain 
@@ -566,10 +579,10 @@ export default function AdminProducts() {
                           variant="outline"
                           size="sm"
                           onClick={() => refreshVariantsMutation.mutate(pt.id)}
-                          disabled={refreshVariantsMutation.isPending}
+                          disabled={refreshVariantsMutatingId === pt.id}
                           data-testid={`button-refresh-variants-${pt.id}`}
                         >
-                          <RefreshCw className={`h-3 w-3 mr-1 ${refreshVariantsMutation.isPending ? 'animate-spin' : ''}`} />
+                          <RefreshCw className={`h-3 w-3 mr-1 ${refreshVariantsMutatingId === pt.id ? 'animate-spin' : ''}`} />
                           Refresh Variants
                         </Button>
                       )}
@@ -578,10 +591,10 @@ export default function AdminProducts() {
                           variant="outline" 
                           size="sm"
                           onClick={() => refreshColorsMutation.mutate(pt.id)}
-                          disabled={refreshColorsMutation.isPending}
+                          disabled={refreshColorsMutatingId === pt.id}
                           data-testid={`button-refresh-colors-${pt.id}`}
                         >
-                          <Palette className={`h-3 w-3 mr-1 ${refreshColorsMutation.isPending ? 'animate-pulse' : ''}`} />
+                          <Palette className={`h-3 w-3 mr-1 ${refreshColorsMutatingId === pt.id ? 'animate-pulse' : ''}`} />
                           Refresh Colors
                         </Button>
                       )}
@@ -589,17 +602,17 @@ export default function AdminProducts() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleUpdateShopifyProduct(pt)}
-                        disabled={updateShopifyProductMutation.isPending}
+                        disabled={shopifyMutatingProductId === pt.id}
                         data-testid={`button-refresh-shopify-${pt.id}`}
                       >
                         {pt.shopifyProductId ? (
                           <>
-                            <RefreshCw className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-spin' : ''}`} />
+                            <RefreshCw className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
                             Refresh Shopify
                           </>
                         ) : (
                           <>
-                            <Upload className={`h-3 w-3 mr-1 ${updateShopifyProductMutation.isPending ? 'animate-pulse' : ''}`} />
+                            <Upload className={`h-3 w-3 mr-1 ${shopifyMutatingProductId === pt.id ? 'animate-spin' : ''}`} />
                             Send to Shopify
                           </>
                         )}
