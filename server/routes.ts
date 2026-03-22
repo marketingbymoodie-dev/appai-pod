@@ -11007,6 +11007,12 @@ ${textEdgeRestrictions}
               console.warn(`[customizer-pages] Re-sync failed: ${resyncResp.status}`);
             } else {
               console.log(`[customizer-pages] Re-sync complete for product ${ptForSync.shopifyProductId}`);
+              // Re-fetch the product type to get the updated shopifyProductId
+              // (the PUT may have deleted the old product and created a new one with a different ID)
+              const refreshedPt = await storage.getProductType(incomingProductTypeId!);
+              if (refreshedPt?.shopifyProductId) {
+                ptForSync.shopifyProductId = refreshedPt.shopifyProductId;
+              }
             }
           }
         } catch (syncCheckErr: any) {
