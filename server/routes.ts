@@ -9810,9 +9810,14 @@ ${textEdgeRestrictions}
       const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
       const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
 
-      // If the existing selection is empty (never set), default to all available.
-      const finalSizeIds = filteredSizeIds.length > 0 ? filteredSizeIds : sizes.map((s: { id: string }) => s.id);
-      const finalColorIds = filteredColorIds.length > 0 ? filteredColorIds : frameColors.map((c: { id: string }) => c.id);
+      // Preserve the existing selection as-is after filtering out stale IDs.
+      // Since the import flow always writes explicit IDs, an empty existingColorIds/existingSizeIds
+      // means the merchant intentionally cleared all options — respect that and keep it empty.
+      // Only fall back to "all available" when the product has never been imported at all
+      // (existingSizeIds is empty AND the product has no variantMap entries), which shouldn't
+      // happen in practice but is a safe guard.
+      const finalSizeIds = filteredSizeIds;
+      const finalColorIds = filteredColorIds;
 
       const updated = await storage.updateProductType(productTypeId, {
         sizes: JSON.stringify(sizes),

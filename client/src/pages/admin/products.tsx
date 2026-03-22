@@ -469,9 +469,16 @@ export default function AdminProducts() {
     setAvailableSizes(sizes);
     setAvailableColors(colors);
     
-    // If no saved selection, select all
-    setSelectedSizeIds(new Set(savedSizeIds.length > 0 ? savedSizeIds : sizes.map((s: VariantOption) => s.id)));
-    setSelectedColorIds(new Set(savedColorIds.length > 0 ? savedColorIds : colors.map((c: VariantOption) => c.id)));
+    // Use the saved selection as-is. An empty array means the merchant has explicitly
+    // cleared all options (e.g. removed the stray '12 Pro' color from phone cases).
+    // We only fall back to "select all" when the product has never been saved at all
+    // (i.e. the product was imported before the variant-selection feature existed and
+    // the DB still holds the schema default of '[]' for both fields AND the product
+    // has never been explicitly saved via this modal).
+    // Since the import flow always writes explicit IDs, an empty array here reliably
+    // means "intentionally cleared" — so we respect it and show nothing checked.
+    setSelectedSizeIds(new Set(savedSizeIds));
+    setSelectedColorIds(new Set(savedColorIds));
     
     setEditVariantsOpen(true);
   };
