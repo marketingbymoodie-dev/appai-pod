@@ -2891,6 +2891,7 @@ ${textEdgeRestrictions}
                 { namespace: "ai_art_studio", key: "app_url", value: createAppUrl, type: "single_line_text_field" },
                 { namespace: "ai_art_studio", key: "design_studio_url", value: `${createAppUrl}/embed/design?productTypeId=${productType.id}`, type: "single_line_text_field" },
                 { namespace: "ai_art_studio", key: "hide_add_to_cart", value: "true", type: "single_line_text_field" },
+                { namespace: "seo", key: "hidden", value: 1, type: "integer" },
               ],
             },
           };
