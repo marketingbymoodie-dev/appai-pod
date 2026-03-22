@@ -286,12 +286,12 @@ export default function AdminCustomizerPages() {
     tiers: string[];
     countries: string[];
   }>({
-    queryKey: ["/api/admin/printify/shipping", selectedBlank?.productTypeId],
+    queryKey: ["/api/admin/printify/shipping", selectedBlank?.printifyBlueprintId, selectedBlank?.printifyProviderId],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/printify/shipping/${selectedBlank!.productTypeId}`);
+      const res = await apiRequest("GET", `/api/admin/printify/shipping/${selectedBlank!.printifyBlueprintId}/${selectedBlank!.printifyProviderId}`);
       return res.json();
     },
-    enabled: costsOpen && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
+    enabled: costsOpen && !!selectedBlank?.printifyBlueprintId && !!selectedBlank?.printifyProviderId,
   });
 
   // Helper to round up to .95
