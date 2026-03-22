@@ -12,7 +12,7 @@ export async function registerCartScript(shop: string, accessToken: string): Pro
 
   try {
     const existingResponse = await fetch(
-      `https://${shop}/admin/api/2024-01/script_tags.json`,
+      `https://${shop}/admin/api/2025-10/script_tags.json`,
       {
         headers: {
           "X-Shopify-Access-Token": accessToken,
@@ -31,7 +31,7 @@ export async function registerCartScript(shop: string, accessToken: string): Pro
     }
 
     const response = await fetch(
-      `https://${shop}/admin/api/2024-01/script_tags.json`,
+      `https://${shop}/admin/api/2025-10/script_tags.json`,
       {
         method: "POST",
         headers: {
@@ -106,7 +106,7 @@ function isValidShopDomain(shop: string): boolean {
 export async function validateShopifyToken(shop: string, accessToken: string): Promise<{ valid: boolean; error?: string }> {
   try {
     const response = await fetch(
-      `https://${shop}/admin/api/2024-01/shop.json`,
+      `https://${shop}/admin/api/2025-10/shop.json`,
       {
         headers: {
           "X-Shopify-Access-Token": accessToken,
@@ -142,7 +142,7 @@ export async function shopifyApiCall(
 ): Promise<{ ok: boolean; data?: any; error?: string; needsReinstall?: boolean }> {
   try {
     const response = await fetch(
-      `https://${shop}/admin/api/2024-01/${endpoint}`,
+      `https://${shop}/admin/api/2025-10/${endpoint}`,
       {
         ...options,
         headers: {

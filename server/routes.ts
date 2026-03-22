@@ -2408,7 +2408,7 @@ ${textEdgeRestrictions}
           
           try {
             const deleteResponse = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`,
+              `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`,
               {
                 method: "DELETE",
                 headers: {
@@ -2615,7 +2615,7 @@ ${textEdgeRestrictions}
           `,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: productType.name,
-          status: "active",
+          status: "unlisted",
           published: false,
           tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
@@ -2670,7 +2670,7 @@ ${textEdgeRestrictions}
 
       // Call Shopify Admin API to create the product
       const shopifyResponse = await fetch(
-        `https://${shopDomain}/admin/api/2024-01/products.json`,
+        `https://${shopDomain}/admin/api/2025-10/products.json`,
         {
           method: "POST",
           headers: {
@@ -2859,7 +2859,7 @@ ${textEdgeRestrictions}
               body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
               vendor: merchant.storeName || "AI Art Studio",
               product_type: productType.designerType,
-              status: "active",
+              status: "unlisted",
               published: false,
               tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
               options: productOptions.length > 0 ? productOptions : undefined,
@@ -2877,7 +2877,7 @@ ${textEdgeRestrictions}
             },
           };
 
-          const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/2024-01/products.json`, {
+          const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/2025-10/products.json`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
             body: JSON.stringify(shopifyProduct),
@@ -3071,7 +3071,7 @@ ${textEdgeRestrictions}
       };
 
       const shopifyResponse = await fetch(
-        `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`,
+        `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`,
         {
           method: "PUT",
           headers: {
@@ -3142,7 +3142,7 @@ ${textEdgeRestrictions}
               body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDesc}</p></div>`,
               vendor: merchant.storeName || "AI Art Studio",
               product_type: productType.designerType,
-              status: "active",
+              status: "unlisted",
               published: false,
               tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
               options: reOptions.length > 0 ? reOptions : undefined,
@@ -3160,7 +3160,7 @@ ${textEdgeRestrictions}
             },
           };
 
-          const reCreateResp = await fetch(`https://${shopDomain}/admin/api/2024-01/products.json`, {
+          const reCreateResp = await fetch(`https://${shopDomain}/admin/api/2025-10/products.json`, {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
             body: JSON.stringify(reProduct),
@@ -3216,7 +3216,7 @@ ${textEdgeRestrictions}
 
       // Fetch existing metafields
       const metafieldsResponse = await fetch(
-        `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}/metafields.json`,
+        `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}/metafields.json`,
         {
           headers: { "X-Shopify-Access-Token": installation.accessToken },
         }
@@ -3249,7 +3249,7 @@ ${textEdgeRestrictions}
             // Update existing metafield
             console.log(`[Update Shopify] Updating ${mf.key}: ${existing.value} -> ${mf.value}`);
             const updateRes = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/metafields/${existing.id}.json`,
+              `https://${shopDomain}/admin/api/2025-10/metafields/${existing.id}.json`,
               {
                 method: "PUT",
                 headers: {
@@ -3269,7 +3269,7 @@ ${textEdgeRestrictions}
             // Create new metafield
             console.log(`[Update Shopify] Creating ${mf.key}: ${mf.value}`);
             const createRes = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}/metafields.json`,
+              `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}/metafields.json`,
               {
                 method: "POST",
                 headers: {
@@ -3351,7 +3351,7 @@ ${textEdgeRestrictions}
 
       // Find all products with the ai-art-studio-enabled tag
       const searchResponse = await fetch(
-        `https://${shopDomain}/admin/api/2024-01/products.json?tag=ai-art-studio-enabled&limit=250`,
+        `https://${shopDomain}/admin/api/2025-10/products.json?tag=ai-art-studio-enabled&limit=250`,
         {
           headers: {
             "X-Shopify-Access-Token": installation.accessToken,
@@ -3388,7 +3388,7 @@ ${textEdgeRestrictions}
         try {
           // Get product metafields to find our namespace
           const metafieldsResponse = await fetch(
-            `https://${shopDomain}/admin/api/2024-01/products/${product.id}/metafields.json`,
+            `https://${shopDomain}/admin/api/2025-10/products/${product.id}/metafields.json`,
             {
               headers: {
                 "X-Shopify-Access-Token": installation.accessToken,
@@ -3418,7 +3418,7 @@ ${textEdgeRestrictions}
           if (appUrlMeta) {
             // Update existing metafield
             const updateResponse = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/metafields/${appUrlMeta.id}.json`,
+              `https://${shopDomain}/admin/api/2025-10/metafields/${appUrlMeta.id}.json`,
               {
                 method: "PUT",
                 headers: {
@@ -3442,7 +3442,7 @@ ${textEdgeRestrictions}
           } else {
             // Create new metafield
             const createResponse = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/products/${product.id}/metafields.json`,
+              `https://${shopDomain}/admin/api/2025-10/products/${product.id}/metafields.json`,
               {
                 method: "POST",
                 headers: {
@@ -3478,7 +3478,7 @@ ${textEdgeRestrictions}
 
           if (designUrlMeta) {
             await fetch(
-              `https://${shopDomain}/admin/api/2024-01/metafields/${designUrlMeta.id}.json`,
+              `https://${shopDomain}/admin/api/2025-10/metafields/${designUrlMeta.id}.json`,
               {
                 method: "PUT",
                 headers: {
@@ -3513,7 +3513,7 @@ ${textEdgeRestrictions}
             `;
 
             const updateProductResponse = await fetch(
-              `https://${shopDomain}/admin/api/2024-01/products/${product.id}.json`,
+              `https://${shopDomain}/admin/api/2025-10/products/${product.id}.json`,
               {
                 method: "PUT",
                 headers: {
@@ -3656,7 +3656,7 @@ ${textEdgeRestrictions}
         }
         
         // Use Shopify Admin API to get product variants
-        const adminApiUrl = `https://${shopDomain}/admin/api/2024-01/products/${productType.shopifyProductId}.json`;
+        const adminApiUrl = `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`;
         console.log(`[Product Variants] Fetching from Admin API: ${adminApiUrl}`);
         
         const adminResponse = await fetch(adminApiUrl, {
@@ -5645,7 +5645,7 @@ ${textEdgeRestrictions}
 
       // 1. Upload image to Shopify product
       const imageRes = await fetch(
-        `https://${shop}/admin/api/2024-01/products/${productIdNum}/images.json`,
+        `https://${shop}/admin/api/2025-10/products/${productIdNum}/images.json`,
         {
           method: "POST",
           headers: {
@@ -5674,7 +5674,7 @@ ${textEdgeRestrictions}
 
       // 2. Assign image to variant
       const variantRes = await fetch(
-        `https://${shop}/admin/api/2024-01/variants/${variantIdNum}.json`,
+        `https://${shop}/admin/api/2025-10/variants/${variantIdNum}.json`,
         {
           method: "PUT",
           headers: {
@@ -11331,7 +11331,7 @@ ${textEdgeRestrictions}
    * then always falls back to REST published_at (uses write_products scope).
    */
   async function ensureProductPublishedToOnlineStore(shop: string, accessToken: string, productId: number) {
-    const gqlEndpoint = `https://${shop}/admin/api/2024-01/graphql.json`;
+    const gqlEndpoint = `https://${shop}/admin/api/2025-10/graphql.json`;
     const gqlHeaders = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
     const productGid = `gid://shopify/Product/${productId}`;
 
@@ -11419,7 +11419,7 @@ ${textEdgeRestrictions}
       try {
         console.log(`[ensurePublished] Setting seo.hidden=1 for product ${productId}`);
         const metafieldRes = await fetch(
-          `https://${shop}/admin/api/2024-01/products/${productId}/metafields.json`,
+          `https://${shop}/admin/api/2025-10/products/${productId}/metafields.json`,
           {
             method: "POST",
             headers: { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" },
@@ -12067,7 +12067,7 @@ ${textEdgeRestrictions}
     });
 
     const gqlResponse = await fetch(
-      `https://${installation.shopDomain}/admin/api/2024-01/graphql.json`,
+      `https://${installation.shopDomain}/admin/api/2025-10/graphql.json`,
       {
         method: "POST",
         headers: {
@@ -12132,7 +12132,7 @@ ${textEdgeRestrictions}
     // Verify the subscription via Shopify GraphQL
     try {
       const gqlResponse = await fetch(
-        `https://${shop}/admin/api/2024-01/graphql.json`,
+        `https://${shop}/admin/api/2025-10/graphql.json`,
         {
           method: "POST",
           headers: {
@@ -12203,7 +12203,7 @@ ${textEdgeRestrictions}
 
     if (subscriptionId) {
       // Cancel via Shopify GraphQL (best-effort)
-      await fetch(`https://${installation.shopDomain}/admin/api/2024-01/graphql.json`, {
+      await fetch(`https://${installation.shopDomain}/admin/api/2025-10/graphql.json`, {
         method: "POST",
         headers: {
           "X-Shopify-Access-Token": installation.accessToken,
