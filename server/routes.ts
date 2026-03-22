@@ -11077,16 +11077,58 @@ ${textEdgeRestrictions}
         `products/${productNum}.json?fields=id,title,handle,variants`,
       );
       if (!prodResult.ok || !prodResult.data?.product) {
-        return res.status(400).json({ error: `Product ${resolvedBaseProductId} not found in this store` });
+        // Product not found — stale ID in DB. Clear it and re-create the product on Shopify.
+        console.log(`[customizer-pages] Product ${resolvedBaseProductId} not found (stale ID). Clearing and re-creating...`);
+        if (incomingProductTypeId) {
+          await storage.updateProductType(incomingProductTypeId, {
+            shopifyProductId: null as any,
+            shopifyProductHandle: null as any,
+            shopifyProductUrl: null as any,
+            shopifyShopDomain: null as any,
+            shopifyVariantIds: null as any,
+          });
+          const republishResp = await fetch(`${process.env.APP_URL || "http://localhost:5000"}/api/shopify/products`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Cookie": req.headers["cookie"] ?? "",
+              "Authorization": req.headers["authorization"] ?? "",
+            },
+            body: JSON.stringify({ productTypeId: incomingProductTypeId, shopDomain: shop, selectedColorIds: [] }),
+          });
+          if (!republishResp.ok) {
+            const errBody = await republishResp.json().catch(() => ({}));
+            return res.status(400).json({ error: errBody.error ?? `Product ${resolvedBaseProductId} not found in Shopify. Please send it to Shopify first.` });
+          }
+          const republishData = await republishResp.json();
+          resolvedBaseProductId = republishData.shopifyProductId ? String(republishData.shopifyProductId) : undefined;
+          if (!resolvedBaseProductId) {
+            return res.status(400).json({ error: "Product was re-created on Shopify but no product ID was returned. Try again." });
+          }
+          // Re-fetch the newly created product
+          const newProdResult = await shopifyApiCall(shop, installation.accessToken, `products/${resolvedBaseProductId}.json?fields=id,title,handle,variants`);
+          if (!newProdResult.ok || !newProdResult.data?.product) {
+            return res.status(400).json({ error: `Newly created product ${resolvedBaseProductId} not found. Please try again.` });
+          }
+          const product = newProdResult.data.product;
+          const firstVariant = product.variants?.[0];
+          if (!firstVariant) return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
+          variant = firstVariant;
+          productTitle = product.title ?? "";
+          productHandle = product.handle ?? "";
+        } else {
+          return res.status(400).json({ error: `Product ${resolvedBaseProductId} not found in this store` });
+        }
+      } else {
+        const product = prodResult.data.product;
+        const firstVariant = product.variants?.[0];
+        if (!firstVariant) {
+          return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
+        }
+        variant = firstVariant;
+        productTitle = product.title ?? "";
+        productHandle = product.handle ?? "";
       }
-      const product = prodResult.data.product;
-      const firstVariant = product.variants?.[0];
-      if (!firstVariant) {
-        return res.status(400).json({ error: `Product ${resolvedBaseProductId} has no variants` });
-      }
-      variant = firstVariant;
-      productTitle = product.title ?? "";
-      productHandle = product.handle ?? "";
     } else {
       // Legacy variant-level flow (backward compat)
       const variantNum = parseInt(String(baseVariantId).replace(/\D/g, ""), 10);
