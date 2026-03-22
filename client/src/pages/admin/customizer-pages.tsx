@@ -246,7 +246,27 @@ export default function AdminCustomizerPages() {
   const selectedBlank = (blanksData?.blanks ?? []).find(
     (b) => (b.productId ? b.productId : `pt:${b.productTypeId}`) === formProductId
   );
-  const selectedVariants: BlankVariant[] = selectedBlank?.variants ?? [];
+
+  /**
+   * Deduplicate variants by size — strip the color suffix (" / Color") from variant
+   * titles and keep only the first variant per unique size name. This prevents phone
+   * case products (e.g. "iPhone 12 Pro / Black", "iPhone 12 Pro / Clear") from
+   * showing duplicate pricing rows for the same model.
+   */
+  const selectedVariants: BlankVariant[] = useMemo(() => {
+    const raw = selectedBlank?.variants ?? [];
+    const seen = new Set<string>();
+    const deduped: BlankVariant[] = [];
+    for (const v of raw) {
+      // Strip color suffix: "iPhone 12 Pro / Black" → "iPhone 12 Pro"
+      const sizeOnly = v.title.includes(" / ") ? v.title.split(" / ")[0].trim() : v.title;
+      if (!seen.has(sizeOnly)) {
+        seen.add(sizeOnly);
+        deduped.push({ ...v, title: sizeOnly });
+      }
+    }
+    return deduped;
+  }, [selectedBlank?.variants]);
 
   // Printify costs query -- fetches production costs via temporary product probe
   const { data: costsData, isLoading: costsLoading } = useQuery<{
@@ -865,7 +885,7 @@ export default function AdminCustomizerPages() {
                       </Button>
                     </div>
 
-                    <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
+                    <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
                       <p className="text-xs font-semibold shimmer-text">
                         Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
                       </p>
@@ -989,6 +1009,17 @@ export default function AdminCustomizerPages() {
                       <div className="p-2 bg-background rounded border font-mono text-xs break-all">
                         https://{shopDomain}/pages/{createdPageResult.page.handle}
                       </div>
+                      {createdPageResult.navWarning ? (
+                        <div className="flex items-start gap-2 pt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                          <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                          <span>Navigation menu could not be updated automatically. Please add the page link manually in your Shopify admin under <strong>Online Store → Navigation</strong>.</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 pt-1 text-xs text-green-700">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          <span>Added to your store navigation menu automatically.</span>
+                        </div>
+                      )}
                     </div>
 
                     <Button className="w-full" onClick={() => { setCreateOpen(false); resetForm(); }}>

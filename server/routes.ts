@@ -481,11 +481,15 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
           items {
             id
             title
+            type
             url
+            resourceId
             items {
               id
               title
+              type
               url
+              resourceId
             }
           }
         }
@@ -500,13 +504,25 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
 /**
  * Converts a menu item (with optional nested items) to a MenuItemCreateInput shape.
  * Used when rebuilding the full menu tree for menuUpdate.
+ * Preserves the original item type (FRONTPAGE, CATALOG, PAGE, etc.) so existing
+ * menu items are not corrupted when we rebuild the tree.
  */
 function menuItemToInput(item: any): any {
+  const itemType: string = item.type ?? "HTTP";
   const input: any = {
     title: item.title,
-    type: "HTTP",
-    url: item.url ?? "/",
+    type: itemType,
   };
+  // HTTP type requires a url; resource-based types (PAGE, PRODUCT, etc.) use resourceId
+  if (itemType === "HTTP") {
+    input.url = item.url ?? "/";
+  } else if (item.resourceId) {
+    input.resourceId = item.resourceId;
+  } else if (item.url) {
+    // Fallback: if we have a URL but no resourceId, use HTTP type
+    input.type = "HTTP";
+    input.url = item.url;
+  }
   if (item.items && item.items.length > 0) {
     input.items = item.items.map(menuItemToInput);
   }
