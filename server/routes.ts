@@ -2390,7 +2390,12 @@ ${textEdgeRestrictions}
           }
         }
       }
-    } else if (allColors.length === 0) {
+    }
+
+    // If no variants were produced by the color loop (e.g. phone cases where most variants use
+    // 'default' as the color key even though a stray color entry exists in frameColors), fall back
+    // to the size-only path and look for '{sizeId}:default' keys in the variantMap.
+    if (shopifyVariants.length === 0) {
       for (const size of sizesToUse) {
         const variantKey = `${size.id}:default`;
         if (variantMap[variantKey]) {
