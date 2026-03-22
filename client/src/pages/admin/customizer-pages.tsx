@@ -581,6 +581,12 @@ export default function AdminCustomizerPages() {
                 {/* ── STEP 2: Pricing ── */}
                 {formStep === 2 && (
                   <div className="space-y-4 pt-2">
+                    {blanksLoading ? (
+                      <div className="flex flex-col items-center justify-center py-12 gap-3">
+                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                        <p className="text-sm text-muted-foreground">Loading variant prices…</p>
+                      </div>
+                    ) : (
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-muted-foreground">Set a retail price for each variant.</p>
                       <Dialog open={costsOpen} onOpenChange={setCostsOpen}>
@@ -894,6 +900,7 @@ export default function AdminCustomizerPages() {
                         Review & Create <ChevronRight className="h-4 w-4 ml-1" />
                       </Button>
                     </div>
+                    )}
                   </div>
                 )}
 
@@ -916,12 +923,17 @@ export default function AdminCustomizerPages() {
                       {selectedVariants.length > 0 ? (
                         <div className="border-t pt-2 mt-1 space-y-1">
                           <span className="text-muted-foreground text-xs uppercase tracking-wide">Variant prices</span>
-                          {selectedVariants.map((v) => (
-                            <div key={v.id} className="flex justify-between">
-                              <span>{v.title}</span>
-                              <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
-                            </div>
-                          ))}
+                          <div className={selectedVariants.length > 6 ? "max-h-[160px] overflow-y-auto pr-1 space-y-1" : "space-y-1"}>
+                            {selectedVariants.map((v) => (
+                              <div key={v.id} className="flex justify-between">
+                                <span>{v.title}</span>
+                                <span className="font-medium">${parseFloat(variantPrices[v.id] ?? "0").toFixed(2)}</span>
+                              </div>
+                            ))}
+                          </div>
+                          {selectedVariants.length > 6 && (
+                            <p className="text-[10px] text-muted-foreground pt-1">{selectedVariants.length} variants total — scroll to view all</p>
+                          )}
                         </div>
                       ) : (
                         <div className="border-t pt-2 mt-1">
