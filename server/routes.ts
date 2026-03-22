@@ -513,6 +513,8 @@ function menuItemToInput(item: any): any {
     title: item.title,
     type: itemType,
   };
+  // Pass id so Shopify can match existing items (required for MenuItemUpdateInput)
+  if (item.id) input.id = item.id;
   // HTTP type requires a url; resource-based types (PAGE, PRODUCT, etc.) use resourceId
   if (itemType === "HTTP") {
     input.url = item.url ?? "/";
@@ -635,13 +637,13 @@ async function ensureNavigationLink(
       });
 
       const updateRes = await shopifyGraphQL(shop, accessToken, `
-        mutation UpdateMenu($id: ID!, $items: [MenuItemCreateInput!]!) {
-          menuUpdate(id: $id, items: $items) {
+        mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
+          menuUpdate(id: $id, title: $title, items: $items) {
             menu { id }
             userErrors { field message }
           }
         }
-      `, { id: menu.id, items: newMenuItems });
+      `, { id: menu.id, title: menu.title, items: newMenuItems });
 
       const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
       if (userErrors.length > 0) {
@@ -666,13 +668,13 @@ async function ensureNavigationLink(
       ];
 
       const updateRes = await shopifyGraphQL(shop, accessToken, `
-        mutation UpdateMenu($id: ID!, $items: [MenuItemCreateInput!]!) {
-          menuUpdate(id: $id, items: $items) {
+        mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
+          menuUpdate(id: $id, title: $title, items: $items) {
             menu { id }
             userErrors { field message }
           }
         }
-      `, { id: menu.id, items: newMenuItems });
+      `, { id: menu.id, title: menu.title, items: newMenuItems });
 
       const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
       if (userErrors.length > 0) {
@@ -753,13 +755,13 @@ async function removeNavigationLink(
     }
 
     const updateRes = await shopifyGraphQL(shop, accessToken, `
-      mutation UpdateMenu($id: ID!, $items: [MenuItemCreateInput!]!) {
-        menuUpdate(id: $id, items: $items) {
+      mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
+        menuUpdate(id: $id, title: $title, items: $items) {
           menu { id }
           userErrors { field message }
         }
       }
-    `, { id: menu.id, items: newMenuItems });
+    `, { id: menu.id, title: menu.title, items: newMenuItems });
 
     const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
     if (userErrors.length > 0) {

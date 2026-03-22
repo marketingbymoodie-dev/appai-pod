@@ -45,7 +45,7 @@ export function FrameColorSelector({
             )}
           </SelectValue>
         </SelectTrigger>
-        <SelectContent className="max-h-64 overflow-y-auto">
+        <SelectContent position="popper" className="max-h-64 overflow-y-auto">
           {frameColors.map((color) => (
             <SelectItem
               key={color.id}

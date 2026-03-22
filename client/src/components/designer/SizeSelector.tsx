@@ -28,7 +28,7 @@ export function SizeSelector({
         <SelectTrigger data-testid="select-size" className="h-11">
           <SelectValue placeholder="Select a size" />
         </SelectTrigger>
-        <SelectContent className="max-h-64 overflow-y-auto">
+        <SelectContent position="popper" className="max-h-64 overflow-y-auto">
           {sizes.map((size) => (
             <SelectItem
               key={size.id}
