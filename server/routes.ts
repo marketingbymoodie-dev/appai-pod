@@ -11270,12 +11270,14 @@ ${textEdgeRestrictions}
       }
 
       for (const pt of productTypes) {
+        console.log(`[blanks] product "${pt.name}" shopifyProductId=${pt.shopifyProductId} shopifyVariantIds=${JSON.stringify(pt.shopifyVariantIds)}`);
         if (pt.shopifyProductId) {
           const pResult = await shopifyApiCall(
             shop,
             installation.accessToken,
             `products/${pt.shopifyProductId}.json?fields=id,title,variants,images`,
           );
+          console.log(`[blanks] Shopify fetch for "${pt.name}": ok=${pResult.ok} error=${pResult.error ?? 'none'} variantCount=${pResult.data?.product?.variants?.length ?? 'N/A'}`);
           if (pResult.ok && pResult.data?.product) {
             const p = pResult.data.product;
             enriched.push({
