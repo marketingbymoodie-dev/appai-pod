@@ -11006,9 +11006,46 @@ ${textEdgeRestrictions}
             return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
           }
         }
+
+        // Build a printifyVariantId → shopifyVariantId mapping for products that
+        // were just sent to Shopify (variantPrices keyed by "printify:XXXXX").
+        // We get the live Shopify variants from the product we just fetched and
+        // cross-reference with the stored variantMap (printifyVariantId is in each entry).
+        const printifyToShopifyVariantId: Record<string, number> = {};
+        if (matchedType?.variantMap) {
+          const storedVm = typeof matchedType.variantMap === "string"
+            ? JSON.parse(matchedType.variantMap || "{}")
+            : (matchedType.variantMap || {});
+          // Fetch all variants for the product (we may only have firstVariant above)
+          const allVariantsResult = await shopifyApiCall(
+            shop, installation.accessToken,
+            `products/${variant.product_id}.json?fields=id,variants`,
+          );
+          const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
+          // Build SKU → shopify variant ID map
+          const skuToShopifyId: Record<string, number> = {};
+          for (const sv of allShopifyVariants) {
+            if (sv.sku) skuToShopifyId[sv.sku] = sv.id;
+          }
+          // Map printifyVariantId → shopifyVariantId via variantMap entries
+          for (const [, entry] of Object.entries(storedVm)) {
+            const e = entry as any;
+            if (e.printifyVariantId && e.sku && skuToShopifyId[e.sku]) {
+              printifyToShopifyVariantId[String(e.printifyVariantId)] = skuToShopifyId[e.sku];
+            }
+          }
+        }
+
         // Write prices to Shopify
         for (const [vid, price] of priceEntries) {
-          const variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
+          let variantNum: number;
+          if (String(vid).startsWith("printify:")) {
+            // Map printify:XXXXX → real Shopify variant ID
+            const printifyId = String(vid).replace("printify:", "");
+            variantNum = printifyToShopifyVariantId[printifyId] ?? 0;
+          } else {
+            variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
+          }
           if (!variantNum) continue;
           const formatted = parseFloat(String(price)).toFixed(2);
           const priceResult = await shopifyApiCall(shop, installation.accessToken, `variants/${variantNum}.json`, {
@@ -11252,7 +11289,7 @@ ${textEdgeRestrictions}
       // Helper: build printifyVariantId → human-readable label from stored variantMap
       function buildPrintifyVariantLabels(pt: any): Record<string, string> {
         const storedVm = typeof pt.variantMap === "string" ? JSON.parse(pt.variantMap || "{}") : (pt.variantMap || {});
-        const allSizes = JSON.parse(pt.frameSizes || "[]");
+        const allSizes = JSON.parse(pt.sizes || pt.frameSizes || "[]");
         const allColors = JSON.parse(pt.frameColors || "[]");
         const savedSizeIds: string[] = JSON.parse(pt.selectedSizeIds || "[]");
         const savedColorIds: string[] = JSON.parse(pt.selectedColorIds || "[]");
@@ -11270,7 +11307,7 @@ ${textEdgeRestrictions}
       }
 
       for (const pt of productTypes) {
-        console.log(`[blanks] product "${pt.name}" shopifyProductId=${pt.shopifyProductId} shopifyVariantIds=${JSON.stringify(pt.shopifyVariantIds)}`);
+
         if (pt.shopifyProductId) {
           const pResult = await shopifyApiCall(
             shop,
@@ -11300,7 +11337,7 @@ ${textEdgeRestrictions}
           }
         }
         // Not on Shopify (or Shopify fetch failed)
-        // If we have stored shopifyVariantIds, generate variants from them so pricing step still works
+        // Priority 1: use stored shopifyVariantIds (product was on Shopify but API failed)
         const storedSvIds = (typeof pt.shopifyVariantIds === "string"
           ? JSON.parse(pt.shopifyVariantIds || "{}")
           : pt.shopifyVariantIds || {}) as Record<string, number>;
@@ -11312,6 +11349,18 @@ ${textEdgeRestrictions}
             fallbackVariants.push({
               id: String(variantId),
               title,
+              price: "0.00",
+              sku: "",
+            });
+          }
+        } else if (!pt.shopifyProductId) {
+          // Priority 2: product not yet on Shopify — generate variants from printifyVariantLabels
+          // so the pricing step can be shown before the product is sent to Shopify at page creation
+          const pvLabels = buildPrintifyVariantLabels(pt);
+          for (const [printifyVariantId, label] of Object.entries(pvLabels)) {
+            fallbackVariants.push({
+              id: `printify:${printifyVariantId}`,
+              title: label,
               price: "0.00",
               sku: "",
             });
