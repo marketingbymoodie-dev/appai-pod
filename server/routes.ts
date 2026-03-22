@@ -9778,13 +9778,32 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Update product type
+      // Update product type.
+      // Preserve any existing manual selections — only reset to "all" if the merchant has never
+      // explicitly saved a selection (i.e. the stored array is empty / matches the old full set).
+      const existingSizeIds: string[] = typeof productType.selectedSizeIds === 'string'
+        ? JSON.parse(productType.selectedSizeIds || '[]')
+        : productType.selectedSizeIds || [];
+      const existingColorIds: string[] = typeof productType.selectedColorIds === 'string'
+        ? JSON.parse(productType.selectedColorIds || '[]')
+        : productType.selectedColorIds || [];
+
+      // Keep only IDs that still exist in the refreshed data (remove stale ones).
+      const newSizeIdSet = new Set(sizes.map((s: { id: string }) => s.id));
+      const newColorIdSet = new Set(frameColors.map((c: { id: string }) => c.id));
+      const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
+      const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
+
+      // If the existing selection is empty (never set), default to all available.
+      const finalSizeIds = filteredSizeIds.length > 0 ? filteredSizeIds : sizes.map((s: { id: string }) => s.id);
+      const finalColorIds = filteredColorIds.length > 0 ? filteredColorIds : frameColors.map((c: { id: string }) => c.id);
+
       const updated = await storage.updateProductType(productTypeId, {
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
         variantMap: JSON.stringify(variantMap),
-        selectedSizeIds: JSON.stringify(sizes.map(s => s.id)),
-        selectedColorIds: JSON.stringify(frameColors.map(c => c.id)),
+        selectedSizeIds: JSON.stringify(finalSizeIds),
+        selectedColorIds: JSON.stringify(finalColorIds),
       });
 
       console.log(`[Refresh Variants] Final result: ${sizes.length} sizes, ${frameColors.length} colors from ${variants.length} variants`);
