@@ -371,9 +371,9 @@ export default function AdminCustomizerPages() {
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
-    // If the product isn't on Shopify yet, skip pricing step (no Shopify variants to price yet)
-    if (selectedBlank?.needsShopifySync) {
-      setConfirmedVariants(selectedVariants);
+    // If the product has no variants (e.g. not yet on Shopify), skip pricing step
+    if (selectedVariants.length === 0) {
+      setConfirmedVariants([]);
       setFormStep(3);
       return;
     }
@@ -933,7 +933,7 @@ export default function AdminCustomizerPages() {
                       This will create the customizer page on your Online Store.
                     </p>
                     <div className="flex gap-2">
-                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(selectedBlank?.needsShopifySync ? 1 : 2)} disabled={createMutation.isPending}>
+                      <Button variant="outline" className="flex-1" onClick={() => setFormStep(selectedVariants.length === 0 ? 1 : 2)} disabled={createMutation.isPending}>
                         Back
                       </Button>
                       <Button className="flex-1" onClick={handleSubmitCreate} disabled={createMutation.isPending}>
