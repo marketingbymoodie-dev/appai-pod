@@ -470,14 +470,15 @@ async function shopifyGraphQL(
  * Fetches the full main-menu with nested items (up to 2 levels deep).
  */
 async function getMainMenu(shop: string, accessToken: string): Promise<any | null> {
-  // Try "main-menu" first, then "customizer"
-  const handles = ["main-menu", "customizer"];
-  for (const handle of handles) {
-    const queryRes = await shopifyGraphQL(shop, accessToken, `
-      query GetMenu($handle: String!) {
-        menu(handle: $handle) {
+  // Fetch all menus and pick the best one:
+  // Priority: handle contains "main", then the menu with the most items, then first result.
+  const queryRes = await shopifyGraphQL(shop, accessToken, `
+    query GetMenus {
+      menus(first: 20) {
+        nodes {
           id
           title
+          handle
           items {
             id
             title
@@ -494,11 +495,17 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
           }
         }
       }
-    `, { handle });
-    const menu = queryRes?.data?.menu;
-    if (menu?.id) return menu;
-  }
-  return null;
+    }
+  `, {});
+  const menus: any[] = queryRes?.data?.menus?.nodes ?? [];
+  if (menus.length === 0) return null;
+  // Prefer a menu whose handle contains "main"
+  const mainMenu = menus.find((m: any) => m.handle?.includes("main"));
+  if (mainMenu) return mainMenu;
+  // Fallback: pick the menu with the most top-level items
+  return menus.reduce((best: any, m: any) =>
+    (m.items?.length ?? 0) > (best.items?.length ?? 0) ? m : best
+  , menus[0]);
 }
 
 /**
