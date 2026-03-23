@@ -497,15 +497,40 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
       }
     }
   `, {});
+  console.log(`[nav] getMainMenu raw response: ${JSON.stringify(queryRes?.data)} errors=${JSON.stringify(queryRes?.errors)}`);
   const menus: any[] = queryRes?.data?.menus?.nodes ?? [];
-  if (menus.length === 0) return null;
-  // Prefer a menu whose handle contains "main"
-  const mainMenu = menus.find((m: any) => m.handle?.includes("main"));
-  if (mainMenu) return mainMenu;
-  // Fallback: pick the menu with the most top-level items
-  return menus.reduce((best: any, m: any) =>
-    (m.items?.length ?? 0) > (best.items?.length ?? 0) ? m : best
-  , menus[0]);
+  if (menus.length > 0) {
+    // Prefer a menu whose handle contains "main"
+    const mainMenu = menus.find((m: any) => m.handle?.includes("main"));
+    if (mainMenu) return mainMenu;
+    // Fallback: pick the menu with the most top-level items
+    return menus.reduce((best: any, m: any) =>
+      (m.items?.length ?? 0) > (best.items?.length ?? 0) ? m : best
+    , menus[0]);
+  }
+  // Fallback: menus query failed or returned empty — try fetching by common handles
+  console.log(`[nav] menus query returned empty, falling back to handle-based lookup`);
+  const MENU_ITEM_FRAGMENT = `
+    id title type url resourceId
+    items { id title type url resourceId }
+  `;
+  const handles = ["main-menu", "main", "header-menu", "header", "customizer"];
+  for (const handle of handles) {
+    const fallbackRes = await shopifyGraphQL(shop, accessToken, `
+      query GetMenu($handle: String!) {
+        menu(handle: $handle) {
+          id title handle
+          items { ${MENU_ITEM_FRAGMENT} }
+        }
+      }
+    `, { handle });
+    const m = fallbackRes?.data?.menu;
+    if (m?.id) {
+      console.log(`[nav] Found menu via handle fallback: handle="${handle}" id=${m.id}`);
+      return m;
+    }
+  }
+  return null;
 }
 
 /**
