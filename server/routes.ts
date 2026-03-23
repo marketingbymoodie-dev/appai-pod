@@ -573,6 +573,7 @@ async function ensureNavigationLink(
 
   try {
     const menu = await getMainMenu(shop, accessToken);
+    console.log(`[nav] getMainMenu result for ${shop}: id=${menu?.id} title="${menu?.title}" itemCount=${menu?.items?.length ?? 0}`);
 
     if (!menu?.id) {
       // No main-menu at all — create one with the Customizer parent + sub-item
@@ -624,6 +625,7 @@ async function ensureNavigationLink(
       const newMenuItems = (menu.items ?? []).map((item: any) => {
         if (item.id === customizerParent.id) {
           return {
+            id: item.id,  // must include id so Shopify updates rather than inserts
             title: item.title,  // preserve any rename the merchant made
             type: "HTTP",
             url: item.url ?? "/",
@@ -636,6 +638,7 @@ async function ensureNavigationLink(
         return menuItemToInput(item);
       });
 
+      console.log(`[nav] Sending menuUpdate (add sub-item) for ${shop}: menuId=${menu.id} title="${menu.title}" items=${JSON.stringify(newMenuItems)}`);
       const updateRes = await shopifyGraphQL(shop, accessToken, `
         mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
           menuUpdate(id: $id, title: $title, items: $items) {
@@ -644,6 +647,7 @@ async function ensureNavigationLink(
           }
         }
       `, { id: menu.id, title: menu.title, items: newMenuItems });
+      console.log(`[nav] menuUpdate response (add sub-item): ${JSON.stringify(updateRes?.data)}`);
 
       const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
       if (userErrors.length > 0) {
@@ -667,6 +671,7 @@ async function ensureNavigationLink(
         },
       ];
 
+      console.log(`[nav] Sending menuUpdate (create Customizer parent) for ${shop}: menuId=${menu.id} title="${menu.title}" items=${JSON.stringify(newMenuItems)}`);
       const updateRes = await shopifyGraphQL(shop, accessToken, `
         mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
           menuUpdate(id: $id, title: $title, items: $items) {
@@ -675,6 +680,7 @@ async function ensureNavigationLink(
           }
         }
       `, { id: menu.id, title: menu.title, items: newMenuItems });
+      console.log(`[nav] menuUpdate response (create parent): ${JSON.stringify(updateRes?.data)}`);
 
       const userErrors = updateRes?.data?.menuUpdate?.userErrors ?? [];
       if (userErrors.length > 0) {
