@@ -893,9 +893,14 @@ export default function AdminCustomizerPages() {
                         <div key={v.id} className="space-y-1.5">
                           <div className="flex justify-between items-end">
                             <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
-                            {recommendedPrices[v.id] && (
+                            {costsLoading ? (
+                              <div className="flex items-center gap-1">
+                                <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
+                                <span className="text-[10px] text-muted-foreground italic">Calculating...</span>
+                              </div>
+                            ) : recommendedPrices[v.id] ? (
                               <span className="text-[10px] text-muted-foreground">Suggested: ${recommendedPrices[v.id]}</span>
-                            )}
+                            ) : null}
                           </div>
                           <div className="relative">
                             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>

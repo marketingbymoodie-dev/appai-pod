@@ -2573,8 +2573,15 @@ ${textEdgeRestrictions}
    * For phone cases, frameColors contains device models (iPhone 14, Galaxy S23, etc.)
    * so we label the option "Model" instead of "Color".
    */
-  function getColorOptionName(colors: Array<{ id: string; name: string; hex?: string }>): string {
+  function getColorOptionName(colors: Array<{ id: string; name: string; hex?: string }>, storedName?: string | null): string {
+    // 1. Use the stored name from Printify blueprint if available
+    if (storedName && storedName.trim().length > 0) {
+      return storedName;
+    }
+
+    // 2. Fallback to heuristic if no stored name
     if (!colors || colors.length === 0) return "Color";
+    
     const phoneModelPatterns = [
       /^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i,
       /^samsung\s+(galaxy|note)/i,
@@ -2586,7 +2593,18 @@ ${textEdgeRestrictions}
     const isPhoneModel = colors.some((c) =>
       phoneModelPatterns.some((p) => p.test((c.name || "").trim()))
     );
-    return isPhoneModel ? "Model" : "Color";
+    if (isPhoneModel) return "Model";
+
+    // 3. Check for known color terms
+    const colorTerms = ["black", "white", "red", "blue", "green", "yellow", "pink", "purple", "orange", "gray", "grey", "navy", "brown", "beige", "cream", "tan", "gold", "silver", "oak", "walnut", "cherry", "mahogany", "espresso", "natural"];
+    const hasColors = colors.some(c => {
+      const name = (c.name || "").toLowerCase();
+      return colorTerms.some(term => name.includes(term));
+    });
+    if (hasColors) return "Color";
+
+    // 4. Final fallback for unknown non-phone, non-color options (like "Polyester Fleece")
+    return "Option";
   }
 
   // Create a draft product in merchant's Shopify store with design studio widget
@@ -2649,7 +2667,7 @@ ${textEdgeRestrictions}
 
     const productOptions: any[] = [];
     if (allSizes.length > 0) productOptions.push({ name: 'Size', values: Array.from(new Set(shopifyVariants.map((v: any) => v.option1))) });
-    if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors), values: Array.from(new Set(shopifyVariants.filter((v: any) => v.option2).map((v: any) => v.option2!))) });
+    if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors, productType.colorOptionName), values: Array.from(new Set(shopifyVariants.filter((v: any) => v.option2).map((v: any) => v.option2!))) });
 
     const images: any[] = [];
     if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
@@ -4357,29 +4375,7 @@ ${textEdgeRestrictions}
           hex: c.hex,
         })),
         // Determine the label for the color/option selector
-        // If none of the frameColors match known color names, use "Option" instead of "Color"
-        colorLabel: (() => {
-          if (productType.designerType === "framed-print") return "Frame Color";
-          if (frameColors.length === 0) return "Color";
-          const knownColors = new Set([
-            "black", "white", "red", "blue", "navy", "green", "yellow", "orange",
-            "pink", "purple", "gray", "grey", "brown", "beige", "cream", "tan",
-            "walnut", "natural", "gold", "silver", "oak", "cherry", "mahogany",
-            "charcoal", "burgundy", "maroon", "coral", "teal", "cyan", "aqua",
-            "turquoise", "ivory", "khaki", "olive", "sage", "mint", "lavender",
-            "violet", "plum", "indigo", "rose", "peach", "rust", "sand", "slate",
-            "heather", "ash", "royal", "forest", "kelly", "mustard", "chocolate",
-            "espresso", "mocha", "camel", "nude", "champagne", "pearl", "oatmeal",
-          ]);
-          const hasAnyColor = frameColors.some((c: any) => {
-            const lower = (c.name || "").toLowerCase();
-            // If it contains material terms, it's likely an option, not a color
-            const materialTerms = ["fleece", "microfiber", "polyester", "cotton", "canvas", "paper", "metal", "wood", "plastic", "glass", "ceramic"];
-            if (materialTerms.some(m => lower.includes(m))) return false;
-            return knownColors.has(lower) || [...knownColors].some(k => lower.includes(k));
-          });
-          return hasAnyColor ? "Color" : "Option";
-        })(),
+        colorLabel: getColorOptionName(frameColors, productType.colorOptionName),
         canvasConfig: {
           maxDimension,
           width: canvasWidth,
@@ -4572,28 +4568,7 @@ ${textEdgeRestrictions}
         hex: c.hex,
       })),
       // Determine the label for the color/option selector
-      colorLabel: (() => {
-        if (productTypeToUse.designerType === "framed-print") return "Frame Color";
-        if (frameColors.length === 0) return "Color";
-        const knownColors = new Set([
-          "black", "white", "red", "blue", "navy", "green", "yellow", "orange",
-          "pink", "purple", "gray", "grey", "brown", "beige", "cream", "tan",
-          "walnut", "natural", "gold", "silver", "oak", "cherry", "mahogany",
-          "charcoal", "burgundy", "maroon", "coral", "teal", "cyan", "aqua",
-          "turquoise", "ivory", "khaki", "olive", "sage", "mint", "lavender",
-          "violet", "plum", "indigo", "rose", "peach", "rust", "sand", "slate",
-          "heather", "ash", "royal", "forest", "kelly", "mustard", "chocolate",
-          "espresso", "mocha", "camel", "nude", "champagne", "pearl", "oatmeal",
-        ]);
-        const hasAnyColor = frameColors.some((c: any) => {
-          const lower = (c.name || "").toLowerCase();
-          // If it contains material terms, it's likely an option, not a color
-          const materialTerms = ["fleece", "microfiber", "polyester", "cotton", "canvas", "paper", "metal", "wood", "plastic", "glass", "ceramic"];
-          if (materialTerms.some(m => lower.includes(m))) return false;
-          return knownColors.has(lower) || [...knownColors].some(k => lower.includes(k));
-        });
-        return hasAnyColor ? "Color" : "Option";
-      })(),
+      colorLabel: getColorOptionName(frameColors, productTypeToUse.colorOptionName),
       canvasConfig: {
         maxDimension,
         width: canvasWidth,
@@ -8719,12 +8694,40 @@ ${textEdgeRestrictions}
       );
 
       let blueprintColors: Record<string, string> = {}; // colorName -> hex
+      let blueprintColorOptionName: string | null = null; // Actual option name from Printify (e.g. "Material", "Fabric", "Color")
       if (blueprintResponse.ok) {
         const blueprintData = await blueprintResponse.json();
-        // Extract colors from blueprint options if available
+        // Extract the non-size option from blueprint options
+        // First try color-type options, then fall back to any non-size option
         const colorOptions = blueprintData.options?.find((opt: any) => 
           opt.type === 'color' || opt.name?.toLowerCase() === 'color' || opt.name?.toLowerCase() === 'colors'
         );
+        if (!colorOptions) {
+          // No explicit color option — look for any option that isn't "size"
+          const nonSizeOption = (blueprintData.options || []).find((opt: any) => {
+            const name = (opt.name || '').toLowerCase();
+            return name !== 'size' && name !== 'sizes' && opt.type !== 'size';
+          });
+          if (nonSizeOption) {
+            blueprintColorOptionName = nonSizeOption.name || null;
+            console.log(`Blueprint non-size option found: "${blueprintColorOptionName}" (type: ${nonSizeOption.type})`);
+            // Extract values from this option for hex mapping if available
+            if (nonSizeOption.values) {
+              for (const val of nonSizeOption.values) {
+                const valName = (val.title || val.name || '').toLowerCase();
+                if (val.colors && val.colors.length > 0) {
+                  blueprintColors[valName] = val.colors[0];
+                } else if (val.hex_code) {
+                  blueprintColors[valName] = val.hex_code;
+                } else if (val.value && val.value.startsWith('#')) {
+                  blueprintColors[valName] = val.value;
+                }
+              }
+            }
+          }
+        } else {
+          blueprintColorOptionName = colorOptions.name || 'Color';
+        }
         if (colorOptions?.values) {
           for (const colorVal of colorOptions.values) {
             const colorName = (colorVal.title || colorVal.name || '').toLowerCase();
@@ -9455,6 +9458,7 @@ ${textEdgeRestrictions}
         doubleSidedPrint,
         isAllOverPrint,
         placeholderPositions: JSON.stringify(placeholderPositions),
+        colorOptionName: blueprintColorOptionName,
         isActive: true,
         sortOrder: existingTypes.length,
       });

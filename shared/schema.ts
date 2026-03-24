@@ -260,6 +260,7 @@ export const productTypes = pgTable("product_types", {
   printifyCosts: text("printify_costs").default("{}"),
   isAllOverPrint: boolean("is_all_over_print").notNull().default(false),
   placeholderPositions: text("placeholder_positions").default("[]"),
+  colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
