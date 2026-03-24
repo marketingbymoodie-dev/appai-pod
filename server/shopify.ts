@@ -374,10 +374,16 @@ if (res.locals.shopify?.session?.shop) {
       }
     }
 
-    // Check if the stored token is missing any required scopes
+    // Check if the stored token is missing any required scopes.
+    // Note: Shopify's OAuth token response only lists write_ scopes; write_X implies read_X.
+    // So we expand the granted set: if write_X is present, treat read_X as also granted.
     const REQUIRED_SCOPES = SHOPIFY_SCOPES.split(",").map(s => s.trim());
     const grantedScopes = (installation.scope || "").split(",").map(s => s.trim());
-    const missingScopes = REQUIRED_SCOPES.filter(s => !grantedScopes.includes(s));
+    const expandedGranted = new Set(grantedScopes);
+    for (const s of grantedScopes) {
+      if (s.startsWith("write_")) expandedGranted.add(s.replace("write_", "read_"));
+    }
+    const missingScopes = REQUIRED_SCOPES.filter(s => !expandedGranted.has(s));
     const scopesMissing = missingScopes.length > 0;
 
     res.json({
