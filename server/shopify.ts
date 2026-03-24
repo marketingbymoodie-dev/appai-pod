@@ -4,7 +4,7 @@ import { storage } from "./storage";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,read_online_store_navigation,write_online_store_navigation";
+const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation";
 
 export async function registerCartScript(shop: string, accessToken: string): Promise<void> {
   const appUrl = getAppUrl();
@@ -374,6 +374,12 @@ if (res.locals.shopify?.session?.shop) {
       }
     }
 
+    // Check if the stored token is missing any required scopes
+    const REQUIRED_SCOPES = SHOPIFY_SCOPES.split(",").map(s => s.trim());
+    const grantedScopes = (installation.scope || "").split(",").map(s => s.trim());
+    const missingScopes = REQUIRED_SCOPES.filter(s => !grantedScopes.includes(s));
+    const scopesMissing = missingScopes.length > 0;
+
     res.json({
       installed: installation.status === "active" && tokenValid,
       status: installation.status,
@@ -382,7 +388,8 @@ if (res.locals.shopify?.session?.shop) {
       shop: installation.shopDomain,
       scope: installation.scope,
       installedAt: installation.installedAt,
-      needsReinstall: !tokenValid || installation.status === "token_invalid",
+      missingScopes: scopesMissing ? missingScopes : [],
+      needsReinstall: !tokenValid || installation.status === "token_invalid" || scopesMissing,
       reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`
     });
   });

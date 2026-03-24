@@ -498,6 +498,19 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
     }
   `, {});
   console.log(`[nav] getMainMenu raw response: ${JSON.stringify(queryRes?.data)} errors=${JSON.stringify(queryRes?.errors)}`);
+  // If Shopify returned ACCESS_DENIED, the token is missing read_online_store_navigation.
+  // Throw immediately so ensureNavigationLink returns a proper warning instead of
+  // silently falling through and creating an orphan menu.
+  const accessDenied = (queryRes?.errors ?? []).some(
+    (e: any) => e?.extensions?.code === "ACCESS_DENIED"
+  );
+  if (accessDenied) {
+    throw new Error(
+      "Navigation scope missing: the app needs to be reinstalled to grant " +
+      "read_online_store_navigation permission. Visit /shopify/reinstall?shop=" +
+      shop + " to fix this."
+    );
+  }
   const menus: any[] = queryRes?.data?.menus?.nodes ?? [];
   if (menus.length > 0) {
     // Prefer a menu whose handle contains "main"

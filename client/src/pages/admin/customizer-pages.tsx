@@ -1012,7 +1012,22 @@ export default function AdminCustomizerPages() {
                       {createdPageResult.navWarning ? (
                         <div className="flex items-start gap-2 pt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
                           <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                          <span>Navigation menu could not be updated automatically. Please add the page link manually in your Shopify admin under <strong>Online Store → Navigation</strong>.</span>
+                          <div className="space-y-1">
+                            {createdPageResult.navWarning.includes("Navigation scope missing") ? (
+                              <>
+                                <span className="font-semibold">App needs to be reinstalled to manage navigation.</span>
+                                <span className="block">The app is missing the <code>read_online_store_navigation</code> permission. Click below to reinstall — it only takes a moment.</span>
+                                <button
+                                  className="mt-1 underline font-semibold text-amber-800"
+                                  onClick={() => window.open(`/shopify/reinstall?shop=${shopDomain}`, "_top")}
+                                >
+                                  Reinstall App →
+                                </button>
+                              </>
+                            ) : (
+                              <span>Navigation menu could not be updated automatically. Please add the page link manually in your Shopify admin under <strong>Online Store → Navigation</strong>.</span>
+                            )}
+                          </div>
                         </div>
                       ) : (
                         <div className="flex items-center gap-2 pt-1 text-xs text-green-700">
