@@ -673,12 +673,14 @@ async function ensureNavigationLink(
 
       // Add the new sub-item — rebuild full menu tree.
       // IMPORTANT: The parent item MUST be type HTTP to support children (dropdown).
-      // Shopify silently ignores children on resource-based types (PAGE, FRONTPAGE, etc.).
-      // So we explicitly convert the parent to HTTP with its existing url.
+      // Shopify silently ignores children on resource-based types (PAGE, FRONTPAGE, etc.)
+      // and also ignores type changes on existing items (when id is provided).
+      // So if the parent is not already HTTP, we must REPLACE it: omit the id so Shopify
+      // deletes the old resource-based item and creates a fresh HTTP item with children.
+      const parentIsHTTP = customizerParent.type === "HTTP";
       const newMenuItems = (menu.items ?? []).map((item: any) => {
         if (item.id === customizerParent.id) {
-          return {
-            id: item.id,
+          const parentInput: any = {
             title: item.title,
             type: "HTTP",
             url: item.url ?? "/",
@@ -687,6 +689,10 @@ async function ensureNavigationLink(
               { title: pageTitle, type: "HTTP", url: targetUrl },
             ],
           };
+          // Only keep the id if the item is already HTTP (so Shopify updates in-place).
+          // For non-HTTP items (PAGE, FRONTPAGE, etc.), omit id to replace the item.
+          if (parentIsHTTP) parentInput.id = item.id;
+          return parentInput;
         }
         return menuItemToInput(item);
       });
