@@ -555,24 +555,34 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
 function menuItemToInput(item: any): any {
   const input: any = { title: item.title };
 
+  // type is REQUIRED (non-null) in MenuItemUpdateInput — must always be provided.
+  // Types that don't need a resource reference:
+  const STANDALONE_TYPES = new Set(["FRONTPAGE", "CATALOG", "HTTP", "SEARCH", "COLLECTIONS"]);
+  const itemType: string = item.type ?? "HTTP";
+
   if (item.id) {
-    // Existing item: pass only id + title (+ nested items if any).
-    // Shopify preserves the original type / url / resourceId when they are omitted,
-    // which avoids "Subject can't be blank" errors caused by re-specifying
-    // resource-based types (PAGE, FRONTPAGE, CATALOG, etc.) without a resourceId.
     input.id = item.id;
-  } else {
-    // New item: must specify type + url (or resourceId)
-    const itemType: string = item.type ?? "HTTP";
+  }
+
+  if (STANDALONE_TYPES.has(itemType)) {
+    // These types work without resourceId. HTTP needs url; others are implicit.
     input.type = itemType;
-    if (itemType === "HTTP") {
-      input.url = item.url ?? "/";
-    } else if (item.resourceId) {
-      input.resourceId = item.resourceId;
-    } else if (item.url) {
-      input.type = "HTTP";
+    if (itemType === "HTTP" && item.url) {
       input.url = item.url;
+    } else if (itemType === "HTTP") {
+      input.url = item.url ?? "/";
     }
+    // FRONTPAGE, CATALOG, SEARCH, COLLECTIONS don't need url or resourceId
+  } else if (item.resourceId) {
+    // Resource-based type (PAGE, COLLECTION, PRODUCT, BLOG, ARTICLE, etc.)
+    // with a valid resourceId — preserve the original type.
+    input.type = itemType;
+    input.resourceId = item.resourceId;
+  } else {
+    // Resource-based type but missing resourceId — fall back to HTTP with url
+    // to avoid "Subject can't be blank" errors.
+    input.type = "HTTP";
+    input.url = item.url ?? "/";
   }
 
   if (item.items && item.items.length > 0) {
