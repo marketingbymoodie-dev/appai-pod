@@ -672,13 +672,16 @@ async function ensureNavigationLink(
       }
 
       // Add the new sub-item — rebuild full menu tree.
-      // For the Customizer parent (existing item with id), only pass id + title + items.
-      // Shopify preserves the original type/url/resourceId when omitted.
+      // IMPORTANT: The parent item MUST be type HTTP to support children (dropdown).
+      // Shopify silently ignores children on resource-based types (PAGE, FRONTPAGE, etc.).
+      // So we explicitly convert the parent to HTTP with its existing url.
       const newMenuItems = (menu.items ?? []).map((item: any) => {
         if (item.id === customizerParent.id) {
           return {
             id: item.id,
             title: item.title,
+            type: "HTTP",
+            url: item.url ?? "/",
             items: [
               ...(item.items ?? []).map(menuItemToInput),
               { title: pageTitle, type: "HTTP", url: targetUrl },
