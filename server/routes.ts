@@ -1001,6 +1001,65 @@ export async function registerRoutes(
       } catch (err: any) {
         results.ensureNavError = err.message;
       }
+      // Re-read the menu AFTER the mutation to see if it actually changed
+      try {
+        const menuAfter = await getMainMenu(shop, installation.accessToken);
+        results.menuAfterMutation = {
+          id: menuAfter?.id,
+          title: menuAfter?.title,
+          itemCount: menuAfter?.items?.length ?? 0,
+          items: (menuAfter?.items ?? []).map((i: any) => ({
+            id: i.id, title: i.title, type: i.type, url: i.url,
+            children: (i.items ?? []).map((c: any) => ({ id: c.id, title: c.title, type: c.type, url: c.url }))
+          })),
+        };
+      } catch (err: any) {
+        results.menuAfterError = err.message;
+      }
+    }
+    // Direct mutation test: manually build and send the menuUpdate to capture full response
+    if (req.query.directtest === "true") {
+      try {
+        const menu = await getMainMenu(shop, installation.accessToken);
+        const testHandle = (req.query.handle as string) || "__direct-test__";
+        const testTitle = (req.query.title as string) || "Direct Test";
+        const targetUrl = `/pages/${testHandle}`;
+        // Build items array: keep existing items by id, add new Customizer parent with child
+        // First, remove any existing Customizer item
+        const otherItems = (menu?.items ?? []).filter((i: any) => i.title !== "Customizer").map(menuItemToInput);
+        const newItems = [
+          ...otherItems,
+          {
+            title: "Customizer",
+            type: "HTTP",
+            url: "/",
+            items: [{ title: testTitle, type: "HTTP", url: targetUrl }],
+          },
+        ];
+        results.directMutationInput = { id: menu?.id, title: menu?.title, items: newItems };
+        const mutRes = await shopifyGraphQL(shop, installation.accessToken, `
+          mutation UpdateMenu($id: ID!, $title: String!, $items: [MenuItemUpdateInput!]!) {
+            menuUpdate(id: $id, title: $title, items: $items) {
+              menu {
+                id
+                title
+                items(first: 20) {
+                  nodes {
+                    id title type url
+                    items(first: 20) {
+                      nodes { id title type url }
+                    }
+                  }
+                }
+              }
+              userErrors { field message code }
+            }
+          }
+        `, { id: menu?.id, title: menu?.title, items: newItems });
+        results.directMutationResponse = mutRes;
+      } catch (err: any) {
+        results.directMutationError = err.message;
+      }
     }
     res.json(results);
   });
