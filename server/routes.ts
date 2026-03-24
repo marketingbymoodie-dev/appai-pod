@@ -463,7 +463,17 @@ async function shopifyGraphQL(
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`Shopify GraphQL HTTP ${res.status}: ${text}`);
   }
-  return res.json();
+  const body = await res.json();
+  // Check for top-level GraphQL errors (validation failures, type mismatches, etc.).
+  // These are different from userErrors — they mean the mutation never executed at all.
+  // Without this check, callers that only inspect `data.*.userErrors` would silently
+  // report success when the entire operation was rejected.
+  if (body.errors?.length && !body.data) {
+    const msgs = body.errors.map((e: any) => e.message).join("; ");
+    console.error(`[shopifyGraphQL] Top-level GraphQL errors for ${shop}: ${msgs}`);
+    throw new Error(`Shopify GraphQL error: ${msgs}`);
+  }
+  return body;
 }
 
 /**
@@ -1067,6 +1077,31 @@ export async function registerRoutes(
         results.directMutationResponse = mutRes;
       } catch (err: any) {
         results.directMutationError = err.message;
+      }
+    }
+    // Test removeNavigationLink
+    if (req.query.removetest === "true") {
+      const removeHandle = (req.query.handle as string) || "__remove-test__";
+      try {
+        const removeResult = await removeNavigationLink(shop, installation.accessToken, removeHandle);
+        results.removeResult = removeResult;
+      } catch (err: any) {
+        results.removeError = err.message;
+      }
+      // Re-read menu after removal
+      try {
+        const menuAfterRemove = await getMainMenu(shop, installation.accessToken);
+        results.menuAfterRemove = {
+          id: menuAfterRemove?.id,
+          title: menuAfterRemove?.title,
+          itemCount: menuAfterRemove?.items?.length ?? 0,
+          items: (menuAfterRemove?.items ?? []).map((i: any) => ({
+            id: i.id, title: i.title, type: i.type, url: i.url,
+            children: (i.items ?? []).map((c: any) => ({ id: c.id, title: c.title, type: c.type, url: c.url }))
+          })),
+        };
+      } catch (err: any) {
+        results.menuAfterRemoveError = err.message;
       }
     }
     res.json(results);
