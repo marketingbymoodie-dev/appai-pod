@@ -1043,12 +1043,10 @@ export async function registerRoutes(
               menu {
                 id
                 title
-                items(first: 20) {
-                  nodes {
+                items {
+                  id title type url
+                  items {
                     id title type url
-                    items(first: 20) {
-                      nodes { id title type url }
-                    }
                   }
                 }
               }
