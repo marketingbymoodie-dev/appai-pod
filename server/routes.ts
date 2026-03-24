@@ -956,6 +956,34 @@ export async function registerRoutes(
     } catch (err: any) {
       results.scopeError = err.message;
     }
+    // Test the actual getMainMenu function used by ensureNavigationLink
+    try {
+      const menu = await getMainMenu(shop, installation.accessToken);
+      results.getMainMenuResult = {
+        id: menu?.id,
+        title: menu?.title,
+        handle: menu?.handle,
+        itemCount: menu?.items?.length ?? 0,
+        items: (menu?.items ?? []).map((i: any) => ({
+          id: i.id, title: i.title, type: i.type, url: i.url,
+          children: (i.items ?? []).map((c: any) => ({ title: c.title, url: c.url }))
+        })),
+      };
+    } catch (err: any) {
+      results.getMainMenuError = err.message;
+    }
+    // Dry-run ensureNavigationLink (test handle)
+    if (req.query.dryrun === "true") {
+      try {
+        const navResult = await ensureNavigationLink(shop, installation.accessToken, "__nav-test-page__", "Nav Test Page");
+        results.ensureNavResult = navResult;
+        // Clean up: remove the test item
+        await removeNavigationLink(shop, installation.accessToken, "__nav-test-page__");
+        results.cleanedUp = true;
+      } catch (err: any) {
+        results.ensureNavError = err.message;
+      }
+    }
     res.json(results);
   });
 
