@@ -921,6 +921,44 @@ export async function registerRoutes(
     });
   });
 
+  // ── Diagnostic: test nav menus query with different API versions ──
+  app.get("/api/appai/debug/nav-test", async (req: Request, res: Response) => {
+    const shop = (req.query.shop as string) || "appai-2.myshopify.com";
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation?.accessToken) {
+      return res.json({ error: "No installation or token found", shop });
+    }
+    const results: any = { shop, storedScope: installation.scope, tests: [] };
+    const versions = ["2024-07", "2024-10", "2025-01", "2025-04", "2025-10"];
+    for (const ver of versions) {
+      try {
+        const gqlRes = await fetch(`https://${shop}/admin/api/${ver}/graphql.json`, {
+          method: "POST",
+          headers: { "X-Shopify-Access-Token": installation.accessToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ query: `query { menus(first: 5) { nodes { id title handle } } }` }),
+        });
+        const body = await gqlRes.json();
+        results.tests.push({ apiVersion: ver, httpStatus: gqlRes.status, data: body.data, errors: body.errors });
+      } catch (err: any) {
+        results.tests.push({ apiVersion: ver, error: err.message });
+      }
+    }
+    // Query the app's actual granted scopes via GraphQL
+    try {
+      const scopeRes = await fetch(`https://${shop}/admin/api/2025-01/graphql.json`, {
+        method: "POST",
+        headers: { "X-Shopify-Access-Token": installation.accessToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: `query { currentAppInstallation { accessScopes { handle } } }` }),
+      });
+      const scopeBody = await scopeRes.json();
+      results.actualScopes = scopeBody.data?.currentAppInstallation?.accessScopes?.map((s: any) => s.handle) ?? [];
+      results.scopeErrors = scopeBody.errors;
+    } catch (err: any) {
+      results.scopeError = err.message;
+    }
+    res.json(results);
+  });
+
   // Ready check - returns 503 if DB not ready
   app.get("/api/ready", async (_req: Request, res: Response) => {
     if (!dbReady) {
