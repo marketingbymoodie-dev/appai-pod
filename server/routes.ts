@@ -977,14 +977,18 @@ export async function registerRoutes(
     } catch (err: any) {
       results.getMainMenuError = err.message;
     }
-    // Dry-run ensureNavigationLink (test handle)
+    // Dry-run ensureNavigationLink (test handle or custom handle/title)
     if (req.query.dryrun === "true") {
+      const testHandle = (req.query.handle as string) || "__nav-test-page__";
+      const testTitle = (req.query.title as string) || "Nav Test Page";
+      const cleanup = req.query.cleanup !== "false"; // default: cleanup after test
       try {
-        const navResult = await ensureNavigationLink(shop, installation.accessToken, "__nav-test-page__", "Nav Test Page");
+        const navResult = await ensureNavigationLink(shop, installation.accessToken, testHandle, testTitle);
         results.ensureNavResult = navResult;
-        // Clean up: remove the test item
-        await removeNavigationLink(shop, installation.accessToken, "__nav-test-page__");
-        results.cleanedUp = true;
+        if (cleanup && testHandle === "__nav-test-page__") {
+          await removeNavigationLink(shop, installation.accessToken, testHandle);
+          results.cleanedUp = true;
+        }
       } catch (err: any) {
         results.ensureNavError = err.message;
       }
