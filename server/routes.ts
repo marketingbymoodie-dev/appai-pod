@@ -553,23 +553,28 @@ async function getMainMenu(shop: string, accessToken: string): Promise<any | nul
  * menu items are not corrupted when we rebuild the tree.
  */
 function menuItemToInput(item: any): any {
-  const itemType: string = item.type ?? "HTTP";
-  const input: any = {
-    title: item.title,
-    type: itemType,
-  };
-  // Pass id so Shopify can match existing items (required for MenuItemUpdateInput)
-  if (item.id) input.id = item.id;
-  // HTTP type requires a url; resource-based types (PAGE, PRODUCT, etc.) use resourceId
-  if (itemType === "HTTP") {
-    input.url = item.url ?? "/";
-  } else if (item.resourceId) {
-    input.resourceId = item.resourceId;
-  } else if (item.url) {
-    // Fallback: if we have a URL but no resourceId, use HTTP type
-    input.type = "HTTP";
-    input.url = item.url;
+  const input: any = { title: item.title };
+
+  if (item.id) {
+    // Existing item: pass only id + title (+ nested items if any).
+    // Shopify preserves the original type / url / resourceId when they are omitted,
+    // which avoids "Subject can't be blank" errors caused by re-specifying
+    // resource-based types (PAGE, FRONTPAGE, CATALOG, etc.) without a resourceId.
+    input.id = item.id;
+  } else {
+    // New item: must specify type + url (or resourceId)
+    const itemType: string = item.type ?? "HTTP";
+    input.type = itemType;
+    if (itemType === "HTTP") {
+      input.url = item.url ?? "/";
+    } else if (item.resourceId) {
+      input.resourceId = item.resourceId;
+    } else if (item.url) {
+      input.type = "HTTP";
+      input.url = item.url;
+    }
   }
+
   if (item.items && item.items.length > 0) {
     input.items = item.items.map(menuItemToInput);
   }
@@ -666,14 +671,14 @@ async function ensureNavigationLink(
         return { added: false };
       }
 
-      // Add the new sub-item — rebuild full menu tree
+      // Add the new sub-item — rebuild full menu tree.
+      // For the Customizer parent (existing item with id), only pass id + title + items.
+      // Shopify preserves the original type/url/resourceId when omitted.
       const newMenuItems = (menu.items ?? []).map((item: any) => {
         if (item.id === customizerParent.id) {
           return {
-            id: item.id,  // must include id so Shopify updates rather than inserts
-            title: item.title,  // preserve any rename the merchant made
-            type: "HTTP",
-            url: item.url ?? "/",
+            id: item.id,
+            title: item.title,
             items: [
               ...(item.items ?? []).map(menuItemToInput),
               { title: pageTitle, type: "HTTP", url: targetUrl },
