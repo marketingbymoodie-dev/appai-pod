@@ -11319,6 +11319,29 @@ ${textEdgeRestrictions}
     }
 
     // Create Shopify Page
+    // First, check if a page with this handle already exists and delete it
+    // (can happen if a previous creation attempt left a stale Shopify page)
+    try {
+      const existingPageRes = await shopifyApiCall(
+        shop,
+        installation.accessToken,
+        `pages.json?handle=${encodeURIComponent(handle.trim())}`,
+        { method: "GET" }
+      );
+      if (existingPageRes.ok && existingPageRes.data?.pages?.length > 0) {
+        const existingPageId = existingPageRes.data.pages[0].id;
+        console.log(`[customizer-pages] Deleting stale Shopify page ${existingPageId} with handle '${handle.trim()}'`);
+        await shopifyApiCall(
+          shop,
+          installation.accessToken,
+          `pages/${existingPageId}.json`,
+          { method: "DELETE" }
+        );
+      }
+    } catch (cleanupErr: any) {
+      console.warn(`[customizer-pages] Could not clean up existing page: ${cleanupErr.message}`);
+    }
+
     const pageBody = await shopifyApiCall(
       shop,
       installation.accessToken,
