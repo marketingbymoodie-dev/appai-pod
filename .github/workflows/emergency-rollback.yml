@@ -1,0 +1,42 @@
+name: Emergency Rollback Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "rollback" to confirm'
+        required: true
+      commits_back:
+        description: 'Number of commits to roll back (default 1)'
+        required: false
+        default: '1'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'rollback'
+    steps:
+      - name: Checkout production
+        uses: actions/checkout@v4
+        with:
+          ref: production
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rollback production
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          COMMITS_BACK=${{ github.event.inputs.commits_back }}
+          echo "Rolling back production by $COMMITS_BACK commit(s)..."
+          echo "Current HEAD: $(git log --oneline -1)"
+          git revert --no-edit HEAD~${COMMITS_BACK}..HEAD
+          echo "New HEAD: $(git log --oneline -1)"
+          git push origin production
+          echo "Production rolled back successfully"
+
+      - name: Summary
+        run: |
+          echo "## Emergency Rollback Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Production has been rolled back by ${{ github.event.inputs.commits_back }} commit(s)." >> $GITHUB_STEP_SUMMARY
+          echo "Railway will auto-deploy the reverted production." >> $GITHUB_STEP_SUMMARY

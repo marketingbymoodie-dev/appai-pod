@@ -1,0 +1,34 @@
+name: Manual Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "promote" to confirm'
+        required: true
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm == 'promote'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote main to production
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout production || git checkout -b production
+          git merge origin/main --no-edit -m "ci: manual promote to production"
+          git push origin production
+          echo "Successfully promoted main -> production"
+
+      - name: Summary
+        run: |
+          echo "## Production Promoted" >> $GITHUB_STEP_SUMMARY
+          echo "Main branch has been merged into production." >> $GITHUB_STEP_SUMMARY
+          echo "Railway will auto-deploy the production service." >> $GITHUB_STEP_SUMMARY

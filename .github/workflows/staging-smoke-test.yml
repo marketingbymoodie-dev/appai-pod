@@ -1,0 +1,92 @@
+name: Staging Smoke Test & Auto-Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_url:
+        description: 'Staging URL to test'
+        required: true
+        default: 'https://appai-pod-staging.up.railway.app'
+  repository_dispatch:
+    types: [staging-deployed]
+
+env:
+  STAGING_URL: ${{ github.event.inputs.staging_url || github.event.client_payload.staging_url || 'https://appai-pod-staging.up.railway.app' }}
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for staging to be ready
+        run: |
+          echo "Waiting 30s for staging to stabilize..."
+          sleep 30
+
+      - name: Health check
+        run: |
+          echo "Testing $STAGING_URL/api/health"
+          RESPONSE=$(curl -sf --max-time 15 "$STAGING_URL/api/health" || echo "FAIL")
+          echo "Response: $RESPONSE"
+          if [ "$RESPONSE" = "FAIL" ]; then
+            echo "::error::Health check failed"
+            exit 1
+          fi
+          echo "Health check passed"
+
+      - name: Shopify status check
+        run: |
+          echo "Testing $STAGING_URL/api/shopify/status?shop=appai-2.myshopify.com"
+          RESPONSE=$(curl -sf --max-time 15 "$STAGING_URL/api/shopify/status?shop=appai-2.myshopify.com" || echo "FAIL")
+          echo "Response: $RESPONSE"
+          if [ "$RESPONSE" = "FAIL" ]; then
+            echo "::error::Shopify status check failed"
+            exit 1
+          fi
+          if echo "$RESPONSE" | grep -q '"needsReinstall":true'; then
+            echo "::error::Shopify needs reinstall - scopes may be wrong"
+            exit 1
+          fi
+          echo "Shopify status check passed"
+
+      - name: Product types check
+        run: |
+          echo "Testing $STAGING_URL/api/product-types"
+          RESPONSE=$(curl -sf --max-time 15 "$STAGING_URL/api/product-types" || echo "FAIL")
+          echo "Response: $RESPONSE"
+          if [ "$RESPONSE" = "FAIL" ]; then
+            echo "::error::Product types endpoint failed"
+            exit 1
+          fi
+          echo "Product types check passed"
+
+      - name: Navigation menu check
+        run: |
+          echo "Testing $STAGING_URL/api/debug/nav-test"
+          RESPONSE=$(curl -sf --max-time 20 "$STAGING_URL/api/debug/nav-test" || echo "FAIL")
+          echo "Response: $RESPONSE"
+          if [ "$RESPONSE" = "FAIL" ]; then
+            echo "::warning::Nav test endpoint not available (may be removed in production)"
+          else
+            echo "Nav test check passed"
+          fi
+
+  auto-promote:
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote main to production
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout production || git checkout -b production
+          git merge origin/main --no-edit -m "ci: auto-promote from staging (smoke tests passed)"
+          git push origin production
+          echo "Successfully promoted main -> production"
