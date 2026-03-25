@@ -279,9 +279,7 @@ export default function DesignsPage() {
       {/* Full-size image modal */}
       <Dialog open={!!selectedDesign} onOpenChange={(open) => !open && setSelectedDesign(null)}>
         <DialogContent className="max-w-4xl p-0 overflow-hidden" data-testid="dialog-fullsize-image">
-          <VisuallyHidden>
-            <DialogTitle>Design Preview</DialogTitle>
-          </VisuallyHidden>
+          <DialogTitle className="sr-only">Design Preview</DialogTitle>
           {selectedDesign && (
             <div className="relative">
               <Button
