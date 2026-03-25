@@ -1,7 +1,7 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import { generatePattern, type PatternType } from "./picsart-client";
 import pg from "pg";
-import type { Express, Request, Response, NextFunction } from "express";
+import express, { type Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
 import fs from "fs";
@@ -13,6 +13,7 @@ import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integra
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
+import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
@@ -33,6 +34,7 @@ function toCleanBuffer(buf: Buffer) {
 }
 
 const objectStorage = new ObjectStorageService();
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" }) : null;
 
 /**
  * Wrap an async Express handler so rejected promises are forwarded to next(err)
@@ -79,6 +81,40 @@ async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
     .jpeg({ quality: 80 })
     .toBuffer();
 }
+
+// Helper function to calculate generation dimensions from aspect ratio
+const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
+  const [w, h] = aspectRatioStr.split(":").map(Number);
+  if (!w || !h || isNaN(w) || isNaN(h)) {
+    return { genWidth: 1024, genHeight: 1024 };
+  }
+  const ratio = w / h;
+  const maxDim = 1024;
+  if (ratio >= 1) {
+    // Landscape or square
+    return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
+  } else {
+    // Portrait
+    return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
+  }
+};
+
+// Helper function to map aspect ratio to Gemini-supported aspect ratios
+const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
+  const [w, h] = aspectRatioStr.split(":").map(Number);
+  if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
+  const ratio = w / h;
+  if (ratio >= 2.1) return "21:9";
+  if (ratio >= 1.65) return "16:9";
+  if (ratio >= 1.4) return "3:2";
+  if (ratio >= 1.2) return "4:3";
+  if (ratio >= 1.1) return "5:4";
+  if (ratio >= 0.9) return "1:1";
+  if (ratio >= 0.75) return "4:5";
+  if (ratio >= 0.65) return "3:4";
+  if (ratio >= 0.55) return "2:3";
+  return "9:16";
+};
 
 interface SaveImageResult {
   imageUrl: string;
@@ -870,6 +906,60 @@ export async function registerRoutes(
   const serverStartTime = Date.now();
   let dbReady = false;
 
+  // Stripe Webhook to handle successful payments (must be registered before other body parsers)
+  app.post("/api/webhooks/stripe", express.raw({ type: "application/json" }), async (req: Request, res: Response) => {
+    const sig = req.headers["stripe-signature"];
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+    if (!stripe || !sig || !webhookSecret) {
+      console.error("[Stripe Webhook] Error: Missing configuration", { hasStripe: !!stripe, hasSig: !!sig, hasSecret: !!webhookSecret });
+      return res.status(400).send("Webhook Error: Missing configuration");
+    }
+
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    } catch (err: any) {
+      console.error(`[Stripe Webhook] Error: ${err.message}`);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const { customerId, creditsToAdd } = session.metadata || {};
+
+      if (customerId && creditsToAdd) {
+        const customer = await storage.getCustomer(customerId);
+        if (customer) {
+          const amount = parseInt(creditsToAdd);
+          const priceInCents = session.amount_total || 0;
+          
+          // Update customer
+          const newCredits = customer.credits + amount;
+          const newTotalSpent = parseFloat(customer.totalSpent) + (priceInCents / 100);
+          
+          await storage.updateCustomer(customer.id, {
+            credits: newCredits,
+            totalSpent: newTotalSpent.toFixed(2),
+          });
+
+          // Log transaction
+          await storage.createCreditTransaction({
+            customerId: customer.id,
+            type: "purchase",
+            amount,
+            priceInCents,
+            description: `Purchased ${amount} credits via Stripe`,
+          });
+
+          console.log(`[Stripe Webhook] Credited ${amount} to customer ${customerId}`);
+        }
+      }
+    }
+
+    res.json({ received: true });
+  });
+
   // In-memory cache for /api/config — avoids a DB hit on every storefront page load.
   // Style presets change only when a merchant edits them (rare), so 5 minutes is safe.
   interface ConfigCacheEntry { data: object; expiresAt: number; }
@@ -1432,43 +1522,7 @@ export async function registerRoutes(
       // Find size config - check product type sizes first, then fall back to PRINT_SIZES
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
       
-      // Helper function to calculate generation dimensions from aspect ratio
-      const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
-        const [w, h] = aspectRatioStr.split(":").map(Number);
-        if (!w || !h || isNaN(w) || isNaN(h)) {
-          return { genWidth: 1024, genHeight: 1024 };
-        }
-        const ratio = w / h;
-        const maxDim = 1024;
-        if (ratio >= 1) {
-          // Landscape or square
-          return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
-        } else {
-          // Portrait
-          return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
-        }
-      };
-      
-      // Helper function to map aspect ratio to Gemini-supported aspect ratios
-      // Supported: 21:9, 16:9, 4:3, 3:2, 5:4, 1:1, 9:16, 4:5, 3:4, 2:3
-      const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
-        const [w, h] = aspectRatioStr.split(":").map(Number);
-        if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
-        
-        const ratio = w / h;
-        
-        // Map to closest supported Gemini aspect ratio
-        if (ratio >= 2.1) return "21:9";      // Ultra-wide landscape
-        if (ratio >= 1.65) return "16:9";     // Wide landscape
-        if (ratio >= 1.4) return "3:2";       // Standard landscape
-        if (ratio >= 1.2) return "4:3";       // Mild landscape (tumblers etc)
-        if (ratio >= 1.1) return "5:4";       // Near square landscape
-        if (ratio >= 0.9) return "1:1";       // Square
-        if (ratio >= 0.75) return "4:5";      // Near square portrait
-        if (ratio >= 0.65) return "3:4";      // Standard portrait
-        if (ratio >= 0.55) return "2:3";      // Tall portrait
-        return "9:16";                         // Very tall portrait
-      };
+
 
       if (!sizeConfig && productType) {
         // Try to find size in product type's sizes (for apparel, etc.)
@@ -2302,37 +2356,9 @@ console.log("[shopify/session] installation ok", {
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
-      // Helper function to calculate generation dimensions from aspect ratio
-      const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
-        const [w, h] = aspectRatioStr.split(":").map(Number);
-        if (!w || !h || isNaN(w) || isNaN(h)) {
-          return { genWidth: 1024, genHeight: 1024 };
-        }
-        const ratio = w / h;
-        const maxDim = 1024;
-        if (ratio >= 1) {
-          return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
-        } else {
-          return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
-        }
-      };
+
       
-      // Helper function to map aspect ratio to Gemini-supported aspect ratios
-      const mapToGeminiAspectRatioEmbed = (aspectRatioStr: string): string => {
-        const [w, h] = aspectRatioStr.split(":").map(Number);
-        if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
-        const ratio = w / h;
-        if (ratio >= 2.1) return "21:9";
-        if (ratio >= 1.65) return "16:9";
-        if (ratio >= 1.4) return "3:2";
-        if (ratio >= 1.2) return "4:3";
-        if (ratio >= 1.1) return "5:4";
-        if (ratio >= 0.9) return "1:1";
-        if (ratio >= 0.75) return "4:5";
-        if (ratio >= 0.65) return "3:4";
-        if (ratio >= 0.55) return "2:3";
-        return "9:16";
-      };
+
 
       // Find size config - check product type first, then fall back to PRINT_SIZES
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
@@ -2432,7 +2458,7 @@ ${textEdgeRestrictions}
 `;
 
       // Build final prompt: CONSTRAINTS FIRST, then style, then user description
-      const geminiAspectRatio = mapToGeminiAspectRatioEmbed(sizeConfig.aspectRatio);
+      const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
       const constraintsFirst = sizingRequirements;
       const styleAndContent = fullPrompt;
       fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
@@ -4967,6 +4993,58 @@ ${textEdgeRestrictions}
     });
   });
 
+  // Get storefront status (credits, generation limits)
+  app.get("/api/storefront/status", async (req: Request, res: Response) => {
+    try {
+      const { shop, sessionId, customerId } = req.query;
+      if (!shop) return res.status(400).json({ error: "Shop domain required" });
+
+      const FREE_GENERATION_LIMIT = 10;
+
+      // If customer is logged in, check their credits and free generations
+      if (customerId) {
+        const customer = await storage.getOrCreateShopifyCustomer(shop as string, customerId as string);
+
+        if (customer.credits > 0) {
+          await storage.decrementCreditsIfAvailable(customer.id);
+        } else if (customer.freeGenerationsUsed < FREE_GENERATION_LIMIT) {
+          await storage.updateCustomer(customer.id, { freeGenerationsUsed: customer.freeGenerationsUsed + 1 });
+        } else {
+          return res.status(403).json({ error: "FREE_LIMIT_REACHED", message: "You have used all 10 of your free generations. Please purchase more credits to continue." });
+        }
+      } else if (sessionId) {
+        // Anonymous session limit
+        const count = await storage.countSessionGenerations(shop as string, sessionId as string);
+        if (count >= FREE_GENERATION_LIMIT) {
+          return res.status(403).json({
+            error: "FREE_LIMIT_REACHED",
+            message: "You have used all 10 of your free generations. Please log in to purchase more credits.",
+          });
+        }
+      }
+      let generationsUsed = 0;
+      let creditsRemaining = 0;
+
+      if (customerId) {
+        const customer = await storage.getOrCreateShopifyCustomer(shop as string, customerId as string);
+        generationsUsed = customer.freeGenerationsUsed || 0;
+        creditsRemaining = customer.credits || 0;
+      } else if (sessionId) {
+        generationsUsed = await storage.countSessionGenerations(shop as string, sessionId as string);
+      }
+
+      res.json({
+        generationsUsed,
+        freeLimit: FREE_GENERATION_LIMIT,
+        creditsRemaining,
+        isLimitReached: generationsUsed >= FREE_GENERATION_LIMIT && creditsRemaining <= 0
+      });
+    } catch (error) {
+      console.error("Error checking storefront status:", error);
+      res.status(500).json({ error: "Failed to check status" });
+    }
+  });
+
   // Resolve product type ID from shop + product handle
   app.get("/api/storefront/resolve-product-type", asyncHandler(async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
@@ -5118,14 +5196,60 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Shop not authorized", reqId, stage: "auth" });
       }
 
-      // Anonymous session free-generation limit (10 per session)
+      // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
-      if (sessionId && !customerId) {
-        t1 = Date.now();
-        const count = await withTimeout(
-          storage.countSessionGenerations(shop, sessionId), 5000, "countSessionGenerations"
-        );
-        console.log(P, reqId, `session generation count=${count} ok in ${Date.now() - t1}ms`);
+
+      // If customer is logged in, check their credits and free generations
+      if (customerId) {
+        const customer = await storage.getOrCreateShopifyCustomer(shop as string, customerId as string);
+
+        if (customer.credits > 0) {
+          await storage.decrementCreditsIfAvailable(customer.id);
+        } else if (customer.freeGenerationsUsed < FREE_GENERATION_LIMIT) {
+          await storage.updateCustomer(customer.id, { freeGenerationsUsed: customer.freeGenerationsUsed + 1 });
+        } else {
+          return res.status(403).json({ error: "FREE_LIMIT_REACHED", message: "You have used all 10 of your free generations. Please purchase more credits to continue." });
+        }
+      } else if (sessionId) {
+        // Anonymous session limit
+        const count = await storage.countSessionGenerations(shop as string, sessionId as string);
+        if (count >= FREE_GENERATION_LIMIT) {
+          return res.status(403).json({
+            error: "FREE_LIMIT_REACHED",
+            message: "You have used all 10 of your free generations. Please log in to purchase more credits.",
+          });
+        }
+      }
+      let customer: any = null;
+
+      if (customerId) {
+        customer = await storage.getOrCreateShopifyCustomer(shop, customerId);
+        
+        // If customer has credits, use them first
+        if (customer.credits > 0) {
+          console.log(P, reqId, `customer ${customerId} has ${customer.credits} credits, deducting 1`);
+          const updated = await storage.decrementCreditsIfAvailable(customer.id);
+          if (!updated) {
+            return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
+          }
+        } else {
+          // No credits, check free limit
+          const freeUsed = customer.freeGenerationsUsed || 0;
+          if (freeUsed >= FREE_GENERATION_LIMIT) {
+            return res.status(403).json({
+              error: "FREE_LIMIT_REACHED",
+              message: "You've used all 10 free generations. Purchase credits to continue.",
+              generationsUsed: freeUsed,
+              limit: FREE_GENERATION_LIMIT,
+            });
+          }
+          // Increment free usage
+          await storage.updateCustomer(customer.id, { freeGenerationsUsed: freeUsed + 1 });
+          console.log(P, reqId, `customer ${customerId} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
+        }
+      } else if (sessionId) {
+        // Anonymous session limit
+        const count = await storage.countSessionGenerations(shop, sessionId);
         if (count >= FREE_GENERATION_LIMIT) {
           return res.status(403).json({
             error: "FREE_LIMIT_REACHED",
@@ -5206,37 +5330,9 @@ ${textEdgeRestrictions}
         console.log(P, reqId, `product type lookup ok in ${Date.now() - t1}ms`);
       }
 
-      // Helper function to calculate generation dimensions from aspect ratio
-      const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
-        const [w, h] = aspectRatioStr.split(":").map(Number);
-        if (!w || !h || isNaN(w) || isNaN(h)) {
-          return { genWidth: 1024, genHeight: 1024 };
-        }
-        const ratio = w / h;
-        const maxDim = 1024;
-        if (ratio >= 1) {
-          return { genWidth: maxDim, genHeight: Math.round(maxDim / ratio) };
-        } else {
-          return { genWidth: Math.round(maxDim * ratio), genHeight: maxDim };
-        }
-      };
 
-      // Helper function to map aspect ratio to Gemini-supported aspect ratios
-      const mapToGeminiAspectRatioStorefront = (aspectRatioStr: string): string => {
-        const [w, h] = aspectRatioStr.split(":").map(Number);
-        if (!w || !h || isNaN(w) || isNaN(h)) return "1:1";
-        const ratio = w / h;
-        if (ratio >= 2.1) return "21:9";
-        if (ratio >= 1.65) return "16:9";
-        if (ratio >= 1.4) return "3:2";
-        if (ratio >= 1.2) return "4:3";
-        if (ratio >= 1.1) return "5:4";
-        if (ratio >= 0.9) return "1:1";
-        if (ratio >= 0.75) return "4:5";
-        if (ratio >= 0.65) return "3:4";
-        if (ratio >= 0.55) return "2:3";
-        return "9:16";
-      };
+
+
 
       // Find size config
       let sizeConfig = PRINT_SIZES.find(s => s.id === size);
@@ -5409,7 +5505,7 @@ ${textEdgeRestrictions}
 `;
       }
 
-      const geminiAspectRatio = mapToGeminiAspectRatioStorefront(sizeConfig.aspectRatio);
+      const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
       fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
 
       // Capture appUrl from request before responding (used for reference image resolution in worker)
@@ -5602,12 +5698,21 @@ ${textEdgeRestrictions}
       console.log(`[SF STATUS] ${reqId} jobId=${jobId} status=${job.status} ${Date.now() - t0}ms`);
 
       if (job.status === "complete") {
+        let creditsRemaining = 0;
+        if (job.customerId) {
+          const customer = await storage.getOrCreateShopifyCustomer(shop, job.customerId);
+          creditsRemaining = customer.credits;
+        } else if (job.sessionId) {
+          const count = await storage.countSessionGenerations(shop, job.sessionId);
+          creditsRemaining = Math.max(0, 10 - count);
+        }
+
         return res.json({
           status: "complete",
           imageUrl: job.designImageUrl,
           thumbnailUrl: job.thumbnailUrl,
           designId: job.designId,
-          creditsRemaining: 0,
+          creditsRemaining,
           reqId,
         });
       }
@@ -5686,7 +5791,21 @@ ${textEdgeRestrictions}
         sessionId: null,
       });
 
-      return res.json({ saved: true, jobId });
+      const design = await storage.createDesign({
+        customerId: customer.id,
+        merchantId: installation.merchantId,
+        productTypeId: job.productTypeId ? parseInt(job.productTypeId) : undefined,
+        prompt: job.prompt,
+        stylePreset: job.stylePreset,
+        referenceImageUrl: job.referenceImageUrl,
+        generatedImageUrl: job.designImageUrl,
+        thumbnailImageUrl: job.thumbnailUrl,
+        size: job.size || '16x20',
+        frameColor: job.frameColor || 'black',
+        aspectRatio: '4:5',
+      });
+
+      return res.json({ saved: true, designId: design.id });
     } catch (error) {
       console.error("[Storefront Save Design] Error:", error);
       res.status(500).json({ error: "Failed to save design" });
@@ -7022,62 +7141,79 @@ ${textEdgeRestrictions}
     }
   });
 
-  // Purchase credits
+  // Purchase credits via Stripe Checkout
   app.post("/api/credits/purchase", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { package: creditPackage } = req.body;
+      const { package: creditPackage, shop } = req.body;
       
+      if (!stripe) {
+        return res.status(503).json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY to Railway." });
+      }
+
       let customer = await storage.getCustomerByUserId(userId);
       if (!customer) {
         customer = await storage.createCustomer({
           userId,
-          credits: 5,
+          credits: 0,
           freeGenerationsUsed: 0,
           totalGenerations: 0,
           totalSpent: "0.00",
         });
       }
 
-      // Credit packages: $1 for 5 credits
+      // Credit packages: $1 for 10 credits
       let creditsToAdd = 0;
       let priceInCents = 0;
       
-      if (creditPackage === "5") {
-        creditsToAdd = 5;
+      if (creditPackage === "10") {
+        creditsToAdd = 10;
         priceInCents = 100; // $1.00
       } else {
-        return res.status(400).json({ error: "Invalid credit package" });
+        return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
       }
 
-      // Update customer credits
-      const newCredits = customer.credits + creditsToAdd;
-      const newTotalSpent = parseFloat(customer.totalSpent) + (priceInCents / 100);
+      const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
       
-      await storage.updateCustomer(customer.id, {
-        credits: newCredits,
-        totalSpent: newTotalSpent.toFixed(2),
+      // Create Stripe Checkout Session
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: `${creditsToAdd} AI Generation Credits`,
+                description: "Credits for generating custom AI artwork",
+              },
+              unit_amount: priceInCents,
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        success_url: `${appUrl}/designs?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/designs?payment=cancelled`,
+        customer_email: customer.email || undefined,
+        metadata: {
+          customerId: customer.id,
+          creditsToAdd: creditsToAdd.toString(),
+          shop: shop || "",
+        },
       });
 
-      // Log transaction
-      await storage.createCreditTransaction({
-        customerId: customer.id,
-        type: "purchase",
-        amount: creditsToAdd,
-        priceInCents,
-        description: `Purchased ${creditsToAdd} credits`,
-      });
-
-      res.json({
-        success: true,
-        credits: newCredits,
-        charged: priceInCents,
-      });
-    } catch (error) {
-      console.error("Error purchasing credits:", error);
-      res.status(500).json({ error: "Failed to purchase credits" });
+      if (session.url) {
+        res.json({ url: session.url });
+      } else {
+        res.status(500).json({ error: "Failed to create checkout session" });
+      }
+    } catch (error: any) {
+      console.error("Error creating checkout session:", error);
+      res.status(500).json({ error: error.message || "Failed to initiate purchase" });
     }
   });
+
+
 
   // Get credit transactions
   app.get("/api/credits/transactions", isAuthenticated, async (req: any, res: Response) => {
