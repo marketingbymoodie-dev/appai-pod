@@ -13,6 +13,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { CreditDisplay } from "@/components/credit-display";
 import type { Design, Customer } from "@shared/schema";
 
@@ -279,7 +280,9 @@ export default function DesignsPage() {
       {/* Full-size image modal */}
       <Dialog open={!!selectedDesign} onOpenChange={(open) => !open && setSelectedDesign(null)}>
         <DialogContent className="max-w-4xl p-0 overflow-hidden" data-testid="dialog-fullsize-image">
-          <DialogTitle className="sr-only">Design Preview</DialogTitle>
+          <VisuallyHidden>
+            <DialogTitle>Design Preview</DialogTitle>
+          </VisuallyHidden>
           {selectedDesign && (
             <div className="relative">
               <Button
