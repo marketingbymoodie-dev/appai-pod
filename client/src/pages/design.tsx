@@ -74,6 +74,7 @@ interface ProductDesignerConfig {
     safeZoneMargin: number;
   };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
+  variantPrices?: Record<string, string>;
 }
 
 export default function DesignPage() {
@@ -461,15 +462,29 @@ export default function DesignPage() {
       const currentMax = designerConfig?.designerType === "apparel" ? 135 : 200;
       const currentDefault = designerConfig?.designerType === "apparel" ? 135 : 100;
 
-      setImageScale(Math.min(design.transformScale ?? currentDefault, currentMax));
+      // Auto-zoom: Use stored scale or calculate optimal zoom for full coverage
+      let autoScale = design.transformScale ?? currentDefault;
+      
+      // For pillow products, auto-zoom to 120% to ensure full print coverage
+      if (designerConfig?.designerType === "pillow" && !design.transformScale) {
+        autoScale = Math.min(120, currentMax);
+      }
+      // For framed prints, auto-zoom to 110% for good coverage
+      else if (designerConfig?.designerType === "framed_print" && !design.transformScale) {
+        autoScale = Math.min(110, currentMax);
+      }
+      
+      setImageScale(Math.min(autoScale, currentMax));
       setImagePosition({ x: design.transformX ?? 50, y: design.transformY ?? 50 });
 
+      // Immediately invalidate and refetch customer data to update credits
       queryClient.invalidateQueries({ queryKey: ["/api/customer"] });
+      queryClient.refetchQueries({ queryKey: ["/api/customer"] });
       queryClient.invalidateQueries({ queryKey: ["/api/designs"] });
 
       toast({
         title: "Artwork generated!",
-        description: `You have ${data.creditsRemaining ?? "some"} credits remaining.`,
+        description: `You have ${data.creditsRemaining ?? "some"} credit${data.creditsRemaining === 1 ? "" : "s"} remaining.`,
       });
 
       // Clear mockups first, then fetch
@@ -774,7 +789,17 @@ export default function DesignPage() {
   const handleSaveDesign = () => {
     if (!generatedDesign) return;
 
-    // Don’t attempt PATCH on unsaved “id:0” placeholder
+    // Check authentication first
+    if (!isAuthenticated) {
+      toast({
+        title: "Sign in required",
+        description: "Please sign in to save your designs to your gallery.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Don't attempt PATCH on unsaved "id:0" placeholder
     if (generatedDesign.id === 0) {
       toast({
         title: "Not saved yet",
@@ -795,7 +820,7 @@ export default function DesignPage() {
       },
       {
         onSuccess: () => {
-          toast({ title: "Design saved!", description: "Your artwork adjustments have been saved." });
+          toast({ title: "Design saved!", description: "Your artwork has been saved to your gallery." });
         },
       }
     );
@@ -883,11 +908,13 @@ export default function DesignPage() {
       <div className="grid grid-cols-3 gap-2">
         {activeSizes.map((size) => {
           const isAvailable = !selectedFrameColor || isVariantAvailable(size.id, selectedFrameColor);
+          const variantKey = selectedFrameColor ? `${size.id}:${selectedFrameColor}` : `${size.id}:default`;
+          const price = designerConfig?.variantPrices?.[variantKey];
           return (
             <Button
               key={size.id}
               variant={selectedSize === size.id ? "default" : "outline"}
-              className={`h-auto py-2 text-xs ${!isAvailable ? "opacity-40" : ""}`}
+              className={`h-auto py-2 text-xs flex flex-col items-center gap-0.5 ${!isAvailable ? "opacity-40" : ""}`}
               onClick={() => handleSizeChange(size.id)}
               disabled={!isAvailable}
               title={
@@ -896,6 +923,7 @@ export default function DesignPage() {
               data-testid={`button-size-${size.id}`}
             >
               <span className="font-medium">{size.name}</span>
+              {price && <span className="text-xs opacity-75">${parseFloat(price).toFixed(2)}</span>}
             </Button>
           );
         })}
@@ -1670,7 +1698,7 @@ export default function DesignPage() {
             style={{ transform: `translateX(-${mobileSlide * 100}%)` }}
           >
             {/* Slide 1: Controls */}
-            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-4">
+            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-4" style={{ touchAction: "pan-y" }}>
               {reuseBanner}
               {styleSelector}
               {sizeSelector}
@@ -1680,7 +1708,7 @@ export default function DesignPage() {
             </div>
 
             {/* Slide 2: Preview */}
-            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-3">
+            <div className="w-full h-full flex-shrink-0 overflow-y-auto p-4 space-y-3" style={{ touchAction: "pan-y" }}>
               {sizeSelector}
               {frameColorSelector}
 
