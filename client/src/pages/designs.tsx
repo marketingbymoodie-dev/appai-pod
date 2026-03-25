@@ -13,7 +13,6 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 import { CreditDisplay } from "@/components/credit-display";
 import type { Design, Customer } from "@shared/schema";
 
