@@ -53,6 +53,7 @@ interface ProductTypeConfig {
   baseMockupImages?: Record<string, string>;
   isAllOverPrint?: boolean;
   placeholderPositions?: { position: string; width: number; height: number }[];
+  colorLabel?: string;
 }
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
@@ -907,6 +908,7 @@ export default function EmbedDesign() {
             baseMockupImages: dc.baseMockupImages || undefined,
             isAllOverPrint: dc.isAllOverPrint || false,
             placeholderPositions: dc.placeholderPositions || [],
+            colorLabel: dc.colorLabel || "Color",
           });
           if (dc.frameColors?.length > 0) {
             setSelectedFrameColor(dc.frameColors[0].id);
@@ -1034,6 +1036,7 @@ export default function EmbedDesign() {
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             placeholderPositions: designerConfig.placeholderPositions || [],
+            colorLabel: designerConfig.colorLabel || "Color",
           });
 
           if (designerConfig.frameColors?.length > 0) {

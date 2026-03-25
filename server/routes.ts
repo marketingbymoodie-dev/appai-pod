@@ -2589,6 +2589,8 @@ ${textEdgeRestrictions}
       /^pixel\s+\d/i,
       /^for\s+(iphone|galaxy|pixel|samsung)/i,
       /^(iphone|samsung|galaxy|pixel|oneplus|motorola|lg|htc)\b/i,
+      /^\d+\s+(pro|plus|max|mini)/i,
+      /^(pro|plus|max|mini)\b/i,
     ];
     const isPhoneModel = colors.some((c) =>
       phoneModelPatterns.some((p) => p.test((c.name || "").trim()))
