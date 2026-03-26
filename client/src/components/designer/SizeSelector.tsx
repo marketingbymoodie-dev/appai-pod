@@ -13,6 +13,7 @@ interface SizeSelectorProps {
   selectedSize: string;
   onSizeChange: (sizeId: string) => void;
   showLabel?: boolean;
+  prices?: Record<string, number>;
 }
 
 export function SizeSelector({
@@ -20,6 +21,7 @@ export function SizeSelector({
   selectedSize,
   onSizeChange,
   showLabel = true,
+  prices,
 }: SizeSelectorProps) {
   return (
     <div className="space-y-2">
@@ -36,6 +38,7 @@ export function SizeSelector({
               data-testid={`option-size-${size.id}`}
             >
               {size.name}
+              {prices?.[size.id] && ` - $${(prices[size.id] / 100).toFixed(2)}`}
             </SelectItem>
           ))}
         </SelectContent>

@@ -1834,8 +1834,15 @@ export default function EmbedDesign() {
       if (data.creditsRemaining !== undefined && customer) {
         setCustomer({ ...customer, credits: data.creditsRemaining });
       }
-      // Use conditional default zoom (135% for apparel, 100% for others)
-      const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
+      // Use conditional default zoom based on product type for better coverage
+      let zoomDefault = 100;
+      if (productTypeConfig?.designerType === "apparel") {
+        zoomDefault = 135;
+      } else if (productTypeConfig?.name?.toLowerCase().includes("pillow")) {
+        zoomDefault = 120; // Pillow needs more zoom for full coverage
+      } else if (productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
+        zoomDefault = 110; // Framed prints need slight zoom
+      }
       const newTransform = { scale: zoomDefault, x: 50, y: 50 };
       setTransform(newTransform);
       // Reset the initial transform ref for the new design
@@ -2069,8 +2076,15 @@ export default function EmbedDesign() {
       setPrompt(source === "kittl" ? `Imported from Kittl: ${file.name}` : `Uploaded design: ${file.name}`);
       setDesignSource(source);
       
-      // Use conditional default zoom (135% for apparel, 100% for others)
-      const zoomDefault = productTypeConfig?.designerType === "apparel" ? 135 : 100;
+      // Use conditional default zoom based on product type for better coverage
+      let zoomDefault = 100;
+      if (productTypeConfig?.designerType === "apparel") {
+        zoomDefault = 135;
+      } else if (productTypeConfig?.name?.toLowerCase().includes("pillow")) {
+        zoomDefault = 120; // Pillow needs more zoom for full coverage
+      } else if (productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
+        zoomDefault = 110; // Framed prints need slight zoom
+      }
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
       
       // Persist design state to sessionStorage so refresh doesn't lose it
