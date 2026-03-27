@@ -2213,32 +2213,6 @@ export default function EmbedDesign() {
       });
   }, [isShopify, isStorefront, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
 
-  // Build a price map from shopifyVariants, keyed by size name
-  const buildPriceMap = useCallback((): Record<string, number> => {
-    const priceMap: Record<string, number> = {};
-    if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
-    
-    // For each size, find a matching variant and get its price
-    for (const size of printSizes) {
-      const matchedVariant = shopifyVariants.find((v: any) => {
-        const options = [v.title].filter(Boolean);
-        return options.some(
-          (opt) =>
-            opt?.toLowerCase().includes(size.name.toLowerCase()) ||
-            size.name.toLowerCase().includes(opt?.toLowerCase())
-        );
-      });
-      
-      if (matchedVariant && matchedVariant.price) {
-        // Convert price string to cents (multiply by 100)
-        const priceInCents = Math.round(parseFloat(matchedVariant.price) * 100);
-        priceMap[size.id] = priceInCents;
-      }
-    }
-    
-    return priceMap;
-  }, [shopifyVariants, printSizes]);
-
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
@@ -2958,6 +2932,32 @@ export default function EmbedDesign() {
 
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
+
+  // Build a price map from shopifyVariants, keyed by size id
+  const buildPriceMap = useCallback((): Record<string, number> => {
+    const priceMap: Record<string, number> = {};
+    if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
+    
+    // For each size, find a matching variant and get its price
+    for (const size of printSizes) {
+      const matchedVariant = shopifyVariants.find((v: any) => {
+        const options = [v.title].filter(Boolean);
+        return options.some(
+          (opt) =>
+            opt?.toLowerCase().includes(size.name.toLowerCase()) ||
+            size.name.toLowerCase().includes(opt?.toLowerCase())
+        );
+      });
+      
+      if (matchedVariant && matchedVariant.price) {
+        // Convert price string to cents (multiply by 100)
+        const priceInCents = Math.round(parseFloat(matchedVariant.price) * 100);
+        priceMap[size.id] = priceInCents;
+      }
+    }
+    
+    return priceMap;
+  }, [shopifyVariants, printSizes])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
