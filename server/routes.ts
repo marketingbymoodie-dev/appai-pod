@@ -2690,6 +2690,22 @@ ${textEdgeRestrictions}
       }
     }
 
+    // If no variants were found in variantMap, create a default one from sizes and colors
+    if (shopifyVariants.length === 0) {
+      console.warn(`[createShopifyProductForType] variantMap is empty or has no matching entries. Creating default variants from sizes/colors.`);
+      // Create default variants for all size/color combinations
+      if (colorsToUse.length > 0) {
+        for (const size of sizesToUse) {
+          for (const color of colorsToUse) {
+            shopifyVariants.push({ option1: size.name, option2: color.name, price: '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}-${color.id}`, inventory_management: null, inventory_policy: 'continue' });
+          }
+        }
+      } else {
+        for (const size of sizesToUse) {
+          shopifyVariants.push({ option1: size.name, price: '0.00', sku: `${productType.printifyBlueprintId || 'PT'}-${size.id}`, inventory_management: null, inventory_policy: 'continue' });
+        }
+      }
+    }
     if (shopifyVariants.length === 0) throw new Error('No variants to create — check size/color selections.');
     if (shopifyVariants.length > 100) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max 100.`);
 
