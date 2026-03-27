@@ -3204,7 +3204,7 @@ export default function EmbedDesign() {
                   </Button>
                   {(isShopify || isStorefront) && (
                     <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-                      10 Free artworks
+                      {credits > 0 ? `${credits} Free artworks` : customer ? '0 Free artworks' : '10 Free artworks'}
                       <Popover>
                         <PopoverTrigger asChild>
                           <button type="button" className="inline-flex items-center" aria-label="Pricing info">

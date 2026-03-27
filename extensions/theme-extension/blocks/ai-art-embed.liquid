@@ -1353,26 +1353,26 @@
                           document.querySelector('input[name="id"]')?.value ||
                           '';
     
-    // Try to get from product JSON in script tag
+    // Always extract variant prices from product JSON
     let productVariants = [];
-    if (!selectedVariant) {
-      const productJson = document.querySelector('[data-product-json]');
-      if (productJson) {
-        try {
-          const product = JSON.parse(productJson.textContent);
-          if (product.variants && product.variants.length > 0) {
+    const productJson = document.querySelector('[data-product-json]');
+    if (productJson) {
+      try {
+        const product = JSON.parse(productJson.textContent);
+        if (product.variants && product.variants.length > 0) {
+          if (!selectedVariant) {
             selectedVariant = product.variants[0].id?.toString() || '';
-            // Extract variants with prices for the iframe
-            productVariants = product.variants.map(v => ({
-              id: v.id?.toString() || '',
-              title: v.title || '',
-              price: v.price ? (parseFloat(v.price) / 100).toFixed(2) : '0.00'
-            }));
-            console.log('[AI Art Embed] Got variant from product JSON:', selectedVariant, 'variants:', productVariants.length);
           }
-        } catch (e) {
-          console.log('[AI Art Embed] Failed to parse product JSON:', e);
+          // Extract variants with prices for the iframe
+          productVariants = product.variants.map(v => ({
+            id: v.id?.toString() || '',
+            title: v.title || '',
+            price: v.price ? (parseFloat(v.price) / 100).toFixed(2) : '0.00'
+          }));
+          console.log('[AI Art Embed] Extracted', productVariants.length, 'variants with prices');
         }
+      } catch (e) {
+        console.log('[AI Art Embed] Failed to parse product JSON:', e);
       }
     }
     
