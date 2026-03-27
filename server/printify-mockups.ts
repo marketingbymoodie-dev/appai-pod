@@ -19,8 +19,11 @@ interface MockupRequest {
   y?: number; // -1 to 1 range, default 0 (center)
   doubleSided?: boolean; // Send image to both front and back
   /** Wrap-around: product uses a single print area that wraps both sides (e.g. pillows).
-   *  When true, the image is duplicated side-by-side to fill the 2:1 wrap area. */
+   *  When true, the image is duplicated to fill the full wrap area. */
   wrapAround?: boolean;
+  /** Direction to duplicate for wrap-around: 'horizontal' (side-by-side) or 'vertical' (top-to-bottom).
+   *  Defaults to 'horizontal' if not specified. */
+  wrapDirection?: 'horizontal' | 'vertical';
   /** AOP: list of all panel positions to fill with the same image */
   aopPositions?: { position: string; width: number; height: number }[];
   /** AOP: when true, right_* panels will receive a horizontally flipped copy of the pattern */
@@ -547,6 +550,7 @@ export async function generatePrintifyMockup(
     let uploadUrl: string | Buffer = imageUrl;
 
     if (wrapAround && !isAop) {
+      const direction = request.wrapDirection || 'horizontal';
       try {
         let originalBuffer: Buffer;
         if (isDataUrl(imageUrl)) {
@@ -561,32 +565,48 @@ export async function generatePrintifyMockup(
             originalBuffer = Buffer.alloc(0);
           }
         }
-
         if (originalBuffer.length > 0) {
-          // Get the image dimensions
           const metadata = await sharp(originalBuffer).metadata();
           const w = metadata.width || 1024;
           const h = metadata.height || 1024;
 
-          // Create a 2:1 canvas with the image duplicated side-by-side
-          // Left half = front, Right half = back (both show same artwork)
-          const wideBuffer = await sharp({
-            create: {
-              width: w * 2,
-              height: h,
-              channels: 4,
-              background: { r: 255, g: 255, b: 255, alpha: 1 },
-            },
-          })
-            .composite([
-              { input: originalBuffer, left: 0, top: 0 },
-              { input: originalBuffer, left: w, top: 0 },
-            ])
-            .png()
-            .toBuffer();
-
-          uploadUrl = wideBuffer;
-          console.log(`[Printify Wrap] Duplicated ${w}x${h} image to ${w * 2}x${h} wrap-around (${wideBuffer.length} bytes)`);
+          let wrappedBuffer: Buffer;
+          if (direction === 'vertical') {
+            // Duplicate top-to-bottom (1:2 canvas)
+            wrappedBuffer = await sharp({
+              create: {
+                width: w,
+                height: h * 2,
+                channels: 4,
+                background: { r: 255, g: 255, b: 255, alpha: 1 },
+              },
+            })
+              .composite([
+                { input: originalBuffer, left: 0, top: 0 },
+                { input: originalBuffer, left: 0, top: h },
+              ])
+              .png()
+              .toBuffer();
+            console.log(`[Printify Wrap] Duplicated ${w}x${h} image to ${w}x${h * 2} vertical wrap-around (${wrappedBuffer.length} bytes)`);
+          } else {
+            // Duplicate side-by-side (2:1 canvas)
+            wrappedBuffer = await sharp({
+              create: {
+                width: w * 2,
+                height: h,
+                channels: 4,
+                background: { r: 255, g: 255, b: 255, alpha: 1 },
+              },
+            })
+              .composite([
+                { input: originalBuffer, left: 0, top: 0 },
+                { input: originalBuffer, left: w, top: 0 },
+              ])
+              .png()
+              .toBuffer();
+            console.log(`[Printify Wrap] Duplicated ${w}x${h} image to ${w * 2}x${h} horizontal wrap-around (${wrappedBuffer.length} bytes)`);
+          }
+          uploadUrl = wrappedBuffer;
         }
       } catch (wrapErr: any) {
         console.warn("[Printify Wrap] Image duplication failed, falling back to original:", wrapErr.message);

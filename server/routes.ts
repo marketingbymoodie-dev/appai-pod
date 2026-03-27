@@ -375,6 +375,43 @@ function resolveWrapAround(productType: any): boolean {
   }
 }
 
+/**
+ * Determine the wrap direction for wrap-around products.
+ * If the front placeholder is wider than tall (ratio > 1.5), wrap horizontally (side-by-side).
+ * If the front placeholder is taller than wide (ratio < 0.67), wrap vertically (top-to-bottom).
+ * For square-ish placeholders, default to horizontal.
+ */
+function resolveWrapDirection(productType: any): 'horizontal' | 'vertical' {
+  try {
+    const positions: { position: string; width?: number; height?: number }[] =
+      typeof productType.placeholderPositions === "string"
+        ? JSON.parse(productType.placeholderPositions || "[]")
+        : (productType.placeholderPositions || []);
+    const front = positions.find((p) => p.position === "front" || p.position === "default");
+    if (front && front.width && front.height) {
+      const ratio = front.width / front.height;
+      if (ratio < 0.67) {
+        console.log(`[resolveWrapDirection] Vertical wrap: front placeholder ${front.width}x${front.height} ratio=${ratio.toFixed(2)}`);
+        return 'vertical';
+      }
+    }
+    // Also check aspect ratio as fallback
+    if (positions.length === 0 && productType.aspectRatio) {
+      const parts = String(productType.aspectRatio).split(":").map(Number);
+      if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
+        const ratio = parts[0] / parts[1];
+        if (ratio < 0.67) {
+          console.log(`[resolveWrapDirection] Vertical wrap from aspectRatio=${productType.aspectRatio}`);
+          return 'vertical';
+        }
+      }
+    }
+    return 'horizontal';
+  } catch {
+    return 'horizontal';
+  }
+}
+
 interface SaveImageOptions {
   isApparel?: boolean;
   isAllOverPrint?: boolean;
@@ -6002,6 +6039,7 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: resolvedDoubleSided,
         wrapAround: resolvedWrapAround,
+        wrapDirection: resolvedWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
@@ -11072,6 +11110,7 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: resolveDoubleSided(productType),
         wrapAround: resolveWrapAround(productType),
+        wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions,
         mirrorLegs: !!mirrorLegs,
       });
@@ -11200,6 +11239,7 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: resolveDoubleSided(productType),
         wrapAround: resolveWrapAround(productType),
+        wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
