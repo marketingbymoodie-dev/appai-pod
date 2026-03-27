@@ -1844,16 +1844,32 @@ export default function EmbedDesign() {
             isLoggedIn: false,
           });
         }
+        // Show remaining credits notification
+        if (data.creditsRemaining > 0) {
+          toast({
+            title: `${data.creditsRemaining} Free Artwork Generation${data.creditsRemaining === 1 ? '' : 's'} Remaining`,
+            description: "Tap \u24D8 next to 'Free artworks' for details on getting more.",
+            duration: 5000,
+          });
+        } else {
+          toast({
+            title: "All Free Generations Used",
+            description: "Create an account or purchase more credits to continue designing.",
+            variant: "destructive",
+            duration: 8000,
+          });
+        }
       }
       // Use conditional default zoom based on product type for better coverage
       let zoomDefault = 100;
       if (productTypeConfig?.designerType === "apparel") {
         zoomDefault = 135;
-      } else if (productTypeConfig?.name?.toLowerCase().includes("pillow")) {
-        zoomDefault = 120; // Pillow needs more zoom for full coverage
-      } else if (productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
-        zoomDefault = 110; // Framed prints need slight zoom
+      } else if (productTypeConfig?.designerType === "pillow" || productTypeConfig?.name?.toLowerCase().includes("pillow") || productTypeConfig?.name?.toLowerCase().includes("cushion")) {
+        zoomDefault = 120;
+      } else if (productTypeConfig?.designerType === "framed-print" || productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
+        zoomDefault = 110;
       }
+      console.log('[EmbedDesign] Auto-zoom:', zoomDefault, 'designerType:', productTypeConfig?.designerType, 'name:', productTypeConfig?.name);
       const newTransform = { scale: zoomDefault, x: 50, y: 50 };
       setTransform(newTransform);
       // Reset the initial transform ref for the new design
@@ -2091,10 +2107,10 @@ export default function EmbedDesign() {
       let zoomDefault = 100;
       if (productTypeConfig?.designerType === "apparel") {
         zoomDefault = 135;
-      } else if (productTypeConfig?.name?.toLowerCase().includes("pillow")) {
-        zoomDefault = 120; // Pillow needs more zoom for full coverage
-      } else if (productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
-        zoomDefault = 110; // Framed prints need slight zoom
+      } else if (productTypeConfig?.designerType === "pillow" || productTypeConfig?.name?.toLowerCase().includes("pillow") || productTypeConfig?.name?.toLowerCase().includes("cushion")) {
+        zoomDefault = 120;
+      } else if (productTypeConfig?.designerType === "framed-print" || productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
+        zoomDefault = 110;
       }
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
       
