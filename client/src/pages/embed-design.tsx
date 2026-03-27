@@ -2938,6 +2938,9 @@ export default function EmbedDesign() {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
     
+    console.log('[buildPriceMap] shopifyVariants:', shopifyVariants);
+    console.log('[buildPriceMap] printSizes:', printSizes);
+    
     // For each size, find a matching variant and get its price
     for (const size of printSizes) {
       const matchedVariant = shopifyVariants.find((v: any) => {
@@ -2953,9 +2956,11 @@ export default function EmbedDesign() {
         // Convert price string to cents (multiply by 100)
         const priceInCents = Math.round(parseFloat(matchedVariant.price) * 100);
         priceMap[size.id] = priceInCents;
+        console.log(`[buildPriceMap] Matched ${size.name} (${size.id}) to variant ${matchedVariant.title}: $${matchedVariant.price}`);
       }
     }
     
+    console.log('[buildPriceMap] Final priceMap:', priceMap);
     return priceMap;
   }, [shopifyVariants, printSizes])
 

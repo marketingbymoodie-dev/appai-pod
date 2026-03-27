@@ -37,8 +37,7 @@ export function SizeSelector({
               value={size.id}
               data-testid={`option-size-${size.id}`}
             >
-              {size.name}
-              {prices?.[size.id] && ` - $${(prices[size.id] / 100).toFixed(2)}`}
+              {size.name}{prices?.[size.id] ? ` - $${(prices[size.id] / 100).toFixed(2)}` : ''}
             </SelectItem>
           ))}
         </SelectContent>
