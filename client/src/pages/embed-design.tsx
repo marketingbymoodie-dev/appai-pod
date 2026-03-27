@@ -1831,8 +1831,19 @@ export default function EmbedDesign() {
         imageUrl: imageUrl,
         prompt: prompt,
       });
-      if (data.creditsRemaining !== undefined && customer) {
-        setCustomer({ ...customer, credits: data.creditsRemaining });
+      // Update credits from the response
+      if (data.creditsRemaining !== undefined) {
+        console.log('[EmbedDesign] Updating credits from', customer?.credits, 'to', data.creditsRemaining);
+        if (customer) {
+          setCustomer({ ...customer, credits: data.creditsRemaining });
+        } else {
+          // If no customer object yet, create one with the credits
+          setCustomer({
+            id: 'anonymous',
+            credits: data.creditsRemaining,
+            isLoggedIn: false,
+          });
+        }
       }
       // Use conditional default zoom based on product type for better coverage
       let zoomDefault = 100;
