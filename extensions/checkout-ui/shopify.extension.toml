@@ -1,7 +1,7 @@
 # Checkout UI extensions use a separate API version track from the Admin/Storefront API.
 # Valid checkout UI versions: 2025-04, 2025-07, 2025-10, 2026-01, 2026-04, unstable.
 # (These differ from the app-level api_version in shopify.app.toml.)
-api_version = "2026-01"
+api_version = "2025-04"
 
 [[extensions]]
 
