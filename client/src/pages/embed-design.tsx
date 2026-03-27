@@ -2213,6 +2213,32 @@ export default function EmbedDesign() {
       });
   }, [isShopify, isStorefront, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
 
+  // Build a price map from shopifyVariants, keyed by size name
+  const buildPriceMap = useCallback((): Record<string, number> => {
+    const priceMap: Record<string, number> = {};
+    if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
+    
+    // For each size, find a matching variant and get its price
+    for (const size of printSizes) {
+      const matchedVariant = shopifyVariants.find((v: any) => {
+        const options = [v.title].filter(Boolean);
+        return options.some(
+          (opt) =>
+            opt?.toLowerCase().includes(size.name.toLowerCase()) ||
+            size.name.toLowerCase().includes(opt?.toLowerCase())
+        );
+      });
+      
+      if (matchedVariant && matchedVariant.price) {
+        // Convert price string to cents (multiply by 100)
+        const priceInCents = Math.round(parseFloat(matchedVariant.price) * 100);
+        priceMap[size.id] = priceInCents;
+      }
+    }
+    
+    return priceMap;
+  }, [shopifyVariants, printSizes]);
+
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
@@ -3343,6 +3369,7 @@ export default function EmbedDesign() {
                           setSelectedSize(sizeId);
                           setTransform({ scale: defaultZoom, x: 50, y: 50 });
                         }}
+                        prices={buildPriceMap()}
                       />
                       {selectedSize === "" && (
                         <p className="text-xs text-muted-foreground mt-1">Please select a size</p>

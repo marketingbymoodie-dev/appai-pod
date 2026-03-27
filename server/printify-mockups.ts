@@ -106,7 +106,8 @@ function isAllowedImageUrl(url: string): boolean {
 
 const MAX_RETRIES = 3;
 const MAX_MOCKUP_VIEWS = 4;
-const PREFERRED_LABELS = ["front", "left", "right", "close-up"];
+// For double-sided products, prioritize front and back; for others, prefer lifestyle shots
+const PREFERRED_LABELS = ["front", "back", "left", "right", "close-up"];
 
 async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
