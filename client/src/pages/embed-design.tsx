@@ -648,6 +648,12 @@ export default function EmbedDesign() {
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(null);
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrl: string; prompt: string; baseTitle: string; createdAt: string}>>([]);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
+  const [showSavedDesigns, setShowSavedDesigns] = useState(false);
+  const [showCouponInput, setShowCouponInput] = useState(false);
+  const [couponCode, setCouponCode] = useState('');
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -3091,16 +3097,30 @@ export default function EmbedDesign() {
                 Create Your Design
               </h2>
               {isLoggedIn ? (
-                <div className="flex items-center gap-2 text-sm" data-testid="text-credits">
+                <div className="flex items-center gap-3 text-sm" data-testid="text-credits">
                   <span className="text-muted-foreground">{customer?.email || 'Signed in'}</span>
+                  <button
+                    onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
+                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent"
+                  >
+                    Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
+                  </button>
+                  <button
+                    onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
+                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent"
+                  >
+                    Redeem Code
+                  </button>
                   <span className="font-medium">{credits > 0 ? `${credits} credits` : ''}</span>
                   <button
                     onClick={() => {
                       setCustomer(null);
                       setStorefrontCustomerId(null);
                       setOtpEmail('');
+                      setShowSavedDesigns(false);
+                      setShowCouponInput(false);
                     }}
-                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0 ml-1"
+                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
                   >
                     Sign out
                   </button>
@@ -3266,6 +3286,112 @@ export default function EmbedDesign() {
                 </div>
               )}
             </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Saved Designs dropdown panel */}
+            {showSavedDesigns && isLoggedIn && (
+              <div className="absolute right-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
+                <Card className="border bg-background shadow-lg">
+                  <CardContent className="py-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold">Saved Designs</h3>
+                      <button
+                        onClick={() => setShowSavedDesigns(false)}
+                        className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    {savedDesignsLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Loading your designs...
+                      </div>
+                    ) : savedDesigns.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[300px] overflow-y-auto">
+                        {savedDesigns.map((d) => (
+                          <div key={d.id} className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow cursor-pointer">
+                            <div className="aspect-square relative">
+                              <img
+                                src={d.mockupUrl || d.artworkUrl}
+                                alt={d.prompt}
+                                className="w-full h-full object-cover"
+                              />
+                            </div>
+                            <div className="p-1.5">
+                              <p className="text-xs text-muted-foreground truncate" title={d.prompt}>{d.prompt}</p>
+                              {d.baseTitle && <p className="text-xs font-medium mt-0.5">{d.baseTitle}</p>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
+            {/* Coupon Code dropdown panel */}
+            {showCouponInput && isLoggedIn && (
+              <div className="absolute right-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                <Card className="border bg-background shadow-lg">
+                  <CardContent className="py-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold">Redeem Credit Code</h3>
+                      <button
+                        onClick={() => { setShowCouponInput(false); setCouponError(null); setCouponSuccess(null); }}
+                        className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    {couponError && <p className="text-destructive text-xs mb-2">{couponError}</p>}
+                    {couponSuccess && <p className="text-green-600 text-xs mb-2">{couponSuccess}</p>}
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Enter coupon code"
+                        value={couponCode}
+                        onChange={(e) => setCouponCode(e.target.value)}
+                        className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
+                        disabled={couponLoading}
+                      />
+                      <Button
+                        size="sm"
+                        disabled={couponLoading || !couponCode.trim()}
+                        onClick={() => {
+                          setCouponLoading(true);
+                          setCouponError(null);
+                          setCouponSuccess(null);
+                          safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ code: couponCode.trim(), customerId: storefrontCustomerId, shop: shopDomain }),
+                          })
+                            .then(r => r.json())
+                            .then(data => {
+                              if (data.ok) {
+                                setCouponSuccess(`Added ${data.creditsAdded} credits!`);
+                                setCouponCode('');
+                                if (customer) {
+                                  setCustomer({ ...customer, credits: data.newBalance });
+                                }
+                              } else {
+                                setCouponError(data.error || 'Invalid code');
+                              }
+                            })
+                            .catch(() => setCouponError('Failed to redeem code'))
+                            .finally(() => setCouponLoading(false));
+                        }}
+                      >
+                        {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Redeem'}
+                      </Button>
+                    </div>
+                  </CardContent>
                 </Card>
               </div>
             )}
@@ -3974,38 +4100,7 @@ export default function EmbedDesign() {
             )}
           </div>
         </div>
-        {/* Saved Designs — shown when logged in */}
-        {isLoggedIn && isStorefront && (
-          <div className="border-t pt-6 mt-6">
-            <h3 className="text-lg font-semibold mb-4">My Saved Designs</h3>
-            {savedDesignsLoading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Loading your designs...
-              </div>
-            ) : savedDesigns.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No saved designs yet. Generate a design and add it to cart to save it here.</p>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                {savedDesigns.map((d) => (
-                  <div key={d.id} className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow cursor-pointer group">
-                    <div className="aspect-square relative">
-                      <img
-                        src={d.mockupUrl || d.artworkUrl}
-                        alt={d.prompt}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                    <div className="p-2">
-                      <p className="text-xs text-muted-foreground truncate" title={d.prompt}>{d.prompt}</p>
-                      {d.baseTitle && <p className="text-xs font-medium mt-0.5">{d.baseTitle}</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+
         </>
         )}
       </div>

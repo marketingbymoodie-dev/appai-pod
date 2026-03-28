@@ -6562,6 +6562,61 @@ ${textEdgeRestrictions}
     }
   });
 
+  // ==================== STOREFRONT COUPON REDEMPTION ====================
+  app.post("/api/storefront/auth/redeem-coupon", async (req: Request, res: Response) => {
+    try {
+      const { code, customerId, shop } = req.body;
+      if (!code || !customerId || !shop) {
+        return res.status(400).json({ error: "Code, customerId, and shop are required" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const customer = await storage.getCustomer(customerId);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+      const coupon = await storage.getCouponByCode(code);
+      if (!coupon) {
+        return res.status(404).json({ error: "Invalid coupon code" });
+      }
+      if (!coupon.isActive) {
+        return res.status(400).json({ error: "Coupon is no longer active" });
+      }
+      if (coupon.expiresAt && new Date() > coupon.expiresAt) {
+        return res.status(400).json({ error: "Coupon has expired" });
+      }
+      if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
+        return res.status(400).json({ error: "Coupon has reached maximum uses" });
+      }
+      await storage.updateCustomer(customer.id, {
+        credits: customer.credits + coupon.creditAmount,
+      });
+      await storage.createCouponRedemption({
+        couponId: coupon.id,
+        customerId: customer.id,
+      });
+      await storage.updateCoupon(coupon.id, {
+        usedCount: coupon.usedCount + 1,
+      });
+      await storage.createCreditTransaction({
+        customerId: customer.id,
+        type: "coupon",
+        amount: coupon.creditAmount,
+        description: `Redeemed coupon: ${coupon.code}`,
+      });
+      res.json({
+        ok: true,
+        creditsAdded: coupon.creditAmount,
+        newBalance: customer.credits + coupon.creditAmount,
+      });
+    } catch (error: any) {
+      console.error("[Storefront Coupon] redeem error:", error);
+      res.status(500).json({ error: "Failed to redeem coupon" });
+    }
+  });
+
   // ==================== STOREFRONT DESIGN SKU (SHADOW SKU FOR CHECKOUT) ====================
   // Creates or reuses a hidden Shopify product+variant with the mockup as its image.
   // The storefront adds this shadow variant to cart so checkout renders the exact mockup.
