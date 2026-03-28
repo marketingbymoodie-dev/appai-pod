@@ -36,6 +36,7 @@ interface CustomizerPage {
   handle: string;
   title: string;
   baseVariantId: string;
+  baseProductId: string | null;
   baseProductTitle: string | null;
   baseVariantTitle: string | null;
   baseProductPrice: string | null;
@@ -91,6 +92,9 @@ export default function AdminCustomizerPages() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
+  const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
+  const [syncPricesMap, setSyncPricesMap] = useState<Record<string, string>>({});
+  const [syncPricesLoading, setSyncPricesLoading] = useState(false);
 
   // Hub URL (fallback for disabled pages)
   const [hubUrl, setHubUrl] = useState("");
@@ -155,7 +159,7 @@ export default function AdminCustomizerPages() {
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
-    enabled: createOpen,
+    enabled: createOpen || !!syncPricesTarget,
   });
 
   const shopDomain = pagesData?.pages?.[0]?.shop ?? "";
@@ -205,6 +209,34 @@ export default function AdminCustomizerPages() {
       toast({ title: "Delete failed", description: msg, variant: "destructive" });
     },
   });
+
+  async function handleSyncPrices() {
+    if (!syncPricesTarget) return;
+    const prices = Object.fromEntries(
+      Object.entries(syncPricesMap).filter(([, v]) => v && parseFloat(v) > 0)
+    );
+    if (Object.keys(prices).length === 0) {
+      toast({ title: "No prices entered", description: "Please enter at least one price.", variant: "destructive" });
+      return;
+    }
+    setSyncPricesLoading(true);
+    try {
+      const res = await apiRequest("POST", `/api/appai/customizer-pages/${syncPricesTarget.id}/sync-prices`, { variantPrices: prices });
+      const data = await res.json();
+      if (data.success) {
+        queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+        toast({ title: "Prices updated", description: `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.` });
+        setSyncPricesTarget(null);
+        setSyncPricesMap({});
+      } else {
+        toast({ title: "Sync failed", description: data.error ?? "Unknown error", variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "Sync failed", description: err.message ?? "Unknown error", variant: "destructive" });
+    } finally {
+      setSyncPricesLoading(false);
+    }
+  }
 
   function resetForm() {
     setFormTitle("");
@@ -1228,6 +1260,17 @@ export default function AdminCustomizerPages() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            title="Sync prices to Shopify"
+                            onClick={() => {
+                              setSyncPricesTarget(page);
+                              setSyncPricesMap({});
+                            }}
+                          >
+                            <DollarSign className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             title="Delete page"
                             className="text-destructive hover:text-destructive"
                             onClick={() => setDeleteTarget(page)}
@@ -1272,6 +1315,79 @@ export default function AdminCustomizerPages() {
           </>
         )}
       </div>
+
+      {/* Sync Prices dialog */}
+      <Dialog open={!!syncPricesTarget} onOpenChange={(v) => { if (!v) { setSyncPricesTarget(null); setSyncPricesMap({}); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <DollarSign className="h-5 w-5" />
+              Sync Prices — {syncPricesTarget?.title}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <p className="text-sm text-muted-foreground">
+              Enter the retail price for each variant. These will be pushed directly to Shopify.
+            </p>
+            {syncPricesTarget && (() => {
+              if (blanksLoading) {
+                return <Skeleton className="h-24 w-full" />;
+              }
+              // Find the blank for this page's product
+              const blank = (blanksData?.blanks ?? []).find(
+                (b) => b.productId === syncPricesTarget.baseProductId
+              );
+              const variants = blank?.variants ?? [];
+              if (variants.length === 0) {
+                return (
+                  <p className="text-sm text-amber-600">
+                    No variant data available. Make sure the product is imported.
+                  </p>
+                );
+              }
+              return (
+                <div className="space-y-2">
+                  {variants.map((v) => (
+                    <div key={v.id} className="flex items-center gap-3">
+                      <span className="text-sm flex-1 min-w-0 truncate">{v.title}</span>
+                      <div className="relative w-28 shrink-0">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                        <Input
+                          className="pl-6 text-sm"
+                          placeholder="0.00"
+                          value={syncPricesMap[v.id] ?? ""}
+                          onChange={(e) => setSyncPricesMap({ ...syncPricesMap, [v.id]: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            <div className="flex gap-2 pt-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => { setSyncPricesTarget(null); setSyncPricesMap({}); }}
+                disabled={syncPricesLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleSyncPrices}
+                disabled={syncPricesLoading}
+              >
+                {syncPricesLoading ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Syncing…</>
+                ) : (
+                  <><RefreshCw className="h-4 w-4 mr-2" /> Sync Prices</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Confirm delete dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>

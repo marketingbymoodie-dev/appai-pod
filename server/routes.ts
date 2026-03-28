@@ -11839,31 +11839,88 @@ ${textEdgeRestrictions}
 
         // Build a printifyVariantId → shopifyVariantId mapping for products that
         // were just sent to Shopify (variantPrices keyed by "printify:XXXXX").
-        // We get the live Shopify variants from the product we just fetched and
-        // cross-reference with the stored variantMap (printifyVariantId is in each entry).
+        // Strategy: use shopifyVariantIds (sizeName:colorName → shopifyVid) + variantMap
+        // (sizeId:colorId → printifyVariantId) + sizes/frameColors to bridge the gap.
         const printifyToShopifyVariantId: Record<string, number> = {};
         if (matchedType?.variantMap) {
           const storedVm = typeof matchedType.variantMap === "string"
             ? JSON.parse(matchedType.variantMap || "{}")
             : (matchedType.variantMap || {});
-          // Fetch all variants for the product (we may only have firstVariant above)
-          const allVariantsResult = await shopifyApiCall(
-            shop, installation.accessToken,
-            `products/${variant.product_id}.json?fields=id,variants`,
-          );
-          const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-          // Build SKU → shopify variant ID map
-          const skuToShopifyId: Record<string, number> = {};
-          for (const sv of allShopifyVariants) {
-            if (sv.sku) skuToShopifyId[sv.sku] = sv.id;
-          }
-          // Map printifyVariantId → shopifyVariantId via variantMap entries
-          for (const [, entry] of Object.entries(storedVm)) {
-            const e = entry as any;
-            if (e.printifyVariantId && e.sku && skuToShopifyId[e.sku]) {
-              printifyToShopifyVariantId[String(e.printifyVariantId)] = skuToShopifyId[e.sku];
+          const svIds = (typeof matchedType.shopifyVariantIds === "string"
+            ? JSON.parse(matchedType.shopifyVariantIds || "{}")
+            : (matchedType.shopifyVariantIds || {})) as Record<string, number>;
+          const ptSizes = (typeof (matchedType as any).sizes === "string"
+            ? JSON.parse((matchedType as any).sizes || "[]")
+            : ((matchedType as any).sizes || [])) as Array<{id: string; name: string}>;
+          const ptColors = (typeof (matchedType as any).frameColors === "string"
+            ? JSON.parse((matchedType as any).frameColors || "[]")
+            : ((matchedType as any).frameColors || [])) as Array<{id: string; name: string}>;
+
+          // Build sizeName:colorName → shopifyVariantId from stored shopifyVariantIds
+          // (keys may be either sizeName:colorName or sizeId:colorId depending on when stored)
+          // Also build sizeId:colorId → shopifyVariantId via name bridging
+          const nameToShopifyId: Record<string, number> = {};
+          for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
+            nameToShopifyId[mapKey] = shopifyVid as number;
+            // Try to also add a name-based key if mapKey looks like IDs
+            const [kSizeId, kColorId] = mapKey.split(":");
+            const sizeName = ptSizes.find((s: any) => String(s.id) === kSizeId)?.name;
+            const colorName = ptColors.find((c: any) => String(c.id) === kColorId)?.name;
+            if (sizeName) {
+              const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
+              nameToShopifyId[nameKey] = shopifyVid as number;
             }
           }
+
+          // Map printifyVariantId → shopifyVariantId via variantMap
+          for (const [vmKey, entry] of Object.entries(storedVm)) {
+            const e = entry as any;
+            if (!e.printifyVariantId) continue;
+            const [sizeId, colorId] = vmKey.split(":");
+            const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+            const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
+            // Try multiple key formats to find the shopify variant ID
+            const candidates = [
+              vmKey,                                                          // sizeId:colorId
+              colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`, // sizeName:colorName
+              `${sizeName}:${colorId}`,                                        // sizeName:colorId
+              `${sizeId}:${colorName ?? colorId}`,                             // sizeId:colorName
+            ];
+            for (const candidate of candidates) {
+              if (nameToShopifyId[candidate]) {
+                printifyToShopifyVariantId[String(e.printifyVariantId)] = nameToShopifyId[candidate];
+                break;
+              }
+            }
+          }
+
+          // Fallback: if shopifyVariantIds is empty but we have live Shopify variants,
+          // try to match by position (order of variants in Shopify matches variantMap order)
+          if (Object.keys(printifyToShopifyVariantId).length === 0) {
+            const allVariantsResult = await shopifyApiCall(
+              shop, installation.accessToken,
+              `products/${variant.product_id}.json?fields=id,variants`,
+            );
+            const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
+            // Build title → shopify variant ID map
+            const titleToShopifyId: Record<string, number> = {};
+            for (const sv of allShopifyVariants) {
+              if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
+              if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
+            }
+            for (const [vmKey, entry] of Object.entries(storedVm)) {
+              const e = entry as any;
+              if (!e.printifyVariantId) continue;
+              const [sizeId] = vmKey.split(":");
+              const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+              const shopifyId = titleToShopifyId[sizeName.toLowerCase()];
+              if (shopifyId) {
+                printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
+              }
+            }
+          }
+
+          console.log(`[customizer-pages] printifyToShopifyVariantId mapping built: ${JSON.stringify(printifyToShopifyVariantId)}`);
         }
 
         // Write prices to Shopify
@@ -12114,6 +12171,153 @@ ${textEdgeRestrictions}
 
     await storage.deleteCustomizerPage(dbPage.id);
     return res.json({ success: true });
+  }));
+
+  /** POST /api/appai/customizer-pages/:id/sync-prices — update Shopify variant prices for an existing page */
+  app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
+    if (!dbPage) return res.status(404).json({ error: "Page not found" });
+
+    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+      return res.status(400).json({ error: "variantPrices is required" });
+    }
+
+    // Validate all prices
+    for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (isNaN(num) || num <= 0) {
+        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+      }
+    }
+
+    // Find the product type for this page
+    const productTypes = await storage.getActiveProductTypes();
+    const matchedType = productTypes.find(
+      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
+    );
+
+    // Build printifyVariantId → shopifyVariantId mapping
+    const printifyToShopifyVariantId: Record<string, number> = {};
+    if (matchedType?.variantMap) {
+      const storedVm = typeof matchedType.variantMap === "string"
+        ? JSON.parse(matchedType.variantMap || "{}")
+        : (matchedType.variantMap || {});
+      const svIds = (typeof matchedType.shopifyVariantIds === "string"
+        ? JSON.parse(matchedType.shopifyVariantIds || "{}")
+        : (matchedType.shopifyVariantIds || {})) as Record<string, number>;
+      const ptSizes = (typeof (matchedType as any).sizes === "string"
+        ? JSON.parse((matchedType as any).sizes || "[]")
+        : ((matchedType as any).sizes || [])) as Array<{id: string; name: string}>;
+      const ptColors = (typeof (matchedType as any).frameColors === "string"
+        ? JSON.parse((matchedType as any).frameColors || "[]")
+        : ((matchedType as any).frameColors || [])) as Array<{id: string; name: string}>;
+
+      const nameToShopifyId: Record<string, number> = {};
+      for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
+        nameToShopifyId[mapKey] = shopifyVid as number;
+        const [kSizeId, kColorId] = mapKey.split(":");
+        const sizeName = ptSizes.find((s: any) => String(s.id) === kSizeId)?.name;
+        const colorName = ptColors.find((c: any) => String(c.id) === kColorId)?.name;
+        if (sizeName) {
+          const nameKey = colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`;
+          nameToShopifyId[nameKey] = shopifyVid as number;
+        }
+      }
+
+      for (const [vmKey, entry] of Object.entries(storedVm)) {
+        const e = entry as any;
+        if (!e.printifyVariantId) continue;
+        const [sizeId, colorId] = vmKey.split(":");
+        const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+        const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
+        const candidates = [
+          vmKey,
+          colorName ? `${sizeName}:${colorName}` : `${sizeName}:default`,
+          `${sizeName}:${colorId}`,
+          `${sizeId}:${colorName ?? colorId}`,
+        ];
+        for (const candidate of candidates) {
+          if (nameToShopifyId[candidate]) {
+            printifyToShopifyVariantId[String(e.printifyVariantId)] = nameToShopifyId[candidate];
+            break;
+          }
+        }
+      }
+
+      // Fallback: match by title from live Shopify variants
+      if (Object.keys(printifyToShopifyVariantId).length === 0) {
+        const allVariantsResult = await shopifyApiCall(
+          shop, installation.accessToken,
+          `products/${dbPage.baseProductId}.json?fields=id,variants`,
+        );
+        const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
+        const titleToShopifyId: Record<string, number> = {};
+        for (const sv of allShopifyVariants) {
+          if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
+          if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
+        }
+        for (const [vmKey, entry] of Object.entries(storedVm)) {
+          const e = entry as any;
+          if (!e.printifyVariantId) continue;
+          const [sizeId] = vmKey.split(":");
+          const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+          const shopifyId = titleToShopifyId[sizeName.toLowerCase()];
+          if (shopifyId) {
+            printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
+          }
+        }
+      }
+    }
+
+    console.log(`[sync-prices] printifyToShopifyVariantId: ${JSON.stringify(printifyToShopifyVariantId)}`);
+
+    // Also fetch live Shopify variants for direct ID matching
+    const allVariantsResult = await shopifyApiCall(
+      shop, installation.accessToken,
+      `products/${dbPage.baseProductId}.json?fields=id,variants`,
+    );
+    const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
+
+    const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
+
+    for (const [vid, price] of Object.entries(variantPrices)) {
+      let variantNum: number;
+      if (String(vid).startsWith("printify:")) {
+        const printifyId = String(vid).replace("printify:", "");
+        variantNum = printifyToShopifyVariantId[printifyId] ?? 0;
+      } else {
+        variantNum = parseInt(String(vid).replace(/\D/g, ""), 10);
+      }
+      if (!variantNum) {
+        updated.push({ variantId: 0, price, success: false, error: `Could not resolve Shopify variant ID for key "${vid}"` });
+        continue;
+      }
+      const formatted = parseFloat(String(price)).toFixed(2);
+      const priceResult = await shopifyApiCall(shop, installation.accessToken, `variants/${variantNum}.json`, {
+        method: "PUT",
+        body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+      });
+      if (priceResult.ok) {
+        updated.push({ variantId: variantNum, price: formatted, success: true });
+        // Update baseProductPrice if this is the base variant
+        if (String(variantNum) === String(dbPage.baseVariantId)) {
+          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
+        }
+      } else {
+        updated.push({ variantId: variantNum, price: formatted, success: false, error: priceResult.error });
+        console.warn(`[sync-prices] Failed to update variant ${variantNum}: ${priceResult.error}`);
+      }
+    }
+
+    const successCount = updated.filter(u => u.success).length;
+    return res.json({ success: true, updated, successCount, totalCount: updated.length });
   }));
 
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */
