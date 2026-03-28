@@ -5258,29 +5258,42 @@ ${textEdgeRestrictions}
       let customer: any = null;
 
       if (customerId) {
-        customer = await storage.getOrCreateShopifyCustomer(shop, customerId);
-        
-        // If customer has credits, use them first
-        if (customer.credits > 0) {
-          console.log(P, reqId, `customer ${customerId} has ${customer.credits} credits, deducting 1`);
-          const updated = await storage.decrementCreditsIfAvailable(customer.id);
-          if (!updated) {
-            return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
+        // Determine if this is an OTP customer (internal UUID) or Shopify-native customer (numeric ID).
+        // OTP customers are already in the DB by their internal UUID; Shopify-native customers are
+        // looked up/created via getOrCreateShopifyCustomer using their Shopify numeric ID.
+        const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+        if (isOtpCustomer) {
+          customer = await storage.getCustomer(customerId);
+          if (!customer) {
+            console.warn(P, reqId, `OTP customer ${customerId} not found in DB`);
           }
         } else {
-          // No credits, check free limit
-          const freeUsed = customer.freeGenerationsUsed || 0;
-          if (freeUsed >= FREE_GENERATION_LIMIT) {
-            return res.status(403).json({
-              error: "FREE_LIMIT_REACHED",
-              message: "You've used all 10 free generations. Purchase credits to continue.",
-              generationsUsed: freeUsed,
-              limit: FREE_GENERATION_LIMIT,
-            });
+          customer = await storage.getOrCreateShopifyCustomer(shop, customerId);
+        }
+        
+        if (customer) {
+          // If customer has credits, use them first
+          if (customer.credits > 0) {
+            console.log(P, reqId, `customer ${customerId} has ${customer.credits} credits, deducting 1`);
+            const updated = await storage.decrementCreditsIfAvailable(customer.id);
+            if (!updated) {
+              return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
+            }
+          } else {
+            // No credits, check free limit
+            const freeUsed = customer.freeGenerationsUsed || 0;
+            if (freeUsed >= FREE_GENERATION_LIMIT) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: "You've used all 10 free generations. Purchase credits to continue.",
+                generationsUsed: freeUsed,
+                limit: FREE_GENERATION_LIMIT,
+              });
+            }
+            // Increment free usage
+            await storage.updateCustomer(customer.id, { freeGenerationsUsed: freeUsed + 1 });
+            console.log(P, reqId, `customer ${customerId} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
           }
-          // Increment free usage
-          await storage.updateCustomer(customer.id, { freeGenerationsUsed: freeUsed + 1 });
-          console.log(P, reqId, `customer ${customerId} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
         }
       } else if (sessionId) {
         // Anonymous session limit
@@ -5735,8 +5748,11 @@ ${textEdgeRestrictions}
       if (job.status === "complete") {
         let creditsRemaining = 0;
         if (job.customerId) {
-          const customer = await storage.getOrCreateShopifyCustomer(shop, job.customerId);
-          creditsRemaining = customer.credits;
+          const isOtpCust = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(job.customerId);
+          const cust = isOtpCust
+            ? await storage.getCustomer(job.customerId)
+            : await storage.getOrCreateShopifyCustomer(shop, job.customerId);
+          creditsRemaining = cust?.credits ?? 0;
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
           creditsRemaining = Math.max(0, 10 - count);
