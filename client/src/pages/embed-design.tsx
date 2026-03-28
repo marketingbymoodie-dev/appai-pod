@@ -3093,7 +3093,7 @@ export default function EmbedDesign() {
 
         {/* OTP Login Modal */}
         {showOtpLogin && (
-          <Card className="border-primary bg-background shadow-lg">
+          <Card className="border-primary bg-background shadow-lg ml-auto" style={{ maxWidth: '400px' }}>
             <CardContent className="py-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold">Sign in with Email</h3>

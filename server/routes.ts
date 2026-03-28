@@ -6453,7 +6453,7 @@ ${textEdgeRestrictions}
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          from: "AppAI <noreply@appai.app>",
+          from: "AppAI <onboarding@resend.dev>",
           to: [emailNorm],
           subject: "Your AppAI Login Code",
           html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:20px"><h2 style="text-align:center">Your Login Code</h2><div style="background:#f5f5f5;border-radius:8px;padding:20px;text-align:center;margin:20px 0"><span style="font-size:32px;letter-spacing:8px;font-weight:bold">${otpCode}</span></div><p style="color:#666;text-align:center">This code expires in 10 minutes.</p></div>`,
