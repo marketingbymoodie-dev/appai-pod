@@ -8,7 +8,9 @@ import fs from "fs";
 import path from "path";
 import sharp from "sharp";
 import { storage } from "./storage";
-import { pool } from "./db";
+import { pool, db } from "./db";
+import { customizerDesigns } from "@shared/schema";
+import { eq, and, desc } from "drizzle-orm";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
@@ -6400,6 +6402,44 @@ ${textEdgeRestrictions}
     }
   });
 
+
+  // ==================== STOREFRONT CUSTOMER DESIGNS LIST ====================
+  app.get("/api/storefront/customizer/my-designs", async (req: Request, res: Response) => {
+    try {
+      const shop = req.query.shop as string;
+      const customerId = req.query.customerId as string;
+      if (!shop || !customerId) {
+        return res.status(400).json({ error: "shop and customerId are required" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const rows = await db
+        .select()
+        .from(customizerDesigns)
+        .where(
+          and(
+            eq(customizerDesigns.shop, shop),
+            eq(customizerDesigns.shopifyCustomerId, customerId),
+            eq(customizerDesigns.status, "READY")
+          )
+        )
+        .orderBy(desc(customizerDesigns.createdAt))
+        .limit(50);
+      return res.json({ designs: rows.map(d => ({
+        id: d.id,
+        artworkUrl: d.artworkUrl,
+        mockupUrl: d.mockupUrl,
+        prompt: d.prompt,
+        baseTitle: d.baseTitle,
+        createdAt: d.createdAt,
+      })) });
+    } catch (err: any) {
+      console.error("[MyDesigns GET]", err);
+      return res.status(500).json({ error: "Failed to fetch designs" });
+    }
+  });
 
   // ==================== STOREFRONT OTP AUTH ====================
   // Email-based OTP login for storefront customers.

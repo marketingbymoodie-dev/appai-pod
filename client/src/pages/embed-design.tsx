@@ -29,6 +29,7 @@ import {
 
 interface CustomerInfo {
   id: string;
+  email?: string;
   credits: number;
   isLoggedIn: boolean;
 }
@@ -645,6 +646,8 @@ export default function EmbedDesign() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(null);
+  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrl: string; prompt: string; baseTitle: string; createdAt: string}>>([]);
+  const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -3055,6 +3058,19 @@ export default function EmbedDesign() {
   const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
   const credits = customer?.credits ?? 0;
 
+  // Fetch saved designs when logged in
+  React.useEffect(() => {
+    if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
+    setSavedDesignsLoading(true);
+    safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.designs) setSavedDesigns(data.designs);
+      })
+      .catch(() => {})
+      .finally(() => setSavedDesignsLoading(false));
+  }, [isLoggedIn, storefrontCustomerId, shopDomain]);
+
   // Derived values for the ATC button state — computed at render scope to avoid IIFE in JSX
   const atcHasMockups = productTypeConfig?.hasPrintifyMockups;
   const atcMockupsReady = printifyMockups.length > 0 || printifyMockupImages.length > 0;
@@ -3070,30 +3086,42 @@ export default function EmbedDesign() {
       <div className="max-w-6xl mx-auto space-y-4">
         {/* Login / credits info — shown in standalone and storefront modes */}
         {(isStorefront || (!isShopify && !isStorefront)) && (
-          <div className="flex items-center justify-between gap-4">
-            <h2 className="text-lg font-semibold" data-testid="text-title">
-              Create Your Design
-            </h2>
-            {isLoggedIn ? (
-              <span className="text-sm text-muted-foreground" data-testid="text-credits">
-                {credits > 0 ? `${credits} credits` : 'Logged in'}
-              </span>
-            ) : (
-              <button
-                onClick={() => setShowOtpLogin(true)}
-                className="text-sm text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0"
-                data-testid="text-login-prompt"
-              >
-                <LogIn className="w-4 h-4" />
-                Log in to your store account to save designs
-              </button>
-            )}
-          </div>
-        )}
+          <div className="relative">
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-lg font-semibold" data-testid="text-title">
+                Create Your Design
+              </h2>
+              {isLoggedIn ? (
+                <div className="flex items-center gap-2 text-sm" data-testid="text-credits">
+                  <span className="text-muted-foreground">{customer?.email || 'Signed in'}</span>
+                  <span className="font-medium">{credits > 0 ? `${credits} credits` : ''}</span>
+                  <button
+                    onClick={() => {
+                      setCustomer(null);
+                      setStorefrontCustomerId(null);
+                      setOtpEmail('');
+                    }}
+                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0 ml-1"
+                  >
+                    Sign out
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowOtpLogin(true)}
+                  className="text-sm text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0"
+                  data-testid="text-login-prompt"
+                >
+                  <LogIn className="w-4 h-4" />
+                  Log in to your store account to save designs
+                </button>
+              )}
+            </div>
 
-        {/* OTP Login Modal */}
-        {showOtpLogin && (
-          <Card className="border-primary bg-background shadow-lg ml-auto" style={{ maxWidth: '400px' }}>
+            {/* OTP Login — absolute overlay, doesn't push content */}
+            {showOtpLogin && (
+              <div className="absolute right-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                <Card className="border-primary bg-background shadow-lg">
             <CardContent className="py-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold">Sign in with Email</h3>
@@ -3185,7 +3213,7 @@ export default function EmbedDesign() {
                             .then(data => {
                               if (data.ok) {
                                 setStorefrontCustomerId(data.customerId);
-                                setCustomer({ id: data.customerId, credits: data.credits || 0, isLoggedIn: true });
+                                setCustomer({ id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true });
                                 setShowOtpLogin(false);
                                 setOtpStep('email');
                                 setOtpCode('');
@@ -3214,7 +3242,7 @@ export default function EmbedDesign() {
                           .then(data => {
                             if (data.ok) {
                               setStorefrontCustomerId(data.customerId);
-                              setCustomer({ id: data.customerId, credits: data.credits || 0, isLoggedIn: true });
+                              setCustomer({ id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true });
                               setShowOtpLogin(false);
                               setOtpStep('email');
                               setOtpCode('');
@@ -3239,7 +3267,10 @@ export default function EmbedDesign() {
                 </div>
               )}
             </CardContent>
-          </Card>
+                </Card>
+              </div>
+            )}
+          </div>
         )}
 
         {/* Free generation limit reached — prompt to create account */}
@@ -3944,6 +3975,38 @@ export default function EmbedDesign() {
             )}
           </div>
         </div>
+        {/* Saved Designs — shown when logged in */}
+        {isLoggedIn && isStorefront && (
+          <div className="border-t pt-6 mt-6">
+            <h3 className="text-lg font-semibold mb-4">My Saved Designs</h3>
+            {savedDesignsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Loading your designs...
+              </div>
+            ) : savedDesigns.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No saved designs yet. Generate a design and add it to cart to save it here.</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                {savedDesigns.map((d) => (
+                  <div key={d.id} className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow cursor-pointer group">
+                    <div className="aspect-square relative">
+                      <img
+                        src={d.mockupUrl || d.artworkUrl}
+                        alt={d.prompt}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="p-2">
+                      <p className="text-xs text-muted-foreground truncate" title={d.prompt}>{d.prompt}</p>
+                      {d.baseTitle && <p className="text-xs font-medium mt-0.5">{d.baseTitle}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         </>
         )}
       </div>
