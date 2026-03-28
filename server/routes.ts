@@ -6394,10 +6394,12 @@ ${textEdgeRestrictions}
 
 
   // ==================== STOREFRONT CUSTOMER DESIGNS LIST ====================
-  app.get("/api/storefront/customizer/my-designs", async (req: Request, res: Response) => {
+  // POST instead of GET so customerId (UUID) is sent in the body, not the URL.
+  // The Shopify App Proxy truncates long query parameter values, which broke UUID lookups.
+  app.post("/api/storefront/customizer/my-designs", async (req: Request, res: Response) => {
     try {
-      const shop = req.query.shop as string;
-      const customerId = req.query.customerId as string;
+      const shop = (req.body.shop || req.query.shop) as string;
+      const customerId = (req.body.customerId || req.query.customerId) as string;
       if (!shop || !customerId) {
         return res.status(400).json({ error: "shop and customerId are required" });
       }

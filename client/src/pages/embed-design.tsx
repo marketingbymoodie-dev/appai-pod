@@ -1940,7 +1940,11 @@ export default function EmbedDesign() {
           if (saved.saved) {
             // Refresh saved designs list
             setSavedDesignsLoading(true);
-            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(saveShop)}&customerId=${encodeURIComponent(saveCustomerId)}`)
+            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ shop: saveShop, customerId: saveCustomerId }),
+            })
               .then(r => r.json()).then(d => { console.log('[AutoSave] my-designs response:', d); if (d.designs) setSavedDesigns(d.designs); })
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
           }
@@ -3084,7 +3088,11 @@ export default function EmbedDesign() {
   useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
-    safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
+    safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+    })
       .then(r => r.json())
       .then(data => {
         if (data.designs) setSavedDesigns(data.designs);
@@ -3287,7 +3295,11 @@ export default function EmbedDesign() {
                                 // Refresh saved designs list
                                 if (shopDomain) {
                                   setSavedDesignsLoading(true);
-                                  safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+                                  safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ shop: shopDomain, customerId: newCustomerId }),
+                                  })
                                     .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
                                     .catch(() => {}).finally(() => setSavedDesignsLoading(false));
                                 }
