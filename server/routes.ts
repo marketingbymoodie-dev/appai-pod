@@ -5833,6 +5833,7 @@ ${textEdgeRestrictions}
       }
 
       const job = await storage.getGenerationJob(jobId);
+      console.log(`[SaveDesign] jobId=${jobId} found=${!!job} jobShop=${job?.shop} reqShop=${shop} status=${job?.status} hasImage=${!!job?.designImageUrl} existingCustomerId=${job?.customerId}`);
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Design not found" });
       }
@@ -5847,6 +5848,7 @@ ${textEdgeRestrictions}
         customerId,
         sessionId: null,
       });
+      console.log(`[SaveDesign] Linked jobId=${jobId} to customerId=${customerId}`);
 
       return res.json({ saved: true, jobId });
     } catch (error) {
@@ -6403,6 +6405,7 @@ ${textEdgeRestrictions}
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const rows = await db
         .select()
         .from(generationJobs)
@@ -6415,6 +6418,7 @@ ${textEdgeRestrictions}
         )
         .orderBy(desc(generationJobs.createdAt))
         .limit(50);
+      console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
       return res.json({ designs: rows.map(d => ({
         id: d.id,
         artworkUrl: d.designImageUrl,

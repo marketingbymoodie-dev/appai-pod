@@ -1849,7 +1849,7 @@ export default function EmbedDesign() {
       }
       return data;
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
       const designId = data.designId || data.design?.id || crypto.randomUUID();
       setAddedToCart(false);
@@ -1926,20 +1926,25 @@ export default function EmbedDesign() {
       } catch (e) { /* sessionStorage may be unavailable */ }
 
       // Auto-save design to account if user is logged in (storefront mode)
-      if (isStorefront && storefrontCustomerId && data.jobId) {
+      // Use variables.customerId (from the mutation payload) to avoid stale closure issues
+      const saveCustomerId = variables.customerId || storefrontCustomerId;
+      const saveShop = variables.shop || shopDomain;
+      console.log('[AutoSave] isStorefront:', isStorefront, 'customerId:', saveCustomerId, 'jobId:', data.jobId);
+      if (isStorefront && saveCustomerId && data.jobId) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobId: data.jobId, customerId: storefrontCustomerId, shop: shopDomain }),
+          body: JSON.stringify({ jobId: data.jobId, customerId: saveCustomerId, shop: saveShop }),
         }).then(r => r.json()).then(saved => {
+          console.log('[AutoSave] save-design response:', saved);
           if (saved.saved) {
             // Refresh saved designs list
             setSavedDesignsLoading(true);
-            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
-              .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(saveShop)}&customerId=${encodeURIComponent(saveCustomerId)}`)
+              .then(r => r.json()).then(d => { console.log('[AutoSave] my-designs response:', d); if (d.designs) setSavedDesigns(d.designs); })
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
           }
-        }).catch(() => {}); // silent fail — don't interrupt user experience
+        }).catch((e) => { console.error('[AutoSave] save-design error:', e); }); // log errors for debugging
       }
 
       // Clear any existing mockups and fetch new Printify composite mockups
