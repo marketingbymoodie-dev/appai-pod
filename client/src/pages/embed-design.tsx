@@ -3059,7 +3059,7 @@ export default function EmbedDesign() {
   const credits = customer?.credits ?? 0;
 
   // Fetch saved designs when logged in
-  React.useEffect(() => {
+  useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
