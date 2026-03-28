@@ -322,6 +322,11 @@ app.use((req, res, next) => {
     app.use("/s", express.static(publicDir, { index: false }));
     console.log(`[APP PROXY] Static assets mounted at /s → ${publicDir}`);
 
+    // Serve assets at /apps/appai/ so Shopify admin embedded app can load
+    // /apps/appai/assets/index-xxx.js → publicDir/assets/index-xxx.js
+    app.use("/apps/appai", express.static(publicDir, { index: false }));
+    console.log(`[APP PROXY] Admin app assets mounted at /apps/appai → ${publicDir}`);
+
     // Proxied designer HTML handler
     app.get("/s/designer", (req: Request, res: Response, next: NextFunction) => {
       if (!(req as any).isProxied) return next();

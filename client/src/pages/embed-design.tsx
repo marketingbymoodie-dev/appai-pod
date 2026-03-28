@@ -632,20 +632,29 @@ export default function EmbedDesign() {
   
   const shopDomain = resolveShopDomain();
   const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [customer, setCustomer] = useState<CustomerInfo | null>(null);
+  const [customer, setCustomer] = useState<CustomerInfo | null>(() => {
+    try {
+      const saved = localStorage.getItem('appai_customer');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const [sessionLoading, setSessionLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [freeLimitReached, setFreeLimitReached] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
-  // OTP login state for storefront
+  // OTP login state for storefront — restore from localStorage if available
   const [showOtpLogin, setShowOtpLogin] = useState(false);
-  const [otpEmail, setOtpEmail] = useState("");
+  const [otpEmail, setOtpEmail] = useState(() => {
+    try { return localStorage.getItem('appai_otp_email') || ''; } catch { return ''; }
+  });
   const [otpCode, setOtpCode] = useState("");
   const [otpStep, setOtpStep] = useState<"email" | "code">("email");
   const [otpLoading, setOtpLoading] = useState(false);
   const [otpError, setOtpError] = useState<string | null>(null);
-  const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(null);
+  const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
+    try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
+  });
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrl: string; prompt: string; baseTitle: string; createdAt: string}>>([]);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
@@ -1852,7 +1861,9 @@ export default function EmbedDesign() {
       if (data.creditsRemaining !== undefined) {
         console.log('[EmbedDesign] Updating credits from', customer?.credits, 'to', data.creditsRemaining);
         if (customer) {
-          setCustomer({ ...customer, credits: data.creditsRemaining });
+          const updatedCust = { ...customer, credits: data.creditsRemaining };
+          setCustomer(updatedCust);
+          try { localStorage.setItem('appai_customer', JSON.stringify(updatedCust)); } catch {}
         } else {
           // If no customer object yet, create one with the credits
           setCustomer({
@@ -2039,6 +2050,7 @@ export default function EmbedDesign() {
       sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
       productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
       sessionId: isStorefront ? anonSessionId : undefined,
+      customerId: storefrontCustomerId || undefined,
     });
     setDesignSource("ai");
   };
@@ -3117,6 +3129,7 @@ export default function EmbedDesign() {
                       setCustomer(null);
                       setStorefrontCustomerId(null);
                       setOtpEmail('');
+                      try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
                       setShowSavedDesigns(false);
                       setShowCouponInput(false);
                     }}
@@ -3232,7 +3245,9 @@ export default function EmbedDesign() {
                             .then(data => {
                               if (data.ok) {
                                 setStorefrontCustomerId(data.customerId);
-                                setCustomer({ id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true });
+                                const custObj2 = { id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
+                                setCustomer(custObj2);
+                                try { localStorage.setItem('appai_customer_id', data.customerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj2)); } catch {}
                                 setShowOtpLogin(false);
                                 setOtpStep('email');
                                 setOtpCode('');
@@ -3260,29 +3275,31 @@ export default function EmbedDesign() {
                           .then(r => r.json())
                           .then(data => {
                             if (data.ok) {
-                              setStorefrontCustomerId(data.customerId);
-                              setCustomer({ id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true });
-                              setShowOtpLogin(false);
-                              setOtpStep('email');
-                              setOtpCode('');
-                              toast({ title: 'Signed in', description: 'You can now save your designs.' });
-                            } else {
-                              setOtpError(data.error || 'Invalid code');
-                            }
-                          })
-                          .catch(() => setOtpError('Verification failed'))
-                          .finally(() => setOtpLoading(false));
-                      }}
+                                setStorefrontCustomerId(data.customerId);
+                                const custObj = { id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
+                                setCustomer(custObj);
+                                try { localStorage.setItem('appai_customer_id', data.customerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj)); } catch {}
+                                setShowOtpLogin(false);
+                                setOtpStep('email');
+                                setOtpCode('');
+                                toast({ title: 'Signed in', description: 'You can now save your designs.' });
+                              } else {
+                                setOtpError(data.error || 'Invalid code');
+                              }
+                            })
+                            .catch(() => setOtpError('Verification failed'))
+                            .finally(() => setOtpLoading(false));
+                        }}
+                      >
+                        {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
+                      </Button>
+                    </div>
+                    <button
+                      onClick={() => { setOtpStep('email'); setOtpCode(''); setOtpError(null); }}
+                      className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
                     >
-                      {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
-                    </Button>
-                  </div>
-                  <button
-                    onClick={() => { setOtpStep('email'); setOtpCode(''); setOtpError(null); }}
-                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
-                  >
-                    Use a different email
-                  </button>
+                      Use a different email
+                    </button>
                 </div>
               )}
             </CardContent>

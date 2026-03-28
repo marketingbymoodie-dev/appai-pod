@@ -5254,27 +5254,7 @@ ${textEdgeRestrictions}
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
 
-      // If customer is logged in, check their credits and free generations
-      if (customerId) {
-        const customer = await storage.getOrCreateShopifyCustomer(shop as string, customerId as string);
-
-        if (customer.credits > 0) {
-          await storage.decrementCreditsIfAvailable(customer.id);
-        } else if (customer.freeGenerationsUsed < FREE_GENERATION_LIMIT) {
-          await storage.updateCustomer(customer.id, { freeGenerationsUsed: customer.freeGenerationsUsed + 1 });
-        } else {
-          return res.status(403).json({ error: "FREE_LIMIT_REACHED", message: "You have used all 10 of your free generations. Please purchase more credits to continue." });
-        }
-      } else if (sessionId) {
-        // Anonymous session limit
-        const count = await storage.countSessionGenerations(shop as string, sessionId as string);
-        if (count >= FREE_GENERATION_LIMIT) {
-          return res.status(403).json({
-            error: "FREE_LIMIT_REACHED",
-            message: "You have used all 10 of your free generations. Please log in to purchase more credits.",
-          });
-        }
-      }
+      // Credit/limit check is handled in the block below (single deduction)
       let customer: any = null;
 
       if (customerId) {
