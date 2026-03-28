@@ -3037,6 +3037,21 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
 
+  // Fetch saved designs when logged in
+  const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
+  const credits = customer?.credits ?? 0;
+  useEffect(() => {
+    if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
+    setSavedDesignsLoading(true);
+    safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.designs) setSavedDesigns(data.designs);
+      })
+      .catch(() => {})
+      .finally(() => setSavedDesignsLoading(false));
+  }, [isLoggedIn, storefrontCustomerId, shopDomain]);
+
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
@@ -3054,22 +3069,6 @@ export default function EmbedDesign() {
       </div>
     );
   }
-
-  const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
-  const credits = customer?.credits ?? 0;
-
-  // Fetch saved designs when logged in
-  useEffect(() => {
-    if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
-    setSavedDesignsLoading(true);
-    safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.designs) setSavedDesigns(data.designs);
-      })
-      .catch(() => {})
-      .finally(() => setSavedDesignsLoading(false));
-  }, [isLoggedIn, storefrontCustomerId, shopDomain]);
 
   // Derived values for the ATC button state — computed at render scope to avoid IIFE in JSX
   const atcHasMockups = productTypeConfig?.hasPrintifyMockups;
