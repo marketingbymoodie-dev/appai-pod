@@ -11894,26 +11894,29 @@ ${textEdgeRestrictions}
             }
           }
 
-          // Fallback: if shopifyVariantIds is empty but we have live Shopify variants,
-          // try to match by position (order of variants in Shopify matches variantMap order)
+          // Fallback: match by Shopify variant title (handles material variants like Polyester/Microfiber)
           if (Object.keys(printifyToShopifyVariantId).length === 0) {
             const allVariantsResult = await shopifyApiCall(
               shop, installation.accessToken,
               `products/${variant.product_id}.json?fields=id,variants`,
             );
             const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-            // Build title → shopify variant ID map
+            // Build title → shopify variant ID map (full title, option1, and option1 / option2)
             const titleToShopifyId: Record<string, number> = {};
             for (const sv of allShopifyVariants) {
               if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
               if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
+              if (sv.option1 && sv.option2) titleToShopifyId[`${sv.option1} / ${sv.option2}`.toLowerCase()] = sv.id;
             }
             for (const [vmKey, entry] of Object.entries(storedVm)) {
               const e = entry as any;
               if (!e.printifyVariantId) continue;
-              const [sizeId] = vmKey.split(":");
+              const [sizeId, colorId] = vmKey.split(":");
               const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-              const shopifyId = titleToShopifyId[sizeName.toLowerCase()];
+              const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
+              // Try size / material first, then size alone
+              const shopifyId = (colorName ? titleToShopifyId[`${sizeName} / ${colorName}`.toLowerCase()] : undefined)
+                ?? titleToShopifyId[sizeName.toLowerCase()];
               if (shopifyId) {
                 printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
               }
@@ -12262,13 +12265,16 @@ ${textEdgeRestrictions}
         for (const sv of allShopifyVariants) {
           if (sv.title) titleToShopifyId[sv.title.toLowerCase()] = sv.id;
           if (sv.option1) titleToShopifyId[sv.option1.toLowerCase()] = sv.id;
+          if (sv.option1 && sv.option2) titleToShopifyId[`${sv.option1} / ${sv.option2}`.toLowerCase()] = sv.id;
         }
         for (const [vmKey, entry] of Object.entries(storedVm)) {
           const e = entry as any;
           if (!e.printifyVariantId) continue;
-          const [sizeId] = vmKey.split(":");
+          const [sizeId, colorId] = vmKey.split(":");
           const sizeName = ptSizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-          const shopifyId = titleToShopifyId[sizeName.toLowerCase()];
+          const colorName = ptColors.find((c: any) => String(c.id) === colorId)?.name;
+          const shopifyId = (colorName ? titleToShopifyId[`${sizeName} / ${colorName}`.toLowerCase()] : undefined)
+            ?? titleToShopifyId[sizeName.toLowerCase()];
           if (shopifyId) {
             printifyToShopifyVariantId[String(e.printifyVariantId)] = shopifyId;
           }
@@ -12363,20 +12369,19 @@ ${textEdgeRestrictions}
         // The Shopify product is only fetched to get the image URL and current prices.
         const pvLabels = buildPrintifyVariantLabels(pt);
 
-        // Build variants from DB variantMap — deduplicated by size (for products where color
-        // is not a meaningful customer-facing dimension, e.g. phone cases where we only
-        // want one price per model, not per model+color combination).
-        const seenSizes = new Set<string>();
+        // Build variants from DB variantMap — deduplicated by full label so that products
+        // with meaningful material/color variants (e.g. Body Pillow: Polyester vs Microfiber)
+        // each get their own pricing row. Phone cases with cosmetic color variants will show
+        // multiple rows but the auto-calculator fills them with the same price anyway.
+        const seenLabels = new Set<string>();
         const dbVariants: any[] = [];
         for (const [printifyVariantId, label] of Object.entries(pvLabels)) {
-          // Deduplicate: if label contains " / ", the part before is the size.
-          // Only add one entry per unique size label.
-          const sizeLabel = (label as string).includes(" / ") ? (label as string).split(" / ")[0] : (label as string);
-          if (seenSizes.has(sizeLabel)) continue;
-          seenSizes.add(sizeLabel);
+          // Deduplicate by full label to avoid exact duplicates, but keep all distinct variants.
+          if (seenLabels.has(label as string)) continue;
+          seenLabels.add(label as string);
           dbVariants.push({
             id: `printify:${printifyVariantId}`,
-            title: sizeLabel,
+            title: label as string,
             price: "0.00",
             sku: "",
           });

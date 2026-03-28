@@ -187,16 +187,16 @@ export default function AdminCustomizerPages() {
     enabled: !!syncPricesTarget && !!syncBlank?.productTypeId && !!syncBlank?.printifyBlueprintId,
   });
 
-  // Deduplicated variants for the sync dialog (same logic as wizard)
+  // Deduplicated variants for the sync dialog — uses full label so material variants
+  // like Polyester/Microfiber each get their own row
   const syncVariants: BlankVariant[] = useMemo(() => {
     const raw = syncBlank?.variants ?? [];
     const seen = new Set<string>();
     const deduped: BlankVariant[] = [];
     for (const v of raw) {
-      const sizeOnly = v.title.includes(" / ") ? v.title.split(" / ")[0].trim() : v.title;
-      if (!seen.has(sizeOnly)) {
-        seen.add(sizeOnly);
-        deduped.push({ ...v, title: sizeOnly });
+      if (!seen.has(v.title)) {
+        seen.add(v.title);
+        deduped.push(v);
       }
     }
     return deduped;
@@ -370,21 +370,19 @@ export default function AdminCustomizerPages() {
   );
 
   /**
-   * Deduplicate variants by size — strip the color suffix (" / Color") from variant
-   * titles and keep only the first variant per unique size name. This prevents phone
-   * case products (e.g. "iPhone 12 Pro / Black", "iPhone 12 Pro / Clear") from
-   * showing duplicate pricing rows for the same model.
+   * Deduplicate variants by full label — keeps all distinct variants including
+   * products with meaningful material/color variants (e.g. Body Pillow: Polyester
+   * vs Microfiber). Phone cases with cosmetic color variants will show multiple rows
+   * but the auto-calculator fills them with the same price.
    */
   const selectedVariants: BlankVariant[] = useMemo(() => {
     const raw = selectedBlank?.variants ?? [];
     const seen = new Set<string>();
     const deduped: BlankVariant[] = [];
     for (const v of raw) {
-      // Strip color suffix: "iPhone 12 Pro / Black" → "iPhone 12 Pro"
-      const sizeOnly = v.title.includes(" / ") ? v.title.split(" / ")[0].trim() : v.title;
-      if (!seen.has(sizeOnly)) {
-        seen.add(sizeOnly);
-        deduped.push({ ...v, title: sizeOnly });
+      if (!seen.has(v.title)) {
+        seen.add(v.title);
+        deduped.push(v);
       }
     }
     return deduped;
