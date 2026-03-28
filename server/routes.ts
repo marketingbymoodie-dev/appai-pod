@@ -9,7 +9,7 @@ import path from "path";
 import sharp from "sharp";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { customizerDesigns } from "@shared/schema";
+import { customizerDesigns, generationJobs } from "@shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
@@ -5821,26 +5821,18 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Design not found" });
       }
 
+      // Only save if the job is complete (has an image)
+      if (job.status !== 'complete' || !job.designImageUrl) {
+        return res.status(400).json({ error: "Design generation is not complete yet" });
+      }
+
+      // Link the job to the customer account
       await storage.updateGenerationJob(jobId, {
         customerId,
         sessionId: null,
       });
 
-      const design = await storage.createDesign({
-        customerId: customer.id,
-        merchantId: installation.merchantId,
-        productTypeId: job.productTypeId ? parseInt(job.productTypeId) : undefined,
-        prompt: job.prompt,
-        stylePreset: job.stylePreset,
-        referenceImageUrl: job.referenceImageUrl,
-        generatedImageUrl: job.designImageUrl,
-        thumbnailImageUrl: job.thumbnailUrl,
-        size: job.size || '16x20',
-        frameColor: job.frameColor || 'black',
-        aspectRatio: '4:5',
-      });
-
-      return res.json({ saved: true, designId: design.id });
+      return res.json({ saved: true, jobId });
     } catch (error) {
       console.error("[Storefront Save Design] Error:", error);
       res.status(500).json({ error: "Failed to save design" });
@@ -6397,22 +6389,22 @@ ${textEdgeRestrictions}
       }
       const rows = await db
         .select()
-        .from(customizerDesigns)
+        .from(generationJobs)
         .where(
           and(
-            eq(customizerDesigns.shop, shop),
-            eq(customizerDesigns.shopifyCustomerId, customerId),
-            eq(customizerDesigns.status, "READY")
+            eq(generationJobs.shop, shop),
+            eq(generationJobs.customerId, customerId),
+            eq(generationJobs.status, "complete")
           )
         )
-        .orderBy(desc(customizerDesigns.createdAt))
+        .orderBy(desc(generationJobs.createdAt))
         .limit(50);
       return res.json({ designs: rows.map(d => ({
         id: d.id,
-        artworkUrl: d.artworkUrl,
-        mockupUrl: d.mockupUrl,
+        artworkUrl: d.designImageUrl,
+        mockupUrl: null,
         prompt: d.prompt,
-        baseTitle: d.baseTitle,
+        baseTitle: d.productTypeId || null,
         createdAt: d.createdAt,
       })) });
     } catch (err: any) {

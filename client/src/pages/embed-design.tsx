@@ -1745,6 +1745,7 @@ export default function EmbedDesign() {
       sessionToken?: string;
       productTypeId?: string;
       sessionId?: string;
+      customerId?: string;
     }) => {
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/generate`
@@ -1818,7 +1819,7 @@ export default function EmbedDesign() {
             console.log('[EmbedDesign] Job status:', status.status, jobId);
             if (status.status === 'complete') {
               const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
-              return { ...status, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
+              return { ...status, jobId, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
             }
             if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
           } catch (pollErr: any) {
@@ -1923,6 +1924,23 @@ export default function EmbedDesign() {
           savedAt: Date.now(),
         }));
       } catch (e) { /* sessionStorage may be unavailable */ }
+
+      // Auto-save design to account if user is logged in (storefront mode)
+      if (isStorefront && storefrontCustomerId && data.jobId) {
+        safeFetch(`${API_BASE}/api/storefront/save-design`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: data.jobId, customerId: storefrontCustomerId, shop: shopDomain }),
+        }).then(r => r.json()).then(saved => {
+          if (saved.saved) {
+            // Refresh saved designs list
+            setSavedDesignsLoading(true);
+            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
+              .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+              .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+          }
+        }).catch(() => {}); // silent fail — don't interrupt user experience
+      }
 
       // Clear any existing mockups and fetch new Printify composite mockups
       setPrintifyMockups([]);
@@ -3244,14 +3262,30 @@ export default function EmbedDesign() {
                             .then(r => r.json())
                             .then(data => {
                               if (data.ok) {
-                                setStorefrontCustomerId(data.customerId);
-                                const custObj2 = { id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
+                                const newCustomerId = data.customerId;
+                                setStorefrontCustomerId(newCustomerId);
+                                const custObj2 = { id: newCustomerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
                                 setCustomer(custObj2);
-                                try { localStorage.setItem('appai_customer_id', data.customerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj2)); } catch {}
+                                try { localStorage.setItem('appai_customer_id', newCustomerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj2)); } catch {}
                                 setShowOtpLogin(false);
                                 setOtpStep('email');
                                 setOtpCode('');
                                 toast({ title: 'Signed in', description: 'You can now save your designs.' });
+                                // Claim any designs generated anonymously this session
+                                if (anonSessionId && shopDomain) {
+                                  safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+                                  }).catch(() => {});
+                                }
+                                // Refresh saved designs list
+                                if (shopDomain) {
+                                  setSavedDesignsLoading(true);
+                                  safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+                                    .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+                                    .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+                                }
                               } else {
                                 setOtpError(data.error || 'Invalid code');
                               }
@@ -3275,14 +3309,30 @@ export default function EmbedDesign() {
                           .then(r => r.json())
                           .then(data => {
                             if (data.ok) {
-                                setStorefrontCustomerId(data.customerId);
-                                const custObj = { id: data.customerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
+                                const newCustomerId = data.customerId;
+                                setStorefrontCustomerId(newCustomerId);
+                                const custObj = { id: newCustomerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
                                 setCustomer(custObj);
-                                try { localStorage.setItem('appai_customer_id', data.customerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj)); } catch {}
+                                try { localStorage.setItem('appai_customer_id', newCustomerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj)); } catch {}
                                 setShowOtpLogin(false);
                                 setOtpStep('email');
                                 setOtpCode('');
                                 toast({ title: 'Signed in', description: 'You can now save your designs.' });
+                                // Claim any designs generated anonymously this session
+                                if (anonSessionId && shopDomain) {
+                                  safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+                                  }).catch(() => {});
+                                }
+                                // Refresh saved designs list
+                                if (shopDomain) {
+                                  setSavedDesignsLoading(true);
+                                  safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+                                    .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+                                    .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+                                }
                               } else {
                                 setOtpError(data.error || 'Invalid code');
                               }
