@@ -27,6 +27,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "placeholder_positions",       type: "TEXT DEFAULT '[]'" },
   { table: "style_presets",         column: "base_image_url",              type: "TEXT" },
   { table: "merchants",             column: "branding_settings",           type: "JSONB" },
+  { table: "customers",              column: "email",                       type: "TEXT" },
+  { table: "customers",              column: "otp_code",                    type: "TEXT" },
+  { table: "customers",              column: "otp_expires_at",              type: "TIMESTAMP" },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

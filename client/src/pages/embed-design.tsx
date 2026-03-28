@@ -637,6 +637,14 @@ export default function EmbedDesign() {
   const [freeLimitReached, setFreeLimitReached] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [isSharing, setIsSharing] = useState(false);
+  // OTP login state for storefront
+  const [showOtpLogin, setShowOtpLogin] = useState(false);
+  const [otpEmail, setOtpEmail] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpStep, setOtpStep] = useState<"email" | "code">("email");
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -3044,7 +3052,7 @@ export default function EmbedDesign() {
     );
   }
 
-  const isLoggedIn = customer?.isLoggedIn ?? false;
+  const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
   const credits = customer?.credits ?? 0;
 
   // Derived values for the ATC button state — computed at render scope to avoid IIFE in JSX
@@ -3060,23 +3068,178 @@ export default function EmbedDesign() {
   return (
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <div className="max-w-6xl mx-auto space-y-4">
-        {/* Login / credits info — only shown in standalone (non-Shopify, non-storefront) mode */}
-        {!isShopify && !isStorefront && (
+        {/* Login / credits info — shown in standalone and storefront modes */}
+        {(isStorefront || (!isShopify && !isStorefront)) && (
           <div className="flex items-center justify-between gap-4">
             <h2 className="text-lg font-semibold" data-testid="text-title">
               Create Your Design
             </h2>
             {isLoggedIn ? (
               <span className="text-sm text-muted-foreground" data-testid="text-credits">
-                {credits} credits
+                {credits > 0 ? `${credits} credits` : 'Logged in'}
               </span>
             ) : (
-              <span className="text-sm text-muted-foreground flex items-center gap-1" data-testid="text-login-prompt">
+              <button
+                onClick={() => setShowOtpLogin(true)}
+                className="text-sm text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0"
+                data-testid="text-login-prompt"
+              >
                 <LogIn className="w-4 h-4" />
-                Log in to create
-              </span>
+                Log in to your store account to save designs
+              </button>
             )}
           </div>
+        )}
+
+        {/* OTP Login Modal */}
+        {showOtpLogin && (
+          <Card className="border-primary bg-background shadow-lg">
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold">Sign in with Email</h3>
+                <button
+                  onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
+                  className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              {otpError && (
+                <p className="text-destructive text-xs mb-2">{otpError}</p>
+              )}
+              {otpStep === 'email' ? (
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    placeholder="Enter your email"
+                    value={otpEmail}
+                    onChange={(e) => setOtpEmail(e.target.value)}
+                    className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
+                    disabled={otpLoading}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && otpEmail.trim()) {
+                        e.preventDefault();
+                        setOtpLoading(true);
+                        setOtpError(null);
+                        safeFetch(`${API_BASE}/api/storefront/auth/request-otp`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email: otpEmail.trim(), shop: shopDomain }),
+                        })
+                          .then(r => r.json())
+                          .then(data => {
+                            if (data.ok) { setOtpStep('code'); }
+                            else { setOtpError(data.error || 'Failed to send code'); }
+                          })
+                          .catch(() => setOtpError('Failed to send code'))
+                          .finally(() => setOtpLoading(false));
+                      }
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!otpEmail.trim() || otpLoading}
+                    onClick={() => {
+                      setOtpLoading(true);
+                      setOtpError(null);
+                      safeFetch(`${API_BASE}/api/storefront/auth/request-otp`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: otpEmail.trim(), shop: shopDomain }),
+                      })
+                        .then(r => r.json())
+                        .then(data => {
+                          if (data.ok) { setOtpStep('code'); }
+                          else { setOtpError(data.error || 'Failed to send code'); }
+                        })
+                        .catch(() => setOtpError('Failed to send code'))
+                        .finally(() => setOtpLoading(false));
+                    }}
+                  >
+                    {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send Code'}
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">Enter the 6-digit code sent to {otpEmail}</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="000000"
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className="flex-1 px-3 py-2 text-sm border rounded-md bg-background text-center tracking-widest font-mono"
+                      maxLength={6}
+                      disabled={otpLoading}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && otpCode.length === 6) {
+                          e.preventDefault();
+                          setOtpLoading(true);
+                          setOtpError(null);
+                          safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
+                          })
+                            .then(r => r.json())
+                            .then(data => {
+                              if (data.ok) {
+                                setStorefrontCustomerId(data.customerId);
+                                setCustomer({ id: data.customerId, credits: data.credits || 0, isLoggedIn: true });
+                                setShowOtpLogin(false);
+                                setOtpStep('email');
+                                setOtpCode('');
+                                toast({ title: 'Signed in', description: 'You can now save your designs.' });
+                              } else {
+                                setOtpError(data.error || 'Invalid code');
+                              }
+                            })
+                            .catch(() => setOtpError('Verification failed'))
+                            .finally(() => setOtpLoading(false));
+                        }
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      disabled={otpCode.length !== 6 || otpLoading}
+                      onClick={() => {
+                        setOtpLoading(true);
+                        setOtpError(null);
+                        safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
+                        })
+                          .then(r => r.json())
+                          .then(data => {
+                            if (data.ok) {
+                              setStorefrontCustomerId(data.customerId);
+                              setCustomer({ id: data.customerId, credits: data.credits || 0, isLoggedIn: true });
+                              setShowOtpLogin(false);
+                              setOtpStep('email');
+                              setOtpCode('');
+                              toast({ title: 'Signed in', description: 'You can now save your designs.' });
+                            } else {
+                              setOtpError(data.error || 'Invalid code');
+                            }
+                          })
+                          .catch(() => setOtpError('Verification failed'))
+                          .finally(() => setOtpLoading(false));
+                      }}
+                    >
+                      {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
+                    </Button>
+                  </div>
+                  <button
+                    onClick={() => { setOtpStep('email'); setOtpCode(''); setOtpError(null); }}
+                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
+                  >
+                    Use a different email
+                  </button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         )}
 
         {/* Free generation limit reached — prompt to create account */}
@@ -3090,8 +3253,8 @@ export default function EmbedDesign() {
           </Card>
         )}
 
-        {/* Only show login errors for standalone (non-Shopify, non-storefront) mode */}
-        {!isShopify && !isStorefront && loginError && (
+        {/* Login errors */}
+        {loginError && (
           <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
             <CardContent className="py-3">
               <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error">

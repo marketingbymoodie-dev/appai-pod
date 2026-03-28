@@ -6400,6 +6400,128 @@ ${textEdgeRestrictions}
     }
   });
 
+
+  // ==================== STOREFRONT OTP AUTH ====================
+  // Email-based OTP login for storefront customers.
+  // Uses Resend to send 6-digit codes; codes expire after 10 minutes.
+
+  app.post("/api/storefront/auth/request-otp", async (req: Request, res: Response) => {
+    try {
+      const { email, shop } = req.body;
+      if (!email || !shop) {
+        return res.status(400).json({ error: "Email and shop are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      const emailNorm = email.toLowerCase().trim();
+      const userId = `email:${shop}:${emailNorm}`;
+
+      let customer = await storage.getCustomerByUserId(userId);
+      if (!customer) {
+        customer = await storage.createCustomer({
+          userId,
+          credits: 5,
+          freeGenerationsUsed: 0,
+          totalGenerations: 0,
+          totalSpent: "0.00",
+        });
+      }
+
+      await pool.query(
+        `UPDATE customers SET otp_code = $1, otp_expires_at = $2, email = $3 WHERE id = $4`,
+        [otpCode, otpExpiresAt, emailNorm, customer.id]
+      );
+
+      const resendKey = process.env.RESEND_API_KEY;
+      if (!resendKey) {
+        console.error("[OTP] RESEND_API_KEY not set");
+        return res.status(500).json({ error: "Email service not configured" });
+      }
+
+      const emailRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${resendKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: "AppAI <noreply@appai.app>",
+          to: [emailNorm],
+          subject: "Your AppAI Login Code",
+          html: `<div style="font-family:sans-serif;max-width:400px;margin:0 auto;padding:20px"><h2 style="text-align:center">Your Login Code</h2><div style="background:#f5f5f5;border-radius:8px;padding:20px;text-align:center;margin:20px 0"><span style="font-size:32px;letter-spacing:8px;font-weight:bold">${otpCode}</span></div><p style="color:#666;text-align:center">This code expires in 10 minutes.</p></div>`,
+        }),
+      });
+
+      if (!emailRes.ok) {
+        const errText = await emailRes.text();
+        console.error("[OTP] Resend error:", errText);
+        return res.status(500).json({ error: "Failed to send email" });
+      }
+
+      console.log(`[OTP] Code sent to ${emailNorm} for shop ${shop}`);
+      res.json({ ok: true, message: "OTP sent" });
+    } catch (error: any) {
+      console.error("[OTP] request-otp error:", error);
+      res.status(500).json({ error: "Failed to send OTP" });
+    }
+  });
+
+  app.post("/api/storefront/auth/verify-otp", async (req: Request, res: Response) => {
+    try {
+      const { email, code, shop } = req.body;
+      if (!email || !code || !shop) {
+        return res.status(400).json({ error: "Email, code, and shop are required" });
+      }
+
+      const emailNorm = email.toLowerCase().trim();
+      const userId = `email:${shop}:${emailNorm}`;
+      const customer = await storage.getCustomerByUserId(userId);
+
+      if (!customer) {
+        return res.status(401).json({ error: "Invalid email or code" });
+      }
+
+      const result = await pool.query(
+        `SELECT otp_code, otp_expires_at FROM customers WHERE id = $1`,
+        [customer.id]
+      );
+      const row = result.rows[0];
+
+      if (!row || !row.otp_code || row.otp_code !== code) {
+        return res.status(401).json({ error: "Invalid code" });
+      }
+
+      if (new Date(row.otp_expires_at) < new Date()) {
+        return res.status(401).json({ error: "Code expired. Please request a new one." });
+      }
+
+      // Clear OTP after successful verification
+      await pool.query(
+        `UPDATE customers SET otp_code = NULL, otp_expires_at = NULL WHERE id = $1`,
+        [customer.id]
+      );
+
+      console.log(`[OTP] Verified ${emailNorm} for shop ${shop}, customer ${customer.id}`);
+      res.json({
+        ok: true,
+        customerId: customer.id,
+        credits: customer.credits,
+        freeGenerationsUsed: customer.freeGenerationsUsed,
+      });
+    } catch (error: any) {
+      console.error("[OTP] verify-otp error:", error);
+      res.status(500).json({ error: "Failed to verify OTP" });
+    }
+  });
+
   // ==================== STOREFRONT DESIGN SKU (SHADOW SKU FOR CHECKOUT) ====================
   // Creates or reuses a hidden Shopify product+variant with the mockup as its image.
   // The storefront adds this shadow variant to cart so checkout renders the exact mockup.
