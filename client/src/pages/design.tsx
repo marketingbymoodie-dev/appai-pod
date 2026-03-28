@@ -41,6 +41,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { PatternCustomizer } from "@/components/designer/PatternCustomizer";
 
 interface Config {
   sizes: PrintSize[];
@@ -61,6 +62,8 @@ interface ProductDesignerConfig {
   bleedMarginPercent: number;
   designerType: string;
   hasPrintifyMockups: boolean;
+  isAllOverPrint?: boolean;
+  placeholderPositions?: { position: string; width: number; height: number }[];
   baseMockupImages?: {
     front?: string;
     lifestyle?: string;
@@ -108,6 +111,9 @@ export default function DesignPage() {
 
   const [isReuseMode, setIsReuseMode] = useState(false);
   const [reuseSourceDesign, setReuseSourceDesign] = useState<Design | null>(null);
+
+  const [showPatternStep, setShowPatternStep] = useState(false);
+  const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
 
   const loadingFromUrlRef = useRef(false);
   const lastAutoFetchKeyRef = useRef<string | null>(null);
@@ -364,7 +370,9 @@ export default function DesignPage() {
       colorId: string,
       scale: number = 100,
       x: number = 50,
-      y: number = 50
+      y: number = 50,
+      patternUrl?: string,
+      mirrorLegs?: boolean
     ) => {
       setMockupLoading(true);
 
@@ -373,7 +381,7 @@ export default function DesignPage() {
       const clampedScale = Math.max(10, Math.min(200, scale));
 
       try {
-        const response = await apiRequest("POST", "/api/mockup/generate", {
+        const body: Record<string, unknown> = {
           productTypeId,
           designImageUrl,
           sizeId,
@@ -381,7 +389,11 @@ export default function DesignPage() {
           scale: clampedScale,
           x: clampedX,
           y: clampedY,
-        });
+        };
+        if (patternUrl) body.patternUrl = patternUrl;
+        if (mirrorLegs !== undefined) body.mirrorLegs = mirrorLegs;
+
+        const response = await apiRequest("POST", "/api/mockup/generate", body);
 
         const result = await response.json();
 
@@ -403,7 +415,8 @@ export default function DesignPage() {
     []
   );
 
-  // Auto-fetch mockups (reuse/tweak) once we have everything we need
+  // Auto-fetch mockups (reuse/tweak) once we have everything we need.
+  // For AOP products: show Pattern Customizer so user can re-apply pattern via Picsart.
   useEffect(() => {
     if (
       (isReuseMode || showTweak) &&
@@ -414,12 +427,19 @@ export default function DesignPage() {
       !mockupLoading &&
       printifyMockups.length === 0
     ) {
+      const imageUrl = generatedDesign.generatedImageUrl.startsWith("http")
+        ? generatedDesign.generatedImageUrl
+        : window.location.origin + generatedDesign.generatedImageUrl;
+
+      if (designerConfig.isAllOverPrint) {
+        setAopPendingMotifUrl(imageUrl);
+        setShowPatternStep(true);
+        return;
+      }
+
       const fetchKey = `${designerConfig.id}-${selectedSize}-${selectedFrameColor}-${generatedDesign.generatedImageUrl}-${imageScale}-${imagePosition.x}-${imagePosition.y}`;
       if (lastAutoFetchKeyRef.current !== fetchKey) {
         lastAutoFetchKeyRef.current = fetchKey;
-        const imageUrl = generatedDesign.generatedImageUrl.startsWith("http")
-          ? generatedDesign.generatedImageUrl
-          : window.location.origin + generatedDesign.generatedImageUrl;
         fetchPrintifyMockups(imageUrl, designerConfig.id, selectedSize, selectedFrameColor, imageScale, imagePosition.x, imagePosition.y);
       }
     }
@@ -1544,11 +1564,58 @@ export default function DesignPage() {
             {/* Left column: Controls */}
             <div className="w-72 shrink-0 space-y-3 overflow-y-auto">
               {reuseBanner}
-              {styleSelector}
-              {sizeSelector}
-              {frameColorSelector}
-              {promptInput}
-              {isReuseMode ? reuseSaveButton : generateButton}
+              {showPatternStep && aopPendingMotifUrl && designerConfig && (
+                <PatternCustomizer
+                  motifUrl={aopPendingMotifUrl}
+                  productWidth={(() => {
+                    const positions = designerConfig?.placeholderPositions || [];
+                    return positions.reduce((max, p) => Math.max(max, p.width), 2000);
+                  })()}
+                  productHeight={(() => {
+                    const positions = designerConfig?.placeholderPositions || [];
+                    return positions.reduce((max, p) => Math.max(max, p.height), 2000);
+                  })()}
+                  hasPairedPanels={(() => {
+                    const positions = (designerConfig?.placeholderPositions || []).map((p) => p.position);
+                    return positions.some((p) => p.startsWith("left")) && positions.some((p) => p.startsWith("right"));
+                  })()}
+                  onApply={async (appliedPatternUrl: string, options) => {
+                    setShowPatternStep(false);
+                    setAopPendingMotifUrl(null);
+                    if (designerConfig && selectedSize && selectedFrameColor) {
+                      const motifUrl = aopPendingMotifUrl || generatedDesign?.generatedImageUrl;
+                      const imageUrl = motifUrl?.startsWith("http")
+                        ? motifUrl
+                        : motifUrl
+                          ? window.location.origin + motifUrl
+                          : "";
+                      if (imageUrl) {
+                        fetchPrintifyMockups(
+                          imageUrl,
+                          designerConfig.id,
+                          selectedSize,
+                          selectedFrameColor,
+                          imageScale,
+                          imagePosition.x,
+                          imagePosition.y,
+                          appliedPatternUrl,
+                          options.mirrorLegs
+                        );
+                      }
+                    }
+                  }}
+                  isLoading={mockupLoading}
+                />
+              )}
+              {!showPatternStep && (
+                <>
+                  {styleSelector}
+                  {sizeSelector}
+                  {frameColorSelector}
+                  {promptInput}
+                  {isReuseMode ? reuseSaveButton : generateButton}
+                </>
+              )}
             </div>
 
             {/* Center: Main preview */}
