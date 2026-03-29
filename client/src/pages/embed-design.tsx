@@ -1264,6 +1264,11 @@ export default function EmbedDesign() {
   // Track whether we've already restored the loadDesignId so we don't do it twice
   const loadDesignAppliedRef = useRef(false);
 
+  // Reset the applied flag whenever loadDesignId changes so we restore the new design
+  useEffect(() => {
+    loadDesignAppliedRef.current = false;
+  }, [loadDesignId]);
+
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
     if (!loadDesignId || loadDesignAppliedRef.current) return;
