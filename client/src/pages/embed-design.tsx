@@ -3748,6 +3748,26 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
+              {/* When viewing a saved design via loadDesignId, show a "Start New Design" banner instead of allowing generation */}
+              {loadDesignId && generatedDesign && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-center justify-between gap-3">
+                  <span>You&apos;re viewing a saved design. Generate a new design to replace it.</span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 transition-colors"
+                    onClick={() => {
+                      // Clear the loaded design and remove loadDesignId from the URL so the user can generate fresh
+                      setGeneratedDesign(null);
+                      loadDesignAppliedRef.current = false;
+                      const url = new URL(window.location.href);
+                      url.searchParams.delete('loadDesignId');
+                      window.history.replaceState({}, '', url.toString());
+                    }}
+                  >
+                    Start Fresh
+                  </button>
+                </div>
+              )}
               {/* Row 1: Generate + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Generate button — left, wider */}
