@@ -3838,6 +3838,8 @@ export default function EmbedDesign() {
                       setPrompt('');
                       setReferenceImage(null);
                       setReferencePreview(null);
+                      // Reset the file input value so the same file can be re-selected
+                      if (fileInputRef.current) fileInputRef.current.value = '';
                       // Clear style/size selections
                       setSelectedPreset('');
                       setSelectedStyleOption('');
