@@ -655,12 +655,17 @@
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
       var shopDomain = config.shopDomain || (window.Shopify && window.Shopify.shop) || '';
+      // Convert relative proxy URLs (e.g. /apps/appai/objects/designs/...) to absolute https:// URLs
+      // so the backend can fetch the mockup image from Shopify's CDN.
+      if (mockupUrl && mockupUrl.startsWith('/')) {
+        mockupUrl = window.location.origin + mockupUrl;
+      }
       if (!designId || !mockupUrl || !appUrl || !productId || !shopDomain) {
-        console.log(B, '[resolveDesignSku] Missing params, using base variantId', sourceVariantId);
+        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'productId:', !!productId, '('+productId+')', 'shopDomain:', !!shopDomain, '— using base variantId', sourceVariantId);
         return Promise.resolve({ variantId: sourceVariantId });
       }
       if (!mockupUrl.startsWith('https://')) {
-        console.log(B, '[resolveDesignSku] Non-https mockupUrl, using base variantId', sourceVariantId);
+        console.log(B, '[resolveDesignSku] Non-https mockupUrl:', mockupUrl.substring(0, 80), '— using base variantId', sourceVariantId);
         return Promise.resolve({ variantId: sourceVariantId });
       }
       var endpoint = appUrl.replace(/\/$/, '') + '/api/storefront/resolve-design-variant';

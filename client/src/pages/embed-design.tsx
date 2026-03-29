@@ -3829,13 +3829,30 @@ export default function EmbedDesign() {
                     type="button"
                     className="w-full sm:w-auto shrink-0 rounded-md bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 active:bg-amber-800 transition-all shadow-sm flex items-center justify-center gap-2"
                     onClick={() => {
-                      // Clear the loaded design and remove loadDesignId from the URL so the user can generate fresh
+                      // Clear the loaded design and reset all form state so the user can generate fresh
                       setGeneratedDesign(null);
                       setDesignSource(null);
                       loadDesignAppliedRef.current = false;
+                      setBridgeLoadDesignId('');
+                      // Clear prompt and reference image
+                      setPrompt('');
+                      setReferenceImage(null);
+                      setReferencePreview(null);
+                      // Clear style/size selections
+                      setSelectedPreset('');
+                      setSelectedStyleOption('');
+                      setSelectedSize('');
+                      setSelectedFrameColor('');
+                      // Remove loadDesignId from the iframe URL
                       const url = new URL(window.location.href);
                       url.searchParams.delete('loadDesignId');
                       window.history.replaceState({}, '', url.toString());
+                      // Also remove loadDesignId from the parent page URL so parentLoadDesignId clears
+                      try {
+                        const parentUrl = new URL(window.parent.location.href);
+                        parentUrl.searchParams.delete('loadDesignId');
+                        window.parent.history.replaceState({}, '', parentUrl.toString());
+                      } catch (_) { /* cross-origin guard */ }
                     }}
                   >
                     <Plus className="w-4 h-4" />
