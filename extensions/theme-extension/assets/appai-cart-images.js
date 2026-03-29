@@ -5,7 +5,9 @@
  *
  * Strategy (in order):
  *   1. input[name^="updates[KEY]"] → find container → swap first qualifying img
- *   2. Common cart-item containers (.cart-item, [id*=CartItem], tr, li, …)
+ *   2a. [id*="CartItem-N"] — Dawn/OS2 themes with numbered cart item IDs
+ *   2b. data-variant-id matching — themes that embed variant ID on cart item nodes
+ *   2c. Positional matching — nth cart item DOM node = nth item in /cart.js
  *   3. Last resort: single-item cart → first qualifying img in the cart form
  *
  * No-flash: on /cart pages, hides all cart images until the first replace
@@ -51,16 +53,25 @@
     return await res.json();
   }
 
-  // ─── Build key → mockup map ───────────────────────────────────────────────────
-  function buildKeyToMockup(cart) {
-    var map = new Map();
+  // ─── Build lookup maps from cart data ────────────────────────────────────────
+  // Returns:
+  //   keyToMockup   — Map: "variantId:lineIndex" → mockupUrl
+  //   variantToMockup — Map: variantId (string) → mockupUrl (last wins — fallback)
+  //   indexedItems  — Array: [{index (1-based), variantId, mockupUrl, key}]
+  function buildMaps(cart) {
+    var keyToMockup = new Map();
+    var variantToMockup = new Map();
+    var indexedItems = [];
     var items = cart.items || [];
     for (var i = 0; i < items.length; i++) {
       var item = items[i];
       var url = item && item.properties && item.properties._mockup_url;
-      if (url) map.set(item.key, url);
+      if (!url) continue;
+      keyToMockup.set(item.key, url);
+      variantToMockup.set(String(item.variant_id), url);
+      indexedItems.push({ index: i + 1, variantId: String(item.variant_id), mockupUrl: url, key: item.key });
     }
-    return map;
+    return { keyToMockup: keyToMockup, variantToMockup: variantToMockup, indexedItems: indexedItems };
   }
 
   // ─── Image qualification ──────────────────────────────────────────────────────
@@ -103,11 +114,31 @@
     return m ? m[1] : null;
   }
 
+  // ─── Extract 1-based line item index from a cart item element ─────────────────
+  // Dawn/OS2 uses id="CartItem-1", "CartItem-2", etc.
+  function extractLineIndexFromElement(el) {
+    var id = el.id || '';
+    var m = /CartItem-(\d+)/i.exec(id);
+    if (m) return parseInt(m[1], 10);
+    // Also check data attributes
+    var lineAttr = el.getAttribute('data-line') ||
+                   el.getAttribute('data-line-index') ||
+                   el.getAttribute('data-index');
+    if (lineAttr) {
+      var n = parseInt(lineAttr, 10);
+      if (!isNaN(n)) return n;
+    }
+    return null;
+  }
+
   // ─── Core replace ─────────────────────────────────────────────────────────────
   async function applyMockups() {
     try {
       var cart = await getCart();
-      var keyToMockup = buildKeyToMockup(cart);
+      var maps = buildMaps(cart);
+      var keyToMockup = maps.keyToMockup;
+      var variantToMockup = maps.variantToMockup;
+      var indexedItems = maps.indexedItems;
 
       if (keyToMockup.size === 0) {
         console.log('[AppAI Cart Image] No _mockup_url in cart — removing loading class.');
@@ -117,7 +148,7 @@
 
       var replaced = 0;
 
-      // Strategy 1: inputs named updates[KEY] — most reliable
+      // ── Strategy 1: inputs named updates[KEY] — most reliable ─────────────────
       var updateInputs = Array.prototype.slice.call(document.querySelectorAll("input[name^='updates[']"));
       for (var i = 0; i < updateInputs.length; i++) {
         var input = updateInputs[i];
@@ -135,8 +166,12 @@
         }
       }
 
-      // Strategy 2: common cart-item class selectors (drawer themes)
-      if (replaced === 0) {
+      // ── Strategy 2: cart-item containers (drawer/page themes) ─────────────────
+      // Supports multiple AppAI items via 3 sub-strategies:
+      //   2a. CartItem-N id (Dawn/OS2)
+      //   2b. data-variant-id attribute
+      //   2c. Positional (nth DOM node = nth cart item)
+      if (replaced === 0 && indexedItems.length > 0) {
         var selectors = [
           '.cart-item',
           "[class*='cart-item']",
@@ -145,29 +180,75 @@
           "form[action*='/cart'] li",
         ];
 
-        var done = false;
-        for (var s = 0; s < selectors.length && !done; s++) {
+        for (var s = 0; s < selectors.length; s++) {
           var nodes = Array.prototype.slice.call(document.querySelectorAll(selectors[s]));
-          for (var n = 0; n < nodes.length && !done; n++) {
+          if (nodes.length === 0) continue;
+
+          var selectorReplaced = 0;
+
+          for (var n = 0; n < nodes.length; n++) {
             var node = nodes[n];
             var img = Array.prototype.slice.call(node.querySelectorAll('img')).find(isLikelyProductImg);
             if (!img) continue;
 
-            // For carts with only one AppAI item, use the single entry
-            var mockupValues = Array.from ? Array.from(keyToMockup.values()) : [];
-            if (!mockupValues.length) {
-              keyToMockup.forEach(function (v) { mockupValues.push(v); });
+            var mockupForNode = null;
+
+            // 2a. Match by CartItem-N id (Dawn/OS2)
+            var lineIdx = extractLineIndexFromElement(node);
+            if (lineIdx !== null) {
+              for (var k = 0; k < indexedItems.length; k++) {
+                if (indexedItems[k].index === lineIdx) {
+                  mockupForNode = indexedItems[k].mockupUrl;
+                  break;
+                }
+              }
             }
-            if (mockupValues.length === 1) {
-              setImgToMockup(img, mockupValues[0]);
-              replaced++;
-              done = true;
+
+            // 2b. Match by data-variant-id attribute
+            if (!mockupForNode) {
+              var variantAttr = node.getAttribute('data-variant-id') ||
+                                node.getAttribute('data-variant');
+              if (!variantAttr) {
+                var variantEl = node.querySelector('[data-variant-id]');
+                if (variantEl) variantAttr = variantEl.getAttribute('data-variant-id');
+              }
+              if (variantAttr) {
+                mockupForNode = variantToMockup.get(String(variantAttr)) || null;
+              }
             }
+
+            // 2c. Positional fallback: nth node with an image = nth AppAI item
+            if (!mockupForNode) {
+              // Count how many image-bearing nodes we have seen so far (including this one)
+              var imgNodeCount = 0;
+              for (var p = 0; p <= n; p++) {
+                var pImg = Array.prototype.slice.call(nodes[p].querySelectorAll('img')).find(function(im) {
+                  return !im.hasAttribute('data-appai-mockup') &&
+                         (im.getAttribute('src') || '') !== '' &&
+                         im.closest("form[action^='/cart']");
+                });
+                if (pImg) imgNodeCount++;
+              }
+              // imgNodeCount is the 1-based position among nodes with images
+              if (imgNodeCount > 0 && imgNodeCount <= indexedItems.length) {
+                mockupForNode = indexedItems[imgNodeCount - 1].mockupUrl;
+              }
+            }
+
+            if (mockupForNode) {
+              setImgToMockup(img, mockupForNode);
+              selectorReplaced++;
+            }
+          }
+
+          if (selectorReplaced > 0) {
+            replaced += selectorReplaced;
+            break; // Found the right selector, stop trying others
           }
         }
       }
 
-      // Strategy 3: single-item fallback on cart form
+      // ── Strategy 3: single-item fallback on cart form ──────────────────────────
       if (replaced === 0) {
         var cartForm = document.querySelector("form[action^='/cart']");
         if (cartForm && cart.items && cart.items.length === 1) {
