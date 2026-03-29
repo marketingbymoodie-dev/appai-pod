@@ -541,11 +541,21 @@ export default function EmbedDesign() {
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
   const loadDesignId = searchParams.get("loadDesignId") || "";
+  // parentLoadDesignId: read loadDesignId directly from the parent page URL.
+  // The iframe is served on the same Shopify domain as the parent, so window.parent.location
+  // is accessible (no cross-origin restriction). This bypasses the Shopify CDN-cached liquid file.
+  const parentLoadDesignId = (() => {
+    try {
+      const parentParams = new URLSearchParams(window.parent.location.search);
+      return parentParams.get('loadDesignId') || '';
+    } catch {
+      return ''; // cross-origin guard (shouldn't happen on same domain)
+    }
+  })();
   // bridgeLoadDesignId is set when the parent page sends AI_ART_STUDIO_LOAD_DESIGN via postMessage
-  // This is more reliable than URL params which can be cached by Shopify CDN
   const [bridgeLoadDesignId, setBridgeLoadDesignId] = useState("");
-  // The effective loadDesignId — prefer the bridge-provided one, fall back to URL param
-  const effectiveLoadDesignId = bridgeLoadDesignId || loadDesignId;
+  // The effective loadDesignId — prefer parent URL (most reliable), then bridge, then iframe URL param
+  const effectiveLoadDesignId = parentLoadDesignId || bridgeLoadDesignId || loadDesignId;
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
