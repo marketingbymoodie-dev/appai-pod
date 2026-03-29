@@ -6434,10 +6434,11 @@ ${textEdgeRestrictions}
 
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
       // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
-      const absUrl = (u?: string | null) => {
+      // Always prefer local /objects/designs/ paths over Supabase URLs (Supabase may be unconfigured).
+      const proxyUrl = (u?: string | null) => {
         if (!u) return null;
-        // Already absolute (e.g. Supabase URL) — return as-is
-        if (u.startsWith('http')) return u;
+        // Supabase or other external URL — skip, not reliable
+        if (u.startsWith('http')) return null;
         // Relative path like /objects/designs/xxx.png → serve via App Proxy
         const clean = u.startsWith('/') ? u : `/${u}`;
         return `/apps/appai${clean}`;
@@ -6445,7 +6446,7 @@ ${textEdgeRestrictions}
 
       return res.json({ designs: rows.map(d => ({
         id: d.id,
-        artworkUrl: absUrl(d.thumbnailUrl || d.designImageUrl),
+        artworkUrl: proxyUrl(d.designImageUrl) || proxyUrl(d.thumbnailUrl),
         mockupUrl: null,
         prompt: d.prompt,
         baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
