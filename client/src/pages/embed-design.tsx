@@ -3753,13 +3753,21 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
-              {/* When viewing a saved design via loadDesignId, show a banner and block generation */}
+              {/* When viewing a saved design via loadDesignId, show a prominent banner and block generation */}
               {loadDesignId && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-center justify-between gap-3">
-                  <span>You&apos;re viewing a saved design. Click &ldquo;Start Fresh&rdquo; to generate a new one.</span>
+                <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-amber-100 p-2 rounded-full">
+                      <Info className="w-5 h-5 text-amber-600" />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="font-bold">Viewing Saved Design</span>
+                      <span className="text-amber-700 text-xs">Generation is disabled for saved designs.</span>
+                    </div>
+                  </div>
                   <button
                     type="button"
-                    className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 transition-colors"
+                    className="w-full sm:w-auto shrink-0 rounded-md bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 active:bg-amber-800 transition-all shadow-sm flex items-center justify-center gap-2"
                     onClick={() => {
                       // Clear the loaded design and remove loadDesignId from the URL so the user can generate fresh
                       setGeneratedDesign(null);
@@ -3769,7 +3777,8 @@ export default function EmbedDesign() {
                       window.history.replaceState({}, '', url.toString());
                     }}
                   >
-                    Start Fresh
+                    <Plus className="w-4 h-4" />
+                    Start Fresh Design
                   </button>
                 </div>
               )}
