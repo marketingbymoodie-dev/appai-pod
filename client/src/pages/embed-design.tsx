@@ -1267,6 +1267,11 @@ export default function EmbedDesign() {
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
     loadDesignAppliedRef.current = false;
+    if (loadDesignId) {
+      // Clear current design state to prevent "takeover" while loading a new saved design
+      setGeneratedDesign(null);
+      setDesignSource(null);
+    }
   }, [loadDesignId]);
 
   // Primary path: restore from savedDesigns list once it's populated
@@ -3790,6 +3795,7 @@ export default function EmbedDesign() {
                     onClick={() => {
                       // Clear the loaded design and remove loadDesignId from the URL so the user can generate fresh
                       setGeneratedDesign(null);
+                      setDesignSource(null);
                       loadDesignAppliedRef.current = false;
                       const url = new URL(window.location.href);
                       url.searchParams.delete('loadDesignId');
