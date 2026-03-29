@@ -1278,9 +1278,13 @@ export default function EmbedDesign() {
   useEffect(() => {
     if (!loadDesignId || loadDesignAppliedRef.current) return;
     if (!savedDesigns.length) return; // wait until list is loaded
+    console.log('[LoadDesign] savedDesigns IDs:', savedDesigns.map(x => x.id), 'looking for:', loadDesignId);
     const d = savedDesigns.find(x => x.id === loadDesignId);
-    if (!d) return;
-    console.log('[LoadDesign] Restoring from savedDesigns list:', d.id);
+    if (!d) {
+      console.warn('[LoadDesign] Design not found in savedDesigns list! loadDesignId:', loadDesignId);
+      return;
+    }
+    console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls });
   // eslint-disable-next-line react-hooks/exhaustive-deps
