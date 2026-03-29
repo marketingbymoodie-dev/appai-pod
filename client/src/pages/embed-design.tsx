@@ -540,6 +540,7 @@ export default function EmbedDesign() {
   const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
+  const loadDesignId = searchParams.get("loadDesignId") || "";
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
@@ -655,8 +656,9 @@ export default function EmbedDesign() {
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
     try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
   });
-  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrl: string; prompt: string; baseTitle: string; createdAt: string}>>([]);
+  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; createdAt: string}>>([]);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
+  const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [couponCode, setCouponCode] = useState('');
@@ -687,6 +689,7 @@ export default function EmbedDesign() {
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
+  const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -1220,6 +1223,57 @@ export default function EmbedDesign() {
       });
   }, [sharedDesignId]);
 
+  // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
+  useEffect(() => {
+    if (!loadDesignId || !shopDomain) return;
+    const shop = shopDomain;
+    safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(loadDesignId)}&shop=${encodeURIComponent(shop)}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(status => {
+        if (!status || status.status !== 'complete') return;
+        const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
+        const imageUrl = abs(status.imageUrl);
+        if (!imageUrl) return;
+        setGeneratedDesign({ id: loadDesignId, imageUrl, prompt: status.prompt || '' });
+        if (status.prompt) setPrompt(status.prompt);
+        savedJobIdRef.current = loadDesignId;
+        // Restore full design state from designState blob if available
+        const ds = status.designState;
+        if (ds && typeof ds === 'object') {
+          console.log('[LoadDesign] Restoring designState:', ds);
+          // Restore transform (zoom/position)
+          if (ds.scale !== undefined || ds.x !== undefined || ds.y !== undefined) {
+            const restoredTransform = {
+              scale: typeof ds.scale === 'number' ? ds.scale : 100,
+              x: typeof ds.x === 'number' ? ds.x : 50,
+              y: typeof ds.y === 'number' ? ds.y : 50,
+            };
+            setTransform(restoredTransform);
+            initialTransformRef.current = restoredTransform;
+          }
+          // Restore variant selections
+          if (ds.selectedSize) setSelectedSize(ds.selectedSize);
+          if (ds.selectedFrameColor) setSelectedFrameColor(ds.selectedFrameColor);
+          if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
+        } else {
+          // Fallback: restore from top-level fields on the job record
+          if (status.size) setSelectedSize(status.size);
+          if (status.frameColor) setSelectedFrameColor(status.frameColor);
+          if (status.stylePreset) setSelectedPreset(status.stylePreset);
+        }
+        // Pre-load saved mockup URLs if available
+        if (status.mockupUrls?.length) {
+          const absMockups = status.mockupUrls.map((u: string) => u.startsWith('/') ? buildAppUrl(u) : u);
+          setPrintifyMockups(absMockups);
+          setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
+          setSelectedMockupIndex(0);
+          sendMockupsToParent(absMockups);
+        }
+      })
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadDesignId, shopDomain]);
+
   // Restore design state from sessionStorage on load (survives page refresh / back navigation)
   useEffect(() => {
     // Don't restore if we already have a design (e.g., from shared link) or are loading one
@@ -1442,6 +1496,14 @@ export default function EmbedDesign() {
         currentMockupColorRef.current = colorId;
         mockupColorCacheRef.current[colorId] = { urls: absUrls, images: absImages };
         console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for color', colorId);
+        // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups
+        if (isStorefront && savedJobIdRef.current && shopDomain) {
+          safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobId: savedJobIdRef.current, shop: shopDomain, mockupUrls: result.mockupUrls }),
+          }).catch(() => {}); // fire-and-forget, non-critical
+        }
       } else if (!result.success) {
         throw new Error(result.message || "Mockup generation returned unsuccessful");
       }
@@ -1929,6 +1991,8 @@ export default function EmbedDesign() {
       // Use variables.customerId (from the mutation payload) to avoid stale closure issues
       const saveCustomerId = variables.customerId || storefrontCustomerId;
       const saveShop = variables.shop || shopDomain;
+      // Store jobId for mockup saving after fetchPrintifyMockups completes
+      if (data.jobId) savedJobIdRef.current = data.jobId;
       console.log('[AutoSave] isStorefront:', isStorefront, 'customerId:', saveCustomerId, 'jobId:', data.jobId);
       if (isStorefront && saveCustomerId && data.jobId) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
@@ -1949,6 +2013,25 @@ export default function EmbedDesign() {
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
           }
         }).catch((e) => { console.error('[AutoSave] save-design error:', e); }); // log errors for debugging
+
+        // Also save the full design state (transform, size, color, preset) so it can be fully restored
+        safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId: data.jobId,
+            shop: saveShop,
+            designState: {
+              scale: newTransform.scale,
+              x: newTransform.x,
+              y: newTransform.y,
+              selectedSize,
+              selectedFrameColor,
+              stylePreset: selectedPreset || null,
+              prompt,
+            },
+          }),
+        }).catch(() => {}); // fire-and-forget
       }
 
       // Clear any existing mockups and fetch new Printify composite mockups
@@ -3096,6 +3179,7 @@ export default function EmbedDesign() {
       .then(r => r.json())
       .then(data => {
         if (data.designs) setSavedDesigns(data.designs);
+        if (data.limit) setGalleryLimit(data.limit);
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
@@ -3380,7 +3464,7 @@ export default function EmbedDesign() {
                 <Card className="border bg-background shadow-lg">
                   <CardContent className="py-4">
                     <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold">Saved Designs</h3>
+                      <h3 className="text-sm font-semibold">Saved Designs ({savedDesigns.length}/{galleryLimit})</h3>
                       <button
                         onClick={() => setShowSavedDesigns(false)}
                         className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -3388,6 +3472,17 @@ export default function EmbedDesign() {
                         <X className="w-4 h-4" />
                       </button>
                     </div>
+                    {/* Gallery limit warning */}
+                    {savedDesigns.length >= galleryLimit - 4 && savedDesigns.length < galleryLimit && (
+                      <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                        You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
+                      </div>
+                    )}
+                    {savedDesigns.length >= galleryLimit && (
+                      <div className="mb-3 px-3 py-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
+                        Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
+                      </div>
+                    )}
                     {savedDesignsLoading ? (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -3400,31 +3495,60 @@ export default function EmbedDesign() {
                         {savedDesigns.map((d) => (
                           <div
                             key={d.id}
-                            className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow cursor-pointer"
-                            onClick={() => {
-                              if (d.artworkUrl) {
-                                setGeneratedDesign({ id: d.id, imageUrl: d.artworkUrl, prompt: d.prompt });
-                                setShowSavedDesigns(false);
-                              }
-                            }}
+                            className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow relative group"
                           >
-                            <div className="aspect-square relative bg-muted">
-                              {d.artworkUrl ? (
-                                <img
-                                  src={d.artworkUrl}
-                                  alt={d.baseTitle || 'Saved design'}
-                                  className="w-full h-full object-cover"
-                                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
+                            {/* Delete button */}
+                            <button
+                              className="absolute top-1 right-1 z-10 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity border-none cursor-pointer p-0"
+                              title="Delete design"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!confirm('Remove this design from your saved designs?')) return;
+                                safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}`, {
+                                  method: 'DELETE',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+                                }).then(() => {
+                                  setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
+                                }).catch(() => {});
+                              }}
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                            {/* Card click: navigate to the correct product page with this design pre-loaded */}
+                            <div
+                              className="cursor-pointer"
+                              onClick={() => {
+                                if (!d.artworkUrl) return;
+                                if (d.pageHandle) {
+                                  // Navigate to the correct customizer page with this design pre-loaded
+                                  const targetUrl = `https://${shopDomain}/pages/${d.pageHandle}?loadDesignId=${encodeURIComponent(d.id)}`;
+                                  window.parent.location.href = targetUrl;
+                                } else {
+                                  // Fallback: load artwork on current page
+                                  setGeneratedDesign({ id: d.id, imageUrl: d.artworkUrl, prompt: d.prompt || '' });
+                                  setShowSavedDesigns(false);
+                                }
+                              }}
+                            >
+                              <div className="aspect-square relative bg-muted">
+                                {d.artworkUrl ? (
+                                  <img
+                                    src={d.artworkUrl}
+                                    alt={d.baseTitle || 'Saved design'}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                  />
+                                ) : (
+                                  <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
+                                )}
+                              </div>
+                              {d.baseTitle && (
+                                <div className="px-2 py-1.5">
+                                  <p className="text-xs font-medium truncate">{d.baseTitle}</p>
+                                </div>
                               )}
                             </div>
-                            {d.baseTitle && (
-                              <div className="px-2 py-1.5">
-                                <p className="text-xs font-medium truncate">{d.baseTitle}</p>
-                              </div>
-                            )}
                           </div>
                         ))}
                       </div>

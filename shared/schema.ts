@@ -369,6 +369,8 @@ export const generationJobs = pgTable("generation_jobs", {
   referenceImageUrl: text("reference_image_url"),
   designImageUrl: text("design_image_url"),
   thumbnailUrl: text("thumbnail_url"),
+  mockupUrls: json("mockup_urls"),              // Saved Printify mockup URLs (array of strings)
+  designState: json("design_state"),             // Full design state snapshot (transform, size, color, preset)
   designId: text("design_id"),
   errorMessage: text("error_message"),
   expiresAt: timestamp("expires_at").notNull(),

@@ -9,7 +9,7 @@ import path from "path";
 import sharp from "sharp";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { customizerDesigns, generationJobs, productTypes } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes } from "@shared/schema";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
@@ -5308,6 +5308,30 @@ ${textEdgeRestrictions}
         }
       }
 
+      // Gallery limit check for logged-in customers (20 saved designs max)
+      const GALLERY_LIMIT = 20;
+      if (customerId) {
+        const savedCount = await db
+          .select({ count: sql<number>`count(*)` })
+          .from(generationJobs)
+          .where(
+            and(
+              eq(generationJobs.shop, shop),
+              eq(generationJobs.customerId, customerId),
+              eq(generationJobs.status, "complete")
+            )
+          );
+        const currentCount = Number(savedCount[0]?.count ?? 0);
+        if (currentCount >= GALLERY_LIMIT) {
+          return res.status(400).json({
+            error: "GALLERY_FULL",
+            message: `Your saved designs gallery is full (${GALLERY_LIMIT} max). Please delete some designs to generate new ones.`,
+            count: currentCount,
+            limit: GALLERY_LIMIT,
+          });
+        }
+      }
+
       // Rate limiting per shop (shared with admin endpoint)
       const now = Date.now();
       let rateLimit = shopifyGenerationRateLimits.get(shop);
@@ -5764,6 +5788,12 @@ ${textEdgeRestrictions}
           thumbnailUrl: job.thumbnailUrl,
           designId: job.designId,
           creditsRemaining,
+          mockupUrls: (job as any).mockupUrls || null,
+          designState: (job as any).designState || null,
+          prompt: job.prompt || null,
+          stylePreset: job.stylePreset || null,
+          size: job.size || null,
+          frameColor: job.frameColor || null,
           reqId,
         });
       }
@@ -5854,6 +5884,84 @@ ${textEdgeRestrictions}
     } catch (error) {
       console.error("[Storefront Save Design] Error:", error);
       res.status(500).json({ error: "Failed to save design" });
+    }
+  });
+
+  // ==================== STOREFRONT SAVE MOCKUP URLS ====================
+  // Called by the client after mockups are generated, to persist them on the job record.
+  // This allows saved designs to be re-loaded with mockups already available.
+  app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
+    try {
+      const { shop, jobId, mockupUrls } = req.body;
+      if (!shop || !jobId || !Array.isArray(mockupUrls)) {
+        return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      // Only store valid absolute URLs (Printify CDN URLs)
+      const validUrls = mockupUrls.filter((u: any) => typeof u === 'string' && u.startsWith('http'));
+      await storage.updateGenerationJob(jobId, { mockupUrls: validUrls } as any);
+      console.log(`[SaveMockups] jobId=${jobId} saved ${validUrls.length} mockup URLs`);
+      return res.json({ saved: true });
+    } catch (err: any) {
+      console.error("[SaveMockups]", err);
+      return res.status(500).json({ error: "Failed to save mockups" });
+    }
+  });
+
+  // ==================== STOREFRONT SAVE DESIGN STATE ====================
+  app.post("/api/storefront/save-state", async (req: Request, res: Response) => {
+    try {
+      const { shop, jobId, designState } = req.body;
+      if (!shop || !jobId || !designState || typeof designState !== 'object') {
+        return res.status(400).json({ error: "shop, jobId, and designState are required" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      await storage.updateGenerationJob(jobId, { designState } as any);
+      console.log(`[SaveState] jobId=${jobId} saved designState keys=${Object.keys(designState).join(',')}`);
+      return res.json({ saved: true });
+    } catch (err: any) {
+      console.error("[SaveState]", err);
+      return res.status(500).json({ error: "Failed to save design state" });
+    }
+  });
+
+  // ==================== STOREFRONT DELETE SAVED DESIGN ====================
+  app.delete("/api/storefront/customizer/my-designs/:id", async (req: Request, res: Response) => {
+    try {
+      const { shop, customerId } = req.body;
+      const jobId = req.params.id;
+      if (!shop || !customerId || !jobId) {
+        return res.status(400).json({ error: "shop, customerId, and id are required" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop || job.customerId !== customerId) {
+        return res.status(404).json({ error: "Design not found or not owned by this customer" });
+      }
+      // Unlink the design from the customer (don't delete the job, just disown it)
+      await storage.updateGenerationJob(jobId, { customerId: null } as any);
+      console.log(`[DeleteDesign] Unlinked jobId=${jobId} from customerId=${customerId}`);
+      return res.json({ deleted: true });
+    } catch (err: any) {
+      console.error("[DeleteDesign]", err);
+      return res.status(500).json({ error: "Failed to delete design" });
     }
   });
 
@@ -6407,6 +6515,7 @@ ${textEdgeRestrictions}
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      const GALLERY_LIMIT = 20;
       console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const rows = await db
         .select()
@@ -6419,17 +6528,34 @@ ${textEdgeRestrictions}
           )
         )
         .orderBy(desc(generationJobs.createdAt))
-        .limit(50);
+        .limit(GALLERY_LIMIT);
       console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
 
-      // Resolve product type names for all unique productTypeIds in the results
+      // Resolve product type names AND page handles for all unique productTypeIds
       const ptIds = [...new Set(rows.map(r => r.productTypeId).filter(Boolean))] as string[];
-      const ptMap: Record<string, string> = {};
+      const ptMap: Record<string, string> = {};   // productTypeId → name
+      const handleMap: Record<string, string> = {}; // productTypeId → page handle
       if (ptIds.length > 0) {
-        const pts = await db.select({ id: productTypes.id, name: productTypes.name })
-          .from(productTypes)
-          .where(inArray(productTypes.id, ptIds.map(Number).filter(n => !isNaN(n))));
-        for (const pt of pts) ptMap[String(pt.id)] = pt.name;
+        const numericIds = ptIds.map(Number).filter(n => !isNaN(n));
+        if (numericIds.length > 0) {
+          const pts = await db.select({ id: productTypes.id, name: productTypes.name })
+            .from(productTypes)
+            .where(inArray(productTypes.id, numericIds));
+          for (const pt of pts) ptMap[String(pt.id)] = pt.name;
+
+          // Look up customizer page handles by productTypeId + shop
+          const pages = await db
+            .select({ productTypeId: customizerPages.productTypeId, handle: customizerPages.handle })
+            .from(customizerPages)
+            .where(
+              and(
+                eq(customizerPages.shop, shop),
+                eq(customizerPages.status, "active"),
+                inArray(customizerPages.productTypeId, numericIds)
+              )
+            );
+          for (const p of pages) if (p.productTypeId) handleMap[String(p.productTypeId)] = p.handle;
+        }
       }
 
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
@@ -6444,14 +6570,24 @@ ${textEdgeRestrictions}
         return `/apps/appai${clean}`;
       };
 
-      return res.json({ designs: rows.map(d => ({
-        id: d.id,
-        artworkUrl: proxyUrl(d.designImageUrl) || proxyUrl(d.thumbnailUrl),
-        mockupUrl: null,
-        prompt: d.prompt,
-        baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
-        createdAt: d.createdAt,
-      })) });
+      return res.json({
+        count: rows.length,
+        limit: GALLERY_LIMIT,
+        designs: rows.map(d => ({
+          id: d.id,
+          artworkUrl: proxyUrl(d.designImageUrl) || proxyUrl(d.thumbnailUrl),
+          mockupUrls: Array.isArray(d.mockupUrls) ? (d.mockupUrls as string[]) : [],
+          designState: d.designState || null,
+          prompt: d.prompt,
+          stylePreset: d.stylePreset,
+          size: d.size,
+          frameColor: d.frameColor,
+          productTypeId: d.productTypeId,
+          baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
+          pageHandle: d.productTypeId ? (handleMap[d.productTypeId] || null) : null,
+          createdAt: d.createdAt,
+        }))
+      });
     } catch (err: any) {
       console.error("[MyDesigns GET]", err);
       return res.status(500).json({ error: "Failed to fetch designs" });
