@@ -154,11 +154,15 @@
 
       var replaced = 0;
 
+      console.log('[AppAI Cart Image] DEBUG: indexedItems=', indexedItems.length, 'keyToMockup keys=', Array.from(keyToMockup.keys()));
+
       // ── Strategy 1: inputs named updates[KEY] — most reliable ─────────────────
       var updateInputs = Array.prototype.slice.call(document.querySelectorAll("input[name^='updates[']"));
+      console.log('[AppAI Cart Image] S1: found', updateInputs.length, 'updates[] inputs');
       for (var i = 0; i < updateInputs.length; i++) {
         var input = updateInputs[i];
         var key = extractKeyFromUpdatesInputName(input.getAttribute('name'));
+        console.log('[AppAI Cart Image] S1: input name=', input.getAttribute('name'), 'extracted key=', key);
         if (!key) continue;
 
         var mockupUrl = keyToMockup.get(key);
@@ -186,15 +190,19 @@
           "form[action*='/cart'] li",
         ];
 
+        console.log('[AppAI Cart Image] S2: trying selectors...');
         for (var s = 0; s < selectors.length; s++) {
           var nodes = Array.prototype.slice.call(document.querySelectorAll(selectors[s]));
+          console.log('[AppAI Cart Image] S2: selector', selectors[s], '=', nodes.length, 'nodes');
           if (nodes.length === 0) continue;
 
           var selectorReplaced = 0;
 
           for (var n = 0; n < nodes.length; n++) {
             var node = nodes[n];
-            var img = Array.prototype.slice.call(node.querySelectorAll('img')).find(isLikelyProductImg);
+            var allImgs = Array.prototype.slice.call(node.querySelectorAll('img'));
+            var img = allImgs.find(isLikelyProductImg);
+            console.log('[AppAI Cart Image] S2: node', n, 'id=', node.id, 'allImgs=', allImgs.length, 'qualifyingImg=', !!img, allImgs.map(function(im){ return im.getAttribute('width')+'x'+im.getAttribute('height')+' src='+( im.getAttribute('src')||'').slice(0,40); }));
             if (!img) continue;
 
             var mockupForNode = null;
