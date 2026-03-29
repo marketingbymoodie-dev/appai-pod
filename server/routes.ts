@@ -6432,12 +6432,15 @@ ${textEdgeRestrictions}
         for (const pt of pts) ptMap[String(pt.id)] = pt.name;
       }
 
-      // Build absolute base URL for image assets
-      const appBaseUrl = process.env.APP_URL || `https://appai-pod-production.up.railway.app`;
+      // Build image URLs using the Shopify App Proxy path so they load without CORS issues
+      // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
       const absUrl = (u?: string | null) => {
         if (!u) return null;
+        // Already absolute (e.g. Supabase URL) — return as-is
         if (u.startsWith('http')) return u;
-        return `${appBaseUrl}${u.startsWith('/') ? '' : '/'}${u}`;
+        // Relative path like /objects/designs/xxx.png → serve via App Proxy
+        const clean = u.startsWith('/') ? u : `/${u}`;
+        return `/apps/appai${clean}`;
       };
 
       return res.json({ designs: rows.map(d => ({
