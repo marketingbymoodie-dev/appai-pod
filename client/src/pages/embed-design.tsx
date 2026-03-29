@@ -3396,20 +3396,35 @@ export default function EmbedDesign() {
                     ) : savedDesigns.length === 0 ? (
                       <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
                     ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[300px] overflow-y-auto">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto pr-1">
                         {savedDesigns.map((d) => (
-                          <div key={d.id} className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow cursor-pointer">
-                            <div className="aspect-square relative">
-                              <img
-                                src={d.mockupUrl || d.artworkUrl}
-                                alt={d.prompt}
-                                className="w-full h-full object-cover"
-                              />
+                          <div
+                            key={d.id}
+                            className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow cursor-pointer"
+                            onClick={() => {
+                              if (d.artworkUrl) {
+                                setGeneratedDesign({ id: d.id, imageUrl: d.artworkUrl, prompt: d.prompt });
+                                setShowSavedDesigns(false);
+                              }
+                            }}
+                          >
+                            <div className="aspect-square relative bg-muted">
+                              {d.artworkUrl ? (
+                                <img
+                                  src={d.artworkUrl}
+                                  alt={d.baseTitle || 'Saved design'}
+                                  className="w-full h-full object-cover"
+                                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
+                              )}
                             </div>
-                            <div className="p-1.5">
-                              <p className="text-xs text-muted-foreground truncate" title={d.prompt}>{d.prompt}</p>
-                              {d.baseTitle && <p className="text-xs font-medium mt-0.5">{d.baseTitle}</p>}
-                            </div>
+                            {d.baseTitle && (
+                              <div className="px-2 py-1.5">
+                                <p className="text-xs font-medium truncate">{d.baseTitle}</p>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>

@@ -9,8 +9,8 @@ import path from "path";
 import sharp from "sharp";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { customizerDesigns, generationJobs } from "@shared/schema";
-import { eq, and, desc } from "drizzle-orm";
+import { customizerDesigns, generationJobs, productTypes } from "@shared/schema";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
@@ -6421,12 +6421,31 @@ ${textEdgeRestrictions}
         .orderBy(desc(generationJobs.createdAt))
         .limit(50);
       console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
+
+      // Resolve product type names for all unique productTypeIds in the results
+      const ptIds = [...new Set(rows.map(r => r.productTypeId).filter(Boolean))] as string[];
+      const ptMap: Record<string, string> = {};
+      if (ptIds.length > 0) {
+        const pts = await db.select({ id: productTypes.id, name: productTypes.name })
+          .from(productTypes)
+          .where(inArray(productTypes.id, ptIds.map(Number).filter(n => !isNaN(n))));
+        for (const pt of pts) ptMap[String(pt.id)] = pt.name;
+      }
+
+      // Build absolute base URL for image assets
+      const appBaseUrl = process.env.APP_URL || `https://appai-pod-production.up.railway.app`;
+      const absUrl = (u?: string | null) => {
+        if (!u) return null;
+        if (u.startsWith('http')) return u;
+        return `${appBaseUrl}${u.startsWith('/') ? '' : '/'}${u}`;
+      };
+
       return res.json({ designs: rows.map(d => ({
         id: d.id,
-        artworkUrl: d.designImageUrl,
+        artworkUrl: absUrl(d.thumbnailUrl || d.designImageUrl),
         mockupUrl: null,
         prompt: d.prompt,
-        baseTitle: d.productTypeId || null,
+        baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
         createdAt: d.createdAt,
       })) });
     } catch (err: any) {
