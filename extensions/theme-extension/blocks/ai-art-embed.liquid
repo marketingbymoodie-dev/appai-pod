@@ -647,12 +647,49 @@
       }
     }
 
-    // --- Design SKU: always use the original Shopify variant ID ---
-    // Design details (artwork, mockup, design ID) are passed as cart line item
-    // properties, so no shadow variant is needed. Using a shadow variant ID that
-    // doesn't exist in the store causes a 422 "Cannot find variant" error.
-    function resolveDesignSku(sourceVariantId /*, designId, mockupUrl */) {
-      return Promise.resolve({ variantId: sourceVariantId });
+    // --- Design SKU: create/reuse a unique Shopify variant per design ---
+    // This ensures each cart line item has its own variant image at checkout
+    // without requiring Shopify Plus. Falls back to the original variantId if
+    // the endpoint is unavailable or returns an error.
+    function resolveDesignSku(sourceVariantId, designId, mockupUrl) {
+      var appUrl = config.appUrl || '';
+      var productId = config.productId || '';
+      var shopDomain = config.shopDomain || (window.Shopify && window.Shopify.shop) || '';
+      if (!designId || !mockupUrl || !appUrl || !productId || !shopDomain) {
+        console.log(B, '[resolveDesignSku] Missing params, using base variantId', sourceVariantId);
+        return Promise.resolve({ variantId: sourceVariantId });
+      }
+      if (!mockupUrl.startsWith('https://')) {
+        console.log(B, '[resolveDesignSku] Non-https mockupUrl, using base variantId', sourceVariantId);
+        return Promise.resolve({ variantId: sourceVariantId });
+      }
+      var endpoint = appUrl.replace(/\/$/, '') + '/api/storefront/resolve-design-variant';
+      console.log(B, '[resolveDesignSku] Calling endpoint for design', designId);
+      return fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shop: shopDomain,
+          productId: String(productId),
+          variantId: String(sourceVariantId),
+          designId: String(designId),
+          mockupUrl: mockupUrl
+        })
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.success && data.variantId) {
+          console.log(B, '[resolveDesignSku] Resolved variantId:', data.variantId,
+            data.created ? '(created)' : data.reused ? '(reused)' : '(fallback)');
+          return { variantId: data.variantId };
+        }
+        console.warn(B, '[resolveDesignSku] Bad response, falling back:', data);
+        return { variantId: sourceVariantId };
+      })
+      .catch(function(err) {
+        console.warn(B, '[resolveDesignSku] Error, falling back:', err);
+        return { variantId: sourceVariantId };
+      });
     }
 
     // --- Cart add via Shopify Ajax API ---

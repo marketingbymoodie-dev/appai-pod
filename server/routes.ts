@@ -6258,6 +6258,129 @@ ${textEdgeRestrictions}
     }
   });
 
+  // ==================== RESOLVE DESIGN VARIANT ====================
+  // Creates (or reuses) a unique Shopify variant per design so the checkout
+  // thumbnail is correct for every cart line item without Shopify Plus.
+  app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
+    try {
+      const { shop, productId, variantId, designId, mockupUrl } = req.body;
+      if (!shop || !productId || !variantId || !designId || !mockupUrl) {
+        return res.status(400).json({ success: false, error: "shop, productId, variantId, designId and mockupUrl are required" });
+      }
+      if (!mockupUrl.startsWith("https://")) {
+        return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ success: false, error: "Shop not authorized" });
+      }
+      const token = installation.accessToken!;
+      const apiBase = `https://${shop}/admin/api/2025-10`;
+      const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
+
+      // 1. Fetch the product to inspect its options and variants
+      const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
+      if (!productRes.ok) {
+        const t = await productRes.text();
+        return res.status(productRes.status).json({ success: false, error: "Failed to fetch product", details: t.substring(0, 200) });
+      }
+      const { product } = await productRes.json();
+
+      // 2. Find the base variant to copy option1/option2/price
+      const baseVariant = product.variants.find((v: any) => String(v.id) === String(variantId));
+      if (!baseVariant) {
+        // Fall back gracefully — return the original variantId so cart add still works
+        console.warn(`[ResolveDesignVariant] Base variant ${variantId} not found on product ${productId}, falling back`);
+        return res.json({ success: true, variantId: String(variantId), fallback: true });
+      }
+      const opt1 = baseVariant.option1 || "Default";
+      const opt2 = baseVariant.option2 || null;
+      const price = baseVariant.price;
+
+      // Truncate designId to fit Shopify's 255-char option value limit
+      const designOpt = ("D:" + designId).substring(0, 255);
+
+      // 3. Check if a variant with this designOpt already exists (reuse it)
+      const existingVariant = product.variants.find((v: any) =>
+        v.option1 === opt1 &&
+        (!opt2 || v.option2 === opt2) &&
+        v.option3 === designOpt
+      );
+      if (existingVariant) {
+        console.log(`[ResolveDesignVariant] Reusing existing variant ${existingVariant.id} for design ${designId}`);
+        return res.json({ success: true, variantId: String(existingVariant.id), reused: true });
+      }
+
+      // 4. Create the new variant (Shopify auto-adds the 'Design' option if not present)
+      const newVariantBody: any = {
+        variant: {
+          option1: opt1,
+          option3: designOpt,
+          price,
+          inventory_management: null,
+          inventory_policy: "continue",
+          taxable: baseVariant.taxable,
+          requires_shipping: baseVariant.requires_shipping,
+          weight: baseVariant.weight,
+          weight_unit: baseVariant.weight_unit,
+        }
+      };
+      if (opt2) newVariantBody.variant.option2 = opt2;
+
+      const createRes = await fetch(`${apiBase}/products/${productId}/variants.json`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(newVariantBody),
+      });
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        console.error(`[ResolveDesignVariant] Failed to create variant:`, createRes.status, errText);
+        // Fall back to base variant so cart add still works
+        return res.json({ success: true, variantId: String(variantId), fallback: true, error: errText.substring(0, 200) });
+      }
+      const { variant: newVariant } = await createRes.json();
+      console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId}`);
+
+      // 5. Upload mockup image and assign it to the new variant
+      try {
+        const imgUploadRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ image: { src: mockupUrl, variant_ids: [newVariant.id] } }),
+        });
+        if (imgUploadRes.ok) {
+          console.log(`[ResolveDesignVariant] Mockup image assigned to variant ${newVariant.id}`);
+        } else {
+          const errText = await imgUploadRes.text();
+          console.warn(`[ResolveDesignVariant] Image upload failed (non-fatal):`, imgUploadRes.status, errText.substring(0, 200));
+        }
+      } catch (imgErr: any) {
+        console.warn(`[ResolveDesignVariant] Image upload error (non-fatal):`, imgErr?.message);
+      }
+
+      // 6. Store creation timestamp as metafield for future cleanup
+      try {
+        await fetch(`${apiBase}/variants/${newVariant.id}/metafields.json`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            metafield: {
+              namespace: "appai",
+              key: "design_variant_created_at",
+              value: new Date().toISOString(),
+              type: "single_line_text_field",
+            },
+          }),
+        });
+      } catch (_) { /* non-fatal */ }
+
+      return res.json({ success: true, variantId: String(newVariant.id), created: true });
+    } catch (error: any) {
+      console.error("[ResolveDesignVariant] Error:", error);
+      res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+    }
+  });
+
   // ==================== STOREFRONT BLANKS ====================
   // Returns the list of customizable blank products/variants for the customizer page.
   // Results are cached per shop for 5 minutes.
