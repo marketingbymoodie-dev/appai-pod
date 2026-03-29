@@ -3753,16 +3753,16 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
-              {/* When viewing a saved design via loadDesignId, show a prominent banner and block generation */}
-              {loadDesignId && (
+              {/* When viewing a saved design or have a currently open design, show a prominent banner and block generation */}
+              {(loadDesignId || generatedDesign) && (
                 <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
                   <div className="flex items-center gap-3">
                     <div className="bg-amber-100 p-2 rounded-full">
                       <Info className="w-5 h-5 text-amber-600" />
                     </div>
                     <div className="flex flex-col">
-                      <span className="font-bold">Viewing Saved Design</span>
-                      <span className="text-amber-700 text-xs">Generation is disabled for saved designs.</span>
+                      <span className="font-bold">{loadDesignId ? "Viewing Saved Design" : "Design in Progress"}</span>
+                      <span className="text-amber-700 text-xs">{loadDesignId ? "Generation is disabled for saved designs." : "Click 'Start Fresh Design' to create a new one."}</span>
                     </div>
                   </div>
                   <button
@@ -3803,7 +3803,7 @@ export default function EmbedDesign() {
                       }
                       handleGenerate();
                     }}
-                    disabled={!!loadDesignId || !prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
+                    disabled={!!loadDesignId || !!generatedDesign || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
                     className="w-full h-11 text-base font-medium"
                     data-testid="button-generate"
                   >
