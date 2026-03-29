@@ -1224,53 +1224,78 @@ export default function EmbedDesign() {
   }, [sharedDesignId]);
 
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
+  // Helper to apply a saved design record to the UI state
+  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null }) => {
+    const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
+    const absUrl = abs(imageUrl);
+    if (!absUrl) return;
+    setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
+    if (promptText) setPrompt(promptText);
+    savedJobIdRef.current = designId;
+    if (ds && typeof ds === 'object') {
+      console.log('[LoadDesign] Restoring designState:', ds);
+      if (ds.scale !== undefined || ds.x !== undefined || ds.y !== undefined) {
+        const restoredTransform = {
+          scale: typeof ds.scale === 'number' ? ds.scale : 100,
+          x: typeof ds.x === 'number' ? ds.x : 50,
+          y: typeof ds.y === 'number' ? ds.y : 50,
+        };
+        setTransform(restoredTransform);
+        initialTransformRef.current = restoredTransform;
+      }
+      if (ds.selectedSize) setSelectedSize(ds.selectedSize);
+      if (ds.selectedFrameColor) setSelectedFrameColor(ds.selectedFrameColor);
+      if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
+    } else {
+      if (topLevel.size) setSelectedSize(topLevel.size);
+      if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
+      if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
+    }
+    const mockups = topLevel.mockupUrls;
+    if (mockups?.length) {
+      const absMockups = mockups.map((u: string) => u.startsWith('/') ? buildAppUrl(u) : u);
+      setPrintifyMockups(absMockups);
+      setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
+      setSelectedMockupIndex(0);
+      sendMockupsToParent(absMockups);
+    }
+  };
+
+  // Track whether we've already restored the loadDesignId so we don't do it twice
+  const loadDesignAppliedRef = useRef(false);
+
+  // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
-    if (!loadDesignId || !shopDomain) return;
-    const shop = shopDomain;
-    safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(loadDesignId)}&shop=${encodeURIComponent(shop)}`)
-      .then(res => res.ok ? res.json() : null)
-      .then(status => {
-        if (!status || status.status !== 'complete') return;
-        const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
-        const imageUrl = abs(status.imageUrl);
-        if (!imageUrl) return;
-        setGeneratedDesign({ id: loadDesignId, imageUrl, prompt: status.prompt || '' });
-        if (status.prompt) setPrompt(status.prompt);
-        savedJobIdRef.current = loadDesignId;
-        // Restore full design state from designState blob if available
-        const ds = status.designState;
-        if (ds && typeof ds === 'object') {
-          console.log('[LoadDesign] Restoring designState:', ds);
-          // Restore transform (zoom/position)
-          if (ds.scale !== undefined || ds.x !== undefined || ds.y !== undefined) {
-            const restoredTransform = {
-              scale: typeof ds.scale === 'number' ? ds.scale : 100,
-              x: typeof ds.x === 'number' ? ds.x : 50,
-              y: typeof ds.y === 'number' ? ds.y : 50,
-            };
-            setTransform(restoredTransform);
-            initialTransformRef.current = restoredTransform;
-          }
-          // Restore variant selections
-          if (ds.selectedSize) setSelectedSize(ds.selectedSize);
-          if (ds.selectedFrameColor) setSelectedFrameColor(ds.selectedFrameColor);
-          if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
-        } else {
-          // Fallback: restore from top-level fields on the job record
-          if (status.size) setSelectedSize(status.size);
-          if (status.frameColor) setSelectedFrameColor(status.frameColor);
-          if (status.stylePreset) setSelectedPreset(status.stylePreset);
-        }
-        // Pre-load saved mockup URLs if available
-        if (status.mockupUrls?.length) {
-          const absMockups = status.mockupUrls.map((u: string) => u.startsWith('/') ? buildAppUrl(u) : u);
-          setPrintifyMockups(absMockups);
-          setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
-          setSelectedMockupIndex(0);
-          sendMockupsToParent(absMockups);
-        }
-      })
-      .catch(() => {});
+    if (!loadDesignId || loadDesignAppliedRef.current) return;
+    if (!savedDesigns.length) return; // wait until list is loaded
+    const d = savedDesigns.find(x => x.id === loadDesignId);
+    if (!d) return;
+    console.log('[LoadDesign] Restoring from savedDesigns list:', d.id);
+    loadDesignAppliedRef.current = true;
+    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadDesignId, savedDesigns]);
+
+  // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
+  // fetch the job status directly from the server
+  useEffect(() => {
+    if (!loadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
+    // Only run fallback after a short delay to give savedDesigns time to populate
+    const timer = setTimeout(() => {
+      if (loadDesignAppliedRef.current) return; // already restored from list
+      console.log('[LoadDesign] Fallback: fetching status for', loadDesignId);
+      const shop = shopDomain;
+      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(loadDesignId)}&shop=${encodeURIComponent(shop)}`)
+        .then(res => res.ok ? res.json() : null)
+        .then(status => {
+          if (!status || status.status !== 'complete') return;
+          if (loadDesignAppliedRef.current) return; // list restored it in the meantime
+          loadDesignAppliedRef.current = true;
+          applyLoadedDesign(loadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls });
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadDesignId, shopDomain]);
 
