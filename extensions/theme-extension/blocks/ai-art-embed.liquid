@@ -27,7 +27,10 @@
 /* AppAI Cart Image Replacer — inline v2 (avoids CDN caching) */
 ;(function () {
   'use strict';
-  if (window.__APPAI_CART_IMG_REPLACER__) return;
+  // Always run the inline v2 — supersedes the old external appai-cart-images.js
+  if (window.__APPAI_CART_IMG_REPLACER_V2__) return;
+  window.__APPAI_CART_IMG_REPLACER_V2__ = true;
+  // Disable old external script if it already ran
   window.__APPAI_CART_IMG_REPLACER__ = true;
 
   function ensureNoFlash() {
