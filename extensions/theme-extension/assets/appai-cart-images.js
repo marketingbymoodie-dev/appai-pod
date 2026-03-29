@@ -33,8 +33,11 @@
       s.id = 'appai-cart-noflash-style';
       s.textContent =
         // Only hide images inside cart forms that haven't been swapped yet
+        '.appai-cart-loading .cart-item img:not([data-appai-mockup]),' +
+        '.appai-cart-loading [id*="CartItem"] img:not([data-appai-mockup]),' +
+        '.appai-cart-loading cart-items img:not([data-appai-mockup]),' +
         '.appai-cart-loading form[action^="/cart"] img:not([data-appai-mockup]) { opacity: 0 !important; }' +
-        'form[action^="/cart"] img { transition: opacity 120ms ease; }';
+        '.cart-item img, [id*="CartItem"] img, cart-items img, form[action^="/cart"] img { transition: opacity 120ms ease; }';
       document.head.appendChild(s);
     }
 
@@ -75,6 +78,11 @@
   }
 
   // ─── Image qualification ──────────────────────────────────────────────────────
+  // Note: We do NOT require form[action^='/cart'] here because the Dawn cart
+  // drawer uses <cart-drawer>/<cart-items> custom elements that are NOT inside
+  // a <form action="/cart"> wrapper. The strategies below scope the search to
+  // cart-specific containers, so this filter only needs to exclude obvious
+  // non-product images (icons, logos, etc.).
   function isLikelyProductImg(img) {
     var src = img.getAttribute('src') || '';
     if (!src) return false;
@@ -84,8 +92,6 @@
     if ((w && w <= 40) || (h && h <= 40)) return false;
     // Skip already-swapped images
     if (img.hasAttribute('data-appai-mockup')) return false;
-    // Must be inside the cart form
-    if (!img.closest("form[action^='/cart']")) return false;
     return true;
   }
 
@@ -224,8 +230,7 @@
               for (var p = 0; p <= n; p++) {
                 var pImg = Array.prototype.slice.call(nodes[p].querySelectorAll('img')).find(function(im) {
                   return !im.hasAttribute('data-appai-mockup') &&
-                         (im.getAttribute('src') || '') !== '' &&
-                         im.closest("form[action^='/cart']");
+                         (im.getAttribute('src') || '') !== '';
                 });
                 if (pImg) imgNodeCount++;
               }
@@ -248,15 +253,23 @@
         }
       }
 
-      // ── Strategy 3: single-item fallback on cart form ──────────────────────────
-      if (replaced === 0) {
-        var cartForm = document.querySelector("form[action^='/cart']");
-        if (cartForm && cart.items && cart.items.length === 1) {
-          var onlyUrl = cart.items[0].properties && cart.items[0].properties._mockup_url;
-          var fallbackImg = Array.prototype.slice.call(cartForm.querySelectorAll('img')).find(isLikelyProductImg);
-          if (fallbackImg && onlyUrl) {
-            setImgToMockup(fallbackImg, onlyUrl);
+      // ── Strategy 3: single-item fallback — any cart container ──────────────────
+      if (replaced === 0 && indexedItems.length === 1) {
+        // Try cart form first, then cart-drawer, then cart-items custom element
+        var cartContainers = [
+          document.querySelector("form[action^='/cart']"),
+          document.querySelector('cart-drawer'),
+          document.querySelector('cart-items'),
+          document.querySelector('[id*="cart"]'),
+        ];
+        for (var ci = 0; ci < cartContainers.length; ci++) {
+          var cc = cartContainers[ci];
+          if (!cc) continue;
+          var fallbackImg = Array.prototype.slice.call(cc.querySelectorAll('img')).find(isLikelyProductImg);
+          if (fallbackImg) {
+            setImgToMockup(fallbackImg, indexedItems[0].mockupUrl);
             replaced++;
+            break;
           }
         }
       }
