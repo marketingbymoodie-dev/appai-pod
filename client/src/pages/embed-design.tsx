@@ -2167,6 +2167,10 @@ export default function EmbedDesign() {
         reader.onloadend = () => resolve(reader.result as string);
         reader.readAsDataURL(referenceImage);
       });
+      // Validate base64 size (max 5MB encoded)
+      if (referenceImageBase64 && referenceImageBase64.length > 5 * 1024 * 1024) {
+        throw new Error('Reference image is too large. Please use a smaller image (max 5MB).');
+      }
     }
 
     console.log('[Generate] clicked', {
