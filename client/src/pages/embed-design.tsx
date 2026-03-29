@@ -1312,7 +1312,8 @@ export default function EmbedDesign() {
   // Restore design state from sessionStorage on load (survives page refresh / back navigation)
   useEffect(() => {
     // Don't restore if we already have a design (e.g., from shared link) or are loading one
-    if (generatedDesign || sharedDesignId || isLoadingSharedDesign) return;
+    // Also skip if loadDesignId is present — the saved design restore will handle it instead
+    if (generatedDesign || sharedDesignId || isLoadingSharedDesign || loadDesignId) return;
     try {
       const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
       const saved = sessionStorage.getItem(stateKey);
