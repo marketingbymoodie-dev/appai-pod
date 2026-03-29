@@ -2183,19 +2183,34 @@ export default function EmbedDesign() {
       shop: (isShopify || isStorefront) ? shopDomain : undefined,
     });
 
-    generateMutation.mutate({
-      prompt: fullPrompt,
-      size: selectedSize,
-      frameColor: selectedFrameColor || "black",
-      stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
-      referenceImage: referenceImageBase64,
-      baseImageUrl: resolvedBaseImageUrl || undefined,
+    console.log('[Generate] Mutating with payload size:', {
+      prompt: fullPrompt.length,
+      referenceImage: referenceImageBase64?.length ?? 0,
       shop: (isShopify || isStorefront) ? shopDomain : undefined,
-      sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
-      productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
-      sessionId: isStorefront ? anonSessionId : undefined,
-      customerId: storefrontCustomerId || undefined,
     });
+
+    try {
+      generateMutation.mutate({
+        prompt: fullPrompt,
+        size: selectedSize,
+        frameColor: selectedFrameColor || "black",
+        stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
+        referenceImage: referenceImageBase64,
+        baseImageUrl: resolvedBaseImageUrl || undefined,
+        shop: (isShopify || isStorefront) ? shopDomain : undefined,
+        sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
+        productTypeId: productTypeConfig?.id ? String(productTypeConfig.id) : productTypeId,
+        sessionId: isStorefront ? anonSessionId : undefined,
+        customerId: storefrontCustomerId || undefined,
+      });
+    } catch (err: any) {
+      console.error('[Generate] Mutation trigger failed:', err);
+      toast({
+        title: "Generation Failed",
+        description: err.message || "An unexpected error occurred while starting generation.",
+        variant: "destructive",
+      });
+    }
     setDesignSource("ai");
   };
 
