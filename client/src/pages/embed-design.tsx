@@ -1295,7 +1295,7 @@ export default function EmbedDesign() {
       if (loadDesignAppliedRef.current) return; // already restored from list
       console.log('[LoadDesign] Fallback: fetching status for', loadDesignId);
       const shop = shopDomain;
-      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(loadDesignId)}&shop=${encodeURIComponent(shop)}`)
+      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(loadDesignId)}&shop=${encodeURIComponent(shop)}&t=${Date.now()}`)
         .then(res => res.ok ? res.json() : null)
         .then(status => {
           if (!status || status.status !== 'complete') return;
