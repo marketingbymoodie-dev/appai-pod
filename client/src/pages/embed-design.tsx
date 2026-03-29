@@ -3748,10 +3748,10 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
-              {/* When viewing a saved design via loadDesignId, show a "Start New Design" banner instead of allowing generation */}
-              {loadDesignId && generatedDesign && (
+              {/* When viewing a saved design via loadDesignId, show a banner and block generation */}
+              {loadDesignId && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-center justify-between gap-3">
-                  <span>You&apos;re viewing a saved design. Generate a new design to replace it.</span>
+                  <span>You&apos;re viewing a saved design. Click &ldquo;Start Fresh&rdquo; to generate a new one.</span>
                   <button
                     type="button"
                     className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 transition-colors"
@@ -3789,7 +3789,7 @@ export default function EmbedDesign() {
                       }
                       handleGenerate();
                     }}
-                    disabled={!prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
+                    disabled={!!loadDesignId || !prompt.trim() || generateMutation.isPending || freeLimitReached || (!isShopify && !isStorefront && (!isLoggedIn || credits <= 0))}
                     className="w-full h-11 text-base font-medium"
                     data-testid="button-generate"
                   >
