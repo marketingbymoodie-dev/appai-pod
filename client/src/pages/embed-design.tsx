@@ -541,6 +541,11 @@ export default function EmbedDesign() {
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
   const loadDesignId = searchParams.get("loadDesignId") || "";
+  // bridgeLoadDesignId is set when the parent page sends AI_ART_STUDIO_LOAD_DESIGN via postMessage
+  // This is more reliable than URL params which can be cached by Shopify CDN
+  const [bridgeLoadDesignId, setBridgeLoadDesignId] = useState("");
+  // The effective loadDesignId — prefer the bridge-provided one, fall back to URL param
+  const effectiveLoadDesignId = bridgeLoadDesignId || loadDesignId;
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
@@ -1267,57 +1272,57 @@ export default function EmbedDesign() {
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
     loadDesignAppliedRef.current = false;
-    if (loadDesignId) {
+    if (effectiveLoadDesignId) {
       // Clear current design state to prevent "takeover" while loading a new saved design
       setGeneratedDesign(null);
       setDesignSource(null);
     }
-  }, [loadDesignId]);
+  }, [effectiveLoadDesignId]);
 
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
-    if (!loadDesignId || loadDesignAppliedRef.current) return;
+    if (!effectiveLoadDesignId || loadDesignAppliedRef.current) return;
     if (!savedDesigns.length) return; // wait until list is loaded
-    console.log('[LoadDesign] savedDesigns IDs:', savedDesigns.map(x => x.id), 'looking for:', loadDesignId);
-    const d = savedDesigns.find(x => x.id === loadDesignId);
+    console.log('[LoadDesign] savedDesigns IDs:', savedDesigns.map(x => x.id), 'looking for:', effectiveLoadDesignId);
+    const d = savedDesigns.find(x => x.id === effectiveLoadDesignId);
     if (!d) {
-      console.warn('[LoadDesign] Design not found in savedDesigns list! loadDesignId:', loadDesignId);
+      console.warn('[LoadDesign] Design not found in savedDesigns list! loadDesignId:', effectiveLoadDesignId);
       return;
     }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadDesignId, savedDesigns]);
+  }, [effectiveLoadDesignId, savedDesigns]);
 
   // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
   // fetch the job status directly from the server
   useEffect(() => {
-    if (!loadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
+    if (!effectiveLoadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
     // Only run fallback after a short delay to give savedDesigns time to populate
     const timer = setTimeout(() => {
       if (loadDesignAppliedRef.current) return; // already restored from list
-      console.log('[LoadDesign] Fallback: fetching status for', loadDesignId);
+      console.log('[LoadDesign] Fallback: fetching status for', effectiveLoadDesignId);
       const shop = shopDomain;
-      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(loadDesignId)}&shop=${encodeURIComponent(shop)}&t=${Date.now()}`)
+      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(effectiveLoadDesignId)}&shop=${encodeURIComponent(shop)}&t=${Date.now()}`)
         .then(res => res.ok ? res.json() : null)
         .then(status => {
           if (!status || status.status !== 'complete') return;
           if (loadDesignAppliedRef.current) return; // list restored it in the meantime
           loadDesignAppliedRef.current = true;
-          applyLoadedDesign(loadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls });
+          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls });
         })
         .catch(() => {});
     }, 2000);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadDesignId, shopDomain]);
+  }, [effectiveLoadDesignId, shopDomain]);
 
   // Restore design state from sessionStorage on load (survives page refresh / back navigation)
   useEffect(() => {
     // Don't restore if we already have a design (e.g., from shared link) or are loading one
     // Also skip if loadDesignId is present — the saved design restore will handle it instead
-    if (generatedDesign || sharedDesignId || isLoadingSharedDesign || loadDesignId) return;
+    if (generatedDesign || sharedDesignId || isLoadingSharedDesign || effectiveLoadDesignId) return;
     try {
       const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
       const saved = sessionStorage.getItem(stateKey);
@@ -3011,6 +3016,17 @@ export default function EmbedDesign() {
 
         console.log('[Design Studio] Applied store theme CSS variables');
       }
+
+      // Load saved design sent via postMessage from the parent page bridge
+      // This is the primary mechanism — more reliable than URL params which can be cached by Shopify CDN
+      if (type === "AI_ART_STUDIO_LOAD_DESIGN" && event.data.loadDesignId) {
+        const bridgeLoadId = String(event.data.loadDesignId);
+        console.log('[LoadDesign] Received LOAD_DESIGN via postMessage:', bridgeLoadId);
+        // Reset the applied ref so the restore effect will run
+        loadDesignAppliedRef.current = false;
+        // Set the bridge-provided loadDesignId into state so the restore effect can use it
+        setBridgeLoadDesignId(bridgeLoadId);
+      }
     };
 
     window.addEventListener("message", handleMessage);
@@ -3783,15 +3799,15 @@ export default function EmbedDesign() {
             )}
             <div className="space-y-4 mt-4">
               {/* When viewing a saved design or have a currently open design, show a prominent banner and block generation */}
-              {(loadDesignId || generatedDesign) && (
+              {(effectiveLoadDesignId || generatedDesign) && (
                 <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
                   <div className="flex items-center gap-3">
                     <div className="bg-amber-100 p-2 rounded-full">
                       <Info className="w-5 h-5 text-amber-600" />
                     </div>
                     <div className="flex flex-col">
-                      <span className="font-bold">{loadDesignId ? "Viewing Saved Design" : "Design in Progress"}</span>
-                      <span className="text-amber-700 text-xs">{loadDesignId ? "Generation is disabled for saved designs." : "Click 'Start Fresh Design' to create a new one."}</span>
+                      <span className="font-bold">{effectiveLoadDesignId ? "Viewing Saved Design" : "Design in Progress"}</span>
+                      <span className="text-amber-700 text-xs">{effectiveLoadDesignId ? "Generation is disabled for saved designs." : "Click 'Start Fresh Design' to create a new one."}</span>
                     </div>
                   </div>
                   <button
@@ -3833,7 +3849,7 @@ export default function EmbedDesign() {
                       }
                       handleGenerate();
                     }}
-                    disabled={!!loadDesignId || !!generatedDesign || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
+                    disabled={!!effectiveLoadDesignId || !!generatedDesign || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
                     className="w-full h-11 text-base font-medium"
                     data-testid="button-generate"
                   >

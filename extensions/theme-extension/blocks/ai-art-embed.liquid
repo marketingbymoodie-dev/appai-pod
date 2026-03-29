@@ -776,6 +776,22 @@
           console.warn(B, 'Failed to send THEME:', e.message);
         }
 
+        // Send loadDesignId from the parent page URL so the iframe can restore the saved design.
+        // This is more reliable than passing it via iframe URL params (which may be cached by Shopify CDN).
+        try {
+          var pageUrlParams = new URLSearchParams(window.location.search);
+          var loadDesignIdFromPage = pageUrlParams.get('loadDesignId');
+          if (loadDesignIdFromPage) {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_STUDIO_LOAD_DESIGN',
+              loadDesignId: loadDesignIdFromPage,
+            }, iframeOrigin || '*');
+            console.log(B, 'Sent LOAD_DESIGN to iframe:', loadDesignIdFromPage);
+          }
+        } catch(e) {
+          console.warn(B, 'Failed to send LOAD_DESIGN:', e.message);
+        }
+
         return;
       }
 
