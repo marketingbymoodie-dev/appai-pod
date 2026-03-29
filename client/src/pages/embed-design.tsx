@@ -1272,6 +1272,11 @@ export default function EmbedDesign() {
       setPrintifyMockups(absMockups);
       setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
       setSelectedMockupIndex(0);
+      // The loaded mockups are already correct for this design — mark them fresh.
+      // Without this, setTransform() called above triggers the stale-on-transform
+      // effect (which fires because transform deps changed) and sets mockupsStale=true,
+      // blocking _mockup_url from being included in add-to-cart for the 2nd+ design.
+      setMockupsStale(false);
       sendMockupsToParent(absMockups);
     }
   };
