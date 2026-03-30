@@ -1825,7 +1825,13 @@ export default function EmbedDesign() {
     const styleLabel = activePresetForLabel?.name || '';
     const productLabel = displayName || productTitle || '';
     const rawId = String(generatedDesign.id || '');
-    const shortHash = rawId.slice(-4).replace(/[^a-z0-9]/gi, '').slice(0, 4) || rawId.slice(0, 4);
+    // Hash the full ID so every unique design gets a unique suffix — avoids
+    // collisions when a hard refresh regenerates a new ID with a similar tail.
+    const shortHash = (() => {
+      let h = 0;
+      for (let i = 0; i < rawId.length; i++) { h = (Math.imul(31, h) + rawId.charCodeAt(i)) | 0; }
+      return Math.abs(h).toString(36).slice(0, 4);
+    })();
     const readableDesignId = [productLabel, styleLabel].filter(Boolean).join(' · ') + (shortHash ? ` #${shortHash}` : '');
     const properties: Record<string, string> = {
       '_design_id': readableDesignId || rawId,
@@ -2686,8 +2692,20 @@ export default function EmbedDesign() {
     }
 
     // Build line item properties for Printify fulfillment
+    // Use the same human-readable label as the cart-state broadcast so both
+    // code paths produce an identical _design_id (required for variant dedup).
+    const _activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    const _styleLabel = _activePreset?.name || '';
+    const _productLabel = displayName || productTitle || '';
+    const _rawId = String(generatedDesign.id || '');
+    const _shortHash = (() => {
+      let h = 0;
+      for (let i = 0; i < _rawId.length; i++) { h = (Math.imul(31, h) + _rawId.charCodeAt(i)) | 0; }
+      return Math.abs(h).toString(36).slice(0, 4);
+    })();
+    const _readableDesignId = [_productLabel, _styleLabel].filter(Boolean).join(' · ') + (_shortHash ? ` #${_shortHash}` : '');
     const properties: Record<string, string> = {
-      '_design_id': generatedDesign.id,
+      '_design_id': _readableDesignId || _rawId,
       'Artwork': 'Custom AI Design',
     };
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
