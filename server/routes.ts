@@ -6309,24 +6309,32 @@ ${textEdgeRestrictions}
       );
       if (existingVariant) {
         console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
-        // If the existing variant has inventory tracking enabled it may show as
-        // sold out even though we want oversell. Fix it via PUT and verify the
-        // response before returning — Shopify propagates the change immediately
-        // in the Admin API response, which is what /cart/add.js uses.
-        if (existingVariant.inventory_management !== null || existingVariant.inventory_policy !== 'continue') {
+        // Shopify ignores inventory_management on variants linked to a Fulfillment Service
+        // location (e.g. Printify). The correct fix is to set tracked=false on the
+        // InventoryItem, which is the authoritative source for inventory tracking.
+        // Also ensure inventory_policy=continue so overselling is always allowed.
+        const invItemId = existingVariant.inventory_item_id;
+        if (invItemId) {
           try {
-            const fixRes = await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
+            // 1. Disable tracking on the InventoryItem
+            const itemFixRes = await fetch(`${apiBase}/inventory_items/${invItemId}.json`, {
               method: 'PUT',
               headers,
-              body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
+              body: JSON.stringify({ inventory_item: { id: invItemId, tracked: false } }),
             });
-            if (fixRes.ok) {
-              const { variant: fixed } = await fixRes.json();
-              console.log(`[ResolveDesignVariant] Fixed variant ${existingVariant.id}: inventory_management=${fixed.inventory_management} inventory_policy=${fixed.inventory_policy}`);
+            if (itemFixRes.ok) {
+              const { inventory_item: fixedItem } = await itemFixRes.json();
+              console.log(`[ResolveDesignVariant] InventoryItem ${invItemId} tracked=${fixedItem.tracked}`);
             } else {
-              const errText = await fixRes.text();
-              console.warn(`[ResolveDesignVariant] Could not fix inventory on variant ${existingVariant.id} (${fixRes.status}): ${errText.substring(0, 200)}`);
+              const errText = await itemFixRes.text();
+              console.warn(`[ResolveDesignVariant] InventoryItem fix failed (${itemFixRes.status}): ${errText.substring(0, 200)}`);
             }
+            // 2. Also set inventory_policy=continue on the variant (belt-and-suspenders)
+            await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
+              method: 'PUT',
+              headers,
+              body: JSON.stringify({ variant: { id: existingVariant.id, inventory_policy: 'continue' } }),
+            });
           } catch (invErr: any) {
             console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
           }
@@ -6408,24 +6416,34 @@ ${textEdgeRestrictions}
       }
       const { variant: newVariant } = await createRes.json();
       console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId} — inventory_management=${newVariant.inventory_management} inventory_policy=${newVariant.inventory_policy}`);
-      // 4b. Shopify may override inventory_management on creation (product-level setting).
-      //     Always PUT immediately to force inventory_management=null + inventory_policy=continue
-      //     so /cart/add.js never hits a "sold out" block on the new variant.
-      try {
-        const invFixRes = await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
-          method: 'PUT',
-          headers,
-          body: JSON.stringify({ variant: { id: newVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
-        });
-        if (invFixRes.ok) {
-          const { variant: fixedVariant } = await invFixRes.json();
-          console.log(`[ResolveDesignVariant] Inventory fix confirmed: inventory_management=${fixedVariant.inventory_management} inventory_policy=${fixedVariant.inventory_policy}`);
-        } else {
-          const errText = await invFixRes.text();
-          console.warn(`[ResolveDesignVariant] Inventory fix failed (${invFixRes.status}): ${errText.substring(0, 200)}`);
+      // 4b. Shopify ignores inventory_management on variants linked to a Fulfillment Service
+      //     location (e.g. Printify). Set tracked=false on the InventoryItem instead —
+      //     that's the authoritative control. Also set inventory_policy=continue.
+      const newInvItemId = newVariant.inventory_item_id;
+      if (newInvItemId) {
+        try {
+          // 1. Disable tracking on the InventoryItem
+          const itemFixRes = await fetch(`${apiBase}/inventory_items/${newInvItemId}.json`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ inventory_item: { id: newInvItemId, tracked: false } }),
+          });
+          if (itemFixRes.ok) {
+            const { inventory_item: fixedItem } = await itemFixRes.json();
+            console.log(`[ResolveDesignVariant] InventoryItem ${newInvItemId} tracked=${fixedItem.tracked} (new variant)`);
+          } else {
+            const errText = await itemFixRes.text();
+            console.warn(`[ResolveDesignVariant] InventoryItem fix failed for new variant (${itemFixRes.status}): ${errText.substring(0, 200)}`);
+          }
+          // 2. Also set inventory_policy=continue on the variant (belt-and-suspenders)
+          await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ variant: { id: newVariant.id, inventory_policy: 'continue' } }),
+          });
+        } catch (invErr: any) {
+          console.warn(`[ResolveDesignVariant] Inventory fix error on new variant (non-fatal):`, invErr?.message);
         }
-      } catch (invErr: any) {
-        console.warn(`[ResolveDesignVariant] Inventory fix error (non-fatal):`, invErr?.message);
       }
 
       // 5. Upload mockup image and assign it to the new variant
