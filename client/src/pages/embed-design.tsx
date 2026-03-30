@@ -1820,8 +1820,15 @@ export default function EmbedDesign() {
     const variantId = normalizeVariantId(rawVariantId);
 
     // Build cart properties (sync — only hosted URLs, no async ensureHostedUrl)
+    // Build a human-readable design label: "Product Type · Style #xxxx"
+    const activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
+    const styleLabel = activePresetForLabel?.name || '';
+    const productLabel = displayName || productTitle || '';
+    const rawId = String(generatedDesign.id || '');
+    const shortHash = rawId.slice(-4).replace(/[^a-z0-9]/gi, '').slice(0, 4) || rawId.slice(0, 4);
+    const readableDesignId = [productLabel, styleLabel].filter(Boolean).join(' · ') + (shortHash ? ` #${shortHash}` : '');
     const properties: Record<string, string> = {
-      '_design_id': String(generatedDesign.id || ''),
+      '_design_id': readableDesignId || rawId,
       'Artwork': 'Custom AI Design',
     };
     const artworkUrl = generatedDesign.imageUrl;

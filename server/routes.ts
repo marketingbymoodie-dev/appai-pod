@@ -6297,8 +6297,9 @@ ${textEdgeRestrictions}
       const opt2 = baseVariant.option2 || null;
       const price = baseVariant.price;
 
-      // Truncate designId to fit Shopify's 255-char option value limit
-      const designOpt = ("D:" + designId).substring(0, 255);
+      // Use the designId directly as the option value (already human-readable from client).
+      // Truncate to fit Shopify's 255-char option value limit.
+      const designOpt = String(designId).substring(0, 255);
 
       // 3. Check if a variant with this designOpt already exists (reuse it)
       const existingVariant = product.variants.find((v: any) =>
