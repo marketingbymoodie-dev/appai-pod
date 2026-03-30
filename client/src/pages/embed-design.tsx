@@ -3845,6 +3845,11 @@ export default function EmbedDesign() {
                       setSelectedStyleOption('');
                       setSelectedSize('');
                       setSelectedFrameColor('');
+                      // Clear sessionStorage so the previous design's ID is not restored
+                      try {
+                        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                        sessionStorage.removeItem(stateKey);
+                      } catch (_) { /* sessionStorage may be unavailable */ }
                       // Remove loadDesignId from the iframe URL
                       const url = new URL(window.location.href);
                       url.searchParams.delete('loadDesignId');
