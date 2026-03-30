@@ -6344,33 +6344,19 @@ ${textEdgeRestrictions}
       );
       if (existingVariant) {
         console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
-        // Shopify ignores inventory_management on variants linked to a Fulfillment Service
-        // location (e.g. Printify). The correct fix is to set tracked=false on the
-        // InventoryItem, which is the authoritative source for inventory tracking.
-        // Also ensure inventory_policy=continue so overselling is always allowed.
+        // Strategy: keep inventory tracked (so inventory_levels/set works) but set
+        // quantity=999 and inventory_policy=continue so the cart never sees sold-out.
+        // Setting tracked=false conflicts with inventory_levels/set (Shopify rejects it).
         const invItemId = existingVariant.inventory_item_id;
         if (invItemId) {
           try {
-            // 1. Disable tracking on the InventoryItem
-            const itemFixRes = await fetch(`${apiBase}/inventory_items/${invItemId}.json`, {
-              method: 'PUT',
-              headers,
-              body: JSON.stringify({ inventory_item: { id: invItemId, tracked: false } }),
-            });
-            if (itemFixRes.ok) {
-              const { inventory_item: fixedItem } = await itemFixRes.json();
-              console.log(`[ResolveDesignVariant] InventoryItem ${invItemId} tracked=${fixedItem.tracked}`);
-            } else {
-              const errText = await itemFixRes.text();
-              console.warn(`[ResolveDesignVariant] InventoryItem fix failed (${itemFixRes.status}): ${errText.substring(0, 200)}`);
-            }
-            // 2. Also set inventory_policy=continue on the variant (belt-and-suspenders)
+            // 1. Ensure inventory_policy=continue on the variant
             await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
               method: 'PUT',
               headers,
               body: JSON.stringify({ variant: { id: existingVariant.id, inventory_policy: 'continue' } }),
             });
-            // 3. Set inventory quantity to 999 — belt-and-suspenders against storefront cache lag
+            // 2. Set inventory quantity to 999 so storefront never sees sold-out
             await ensureInventoryAvailable(invItemId);
           } catch (invErr: any) {
             console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
@@ -6453,32 +6439,18 @@ ${textEdgeRestrictions}
       }
       const { variant: newVariant } = await createRes.json();
       console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId} — inventory_management=${newVariant.inventory_management} inventory_policy=${newVariant.inventory_policy}`);
-      // 4b. Shopify ignores inventory_management on variants linked to a Fulfillment Service
-      //     location (e.g. Printify). Set tracked=false on the InventoryItem instead —
-      //     that's the authoritative control. Also set inventory_policy=continue.
+      // Strategy: keep inventory tracked (so inventory_levels/set works) but set
+      // quantity=999 and inventory_policy=continue so the cart never sees sold-out.
       const newInvItemId = newVariant.inventory_item_id;
       if (newInvItemId) {
         try {
-          // 1. Disable tracking on the InventoryItem
-          const itemFixRes = await fetch(`${apiBase}/inventory_items/${newInvItemId}.json`, {
-            method: 'PUT',
-            headers,
-            body: JSON.stringify({ inventory_item: { id: newInvItemId, tracked: false } }),
-          });
-          if (itemFixRes.ok) {
-            const { inventory_item: fixedItem } = await itemFixRes.json();
-            console.log(`[ResolveDesignVariant] InventoryItem ${newInvItemId} tracked=${fixedItem.tracked} (new variant)`);
-          } else {
-            const errText = await itemFixRes.text();
-            console.warn(`[ResolveDesignVariant] InventoryItem fix failed for new variant (${itemFixRes.status}): ${errText.substring(0, 200)}`);
-          }
-          // 2. Also set inventory_policy=continue on the variant (belt-and-suspenders)
+          // 1. Ensure inventory_policy=continue on the variant (Shopify may override on creation)
           await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
             method: 'PUT',
             headers,
             body: JSON.stringify({ variant: { id: newVariant.id, inventory_policy: 'continue' } }),
           });
-          // 3. Set inventory quantity to 999 — belt-and-suspenders against storefront cache lag
+          // 2. Set inventory quantity to 999 so storefront never sees sold-out
           await ensureInventoryAvailable(newInvItemId);
         } catch (invErr: any) {
           console.warn(`[ResolveDesignVariant] Inventory fix error on new variant (non-fatal):`, invErr?.message);
