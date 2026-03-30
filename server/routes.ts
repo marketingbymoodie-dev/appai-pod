@@ -6407,7 +6407,26 @@ ${textEdgeRestrictions}
         return res.json({ success: true, variantId: String(variantId), fallback: true, error: errText.substring(0, 200) });
       }
       const { variant: newVariant } = await createRes.json();
-      console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId}`);
+      console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId} — inventory_management=${newVariant.inventory_management} inventory_policy=${newVariant.inventory_policy}`);
+      // 4b. Shopify may override inventory_management on creation (product-level setting).
+      //     Always PUT immediately to force inventory_management=null + inventory_policy=continue
+      //     so /cart/add.js never hits a "sold out" block on the new variant.
+      try {
+        const invFixRes = await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ variant: { id: newVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
+        });
+        if (invFixRes.ok) {
+          const { variant: fixedVariant } = await invFixRes.json();
+          console.log(`[ResolveDesignVariant] Inventory fix confirmed: inventory_management=${fixedVariant.inventory_management} inventory_policy=${fixedVariant.inventory_policy}`);
+        } else {
+          const errText = await invFixRes.text();
+          console.warn(`[ResolveDesignVariant] Inventory fix failed (${invFixRes.status}): ${errText.substring(0, 200)}`);
+        }
+      } catch (invErr: any) {
+        console.warn(`[ResolveDesignVariant] Inventory fix error (non-fatal):`, invErr?.message);
+      }
 
       // 5. Upload mockup image and assign it to the new variant
       try {
