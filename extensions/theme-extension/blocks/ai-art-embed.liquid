@@ -54,7 +54,7 @@
   function getCart(){return fetch('/cart.js',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('cart.js '+r.status);return r.json();});}
 
   function isLikelyProductImg(img){
-    var src=img.getAttribute('src')||'';
+    var src=img.getAttribute('src')||img.getAttribute('data-src')||'';
     if(!src)return false;
     var w=Number(img.getAttribute('width')||img.naturalWidth||0);
     var h=Number(img.getAttribute('height')||img.naturalHeight||0);
@@ -63,7 +63,15 @@
     return true;
   }
 
-  function setImg(img,url){img.src=url;img.removeAttribute('srcset');img.setAttribute('data-appai-mockup','true');}
+  function setImg(img,url){
+    img.src=url;
+    img.removeAttribute('srcset');
+    // Clear lazy-load attributes so the lazy loader can't overwrite our mockup URL
+    img.removeAttribute('data-src');
+    img.removeAttribute('data-srcset');
+    img.removeAttribute('data-lazy-src');
+    img.setAttribute('data-appai-mockup','true');
+  }
 
   function lineIdxFromEl(el){
     var m=/CartItem-(\d+)/i.exec(el.id||'');
