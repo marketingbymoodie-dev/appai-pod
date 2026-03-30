@@ -6311,21 +6311,66 @@ ${textEdgeRestrictions}
         return res.json({ success: true, variantId: String(existingVariant.id), reused: true });
       }
 
-      // 4. Create the new variant (Shopify auto-adds the 'Design' option if not present)
+      // 4. Ensure the product has a 'Design' option — Shopify requires the option
+      //    to exist on the product before variants can use it.
+      const existingOptions: any[] = product.options || [];
+      const hasDesignOption = existingOptions.some((o: any) => o.name === 'Design');
+      let designOptionPosition = existingOptions.length + 1; // default: new last option
+
+      if (!hasDesignOption) {
+        console.log(`[ResolveDesignVariant] Adding 'Design' option to product ${productId}`);
+        // Shopify requires all existing options + the new one in the PUT body.
+        // We must also include a placeholder value for the new option on existing variants.
+        const updatedOptions = [
+          ...existingOptions.map((o: any) => ({ name: o.name, values: o.values })),
+          { name: 'Design', values: [designOpt] },
+        ];
+        designOptionPosition = updatedOptions.length;
+
+        const updateProductRes = await fetch(`${apiBase}/products/${productId}.json`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({
+            product: {
+              id: productId,
+              options: updatedOptions,
+              // Shopify requires existing variants to have a value for the new option.
+              // We set it to a placeholder; only new design variants get real values.
+              variants: product.variants.map((v: any) => ({
+                id: v.id,
+                option1: v.option1,
+                option2: v.option2 || undefined,
+                [`option${designOptionPosition}`]: 'base',
+              })),
+            },
+          }),
+        });
+        if (!updateProductRes.ok) {
+          const errText = await updateProductRes.text();
+          console.error(`[ResolveDesignVariant] Failed to add Design option:`, updateProductRes.status, errText);
+          return res.json({ success: true, variantId: String(variantId), fallback: true, error: errText.substring(0, 200) });
+        }
+        console.log(`[ResolveDesignVariant] Design option added at position ${designOptionPosition}`);
+      } else {
+        const designOption = existingOptions.find((o: any) => o.name === 'Design');
+        designOptionPosition = designOption?.position || existingOptions.length;
+      }
+
+      // 4b. Create the new variant using the correct option position
       const newVariantBody: any = {
         variant: {
           option1: opt1,
-          option3: designOpt,
+          [`option${designOptionPosition}`]: designOpt,
           price,
           inventory_management: null,
-          inventory_policy: "continue",
+          inventory_policy: 'continue',
           taxable: baseVariant.taxable,
           requires_shipping: baseVariant.requires_shipping,
           weight: baseVariant.weight,
           weight_unit: baseVariant.weight_unit,
         }
       };
-      if (opt2) newVariantBody.variant.option2 = opt2;
+      if (opt2 && designOptionPosition !== 2) newVariantBody.variant.option2 = opt2;
 
       const createRes = await fetch(`${apiBase}/products/${productId}/variants.json`, {
         method: "POST",
