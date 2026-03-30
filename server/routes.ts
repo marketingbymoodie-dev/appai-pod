@@ -6309,6 +6309,20 @@ ${textEdgeRestrictions}
       );
       if (existingVariant) {
         console.log(`[ResolveDesignVariant] Reusing existing variant ${existingVariant.id} for design ${designId}`);
+        // Always ensure inventory_policy is 'continue' on reused variants so
+        // Shopify never blocks the cart add with a "sold out" error.
+        if (existingVariant.inventory_policy !== 'continue' || existingVariant.inventory_management !== null) {
+          try {
+            await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
+              method: 'PUT',
+              headers,
+              body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
+            });
+            console.log(`[ResolveDesignVariant] Reset inventory_policy to continue on variant ${existingVariant.id}`);
+          } catch (invErr: any) {
+            console.warn(`[ResolveDesignVariant] Could not reset inventory_policy (non-fatal):`, invErr?.message);
+          }
+        }
         return res.json({ success: true, variantId: String(existingVariant.id), reused: true });
       }
 
