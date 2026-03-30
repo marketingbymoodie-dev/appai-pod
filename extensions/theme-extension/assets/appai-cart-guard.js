@@ -14,7 +14,15 @@
   NS.latest = NS.latest || null;
 
   var LOG_PREFIX = "[AppAI Cart Guard]";
-  var ENABLE_DEBUG = false;
+  var CART_GUARD_VERSION = '1.1';
+  /* DEBUG MARKERS (search these in DevTools console to diagnose issues):
+     [AppAI Cart Guard] Loaded                        → script running (set ENABLE_DEBUG=true to see all logs)
+     [AppAI Cart Guard] Ignored setLatestDesign       → payload missing _mockup_url; check embed-design.tsx handleAddToCart
+     [AppAI Cart Guard] Latest set:                   → design registered OK; _mockup_url should be a valid URL
+     [AppAI Cart Guard] fetch patch error:            → error injecting props into fetch /cart/add.js body
+     [AppAI Cart Guard] xhr patch error:              → error injecting props into XHR /cart/add.js body
+  */
+  var ENABLE_DEBUG = false; // set to true temporarily to see verbose logs
   function debug() {
     if (ENABLE_DEBUG) console.log.apply(console, [LOG_PREFIX].concat(Array.prototype.slice.call(arguments)));
   }
@@ -23,7 +31,7 @@
   NS.setLatestDesign = function setLatestDesign(payload) {
     var latest = normalizePayload(payload);
     if (!latest || !latest._mockup_url) {
-      debug("Ignored setLatestDesign payload (missing _mockup_url):", payload);
+      console.warn(LOG_PREFIX, 'Ignored setLatestDesign payload (missing _mockup_url):', payload);
       return;
     }
     NS.latest = latest;
@@ -328,5 +336,5 @@
     syncHiddenInputsIntoAllProductForms(NS.latest);
   }
 
-  debug("Loaded");
+  console.log(LOG_PREFIX, 'Loaded. version=' + CART_GUARD_VERSION + ' isRelevantPage=' + isRelevantPage);
 })();

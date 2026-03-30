@@ -24,9 +24,18 @@
 
 <script src="{{ 'appai-cart-guard.js' | asset_url }}" defer></script>
 <script>
-/* AppAI Cart Image Replacer — inline v2 (avoids CDN caching) */
+/* AppAI Cart Image Replacer — inline v2.1 (avoids CDN caching) */
+/* DEBUG MARKERS (search these in DevTools console to diagnose issues):
+   [AppAI Cart Image] v2 inline installed.          → script loaded OK
+   [AppAI Cart Image] No _mockup_url in cart.       → cart items have no _mockup_url property; check add-to-cart flow
+   [AppAI Cart Image] Applied mockups. Replaced:X   → X=0 means DOM matching failed; check S2 node logs
+   [AppAI Cart Image] S2 node N ok=false            → isLikelyProductImg rejected img; check width/height attrs
+   [AppAI Cart Guard] (in appai-cart-guard.js)      → fetch/XHR interceptor for /cart/add.js
+   [AppAI Cart Guard] Ignored setLatestDesign       → _mockup_url missing from payload sent by embed-design.tsx
+*/
 ;(function () {
   'use strict';
+  var CART_IMG_VERSION = '2.1';
   // Always run the inline v2 — supersedes the old external appai-cart-images.js
   if (window.__APPAI_CART_IMG_REPLACER_V2__) return;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -168,7 +177,7 @@
   document.addEventListener('cart:refresh',schedule);
   document.addEventListener('shopify:section:load',schedule);
   window.addEventListener('pageshow',schedule);
-  console.log('[AppAI Cart Image] v2 inline installed.');
+  console.log('[AppAI Cart Image] v2 inline installed. version=' + CART_IMG_VERSION);
 })();
 </script>
 {% comment %}
