@@ -4,6 +4,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL ?? "";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
 const BUCKET = process.env.SUPABASE_BUCKET ?? "mockups";
 
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  console.warn('[SupabaseMockups] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — mockup caching disabled');
+} else {
+  console.log('[SupabaseMockups] Supabase configured. URL:', SUPABASE_URL.substring(0, 40), 'Bucket:', BUCKET);
+}
+
 const supabase =
   SUPABASE_URL && SUPABASE_KEY
     ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -54,13 +60,18 @@ export async function uploadMockupToSupabase({
     throw new Error("Either sourceUrl or buffer must be provided");
   }
 
+  console.log(`[SupabaseMockups] Uploading ${bytes.length} bytes to ${BUCKET}/${storagePath}`);
   const { error } = await supabase.storage.from(BUCKET).upload(storagePath, bytes, {
     contentType: "image/jpeg",
     upsert: true,
   });
 
-  if (error) throw error;
+  if (error) {
+    console.error(`[SupabaseMockups] Upload error for ${storagePath}:`, JSON.stringify(error));
+    throw error;
+  }
 
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(storagePath);
+  console.log(`[SupabaseMockups] Upload success → ${data.publicUrl.substring(0, 80)}`);
   return data.publicUrl;
 }
