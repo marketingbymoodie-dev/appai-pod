@@ -6292,7 +6292,7 @@ ${textEdgeRestrictions}
               return _primaryLocationId;
             }
           }
-          // Fallback: read location from the inventory item's existing levels
+          // Fallback 1: read location from the inventory item's existing levels (requires read_inventory)
           if (inventoryItemIdHint) {
             const levRes = await fetch(`${apiBase}/inventory_levels.json?inventory_item_ids=${inventoryItemIdHint}&limit=1`, { headers });
             if (levRes.ok) {
@@ -6300,6 +6300,17 @@ ${textEdgeRestrictions}
               if (inventory_levels && inventory_levels.length > 0) {
                 _primaryLocationId = inventory_levels[0].location_id;
                 console.log(`[ResolveDesignVariant] Got location ${_primaryLocationId} from inventory_levels fallback`);
+              }
+            }
+          }
+          // Fallback 2: use shop.json primary_location_id (always accessible with any token)
+          if (!_primaryLocationId) {
+            const shopRes = await fetch(`${apiBase}/shop.json`, { headers });
+            if (shopRes.ok) {
+              const { shop: shopData } = await shopRes.json();
+              if (shopData?.primary_location_id) {
+                _primaryLocationId = shopData.primary_location_id;
+                console.log(`[ResolveDesignVariant] Got location ${_primaryLocationId} from shop.json fallback`);
               }
             }
           }
