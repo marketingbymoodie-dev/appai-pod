@@ -6278,6 +6278,41 @@ ${textEdgeRestrictions}
       const apiBase = `https://${shop}/admin/api/2025-10`;
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
 
+      // Helper: fetch the shop's primary location ID (cached per request)
+      let _primaryLocationId: number | null = null;
+      const getPrimaryLocationId = async (): Promise<number | null> => {
+        if (_primaryLocationId !== null) return _primaryLocationId;
+        try {
+          const locRes = await fetch(`${apiBase}/locations.json?limit=1`, { headers });
+          if (locRes.ok) {
+            const { locations } = await locRes.json();
+            _primaryLocationId = locations && locations.length > 0 ? locations[0].id : null;
+          }
+        } catch (_) {}
+        return _primaryLocationId;
+      };
+
+      // Helper: set inventory quantity to 999 at primary location so cart never sees sold-out
+      const ensureInventoryAvailable = async (inventoryItemId: number) => {
+        try {
+          const locationId = await getPrimaryLocationId();
+          if (!locationId) { console.warn('[ResolveDesignVariant] No primary location found, skipping inventory set'); return; }
+          const setRes = await fetch(`${apiBase}/inventory_levels/set.json`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ location_id: locationId, inventory_item_id: inventoryItemId, available: 999 }),
+          });
+          if (setRes.ok) {
+            console.log(`[ResolveDesignVariant] Set inventory to 999 for item ${inventoryItemId} at location ${locationId}`);
+          } else {
+            const errText = await setRes.text();
+            console.warn(`[ResolveDesignVariant] inventory_levels/set failed (${setRes.status}): ${errText.substring(0, 200)}`);
+          }
+        } catch (e: any) {
+          console.warn('[ResolveDesignVariant] ensureInventoryAvailable error (non-fatal):', e?.message);
+        }
+      };
+
       // 1. Fetch the product to inspect its options and variants
       const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
       if (!productRes.ok) {
@@ -6335,6 +6370,8 @@ ${textEdgeRestrictions}
               headers,
               body: JSON.stringify({ variant: { id: existingVariant.id, inventory_policy: 'continue' } }),
             });
+            // 3. Set inventory quantity to 999 — belt-and-suspenders against storefront cache lag
+            await ensureInventoryAvailable(invItemId);
           } catch (invErr: any) {
             console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
           }
@@ -6441,6 +6478,8 @@ ${textEdgeRestrictions}
             headers,
             body: JSON.stringify({ variant: { id: newVariant.id, inventory_policy: 'continue' } }),
           });
+          // 3. Set inventory quantity to 999 — belt-and-suspenders against storefront cache lag
+          await ensureInventoryAvailable(newInvItemId);
         } catch (invErr: any) {
           console.warn(`[ResolveDesignVariant] Inventory fix error on new variant (non-fatal):`, invErr?.message);
         }
