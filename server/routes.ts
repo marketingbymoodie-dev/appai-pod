@@ -6308,19 +6308,27 @@ ${textEdgeRestrictions}
         v.option3 === designOpt
       );
       if (existingVariant) {
-        console.log(`[ResolveDesignVariant] Reusing existing variant ${existingVariant.id} for design ${designId}`);
-        // Always ensure inventory_policy is 'continue' on reused variants so
-        // Shopify never blocks the cart add with a "sold out" error.
-        if (existingVariant.inventory_policy !== 'continue' || existingVariant.inventory_management !== null) {
+        console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
+        // If the existing variant has inventory tracking enabled it may show as
+        // sold out even though we want oversell. Fix it via PUT and verify the
+        // response before returning — Shopify propagates the change immediately
+        // in the Admin API response, which is what /cart/add.js uses.
+        if (existingVariant.inventory_management !== null || existingVariant.inventory_policy !== 'continue') {
           try {
-            await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
+            const fixRes = await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
               method: 'PUT',
               headers,
               body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
             });
-            console.log(`[ResolveDesignVariant] Reset inventory_policy to continue on variant ${existingVariant.id}`);
+            if (fixRes.ok) {
+              const { variant: fixed } = await fixRes.json();
+              console.log(`[ResolveDesignVariant] Fixed variant ${existingVariant.id}: inventory_management=${fixed.inventory_management} inventory_policy=${fixed.inventory_policy}`);
+            } else {
+              const errText = await fixRes.text();
+              console.warn(`[ResolveDesignVariant] Could not fix inventory on variant ${existingVariant.id} (${fixRes.status}): ${errText.substring(0, 200)}`);
+            }
           } catch (invErr: any) {
-            console.warn(`[ResolveDesignVariant] Could not reset inventory_policy (non-fatal):`, invErr?.message);
+            console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
           }
         }
         return res.json({ success: true, variantId: String(existingVariant.id), reused: true });
