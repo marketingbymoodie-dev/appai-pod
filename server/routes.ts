@@ -6280,13 +6280,28 @@ ${textEdgeRestrictions}
 
       // Helper: fetch the shop's primary location ID (cached per request)
       let _primaryLocationId: number | null = null;
-      const getPrimaryLocationId = async (): Promise<number | null> => {
+      const getPrimaryLocationId = async (inventoryItemIdHint?: number): Promise<number | null> => {
         if (_primaryLocationId !== null) return _primaryLocationId;
         try {
+          // Primary: use locations.json (requires read_locations scope)
           const locRes = await fetch(`${apiBase}/locations.json?limit=1`, { headers });
           if (locRes.ok) {
             const { locations } = await locRes.json();
-            _primaryLocationId = locations && locations.length > 0 ? locations[0].id : null;
+            if (locations && locations.length > 0) {
+              _primaryLocationId = locations[0].id;
+              return _primaryLocationId;
+            }
+          }
+          // Fallback: read location from the inventory item's existing levels
+          if (inventoryItemIdHint) {
+            const levRes = await fetch(`${apiBase}/inventory_levels.json?inventory_item_ids=${inventoryItemIdHint}&limit=1`, { headers });
+            if (levRes.ok) {
+              const { inventory_levels } = await levRes.json();
+              if (inventory_levels && inventory_levels.length > 0) {
+                _primaryLocationId = inventory_levels[0].location_id;
+                console.log(`[ResolveDesignVariant] Got location ${_primaryLocationId} from inventory_levels fallback`);
+              }
+            }
           }
         } catch (_) {}
         return _primaryLocationId;
@@ -6295,7 +6310,7 @@ ${textEdgeRestrictions}
       // Helper: set inventory quantity to 999 at primary location so cart never sees sold-out
       const ensureInventoryAvailable = async (inventoryItemId: number) => {
         try {
-          const locationId = await getPrimaryLocationId();
+          const locationId = await getPrimaryLocationId(inventoryItemId);
           if (!locationId) { console.warn('[ResolveDesignVariant] No primary location found, skipping inventory set'); return; }
           const setRes = await fetch(`${apiBase}/inventory_levels/set.json`, {
             method: 'POST',
