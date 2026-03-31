@@ -329,3 +329,18 @@
   -webkit-text-fill-color: transparent;
   animation: shimmer-sweep 4s linear infinite;
 }
+
+/* White shimmer for black (dark) buttons */
+.shimmer-text-white {
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.70) 20%,
+    rgba(255,255,255,1.00) 45%,
+    rgba(255,255,255,0.70) 80%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-sweep 3s linear infinite;
+}

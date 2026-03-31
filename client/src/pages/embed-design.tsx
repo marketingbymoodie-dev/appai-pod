@@ -2786,6 +2786,29 @@ export default function EmbedDesign() {
             // sessionStorage may be unavailable in some iframe contexts
             console.warn('[Design Studio] Could not persist design state:', e);
           }
+          // Auto-reset the form after 2.5 s so the user can immediately start a new design
+          // without needing to click "Start Fresh Design" again.
+          setTimeout(() => {
+            setAddedToCart(false);
+            setGeneratedDesign(null);
+            setDesignSource(null);
+            loadDesignAppliedRef.current = false;
+            setBridgeLoadDesignId('');
+            setReferenceImage(null);
+            setReferencePreview(null);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            setSelectedPreset('');
+            setSelectedStyleOption('');
+            setSelectedSize('');
+            setSelectedFrameColor('');
+            try {
+              const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+              sessionStorage.removeItem(stateKey);
+            } catch (_) { /* sessionStorage may be unavailable */ }
+            const url = new URL(window.location.href);
+            url.searchParams.delete('loadDesignId');
+            window.history.replaceState({}, '', url.toString());
+          }, 2500);
         } else {
           setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
         }
@@ -3142,18 +3165,24 @@ export default function EmbedDesign() {
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     // Send resize messages so the parent container grows with our content (no scrollbar).
+    // Debounced to 60ms to prevent layout thrashing on rapid content changes (e.g. image load).
+    let rafId: number | null = null;
     const sendHeight = () => {
-      const h = Math.max(
-        document.documentElement.scrollHeight,
-        document.body.scrollHeight,
-        document.documentElement.offsetHeight
-      );
-      window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
+      if (rafId !== null) return; // already scheduled
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const h = Math.max(
+          document.documentElement.scrollHeight,
+          document.body.scrollHeight,
+          document.documentElement.offsetHeight
+        );
+        window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
+      });
     };
     const observer = new ResizeObserver(sendHeight);
     observer.observe(document.body);
     sendHeight(); // send immediately on mount
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); if (rafId !== null) cancelAnimationFrame(rafId); };
   }, [isEmbedded, isStorefront]);
 
   // Set initial transform when design is loaded/created
@@ -3341,26 +3370,26 @@ export default function EmbedDesign() {
         {/* Login / credits info — shown in standalone and storefront modes */}
         {(isStorefront || (!isShopify && !isStorefront)) && (
           <div className="relative">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <h2 className="text-lg font-semibold" data-testid="text-title">
                 Create Your Design
               </h2>
               {isLoggedIn ? (
-                <div className="flex items-center gap-3 text-sm" data-testid="text-credits">
-                  <span className="text-muted-foreground">{customer?.email || 'Signed in'}</span>
+                <div className="flex flex-wrap items-center gap-2 text-sm min-w-0" data-testid="text-credits">
+                  <span className="text-muted-foreground truncate max-w-[160px] sm:max-w-none">{customer?.email || 'Signed in'}</span>
                   <button
                     onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent"
+                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent whitespace-nowrap"
                   >
                     Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
                   </button>
                   <button
                     onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
-                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent"
+                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent whitespace-nowrap"
                   >
                     Redeem Code
                   </button>
-                  <span className="font-medium">{credits > 0 ? `${credits} credits` : ''}</span>
+                  <span className="font-medium whitespace-nowrap">{credits > 0 ? `${credits} credits` : ''}</span>
                   <button
                     onClick={() => {
                       setCustomer(null);
@@ -3370,7 +3399,7 @@ export default function EmbedDesign() {
                       setShowSavedDesigns(false);
                       setShowCouponInput(false);
                     }}
-                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
+                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0 whitespace-nowrap"
                   >
                     Sign out
                   </button>
@@ -3866,8 +3895,8 @@ export default function EmbedDesign() {
                       setDesignSource(null);
                       loadDesignAppliedRef.current = false;
                       setBridgeLoadDesignId('');
-                      // Clear prompt and reference image
-                      setPrompt('');
+                      // Keep prompt text so the user can reuse it for a new design
+                      // setPrompt('');  ← intentionally preserved
                       setReferenceImage(null);
                       setReferencePreview(null);
                       // Reset the file input value so the same file can be re-selected
@@ -3921,18 +3950,18 @@ export default function EmbedDesign() {
                       handleGenerate();
                     }}
                     disabled={!!effectiveLoadDesignId || !!generatedDesign || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
-                    className="w-full h-11 text-base font-medium"
+                    className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                     data-testid="button-generate"
                   >
                     {generateMutation.isPending ? (
                       <>
                         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Generating...
+                        <span className="shimmer-text-white">Generating...</span>
                       </>
                     ) : (
                       <>
                         <Sparkles className="w-4 h-4 mr-2" />
-                        {isShopify ? "Generate Design" : "Generate Design"}
+                        <span className="shimmer-text-white">Generate Design</span>
                       </>
                     )}
                   </Button>
@@ -4200,33 +4229,33 @@ export default function EmbedDesign() {
                       <Button
                         onClick={handleAddToCart}
                         disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
-                        className="w-full h-11 text-base font-medium"
+                        className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                         data-testid="button-add-to-cart"
                       >
                         {isAddingToCart ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            Adding to Cart...
+                            <span className="shimmer-text-white">Adding to Cart...</span>
                           </>
                         ) : atcWaitingForMockups ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            Generating preview…
+                            <span className="shimmer-text-white">Generating preview…</span>
                           </>
                         ) : mockupsStale ? (
                           <>
                             <ShoppingCart className="w-5 h-5 mr-2" />
-                            Refresh Mockups to Continue
+                            <span className="shimmer-text-white">Refresh Mockups to Continue</span>
                           </>
                         ) : isStorefront && bridgeError ? (
                           <>
                             <ShoppingCart className="w-5 h-5 mr-2" />
-                            Add to Cart (unavailable)
+                            <span className="shimmer-text-white">Add to Cart (unavailable)</span>
                           </>
                         ) : (
                           <>
                             <ShoppingCart className="w-5 h-5 mr-2" />
-                            Add to Cart
+                            <span className="shimmer-text-white">Add to Cart</span>
                           </>
                         )}
                       </Button>
