@@ -1271,7 +1271,7 @@ export default function EmbedDesign() {
       const absMockups = mockups.map((u: string) => u.startsWith('/') ? buildAppUrl(u) : u);
       setPrintifyMockups(absMockups);
       setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
-      setSelectedMockupIndex(0);
+      setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
       // The loaded mockups are already correct for this design — mark them fresh.
       // Without this, setTransform() called above triggers the stale-on-transform
       // effect (which fires because transform deps changed) and sets mockupsStale=true,
@@ -1551,7 +1551,7 @@ export default function EmbedDesign() {
         }));
         setPrintifyMockups(absUrls);
         setPrintifyMockupImages(absImages);
-        setSelectedMockupIndex(0);
+        setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         sendMockupsToParent(absUrls);
         currentMockupColorRef.current = colorId;
         mockupColorCacheRef.current[colorId] = { urls: absUrls, images: absImages };
@@ -1673,7 +1673,7 @@ export default function EmbedDesign() {
       setPrintifyMockups(cached.urls);
       setPrintifyMockupImages(cached.images);
       currentMockupColorRef.current = selectedFrameColor;
-      setSelectedMockupIndex(0);
+      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev); // Keep mockup view when swapping colors
       setMockupsStale(false);
       console.log('[Mockups] Swapped to cached mockups for color', selectedFrameColor);
     } else {
@@ -2032,6 +2032,10 @@ export default function EmbedDesign() {
         zoomDefault = 120;
       } else if (productTypeConfig?.designerType === "framed-print" || productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
         zoomDefault = 110;
+      } else if (productTypeConfig?.aspectRatio) {
+        // Landscape products (wider than tall, e.g. 4:3, 16:9) need 110% zoom to avoid white bands
+        const [arW, arH] = productTypeConfig.aspectRatio.split(':').map(Number);
+        if (arW && arH && arW > arH) zoomDefault = 110;
       }
       console.log('[EmbedDesign] Auto-zoom:', zoomDefault, 'designerType:', productTypeConfig?.designerType, 'name:', productTypeConfig?.name);
       const newTransform = { scale: zoomDefault, x: 50, y: 50 };
@@ -2342,6 +2346,10 @@ export default function EmbedDesign() {
         zoomDefault = 120;
       } else if (productTypeConfig?.designerType === "framed-print" || productTypeConfig?.name?.toLowerCase().includes("frame") || productTypeConfig?.name?.toLowerCase().includes("framed")) {
         zoomDefault = 110;
+      } else if (productTypeConfig?.aspectRatio) {
+        // Landscape products (wider than tall, e.g. 4:3, 16:9) need 110% zoom to avoid white bands
+        const [arW, arH] = productTypeConfig.aspectRatio.split(':').map(Number);
+        if (arW && arH && arW > arH) zoomDefault = 110;
       }
       setTransform({ scale: zoomDefault, x: 50, y: 50 });
       
@@ -2493,7 +2501,9 @@ export default function EmbedDesign() {
     // Second: try to match using variant options from Shopify
     if (variants.length > 0 && (selectedSize || selectedFrameColor)) {
       const matchedVariant = variants.find((v: any) => {
-        const options = [v.option1, v.option2, v.option3].filter(Boolean);
+        // Only use option1 and option2 for matching — option3 is the 'Design' option
+        // and including it would cause design variants to be selected accidentally.
+        const options = [v.option1, v.option2].filter(Boolean);
 
         let sizeMatch = true;
         let colorMatch = true;

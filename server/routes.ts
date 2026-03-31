@@ -4117,8 +4117,11 @@ ${textEdgeRestrictions}
           
           console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
           
+          // Filter out design variants (those with option3 set — the 'Design' option)
+          // to prevent base variant infiltration in the storefront customizer.
+          const baseVariants = variants.filter((v: any) => !v.option3 || v.option3 === 'base');
           return res.json({
-            variants: variants.map((v: any) => ({
+            variants: baseVariants.map((v: any) => ({
               id: v.id,
               title: v.title,
               option1: v.option1,
@@ -4152,8 +4155,10 @@ ${textEdgeRestrictions}
       console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
       
       // Return just the essential variant data
+      // Filter out design variants (those with option3 set — the 'Design' option)
+      const baseVariants = variants.filter((v: any) => !v.option3 || v.option3 === 'base');
       res.json({
-        variants: variants.map((v: any) => ({
+        variants: baseVariants.map((v: any) => ({
           id: v.id,
           title: v.title,
           option1: v.option1,
@@ -6825,11 +6830,11 @@ ${textEdgeRestrictions}
 
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
       // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
-      // Always prefer local /objects/designs/ paths over Supabase URLs (Supabase may be unconfigured).
+      // For Supabase/external URLs, pass them through directly so gallery previews work.
       const proxyUrl = (u?: string | null) => {
         if (!u) return null;
-        // Supabase or other external URL — skip, not reliable
-        if (u.startsWith('http')) return null;
+        // Supabase or other absolute URL — pass through directly (needed for gallery previews)
+        if (u.startsWith('http')) return u;
         // Relative path like /objects/designs/xxx.png → serve via App Proxy
         const clean = u.startsWith('/') ? u : `/${u}`;
         return `/apps/appai${clean}`;
