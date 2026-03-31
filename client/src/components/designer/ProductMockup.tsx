@@ -26,6 +26,9 @@ interface ProductMockupProps {
   };
   showSafeZone?: boolean;
   blankImageUrl?: string | null;
+  /** The product's aspect ratio string, e.g. "3:4" or "2:1". Used to detect
+   *  landscape products that need a scale-up to fill the container. */
+  aspectRatio?: string;
 }
 
 export function ProductMockup({
@@ -43,6 +46,7 @@ export function ProductMockup({
   canvasConfig,
   showSafeZone = false,
   blankImageUrl,
+  aspectRatio,
 }: ProductMockupProps) {
   // When a composite mockup URL is available (e.g. Printify mockup after generation),
   // display it as a full-bleed image instead of the raw artwork overlaid on a blank.
@@ -55,6 +59,19 @@ export function ProductMockup({
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Determine whether the product is landscape (wider than tall).
+   * Used to decide whether to scale-up the blank image to fill the container.
+   * Examples: body pillow "2:1" → landscape; phone case "3:4" → portrait.
+   */
+  const isLandscape = (() => {
+    if (aspectRatio) {
+      const [w, h] = aspectRatio.split(":").map(Number);
+      if (w > 0 && h > 0) return w > h;
+    }
+    return false;
+  })();
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -326,12 +343,27 @@ export function ProductMockup({
     }
 
     if (blankImageUrl) {
+      // Use object-cover so the blank product photo fills the container edge-to-edge
+      // with no blank bars (letterboxing). The blank photo's native aspect ratio may
+      // differ from the container's aspect ratio, but object-cover handles this cleanly.
+      //
+      // For landscape/wide products (e.g. body pillow, aspect ratio wider than tall),
+      // the blank photo often has side bars because the photo is shot in a square or
+      // portrait orientation. We apply a subtle scale-up (110%) to fill those bars.
+      // For portrait/square products (phone case, tumbler, poster) object-cover alone
+      // is sufficient.
+      const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
           src={blankImageUrl}
           alt="Product blank"
-          className="absolute inset-0 w-full h-full object-contain"
-          style={{ pointerEvents: "none", opacity: 0.85 }}
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{
+            pointerEvents: "none",
+            opacity: 0.92,
+            transform: blankScale,
+            transformOrigin: "center center",
+          }}
           draggable={false}
           data-testid="img-blank"
         />

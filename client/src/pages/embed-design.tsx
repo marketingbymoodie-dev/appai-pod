@@ -4355,6 +4355,10 @@ export default function EmbedDesign() {
                   const ar = productTypeConfig?.aspectRatio || "3:4";
                   return ar.replace(":", "/");
                 })(),
+                // Cap height so tall/portrait products (phone cases, body pillows, etc.)
+                // don't push the form controls off-screen. The aspect-ratio still governs
+                // the natural proportions; maxHeight just prevents extreme cases.
+                maxHeight: "520px",
               }}
               data-testid="container-mockup"
             >
@@ -4393,6 +4397,7 @@ export default function EmbedDesign() {
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={productTypeConfig?.baseMockupImages?.front || null}
+                      aspectRatio={productTypeConfig?.aspectRatio}
                     />
                   );
                 })()}

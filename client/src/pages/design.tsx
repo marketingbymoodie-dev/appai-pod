@@ -1261,7 +1261,7 @@ export default function DesignPage() {
             </div>
           ) : printifyMockups.length > 0 ? (
             <div className="relative w-full h-full">
-              <img src={printifyMockups[0]} alt="Product mockup" className="w-full h-full object-contain rounded-md" data-testid="img-printify-mockup" />
+              <img src={printifyMockups[0]} alt="Product mockup" className="w-full h-full object-cover rounded-md" data-testid="img-printify-mockup" />
             </div>
           ) : (
             <div className="text-center text-muted-foreground p-4">
@@ -1273,7 +1273,7 @@ export default function DesignPage() {
       ) : showApparelBaseWithArtwork ? (
         <div className="absolute inset-0 flex items-center justify-center" style={{ pointerEvents: "none" }}>
           <div className="relative w-full h-full">
-            <img src={designerConfig!.baseMockupImages!.front!} alt="Product preview" className="w-full h-full object-contain rounded-md" data-testid="img-base-mockup" />
+            <img src={designerConfig!.baseMockupImages!.front!} alt="Product preview" className="w-full h-full object-cover rounded-md" data-testid="img-base-mockup" />
             <div
               className={`absolute overflow-hidden ${
                 designerConfig?.designerType === "pillow" && designerConfig?.printShape === "circle" ? "rounded-full" : ""
@@ -1307,7 +1307,7 @@ export default function DesignPage() {
             </div>
           ) : (
             <div className="relative w-full h-full">
-              <img src={designerConfig!.baseMockupImages!.front!} alt="Product preview" className="w-full h-full object-contain rounded-md" data-testid="img-base-mockup" />
+              <img src={designerConfig!.baseMockupImages!.front!} alt="Product preview" className="w-full h-full object-cover rounded-md" data-testid="img-base-mockup" />
               {generatedDesign?.generatedImageUrl && (
                 <div
                   className={`absolute overflow-hidden ${
