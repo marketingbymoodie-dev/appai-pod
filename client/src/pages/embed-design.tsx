@@ -3436,419 +3436,6 @@ export default function EmbedDesign() {
   return (
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <div className="max-w-6xl mx-auto space-y-4">
-        {/* Login / credits info — shown in standalone and storefront modes */}
-        {(isStorefront || (!isShopify && !isStorefront)) && (
-          <div className="relative">
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <h2 className="text-lg font-semibold" data-testid="text-title">
-                  Create Your Design
-                </h2>
-              </div>
-              {isLoggedIn ? (
-                <div className="flex flex-wrap gap-2" data-testid="user-actions">
-                  <div className="px-3 py-2 text-sm font-medium rounded border border-border bg-background truncate max-w-xs" title={customer?.email}>
-                    {customer?.email || 'Signed in'}
-                  </div>
-                  <button
-                    onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                    className="px-3 py-2 text-sm font-medium rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-background whitespace-nowrap"
-                  >
-                    Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
-                  </button>
-                  <button
-                    onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
-                    className="px-3 py-2 text-sm font-medium rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-background whitespace-nowrap"
-                  >
-                    Redeem Code
-                  </button>
-                  {credits > 0 && (
-                    <div className="px-3 py-2 text-sm font-medium rounded border border-border bg-background whitespace-nowrap">
-                      {credits} credit{credits !== 1 ? 's' : ''}
-                    </div>
-                  )}
-                  <button
-                    onClick={() => {
-                      setCustomer(null);
-                      setStorefrontCustomerId(null);
-                      setOtpEmail('');
-                      try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
-                      setShowSavedDesigns(false);
-                      setShowCouponInput(false);
-                    }}
-                    className="px-3 py-2 text-sm font-medium rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-background whitespace-nowrap"
-                  >
-                    Sign out
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setShowOtpLogin(true)}
-                  className="text-sm text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0 w-fit"
-                  data-testid="text-login-prompt"
-                >
-                  <LogIn className="w-4 h-4" />
-                  Log in to your store account to save designs
-                </button>
-              )}
-            </div>
-
-            {/* OTP Login — absolute overlay, doesn't push content */}
-            {showOtpLogin && (
-              <div className="absolute right-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
-                <Card className="border-primary bg-background shadow-lg">
-            <CardContent className="py-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold">Sign in with Email</h3>
-                <button
-                  onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
-                  className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              {otpError && (
-                <p className="text-destructive text-xs mb-2">{otpError}</p>
-              )}
-              {otpStep === 'email' ? (
-                <div className="flex gap-2">
-                  <input
-                    type="email"
-                    placeholder="Enter your email"
-                    value={otpEmail}
-                    onChange={(e) => setOtpEmail(e.target.value)}
-                    className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
-                    disabled={otpLoading}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && otpEmail.trim()) {
-                        e.preventDefault();
-                        setOtpLoading(true);
-                        setOtpError(null);
-                        safeFetch(`${API_BASE}/api/storefront/auth/request-otp`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ email: otpEmail.trim(), shop: shopDomain }),
-                        })
-                          .then(r => r.json())
-                          .then(data => {
-                            if (data.ok) { setOtpStep('code'); }
-                            else { setOtpError(data.error || 'Failed to send code'); }
-                          })
-                          .catch(() => setOtpError('Failed to send code'))
-                          .finally(() => setOtpLoading(false));
-                      }
-                    }}
-                  />
-                  <Button
-                    size="sm"
-                    disabled={!otpEmail.trim() || otpLoading}
-                    onClick={() => {
-                      setOtpLoading(true);
-                      setOtpError(null);
-                      safeFetch(`${API_BASE}/api/storefront/auth/request-otp`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email: otpEmail.trim(), shop: shopDomain }),
-                      })
-                        .then(r => r.json())
-                        .then(data => {
-                          if (data.ok) { setOtpStep('code'); }
-                          else { setOtpError(data.error || 'Failed to send code'); }
-                        })
-                        .catch(() => setOtpError('Failed to send code'))
-                        .finally(() => setOtpLoading(false));
-                    }}
-                  >
-                    {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send Code'}
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-xs text-muted-foreground">Enter the 6-digit code sent to {otpEmail}</p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="000000"
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                      className="flex-1 px-3 py-2 text-sm border rounded-md bg-background text-center tracking-widest font-mono"
-                      maxLength={6}
-                      disabled={otpLoading}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && otpCode.length === 6) {
-                          e.preventDefault();
-                          setOtpLoading(true);
-                          setOtpError(null);
-                          safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
-                          })
-                            .then(r => r.json())
-                            .then(data => {
-                              if (data.ok) {
-                                const newCustomerId = data.customerId;
-                                setStorefrontCustomerId(newCustomerId);
-                                const custObj2 = { id: newCustomerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
-                                setCustomer(custObj2);
-                                try { localStorage.setItem('appai_customer_id', newCustomerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj2)); } catch {}
-                                setShowOtpLogin(false);
-                                setOtpStep('email');
-                                setOtpCode('');
-                                toast({ title: 'Signed in', description: 'You can now save your designs.' });
-                                // Claim any designs generated anonymously this session
-                                if (anonSessionId && shopDomain) {
-                                  safeFetch(`${API_BASE}/api/storefront/merge-session`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
-                                  }).catch(() => {});
-                                }
-                                // Refresh saved designs list
-                                if (shopDomain) {
-                                  setSavedDesignsLoading(true);
-                                  safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ shop: shopDomain, customerId: newCustomerId }),
-                                  })
-                                    .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
-                                    .catch(() => {}).finally(() => setSavedDesignsLoading(false));
-                                }
-                              } else {
-                                setOtpError(data.error || 'Invalid code');
-                              }
-                            })
-                            .catch(() => setOtpError('Verification failed'))
-                            .finally(() => setOtpLoading(false));
-                        }
-                      }}
-                    />
-                    <Button
-                      size="sm"
-                      disabled={otpCode.length !== 6 || otpLoading}
-                      onClick={() => {
-                        setOtpLoading(true);
-                        setOtpError(null);
-                        safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
-                        })
-                          .then(r => r.json())
-                          .then(data => {
-                            if (data.ok) {
-                                const newCustomerId = data.customerId;
-                                setStorefrontCustomerId(newCustomerId);
-                                const custObj = { id: newCustomerId, email: otpEmail.trim(), credits: data.credits || 0, isLoggedIn: true };
-                                setCustomer(custObj);
-                                try { localStorage.setItem('appai_customer_id', newCustomerId); localStorage.setItem('appai_otp_email', otpEmail.trim()); localStorage.setItem('appai_customer', JSON.stringify(custObj)); } catch {}
-                                setShowOtpLogin(false);
-                                setOtpStep('email');
-                                setOtpCode('');
-                                toast({ title: 'Signed in', description: 'You can now save your designs.' });
-                                // Claim any designs generated anonymously this session
-                                if (anonSessionId && shopDomain) {
-                                  safeFetch(`${API_BASE}/api/storefront/merge-session`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
-                                  }).catch(() => {});
-                                }
-                                // Refresh saved designs list
-                                if (shopDomain) {
-                                  setSavedDesignsLoading(true);
-                                  safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
-                                    .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
-                                    .catch(() => {}).finally(() => setSavedDesignsLoading(false));
-                                }
-                              } else {
-                                setOtpError(data.error || 'Invalid code');
-                              }
-                            })
-                            .catch(() => setOtpError('Verification failed'))
-                            .finally(() => setOtpLoading(false));
-                        }}
-                      >
-                        {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
-                      </Button>
-                    </div>
-                    <button
-                      onClick={() => { setOtpStep('email'); setOtpCode(''); setOtpError(null); }}
-                      className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
-                    >
-                      Use a different email
-                    </button>
-                </div>
-              )}
-            </CardContent>
-                </Card>
-              </div>
-            )}
-
-            {/* Saved Designs dropdown panel */}
-            {showSavedDesigns && isLoggedIn && (
-              <div className="absolute right-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
-                <Card className="border bg-background shadow-lg">
-                  <CardContent className="py-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold">Saved Designs ({savedDesigns.length}/{galleryLimit})</h3>
-                      <button
-                        onClick={() => setShowSavedDesigns(false)}
-                        className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                    {/* Gallery limit warning */}
-                    {savedDesigns.length >= galleryLimit - 4 && savedDesigns.length < galleryLimit && (
-                      <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
-                        You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
-                      </div>
-                    )}
-                    {savedDesigns.length >= galleryLimit && (
-                      <div className="mb-3 px-3 py-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
-                        Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
-                      </div>
-                    )}
-                    {savedDesignsLoading ? (
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Loading your designs...
-                      </div>
-                    ) : savedDesigns.length === 0 ? (
-                      <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
-                    ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto pr-1">
-                        {savedDesigns.map((d) => (
-                          <div
-                            key={d.id}
-                            className="border rounded-lg overflow-hidden bg-background hover:shadow-md transition-shadow relative group"
-                          >
-                            {/* Delete button */}
-                            <button
-                              className="absolute top-1 right-1 z-10 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity border-none cursor-pointer p-0"
-                              title="Delete design"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (!confirm('Remove this design from your saved designs?')) return;
-                                safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}`, {
-                                  method: 'DELETE',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
-                                }).then(() => {
-                                  setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
-                                }).catch(() => {});
-                              }}
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                            {/* Card click: navigate to the correct product page with this design pre-loaded */}
-                            <div
-                              className="cursor-pointer"
-                              onClick={() => {
-                                if (!d.artworkUrl) return;
-                                if (d.pageHandle) {
-                                  // Navigate to the correct customizer page with this design pre-loaded
-                                  const targetUrl = `https://${shopDomain}/pages/${d.pageHandle}?loadDesignId=${encodeURIComponent(d.id)}`;
-                                  window.parent.location.href = targetUrl;
-                                } else {
-                                  // Fallback: load artwork on current page
-                                  setGeneratedDesign({ id: d.id, imageUrl: d.artworkUrl, prompt: d.prompt || '' });
-                                  setShowSavedDesigns(false);
-                                }
-                              }}
-                            >
-                              <div className="aspect-square relative bg-muted">
-                                {d.artworkUrl ? (
-                                  <img
-                                    src={d.artworkUrl}
-                                    alt={d.baseTitle || 'Saved design'}
-                                    className="w-full h-full object-cover"
-                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                  />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
-                                )}
-                              </div>
-                              {d.baseTitle && (
-                                <div className="px-2 py-1.5">
-                                  <p className="text-xs font-medium truncate">{d.baseTitle}</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-            )}
-
-            {/* Coupon Code dropdown panel */}
-            {showCouponInput && isLoggedIn && (
-              <div className="absolute right-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
-                <Card className="border bg-background shadow-lg">
-                  <CardContent className="py-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-semibold">Redeem Credit Code</h3>
-                      <button
-                        onClick={() => { setShowCouponInput(false); setCouponError(null); setCouponSuccess(null); }}
-                        className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                    {couponError && <p className="text-destructive text-xs mb-2">{couponError}</p>}
-                    {couponSuccess && <p className="text-green-600 text-xs mb-2">{couponSuccess}</p>}
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Enter coupon code"
-                        value={couponCode}
-                        onChange={(e) => setCouponCode(e.target.value)}
-                        className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
-                        disabled={couponLoading}
-                      />
-                      <Button
-                        size="sm"
-                        disabled={couponLoading || !couponCode.trim()}
-                        onClick={() => {
-                          setCouponLoading(true);
-                          setCouponError(null);
-                          setCouponSuccess(null);
-                          safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ code: couponCode.trim(), customerId: storefrontCustomerId, shop: shopDomain }),
-                          })
-                            .then(r => r.json())
-                            .then(data => {
-                              if (data.ok) {
-                                setCouponSuccess(`Added ${data.creditsAdded} credits!`);
-                                setCouponCode('');
-                                if (customer) {
-                                  setCustomer({ ...customer, credits: data.newBalance });
-                                }
-                              } else {
-                                setCouponError(data.error || 'Invalid code');
-                              }
-                            })
-                            .catch(() => setCouponError('Failed to redeem code'))
-                            .finally(() => setCouponLoading(false));
-                        }}
-                      >
-                        {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Redeem'}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
@@ -3932,6 +3519,384 @@ export default function EmbedDesign() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div className="space-y-4 order-1 md:order-2">
+            {/* User account pills — shown above form on desktop, top of page on mobile */}
+            {(isStorefront || (!isShopify && !isStorefront)) && (
+              <div className="relative">
+                {isLoggedIn ? (
+                  <div className="flex flex-wrap gap-2" data-testid="user-actions">
+                    <div
+                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 truncate max-w-[200px]"
+                      title={customer?.email}
+                    >
+                      {customer?.email || 'Signed in'}
+                    </div>
+                    <button
+                      onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
+                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
+                    </button>
+                    <button
+                      onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
+                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      Redeem Code
+                    </button>
+                    {credits > 0 && (
+                      <div className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 whitespace-nowrap">
+                        {credits} credit{credits !== 1 ? 's' : ''}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => {
+                        setCustomer(null);
+                        setStorefrontCustomerId(null);
+                        setOtpEmail('');
+                        try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
+                        setShowSavedDesigns(false);
+                        setShowCouponInput(false);
+                      }}
+                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      Sign out
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowOtpLogin(true)}
+                    className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer flex items-center gap-1.5"
+                    data-testid="text-login-prompt"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    Sign in to save designs
+                  </button>
+                )}
+
+                {/* OTP Login — absolute overlay, doesn't push content */}
+                {showOtpLogin && (
+                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                    <Card className="border-primary bg-background shadow-lg">
+                      <CardContent className="py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold">Sign in with Email</h3>
+                          <button
+                            onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
+                            className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        {otpError && (
+                          <p className="text-destructive text-xs mb-2">{otpError}</p>
+                        )}
+                        {otpStep === 'email' ? (
+                          <div className="flex gap-2">
+                            <input
+                              type="email"
+                              placeholder="Enter your email"
+                              value={otpEmail}
+                              onChange={(e) => setOtpEmail(e.target.value)}
+                              className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
+                              disabled={otpLoading}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && otpEmail.trim()) {
+                                  e.preventDefault();
+                                  setOtpLoading(true);
+                                  setOtpError(null);
+                                  safeFetch(`${API_BASE}/api/storefront/auth/request-otp`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ email: otpEmail.trim(), shop: shopDomain }),
+                                  })
+                                    .then(r => r.json())
+                                    .then(data => {
+                                      if (data.ok) { setOtpStep('code'); }
+                                      else { setOtpError(data.error || 'Failed to send code'); }
+                                    })
+                                    .catch(() => setOtpError('Failed to send code'))
+                                    .finally(() => setOtpLoading(false));
+                                }
+                              }}
+                            />
+                            <Button
+                              size="sm"
+                              disabled={!otpEmail.trim() || otpLoading}
+                              onClick={() => {
+                                setOtpLoading(true);
+                                setOtpError(null);
+                                safeFetch(`${API_BASE}/api/storefront/auth/request-otp`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ email: otpEmail.trim(), shop: shopDomain }),
+                                })
+                                  .then(r => r.json())
+                                  .then(data => {
+                                    if (data.ok) { setOtpStep('code'); }
+                                    else { setOtpError(data.error || 'Failed to send code'); }
+                                  })
+                                  .catch(() => setOtpError('Failed to send code'))
+                                  .finally(() => setOtpLoading(false));
+                              }}
+                            >
+                              {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Send Code'}
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <p className="text-xs text-muted-foreground">Enter the 6-digit code sent to {otpEmail}</p>
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                placeholder="000000"
+                                value={otpCode}
+                                maxLength={6}
+                                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                                className="flex-1 px-3 py-2 text-sm border rounded-md bg-background tracking-widest text-center"
+                                disabled={otpLoading}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && otpCode.length === 6) {
+                                    e.preventDefault();
+                                    setOtpLoading(true);
+                                    setOtpError(null);
+                                    safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
+                                    })
+                                      .then(r => r.json())
+                                      .then(data => {
+                                        if (data.ok) {
+                                          const newCustomerId = data.customerId;
+                                          setStorefrontCustomerId(newCustomerId);
+                                          setCustomer({ email: otpEmail.trim(), id: newCustomerId });
+                                          setCredits(data.credits || 0);
+                                          setGalleryLimit(data.galleryLimit || 10);
+                                          try {
+                                            localStorage.setItem('appai_customer_id', newCustomerId);
+                                            localStorage.setItem('appai_otp_email', otpEmail.trim());
+                                            localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId }));
+                                          } catch {}
+                                          setShowOtpLogin(false);
+                                          setOtpStep('email');
+                                          setOtpCode('');
+                                          if (anonSessionId && shopDomain) {
+                                            safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+                                            }).catch(() => {});
+                                          }
+                                          if (shopDomain) {
+                                            setSavedDesignsLoading(true);
+                                            safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+                                              .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+                                              .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+                                          }
+                                        } else {
+                                          setOtpError(data.error || 'Invalid code');
+                                        }
+                                      })
+                                      .catch(() => setOtpError('Verification failed'))
+                                      .finally(() => setOtpLoading(false));
+                                  }
+                                }}
+                              />
+                              <Button
+                                size="sm"
+                                disabled={otpCode.length !== 6 || otpLoading}
+                                onClick={() => {
+                                  setOtpLoading(true);
+                                  setOtpError(null);
+                                  safeFetch(`${API_BASE}/api/storefront/auth/verify-otp`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ email: otpEmail.trim(), code: otpCode, shop: shopDomain }),
+                                  })
+                                    .then(r => r.json())
+                                    .then(data => {
+                                      if (data.ok) {
+                                        const newCustomerId = data.customerId;
+                                        setStorefrontCustomerId(newCustomerId);
+                                        setCustomer({ email: otpEmail.trim(), id: newCustomerId });
+                                        setCredits(data.credits || 0);
+                                        setGalleryLimit(data.galleryLimit || 10);
+                                        try {
+                                          localStorage.setItem('appai_customer_id', newCustomerId);
+                                          localStorage.setItem('appai_otp_email', otpEmail.trim());
+                                          localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId }));
+                                        } catch {}
+                                        setShowOtpLogin(false);
+                                        setOtpStep('email');
+                                        setOtpCode('');
+                                        if (anonSessionId && shopDomain) {
+                                          safeFetch(`${API_BASE}/api/storefront/merge-session`, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+                                          }).catch(() => {});
+                                        }
+                                        if (shopDomain) {
+                                          setSavedDesignsLoading(true);
+                                          safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+                                            .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
+                                            .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+                                        }
+                                      } else {
+                                        setOtpError(data.error || 'Invalid code');
+                                      }
+                                    })
+                                    .catch(() => setOtpError('Verification failed'))
+                                    .finally(() => setOtpLoading(false));
+                                }}
+                              >
+                                {otpLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Verify'}
+                              </Button>
+                            </div>
+                            <button
+                              onClick={() => { setOtpStep('email'); setOtpCode(''); setOtpError(null); }}
+                              className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0"
+                            >
+                              Use a different email
+                            </button>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
+
+                {/* Saved Designs dropdown panel */}
+                {showSavedDesigns && isLoggedIn && (
+                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
+                    <Card className="border bg-background shadow-lg">
+                      <CardContent className="py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold">Saved Designs ({savedDesigns.length}/{galleryLimit})</h3>
+                          <button
+                            onClick={() => setShowSavedDesigns(false)}
+                            className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        {savedDesigns.length >= galleryLimit - 4 && savedDesigns.length < galleryLimit && (
+                          <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                            You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
+                          </div>
+                        )}
+                        {savedDesigns.length >= galleryLimit && (
+                          <div className="mb-3 px-3 py-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
+                            Gallery full ({galleryLimit}/{galleryLimit}). Delete a design before generating a new one.
+                          </div>
+                        )}
+                        {savedDesignsLoading ? (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Loading your designs...
+                          </div>
+                        ) : savedDesigns.length === 0 ? (
+                          <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
+                        ) : (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto pr-1">
+                            {savedDesigns.map((d: any) => (
+                              <div key={d.id} className="relative group">
+                                <div
+                                  className="rounded-md overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors"
+                                  onClick={() => {
+                                    setShowSavedDesigns(false);
+                                    const params = new URLSearchParams(window.location.search);
+                                    params.set('loadDesignId', d.id);
+                                    window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
+                                    window.location.reload();
+                                  }}
+                                >
+                                  <div className="aspect-square relative bg-muted">
+                                    {d.artworkUrl ? (
+                                      <img
+                                        src={d.artworkUrl}
+                                        alt={d.baseTitle || 'Saved design'}
+                                        className="w-full h-full object-cover"
+                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                      />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
+                                    )}
+                                  </div>
+                                  {d.baseTitle && (
+                                    <div className="px-2 py-1.5">
+                                      <p className="text-xs font-medium truncate">{d.baseTitle}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
+
+                {/* Coupon Code dropdown panel */}
+                {showCouponInput && isLoggedIn && (
+                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                    <Card className="border bg-background shadow-lg">
+                      <CardContent className="py-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold">Redeem Credit Code</h3>
+                          <button
+                            onClick={() => { setShowCouponInput(false); setCouponError(null); setCouponSuccess(null); }}
+                            className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        {couponError && <p className="text-destructive text-xs mb-2">{couponError}</p>}
+                        {couponSuccess && <p className="text-green-600 text-xs mb-2">{couponSuccess}</p>}
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="Enter code"
+                            value={couponCode}
+                            onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                            className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
+                            disabled={couponLoading}
+                          />
+                          <Button
+                            size="sm"
+                            disabled={!couponCode.trim() || couponLoading}
+                            onClick={() => {
+                              setCouponLoading(true);
+                              setCouponError(null);
+                              setCouponSuccess(null);
+                              safeFetch(`${API_BASE}/api/storefront/redeem-coupon`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ code: couponCode.trim(), customerId: storefrontCustomerId, shop: shopDomain }),
+                              })
+                                .then(r => r.json())
+                                .then(data => {
+                                  if (data.ok) {
+                                    setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
+                                    setCredits(data.newTotal);
+                                    setCouponCode('');
+                                  } else {
+                                    setCouponError(data.error || 'Invalid code');
+                                  }
+                                })
+                                .catch(() => setCouponError('Failed to redeem code'))
+                                .finally(() => setCouponLoading(false));
+                            }}
+                          >
+                            {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Redeem'}
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                )}
+              </div>
+            )}
             {/* Product title + price */}
             {(isStorefront || isShopify) && (
               <div className="space-y-1">
