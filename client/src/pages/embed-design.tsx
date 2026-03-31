@@ -3195,6 +3195,65 @@ export default function EmbedDesign() {
     return () => { observer.disconnect(); if (rafId !== null) cancelAnimationFrame(rafId); };
   }, [isEmbedded, isStorefront]);
 
+  // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
+  // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
+  // This also fixes the initial scroll glitch where the first few scrolls are swallowed.
+  useEffect(() => {
+    if (!isEmbedded && !isStorefront) return;
+    const handleWheel = (e: WheelEvent) => {
+      // Check if a Radix dropdown/popover is currently open
+      const isRadixOpen = !!document.querySelector(
+        '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
+      );
+      if (isRadixOpen) {
+        // A dropdown is open — check if the wheel target is INSIDE the dropdown
+        const target = e.target as Element | null;
+        const insideDropdown = target?.closest(
+          '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'
+        );
+        if (insideDropdown) return; // let the dropdown scroll naturally
+        // Mouse is outside the dropdown but a dropdown is open — still forward to parent
+        // so the background page can scroll while the dropdown is open
+      }
+      // Forward wheel event to parent page
+      window.parent.postMessage({
+        type: 'ai-art-studio:wheel',
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaZ: e.deltaZ,
+        deltaMode: e.deltaMode,
+      }, '*');
+    };
+    // Use passive:false so we can call preventDefault if needed, but we don't
+    // preventDefault here — we want the iframe to also process the event
+    window.addEventListener('wheel', handleWheel, { passive: true });
+    return () => window.removeEventListener('wheel', handleWheel);
+  }, [isEmbedded, isStorefront]);
+
+  // Counteract Radix UI's body scroll lock in iframe context.
+  // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when
+  // a Select/Dialog opens. In an iframe this prevents the dropdown from scrolling.
+  // We use a MutationObserver to immediately remove these styles.
+  useEffect(() => {
+    if (!isEmbedded && !isStorefront) return;
+    const observer = new MutationObserver(() => {
+      const body = document.body;
+      if (body.hasAttribute('data-scroll-locked')) {
+        // Radix locked the body — remove the inline styles it added
+        // but keep the attribute so Radix's own logic still works
+        const style = body.style;
+        if (style.overflow === 'hidden') style.overflow = '';
+        if (style.overflowX === 'hidden') style.overflowX = '';
+        if (style.overflowY === 'hidden') style.overflowY = '';
+        // Remove padding-right compensation (not needed in iframe)
+        if (style.paddingRight) style.paddingRight = '';
+        if (style.marginRight) style.marginRight = '';
+      }
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['data-scroll-locked', 'style'] });
+    return () => observer.disconnect();
+  }, [isEmbedded, isStorefront]);
+
   // Set initial transform when design is loaded/created
   useEffect(() => {
     if (generatedDesign?.id && !initialTransformRef.current) {

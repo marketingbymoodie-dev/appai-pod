@@ -289,7 +289,7 @@ export function ProductMockup({
         <img
           src={mockupUrl}
           alt="Product mockup"
-          className="absolute inset-0 w-full h-full object-contain"
+          className="absolute inset-0 w-full h-full object-cover"
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"

@@ -238,6 +238,12 @@
         (event.data.type && event.data.type.indexOf('ai-art-studio') !== -1)) {
       console.log('[AI Art Embed] Global listener received:', event.data.type, 'from:', event.origin);
     }
+
+    // Handle wheel forwarding from iframe (so parent page scrolls when mouse is over iframe)
+    if (event.data.type === 'ai-art-studio:wheel') {
+      try { window.scrollBy({ top: event.data.deltaY || 0, left: event.data.deltaX || 0, behavior: 'auto' }); } catch(e) {}
+      return;
+    }
     
     // Handle mockup updates from Railway app origin
     if (event.data.type === 'AI_ART_STUDIO_MOCKUPS') {
@@ -1131,6 +1137,19 @@
       if (data.type === 'ai-art-studio:resize') {
         var newH = Math.max(data.height || 0, 400);
         studioContainer.style.height = newH + 'px';
+        return;
+      }
+      // ===== WHEEL FORWARDING =====
+      // The iframe forwards wheel events so the parent page can scroll when
+      // the mouse is over the iframe but not inside an open dropdown.
+      if (data.type === 'ai-art-studio:wheel') {
+        try {
+          window.scrollBy({
+            top: data.deltaY || 0,
+            left: data.deltaX || 0,
+            behavior: 'auto'
+          });
+        } catch(e) {}
         return;
       }
 

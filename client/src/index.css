@@ -344,3 +344,21 @@
   -webkit-text-fill-color: transparent;
   animation: shimmer-sweep 3s linear infinite;
 }
+
+/* ── Radix UI scroll-lock override (iframe context) ─────────────────────── */
+/* Radix UI adds overflow:hidden to body when a Select/Dialog opens.         */
+/* In an iframe this breaks scrolling inside the dropdown AND the parent.    */
+/* We override it here so the body stays scrollable at all times.            */
+body[data-scroll-locked] {
+  overflow: auto !important; /* counteract Radix's overflow:hidden */
+  padding-right: 0 !important; /* counteract Radix's scrollbar compensation */
+  margin-right: 0 !important;
+}
+/* Ensure Radix select content is always scrollable */
+[data-radix-select-content] {
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+[data-radix-popper-content-wrapper] {
+  z-index: 9999 !important;
+}
