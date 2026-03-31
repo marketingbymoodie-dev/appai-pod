@@ -4347,6 +4347,10 @@ export default function EmbedDesign() {
               className="w-full rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
+                  // Mugs/tumblers: the blank product photo is a tall portrait shot.
+                  // The DB aspectRatio for mugs is the wrap-around print area (wide),
+                  // but the container should be portrait so the full tumbler is visible.
+                  if (productTypeConfig?.designerType === "mug") return "3/4";
                   // For product types with dimensional sizes (width/height > 0), use those
                   if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
                     return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;

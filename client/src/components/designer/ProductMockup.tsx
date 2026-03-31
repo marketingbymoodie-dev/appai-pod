@@ -343,15 +343,28 @@ export function ProductMockup({
     }
 
     if (blankImageUrl) {
-      // Use object-cover so the blank product photo fills the container edge-to-edge
-      // with no blank bars (letterboxing). The blank photo's native aspect ratio may
-      // differ from the container's aspect ratio, but object-cover handles this cleanly.
-      //
+      // Mug/tumbler: the blank product photo is a tall portrait shot of the tumbler
+      // but the container aspect ratio is wide (wrap-around print area). Using
+      // object-cover would zoom in and cut off the top/bottom of the tumbler.
+      // Instead use object-contain so the full product is visible, with the
+      // container background colour filling any remaining space.
+      if (designerType === "mug") {
+        return (
+          <img
+            src={blankImageUrl}
+            alt="Product blank"
+            className="absolute inset-0 w-full h-full object-contain"
+            style={{ pointerEvents: "none", opacity: 0.92 }}
+            draggable={false}
+            data-testid="img-blank"
+          />
+        );
+      }
+
       // For landscape/wide products (e.g. body pillow, aspect ratio wider than tall),
       // the blank photo often has side bars because the photo is shot in a square or
       // portrait orientation. We apply a subtle scale-up (110%) to fill those bars.
-      // For portrait/square products (phone case, tumbler, poster) object-cover alone
-      // is sufficient.
+      // For portrait/square products (phone case, poster) object-cover alone is sufficient.
       const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
