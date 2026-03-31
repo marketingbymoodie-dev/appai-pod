@@ -3439,26 +3439,34 @@ export default function EmbedDesign() {
         {/* Login / credits info — shown in standalone and storefront modes */}
         {(isStorefront || (!isShopify && !isStorefront)) && (
           <div className="relative">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <h2 className="text-lg font-semibold" data-testid="text-title">
-                Create Your Design
-              </h2>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <h2 className="text-lg font-semibold" data-testid="text-title">
+                  Create Your Design
+                </h2>
+              </div>
               {isLoggedIn ? (
-                <div className="flex flex-wrap items-center gap-2 text-sm min-w-0" data-testid="text-credits">
-                  <span className="text-muted-foreground truncate max-w-[160px] sm:max-w-none">{customer?.email || 'Signed in'}</span>
+                <div className="flex flex-wrap gap-2" data-testid="user-actions">
+                  <div className="px-3 py-2 text-sm font-medium rounded border border-border bg-background truncate max-w-xs" title={customer?.email}>
+                    {customer?.email || 'Signed in'}
+                  </div>
                   <button
                     onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent whitespace-nowrap"
+                    className="px-3 py-2 text-sm font-medium rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-background whitespace-nowrap"
                   >
                     Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
                   </button>
                   <button
                     onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
-                    className="text-xs font-medium px-2 py-1 rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-transparent whitespace-nowrap"
+                    className="px-3 py-2 text-sm font-medium rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-background whitespace-nowrap"
                   >
                     Redeem Code
                   </button>
-                  <span className="font-medium whitespace-nowrap">{credits > 0 ? `${credits} credits` : ''}</span>
+                  {credits > 0 && (
+                    <div className="px-3 py-2 text-sm font-medium rounded border border-border bg-background whitespace-nowrap">
+                      {credits} credit{credits !== 1 ? 's' : ''}
+                    </div>
+                  )}
                   <button
                     onClick={() => {
                       setCustomer(null);
@@ -3468,7 +3476,7 @@ export default function EmbedDesign() {
                       setShowSavedDesigns(false);
                       setShowCouponInput(false);
                     }}
-                    className="text-xs text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-0 whitespace-nowrap"
+                    className="px-3 py-2 text-sm font-medium rounded border border-border hover:bg-muted transition-colors cursor-pointer bg-background whitespace-nowrap"
                   >
                     Sign out
                   </button>
@@ -3476,13 +3484,14 @@ export default function EmbedDesign() {
               ) : (
                 <button
                   onClick={() => setShowOtpLogin(true)}
-                  className="text-sm text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0"
+                  className="text-sm text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0 w-fit"
                   data-testid="text-login-prompt"
                 >
                   <LogIn className="w-4 h-4" />
                   Log in to your store account to save designs
                 </button>
               )}
+            </div>
             </div>
 
             {/* OTP Login — absolute overlay, doesn't push content */}
