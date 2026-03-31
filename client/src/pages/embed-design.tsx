@@ -3492,7 +3492,6 @@ export default function EmbedDesign() {
                 </button>
               )}
             </div>
-            </div>
 
             {/* OTP Login — absolute overlay, doesn't push content */}
             {showOtpLogin && (
