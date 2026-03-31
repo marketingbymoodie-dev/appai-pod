@@ -2713,31 +2713,38 @@ export default function EmbedDesign() {
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
 
-    // Update variant image for checkout display — await so Shopify has the correct
-    // image before /cart/add.js fires and the cart drawer renders.
+    // Resolve the unique design variant before adding to cart.
+    // This ensures the cart always gets the correct variant ID with the mockup image.
+    let finalVariantId = normalizedVariant;
     if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
       try {
+        console.log('[Design Studio] Resolving unique design variant before cart add...');
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
-        const imgRes = await safeFetch(`${API_BASE}/api/storefront/variant-image`, {
+        const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout for variant creation
+        const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             shop: shopDomain,
             productId,
             variantId: normalizedVariant,
+            designId: properties['_design_id'],
             mockupUrl: mockupFullUrl,
           }),
           signal: controller.signal,
         });
         clearTimeout(timeout);
-        if (!imgRes.ok) {
-          console.warn('[Design Studio] Variant image update failed:', imgRes.status);
+        if (resolveRes.ok) {
+          const data = await resolveRes.json();
+          if (data.success && data.variantId) {
+            finalVariantId = data.variantId;
+            console.log('[Design Studio] Resolved unique variant:', finalVariantId);
+          }
         } else {
-          console.log('[Design Studio] Variant image updated successfully before cart add.');
+          console.warn('[Design Studio] resolve-design-variant failed:', resolveRes.status);
         }
       } catch (e: any) {
-        console.warn('[Design Studio] Variant image update failed/timed out:', e?.message || e);
+        console.warn('[Design Studio] resolve-design-variant error/timeout:', e?.message || e);
       }
     }
 
@@ -2745,7 +2752,7 @@ export default function EmbedDesign() {
     if (isStorefront) {
       try {
         const result = await addToCartStorefront({
-          variantId: normalizedVariant,
+          variantId: finalVariantId,
           quantity: 1,
           properties,
         });
@@ -2800,7 +2807,7 @@ export default function EmbedDesign() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({
-          items: [{ id: Number(normalizedVariant), quantity: 1, properties }],
+          items: [{ id: Number(finalVariantId), quantity: 1, properties }],
         }),
         credentials: 'include',
       });
@@ -2821,7 +2828,7 @@ export default function EmbedDesign() {
       console.warn('[Design Studio] AJAX cart add failed, falling back to navigation:', e);
       // Fallback: open cart URL in a new tab (never navigate the current iframe)
       const cartParams = new URLSearchParams();
-      cartParams.set('id', normalizedVariant);
+      cartParams.set('id', finalVariantId);
       cartParams.set('quantity', '1');
       for (const [key, value] of Object.entries(properties)) {
         cartParams.set(`properties[${key}]`, value);
