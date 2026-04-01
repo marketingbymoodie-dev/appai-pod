@@ -3931,7 +3931,7 @@ export default function EmbedDesign() {
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
                 <div className="flex-[3] min-w-0">
-                  {(isShopify || isStorefront) && generatedDesign && !effectiveLoadDesignId ? (
+                  {(isShopify || isStorefront) && generatedDesign ? (
                     /* ── Add to Cart state ── */
                     addedToCart ? (
                       <Button
@@ -4009,7 +4009,7 @@ export default function EmbedDesign() {
                     </Button>
                   )}
                   {/* Credits label — shown under Generate; Start Fresh — shown after generation */}
-                  {(isShopify || isStorefront) && generatedDesign && !effectiveLoadDesignId ? (
+                  {(isShopify || isStorefront) && generatedDesign ? (
                     <div className="mt-1 flex flex-col items-center gap-1">
                       {variantError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-variant-error-atc">{variantError}</p>
