@@ -2683,6 +2683,32 @@ export default function EmbedDesign() {
     }
 
     setVariantError(null);
+
+    // If the product needs mockups but none are loaded yet (e.g. older saved design
+    // with no stored mockupUrls), trigger a fresh mockup generation before proceeding.
+    // This sets mockupsStale=false and loads new mockups; the button's onClick will
+    // re-run handleAddToCart once mockups are ready via the atcWaitingForMockups path.
+    const hasMockupProduct = !!(productTypeConfig?.hasPrintifyMockups);
+    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    if (hasMockupProduct && !hasMockups && generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+      console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation before cart add');
+      setMockupError(null);
+      setMockupFailed(false);
+      setMockupsStale(true); // will show "Refresh Mockups to Continue" then auto-proceed
+      // Trigger mockup generation — once done, atcWaitingForMockups will clear
+      // and the user can click Add to Cart again (or we auto-proceed via the button state)
+      fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor || 'default',
+        transform.scale,
+        transform.x,
+        transform.y
+      );
+      return; // don't proceed with cart add yet — wait for mockups
+    }
+
     setIsAddingToCart(true);
 
     // Normalize variant ID (strip GID prefix if present)

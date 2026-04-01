@@ -162,6 +162,37 @@
 
       if(replaced>0)document.documentElement.classList.remove('appai-cart-loading');
       console.log('[AppAI Cart Image] Applied mockups. Replaced:',replaced,'| Cart lines with mockup:',keyMap.size);
+
+      // L1: Disable product page links for AppAI custom design items.
+      // The auto-created product pages are internal and should not be navigable.
+      // Find all cart item containers and disable /products/ links inside them.
+      var cartContainerSels=['.cart-item','[class*="cart-item"]','[id*="CartItem"]','cart-items > *','form[action*="/cart"] li'];
+      var linkedVariants=new Set(Array.from(varMap.keys()));
+      for(var ls=0;ls<cartContainerSels.length;ls++){
+        var lnodes=[].slice.call(document.querySelectorAll(cartContainerSels[ls]));
+        if(!lnodes.length)continue;
+        for(var ln=0;ln<lnodes.length;ln++){
+          var lnode=lnodes[ln];
+          // Check if this cart item is an AppAI design (by variant-id or line index)
+          var isAppAI=false;
+          var lva=lnode.getAttribute('data-variant-id')||lnode.getAttribute('data-variant');
+          if(!lva){var lvel=lnode.querySelector('[data-variant-id]');if(lvel)lva=lvel.getAttribute('data-variant-id');}
+          if(lva&&linkedVariants.has(String(lva)))isAppAI=true;
+          if(!isAppAI){var lli=lineIdxFromEl(lnode);if(lli!==null){for(var lk=0;lk<indexed.length;lk++){if(indexed[lk].index===lli){isAppAI=true;break;}}}}
+          if(!isAppAI)continue;
+          // Disable all /products/ links inside this item
+          var links=[].slice.call(lnode.querySelectorAll('a[href*="/products/"]'));
+          for(var ll=0;ll<links.length;ll++){
+            if(links[ll].getAttribute('data-appai-link-disabled'))continue;
+            links[ll].setAttribute('data-appai-link-disabled','1');
+            links[ll].setAttribute('href','javascript:void(0)');
+            links[ll].style.cursor='default';
+            links[ll].style.pointerEvents='none';
+            links[ll].addEventListener('click',function(e){e.preventDefault();e.stopPropagation();},{capture:true});
+          }
+        }
+        if(lnodes.length>0)break;
+      }
     }).catch(function(e){document.documentElement.classList.remove('appai-cart-loading');console.warn('[AppAI Cart Image] Error:',e);});
   }
 
