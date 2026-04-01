@@ -5235,7 +5235,7 @@ ${textEdgeRestrictions}
     }
 
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
+      const { prompt, userPrompt: rawUserPrompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
 
       if (!shop) {
@@ -5603,6 +5603,7 @@ ${textEdgeRestrictions}
         customerId: customerId ?? null,
         status: "pending",
         prompt,
+        userPrompt: rawUserPrompt ?? null,
         stylePreset: stylePreset ?? null,
         size: size ?? null,
         frameColor: frameColor ?? null,
@@ -5795,7 +5796,7 @@ ${textEdgeRestrictions}
           creditsRemaining,
           mockupUrls: (job as any).mockupUrls || null,
           designState: (job as any).designState || null,
-          prompt: job.prompt || null,
+          prompt: (job as any).userPrompt || job.prompt || null,
           stylePreset: job.stylePreset || null,
           size: job.size || null,
           frameColor: job.frameColor || null,
@@ -6848,7 +6849,7 @@ ${textEdgeRestrictions}
           artworkUrl: proxyUrl(d.designImageUrl) || proxyUrl(d.thumbnailUrl),
           mockupUrls: Array.isArray(d.mockupUrls) ? (d.mockupUrls as string[]) : [],
           designState: d.designState || null,
-          prompt: d.prompt,
+          prompt: (d as any).userPrompt || d.prompt,
           stylePreset: d.stylePreset,
           size: d.size,
           frameColor: d.frameColor,

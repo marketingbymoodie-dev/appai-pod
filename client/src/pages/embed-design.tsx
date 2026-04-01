@@ -1872,6 +1872,7 @@ export default function EmbedDesign() {
   const generateMutation = useMutation({
     mutationFn: async (payload: {
       prompt: string;
+      userPrompt?: string;
       size: string;
       frameColor: string;
       stylePreset?: string;
@@ -2244,6 +2245,7 @@ export default function EmbedDesign() {
     try {
       generateMutation.mutate({
         prompt: fullPrompt,
+        userPrompt: prompt, // raw user text — stored separately so it can be restored cleanly
         size: selectedSize,
         frameColor: selectedFrameColor || "black",
         stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,

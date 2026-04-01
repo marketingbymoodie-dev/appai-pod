@@ -32,6 +32,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customers",              column: "otp_expires_at",              type: "TIMESTAMP" },
   { table: "generation_jobs",       column: "mockup_urls",                 type: "JSON" },
   { table: "generation_jobs",       column: "design_state",                type: "JSON" },
+  { table: "generation_jobs",       column: "user_prompt",                 type: "TEXT" },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

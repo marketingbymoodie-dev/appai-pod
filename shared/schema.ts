@@ -362,6 +362,7 @@ export const generationJobs = pgTable("generation_jobs", {
   customerId: text("customer_id"),
   status: text("status").notNull().default("pending"), // pending | running | complete | failed
   prompt: text("prompt").notNull(),
+  userPrompt: text("user_prompt"),               // User's original short prompt (without style prefix/suffix)
   stylePreset: text("style_preset"),
   size: text("size"),
   frameColor: text("frame_color"),
