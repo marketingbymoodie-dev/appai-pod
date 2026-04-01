@@ -3921,121 +3921,151 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
-              {/* When viewing a saved design or have a currently open design, show a prominent banner and block generation */}
-              {(effectiveLoadDesignId || generatedDesign) && (
-                <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-amber-100 p-2 rounded-full">
-                      <Info className="w-5 h-5 text-amber-600" />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="font-bold">{effectiveLoadDesignId ? "Viewing Saved Design" : "Design in Progress"}</span>
-                      <span className="text-amber-700 text-xs">{effectiveLoadDesignId ? "Generation is disabled for saved designs." : "Click 'Start Fresh Design' to create a new one."}</span>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="w-full sm:w-auto shrink-0 rounded-md bg-amber-600 px-4 py-2 text-sm font-bold text-white hover:bg-amber-700 active:bg-amber-800 transition-all shadow-sm flex items-center justify-center gap-2"
-                    onClick={() => {
-                      // Clear the loaded design and reset all form state so the user can generate fresh
-                      setGeneratedDesign(null);
-                      setDesignSource(null);
-                      loadDesignAppliedRef.current = false;
-                      setBridgeLoadDesignId('');
-                      // Keep prompt text so the user can reuse it for a new design
-                      // setPrompt('');  ← intentionally preserved
-                      setReferenceImage(null);
-                      setReferencePreview(null);
-                      // Reset the file input value so the same file can be re-selected
-                      if (fileInputRef.current) fileInputRef.current.value = '';
-                      // Clear style/size selections
-                      setSelectedPreset('');
-                      setSelectedStyleOption('');
-                      setSelectedSize('');
-                      setSelectedFrameColor('');
-                      // Clear sessionStorage so the previous design's ID is not restored
-                      try {
-                        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
-                        sessionStorage.removeItem(stateKey);
-                      } catch (_) { /* sessionStorage may be unavailable */ }
-                      // Remove loadDesignId from the iframe URL
-                      const url = new URL(window.location.href);
-                      url.searchParams.delete('loadDesignId');
-                      window.history.replaceState({}, '', url.toString());
-                      // Also remove loadDesignId from the parent page URL so parentLoadDesignId clears
-                      try {
-                        const parentUrl = new URL(window.parent.location.href);
-                        parentUrl.searchParams.delete('loadDesignId');
-                        window.parent.history.replaceState({}, '', parentUrl.toString());
-                      } catch (_) { /* cross-origin guard */ }
-                    }}
-                  >
-                    <Plus className="w-4 h-4" />
-                    Start Fresh Design
-                  </button>
-                </div>
-              )}
-              {/* Row 1: Generate + Upload side-by-side */}
+              {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
-                {/* Generate button — left, wider */}
+                {/* Primary action button — left, wider: Generate OR Add to Cart */}
                 <div className="flex-[3] min-w-0">
-                  <Button
-                    onClick={() => {
-                      if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                        alert("Please select a style before generating");
-                        return;
-                      }
-                      const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                      if (activePreset?.options?.required && selectedStyleOption === "") {
-                        alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-                        return;
-                      }
-                      if (printSizes.length > 0 && selectedSize === "") {
-                        alert("Please select a size before generating");
-                        return;
-                      }
-                      handleGenerate();
-                    }}
-                    disabled={!!effectiveLoadDesignId || !!generatedDesign || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
-                    className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
-                    data-testid="button-generate"
-                  >
-                    {generateMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        <span className="shimmer-text-white">Generating...</span>
-                      </>
+                  {(isShopify || isStorefront) && generatedDesign && !effectiveLoadDesignId ? (
+                    /* ── Add to Cart state ── */
+                    addedToCart ? (
+                      <Button
+                        className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
+                        onClick={() => { window.parent.location.href = '/cart'; }}
+                        data-testid="button-view-cart"
+                      >
+                        <CheckCircle className="w-5 h-5 mr-2" />
+                        Added to Cart — View Cart
+                      </Button>
                     ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 mr-2" />
-                        <span className="shimmer-text-white">Generate Design</span>
-                      </>
-                    )}
-                  </Button>
-                  {(isShopify || isStorefront) && (
-                    <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-                      {(() => {
-                        // Logged-in user with purchased credits → no "free" label
-                        if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
-                        // Anonymous or free-tier user
-                        if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
-                        if (customer) return '0 artworks remaining';
-                        return '10 free artworks';
-                      })()}
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <button type="button" className="inline-flex items-center" aria-label="Pricing info">
-                            <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
-                          </button>
-                        </PopoverTrigger>
-                        <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
-                          <p className="font-medium">Artwork Credits</p>
-                          <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
-                          <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
-                          <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
-                        </PopoverContent>
-                      </Popover>
-                    </p>
+                      <Button
+                        onClick={handleAddToCart}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
+                        className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
+                        data-testid="button-add-to-cart"
+                      >
+                        {isAddingToCart ? (
+                          <>
+                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                            <span className="shimmer-text-white">Adding to Cart...</span>
+                          </>
+                        ) : atcWaitingForMockups ? (
+                          <>
+                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                            <span className="shimmer-text-white">Generating preview…</span>
+                          </>
+                        ) : mockupsStale ? (
+                          <>
+                            <ShoppingCart className="w-5 h-5 mr-2" />
+                            <span className="shimmer-text-white">Refresh Mockups to Continue</span>
+                          </>
+                        ) : (
+                          <>
+                            <ShoppingCart className="w-5 h-5 mr-2" />
+                            <span className="shimmer-text-white">Add to Cart</span>
+                          </>
+                        )}
+                      </Button>
+                    )
+                  ) : (
+                    /* ── Generate state ── */
+                    <Button
+                      onClick={() => {
+                        if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+                          alert("Please select a style before generating");
+                          return;
+                        }
+                        const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                        if (activePreset?.options?.required && selectedStyleOption === "") {
+                          alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+                          return;
+                        }
+                        if (printSizes.length > 0 && selectedSize === "") {
+                          alert("Please select a size before generating");
+                          return;
+                        }
+                        handleGenerate();
+                      }}
+                      disabled={!!effectiveLoadDesignId || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
+                      className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
+                      data-testid="button-generate"
+                    >
+                      {generateMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          <span className="shimmer-text-white">Generating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          <span className="shimmer-text-white">Generate Design</span>
+                        </>
+                      )}
+                    </Button>
+                  )}
+                  {/* Credits label — shown under Generate; Start Fresh — shown after generation */}
+                  {(isShopify || isStorefront) && generatedDesign && !effectiveLoadDesignId ? (
+                    <div className="mt-1 flex items-center justify-center gap-2">
+                      {isStorefront && bridgeError && (
+                        <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
+                      )}
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                        onClick={() => {
+                          setGeneratedDesign(null);
+                          setDesignSource(null);
+                          setAddedToCart(false);
+                          loadDesignAppliedRef.current = false;
+                          setBridgeLoadDesignId('');
+                          setReferenceImage(null);
+                          setReferencePreview(null);
+                          if (fileInputRef.current) fileInputRef.current.value = '';
+                          setSelectedPreset('');
+                          setSelectedStyleOption('');
+                          setSelectedSize('');
+                          setSelectedFrameColor('');
+                          try {
+                            const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                            sessionStorage.removeItem(stateKey);
+                          } catch (_) {}
+                          const url = new URL(window.location.href);
+                          url.searchParams.delete('loadDesignId');
+                          window.history.replaceState({}, '', url.toString());
+                          try {
+                            const parentUrl = new URL(window.parent.location.href);
+                            parentUrl.searchParams.delete('loadDesignId');
+                            window.parent.history.replaceState({}, '', parentUrl.toString());
+                          } catch (_) {}
+                        }}
+                      >
+                        <Plus className="w-3 h-3" />
+                        Start Fresh Design
+                      </button>
+                    </div>
+                  ) : (
+                    (isShopify || isStorefront) && (
+                      <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+                        {(() => {
+                          if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
+                          if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
+                          if (customer) return '0 artworks remaining';
+                          return '10 free artworks';
+                        })()}
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button type="button" className="inline-flex items-center" aria-label="Pricing info">
+                              <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
+                            <p className="font-medium">Artwork Credits</p>
+                            <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
+                            <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+                            <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+                          </PopoverContent>
+                        </Popover>
+                      </p>
+                    )
                   )}
                 </div>
 
@@ -4109,19 +4139,52 @@ export default function EmbedDesign() {
                 </div>
               </div>
 
-              {/* Style Selection */}
-              {showPresetsParam && filteredStylePresets.length > 0 && (
-                <div className="space-y-2">
-                  <StyleSelector
-                    stylePresets={filteredStylePresets}
-                    selectedStyle={selectedPreset}
-                    onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
-                  />
-                  {selectedPreset === "" && (
-                    <p className="text-xs text-muted-foreground">Please select a style before generating</p>
-                  )}
-                </div>
-              )}
+              {/* Style + Size side-by-side on desktop, stacked on mobile */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Style Selection */}
+                {showPresetsParam && filteredStylePresets.length > 0 && (
+                  <div className="space-y-1">
+                    <StyleSelector
+                      stylePresets={filteredStylePresets}
+                      selectedStyle={selectedPreset}
+                      onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
+                    />
+                    {selectedPreset === "" && (
+                      <p className="text-xs text-muted-foreground">Please select a style before generating</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Size Selector */}
+                {printSizes.length > 0 && (
+                  <div className="space-y-1">
+                    <SizeSelector
+                      sizes={printSizes}
+                      selectedSize={selectedSize}
+                      onSizeChange={(sizeId) => {
+                        setSelectedSize(sizeId);
+                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                      }}
+                      prices={buildPriceMap()}
+                    />
+                    {selectedSize === "" && (
+                      <p className="text-xs text-muted-foreground mt-1">Please select a size</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Frame Color (full width if no style selector, otherwise second column) */}
+                {frameColorObjects.length > 0 && (
+                  <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
+                    <FrameColorSelector
+                      frameColors={frameColorObjects}
+                      selectedFrameColor={selectedFrameColor}
+                      onFrameColorChange={setSelectedFrameColor}
+                      colorLabel={productTypeConfig?.colorLabel || "Color"}
+                    />
+                  </div>
+                )}
+              </div>
 
               {/* Style Sub-Options */}
               {showPresetsParam && selectedPreset !== "" && (() => {
@@ -4190,36 +4253,6 @@ export default function EmbedDesign() {
                 />
               </div>
 
-              {/* Size + Frame Color on same row */}
-              {(printSizes.length > 0 || frameColorObjects.length > 0) && (
-                <div className={`grid gap-3 ${printSizes.length > 0 && frameColorObjects.length > 0 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
-                  {printSizes.length > 0 && (
-                    <div>
-                      <SizeSelector
-                        sizes={printSizes}
-                        selectedSize={selectedSize}
-                        onSizeChange={(sizeId) => {
-                          setSelectedSize(sizeId);
-                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                        }}
-                        prices={buildPriceMap()}
-                      />
-                      {selectedSize === "" && (
-                        <p className="text-xs text-muted-foreground mt-1">Please select a size</p>
-                      )}
-                    </div>
-                  )}
-                  {frameColorObjects.length > 0 && (
-                    <FrameColorSelector
-                      frameColors={frameColorObjects}
-                      selectedFrameColor={selectedFrameColor}
-                      onFrameColorChange={setSelectedFrameColor}
-                      colorLabel={productTypeConfig?.colorLabel || "Color"}
-                    />
-                  )}
-                </div>
-              )}
-
               {/* AOP Pattern Step — shown after generation for all-over-print products */}
               {showPatternStep && aopPendingMotifUrl && (
                 <PatternCustomizer
@@ -4257,71 +4290,7 @@ export default function EmbedDesign() {
                 />
               )}
 
-              {/* Add to Cart — moved above fold in the form panel (right column on desktop) */}
-              {(isShopify || isStorefront) && generatedDesign && (
-                <div className="flex flex-col gap-2">
-                  {addedToCart ? (
-                    <>
-                      <Button
-                        className="w-full h-12 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-                        onClick={() => { window.parent.location.href = '/cart'; }}
-                        data-testid="button-view-cart"
-                      >
-                        <CheckCircle className="w-5 h-5 mr-2" />
-                        Added to Cart — View Cart
-                      </Button>
-                      <Button
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => { setAddedToCart(false); setGeneratedDesign(null); setPrompt(""); }}
-                      >
-                        Create Another Design
-                      </Button>
-                    </>
-                  ) : (
-                    <>
-                      <Button
-                        onClick={handleAddToCart}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
-                        className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
-                        data-testid="button-add-to-cart"
-                      >
-                        {isAddingToCart ? (
-                          <>
-                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Adding to Cart...</span>
-                          </>
-                        ) : atcWaitingForMockups ? (
-                          <>
-                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Generating preview…</span>
-                          </>
-                        ) : mockupsStale ? (
-                          <>
-                            <ShoppingCart className="w-5 h-5 mr-2" />
-                            <span className="shimmer-text-white">Refresh Mockups to Continue</span>
-                          </>
-                        ) : isStorefront && bridgeError ? (
-                          <>
-                            <ShoppingCart className="w-5 h-5 mr-2" />
-                            <span className="shimmer-text-white">Add to Cart (unavailable)</span>
-                          </>
-                        ) : (
-                          <>
-                            <ShoppingCart className="w-5 h-5 mr-2" />
-                            <span className="shimmer-text-white">Add to Cart</span>
-                          </>
-                        )}
-                      </Button>
-                      {isStorefront && bridgeError && (
-                        <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">
-                          {bridgeError}
-                        </p>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
+
             </div>
           </div>
 
