@@ -2547,6 +2547,12 @@ export default function EmbedDesign() {
       return variants[0].id?.toString() || null;
     }
 
+    // Fourth: fall back to shopifyVariantId received via postMessage from the parent page
+    if (shopifyVariantId) {
+      console.log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
+      return shopifyVariantId;
+    }
+
     console.log('[Design Studio] No variant found');
     return null;
   };
@@ -4004,7 +4010,10 @@ export default function EmbedDesign() {
                   )}
                   {/* Credits label — shown under Generate; Start Fresh — shown after generation */}
                   {(isShopify || isStorefront) && generatedDesign && !effectiveLoadDesignId ? (
-                    <div className="mt-1 flex items-center justify-center gap-2">
+                    <div className="mt-1 flex flex-col items-center gap-1">
+                      {variantError && (
+                        <p className="text-destructive text-xs text-center" data-testid="text-variant-error-atc">{variantError}</p>
+                      )}
                       {isStorefront && bridgeError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
                       )}

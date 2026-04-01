@@ -28,6 +28,7 @@ export default function AdminStyles() {
   const [stylePrompt, setStylePrompt] = useState("");
   const [styleCategory, setStyleCategory] = useState<StyleCategory>("all");
   const [styleBaseImageUrl, setStyleBaseImageUrl] = useState<string>("");
+  const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("show-all");
 
@@ -36,7 +37,7 @@ export default function AdminStyles() {
   });
 
   const createStyleMutation = useMutation({
-    mutationFn: async (data: { name: string; promptPrefix: string; category: StyleCategory; baseImageUrl?: string }) => {
+    mutationFn: async (data: { name: string; promptPrefix: string; category: StyleCategory; baseImageUrl?: string; promptPlaceholder?: string }) => {
       const response = await apiRequest("POST", "/api/admin/styles", data);
       return response.json();
     },
@@ -52,7 +53,7 @@ export default function AdminStyles() {
   });
 
   const updateStyleMutation = useMutation({
-    mutationFn: async ({ id, ...data }: { id: number; name: string; promptPrefix: string; category: StyleCategory; baseImageUrl?: string }) => {
+    mutationFn: async ({ id, ...data }: { id: number; name: string; promptPrefix: string; category: StyleCategory; baseImageUrl?: string; promptPlaceholder?: string }) => {
       const response = await apiRequest("PATCH", `/api/admin/styles/${id}`, data);
       return response.json();
     },
@@ -101,6 +102,7 @@ export default function AdminStyles() {
     setStylePrompt("");
     setStyleCategory("all");
     setStyleBaseImageUrl("");
+    setStylePromptPlaceholder("");
   };
 
   const handleEditStyle = (style: StylePresetDB) => {
@@ -109,6 +111,7 @@ export default function AdminStyles() {
     setStylePrompt(style.promptPrefix);
     setStyleCategory((style.category as StyleCategory) || "all");
     setStyleBaseImageUrl((style as any).baseImageUrl || "");
+    setStylePromptPlaceholder((style as any).promptPlaceholder || "");
     setStyleDialogOpen(true);
   };
 
@@ -131,7 +134,13 @@ export default function AdminStyles() {
   };
 
   const handleSaveStyle = () => {
-    const payload = { name: styleName, promptPrefix: stylePrompt, category: styleCategory, baseImageUrl: styleBaseImageUrl || undefined };
+    const payload = {
+      name: styleName,
+      promptPrefix: stylePrompt,
+      category: styleCategory,
+      baseImageUrl: styleBaseImageUrl || undefined,
+      promptPlaceholder: stylePromptPlaceholder || undefined,
+    };
     if (editingStyle) {
       updateStyleMutation.mutate({ id: editingStyle.id, ...payload });
     } else {
@@ -321,6 +330,19 @@ export default function AdminStyles() {
                 />
                 <p className="text-xs text-muted-foreground">
                   This text will be prepended to the customer's prompt
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="style-placeholder">Prompt Box Placeholder Text <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input
+                  id="style-placeholder"
+                  value={stylePromptPlaceholder}
+                  onChange={(e) => setStylePromptPlaceholder(e.target.value)}
+                  placeholder="e.g. Describe your pet (name, breed, colours)…"
+                  data-testid="input-style-placeholder"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Hint text shown inside the customer's prompt box when this style is selected
                 </p>
               </div>
               <div className="space-y-2">

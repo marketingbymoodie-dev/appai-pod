@@ -1291,14 +1291,15 @@ export async function registerRoutes(
       const stylePresets =
         dbStyles.length > 0
           ? dbStyles.map((s) => {
-              // Merge promptPlaceholder, options, and baseImageUrl from hardcoded STYLE_PRESETS since DB doesn't store sub-options
+              // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
+              // promptPlaceholder: prefer DB value (merchant-editable), fall back to hardcoded default
               const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
               return {
                 id: s.id.toString(),
                 name: s.name,
                 promptSuffix: s.promptPrefix,
                 category: s.category || "all",
-                promptPlaceholder: (hardcoded as any)?.promptPlaceholder,
+                promptPlaceholder: (s as any).promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
                 options: (hardcoded as any)?.options,
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
               };
@@ -8471,7 +8472,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -8485,6 +8486,7 @@ ${textEdgeRestrictions}
         isActive: isActive !== undefined ? isActive : true,
         sortOrder: sortOrder || 0,
         baseImageUrl: baseImageUrl || null,
+        promptPlaceholder: promptPlaceholder || null,
       });
 
       res.json(preset);
@@ -8510,7 +8512,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -8519,8 +8521,10 @@ ${textEdgeRestrictions}
         isActive: isActive !== undefined ? isActive : preset.isActive,
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
         baseImageUrl: baseImageUrl !== undefined ? (baseImageUrl || null) : (preset as any).baseImageUrl,
+        promptPlaceholder: promptPlaceholder !== undefined ? (promptPlaceholder || null) : (preset as any).promptPlaceholder,
       });
 
+      configCache.delete("global"); // invalidate so storefront picks up new placeholder
       res.json(updated);
     } catch (error) {
       console.error("Error updating style preset:", error);
