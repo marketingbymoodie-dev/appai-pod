@@ -1282,6 +1282,10 @@ export default function EmbedDesign() {
       // effect (which fires because transform deps changed) and sets mockupsStale=true,
       // blocking _mockup_url from being included in add-to-cart for the 2nd+ design.
       setMockupsStale(false);
+      // Sync the color ref so the colorMatches guard in handleAddToCart doesn't
+      // incorrectly block the mockup URL when a saved design is loaded.
+      // topLevel.frameColor is the restored frame color for this design.
+      currentMockupColorRef.current = topLevel.frameColor || '';
       sendMockupsToParent(absMockups);
     }
   };
