@@ -705,6 +705,9 @@ export default function EmbedDesign() {
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
+  // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
+  // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
+  const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
   
   const [addedToCart, setAddedToCart] = useState(false);
@@ -1256,6 +1259,7 @@ export default function EmbedDesign() {
           x: typeof ds.x === 'number' ? ds.x : 50,
           y: typeof ds.y === 'number' ? ds.y : 50,
         };
+        suppressMockupStaleRef.current = true; // prevent stale-on-transform during load
         setTransform(restoredTransform);
         initialTransformRef.current = restoredTransform;
       }
@@ -1656,6 +1660,11 @@ export default function EmbedDesign() {
 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
+    if (suppressMockupStaleRef.current) {
+      // Transform changed during design load — mockups are already correct, don't mark stale
+      suppressMockupStaleRef.current = false;
+      return;
+    }
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
     if (hasMockups && !mockupLoading) {
       setMockupsStale(true);
@@ -3944,8 +3953,33 @@ export default function EmbedDesign() {
                       </Button>
                     ) : (
                       <Button
-                        onClick={handleAddToCart}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupsStale}
+                        onClick={() => {
+                          if (mockupsStale) {
+                            // Refresh mockups first, then the button will switch to Add to Cart
+                            if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                              setMockupError(null);
+                              setMockupFailed(false);
+                              setPrintifyMockups([]);
+                              setPrintifyMockupImages([]);
+                              setSelectedMockupIndex(0);
+                              setMockupsStale(false);
+                              mockupColorCacheRef.current = {};
+                              currentMockupColorRef.current = '';
+                              fetchPrintifyMockups(
+                                toAbsoluteImageUrl(generatedDesign.imageUrl),
+                                productTypeConfig.id,
+                                selectedSize,
+                                selectedFrameColor || 'default',
+                                transform.scale,
+                                transform.x,
+                                transform.y
+                              );
+                            }
+                          } else {
+                            handleAddToCart();
+                          }
+                        }}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                         data-testid="button-add-to-cart"
                       >
@@ -3954,14 +3988,14 @@ export default function EmbedDesign() {
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Adding to Cart...</span>
                           </>
-                        ) : atcWaitingForMockups ? (
+                        ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Generating preview…</span>
+                            <span className="shimmer-text-white">Refreshing Mockups…</span>
                           </>
                         ) : mockupsStale ? (
                           <>
-                            <ShoppingCart className="w-5 h-5 mr-2" />
+                            <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
                           </>
                         ) : (

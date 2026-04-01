@@ -6377,23 +6377,21 @@ ${textEdgeRestrictions}
       );
       if (existingVariant) {
         console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
-        // Strategy: keep inventory tracked (so inventory_levels/set works) but set
-        // quantity=999 and inventory_policy=continue so the cart never sees sold-out.
-        // Setting tracked=false conflicts with inventory_levels/set (Shopify rejects it).
+        // Strategy: set inventory_management=null (untracked) + inventory_policy=continue so
+        // Shopify never considers this variant sold-out regardless of previous cart activity.
+        // Also set available=999 as belt-and-suspenders in case tracking is re-enabled by Shopify.
         const invItemId = existingVariant.inventory_item_id;
-        if (invItemId) {
-          try {
-            // 1. Ensure inventory_policy=continue on the variant
-            await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
-              method: 'PUT',
-              headers,
-              body: JSON.stringify({ variant: { id: existingVariant.id, inventory_policy: 'continue' } }),
-            });
-            // 2. Set inventory quantity to 999 so storefront never sees sold-out
-            await ensureInventoryAvailable(invItemId);
-          } catch (invErr: any) {
-            console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
-          }
+        try {
+          // 1. Set inventory_management=null (untracked) and inventory_policy=continue
+          await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
+          });
+          // 2. Belt-and-suspenders: also set quantity=999 at primary location
+          if (invItemId) await ensureInventoryAvailable(invItemId);
+        } catch (invErr: any) {
+          console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
         }
         return res.json({ success: true, variantId: String(existingVariant.id), reused: true });
       }
