@@ -708,6 +708,12 @@ export default function EmbedDesign() {
   // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
+  // Suppress the stale-on-color-change effect during design loading (applyLoadedDesign sets
+  // selectedFrameColor and mockups together; we don't want that to mark the freshly-loaded mockups as stale)
+  const suppressColorStaleRef = useRef(false);
+  // When a saved design has no stored mockup URLs, handleAddToCart triggers a fresh mockup
+  // generation and sets this flag so the cart add auto-proceeds once mockups are ready.
+  const atcPendingAfterMockupsRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
   
   const [addedToCart, setAddedToCart] = useState(false);
@@ -1274,6 +1280,19 @@ export default function EmbedDesign() {
     const mockups = topLevel.mockupUrls;
     if (mockups?.length) {
       const absMockups = mockups.map((u: string) => u.startsWith('/') ? buildAppUrl(u) : u);
+      const restoredColor = topLevel.frameColor || (ds?.selectedFrameColor) || '';
+      // Sync the color ref BEFORE setting state so the color-change useEffect
+      // (which fires when setSelectedFrameColor triggers a re-render) sees the
+      // ref already matching and skips the setMockupsStale(true) branch.
+      currentMockupColorRef.current = restoredColor;
+      // Also populate the per-color cache so the color-change effect finds a
+      // cache hit and calls setMockupsStale(false) instead of setMockupsStale(true).
+      if (restoredColor) {
+        const absImages = absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` }));
+        mockupColorCacheRef.current[restoredColor] = { urls: absMockups, images: absImages };
+      }
+      // Suppress the color-change stale effect that fires when setSelectedFrameColor runs
+      suppressColorStaleRef.current = true;
       setPrintifyMockups(absMockups);
       setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
       setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
@@ -1282,10 +1301,6 @@ export default function EmbedDesign() {
       // effect (which fires because transform deps changed) and sets mockupsStale=true,
       // blocking _mockup_url from being included in add-to-cart for the 2nd+ design.
       setMockupsStale(false);
-      // Sync the color ref so the colorMatches guard in handleAddToCart doesn't
-      // incorrectly block the mockup URL when a saved design is loaded.
-      // topLevel.frameColor is the restored frame color for this design.
-      currentMockupColorRef.current = topLevel.frameColor || '';
       sendMockupsToParent(absMockups);
     }
   };
@@ -1678,6 +1693,12 @@ export default function EmbedDesign() {
 
   // When frame color changes, swap mockups from the per-color cache or mark stale
   useEffect(() => {
+    // If a saved design is being loaded, the color change is part of the restore —
+    // mockups are already correct for this color, so don't mark stale.
+    if (suppressColorStaleRef.current) {
+      suppressColorStaleRef.current = false;
+      return;
+    }
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
     if (!hasMockups || !selectedFrameColor || mockupLoading) return;
     if (selectedFrameColor === currentMockupColorRef.current) return;
@@ -1695,6 +1716,23 @@ export default function EmbedDesign() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFrameColor]);
+
+  // Auto-proceed with cart add once mockups finish loading (for saved designs that had no stored mockups).
+  // When handleAddToCart sets atcPendingAfterMockupsRef=true and triggers fetchPrintifyMockups,
+  // this effect fires once mockupLoading transitions from true→false with mockups available.
+  // We use a button click simulation to avoid stale closure issues with handleAddToCart.
+  const atcButtonRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!atcPendingAfterMockupsRef.current) return;
+    if (mockupLoading) return; // still loading
+    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    if (!hasMockups) return; // mockup generation failed — don't auto-proceed
+    console.log('[Design Studio] Mockups ready after pending cart add — auto-proceeding via button click');
+    atcPendingAfterMockupsRef.current = false;
+    // Small delay to let React flush the state updates from fetchPrintifyMockups
+    setTimeout(() => { atcButtonRef.current?.click(); }, 150);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mockupLoading, printifyMockups.length, printifyMockupImages.length]);
 
   // Background prefetch: after primary mockups load, fetch other frame colors silently
   useEffect(() => {
@@ -2689,18 +2727,17 @@ export default function EmbedDesign() {
     setVariantError(null);
 
     // If the product needs mockups but none are loaded yet (e.g. older saved design
-    // with no stored mockupUrls), trigger a fresh mockup generation before proceeding.
-    // This sets mockupsStale=false and loads new mockups; the button's onClick will
-    // re-run handleAddToCart once mockups are ready via the atcWaitingForMockups path.
+    // with no stored mockupUrls), trigger a fresh mockup generation and auto-proceed
+    // once mockups are ready (via atcPendingAfterMockupsRef + useEffect below).
     const hasMockupProduct = !!(productTypeConfig?.hasPrintifyMockups);
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
     if (hasMockupProduct && !hasMockups && generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-      console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation before cart add');
+      console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation, will auto-proceed to cart add');
       setMockupError(null);
       setMockupFailed(false);
-      setMockupsStale(true); // will show "Refresh Mockups to Continue" then auto-proceed
-      // Trigger mockup generation — once done, atcWaitingForMockups will clear
-      // and the user can click Add to Cart again (or we auto-proceed via the button state)
+      // Mark that we want to auto-proceed with cart add once mockups are ready.
+      // Do NOT set mockupsStale=true here — that would block handleAddToCart on the next call.
+      atcPendingAfterMockupsRef.current = true;
       fetchPrintifyMockups(
         toAbsoluteImageUrl(generatedDesign.imageUrl),
         productTypeConfig.id,
@@ -4009,6 +4046,7 @@ export default function EmbedDesign() {
                             handleAddToCart();
                           }
                         }}
+                        ref={atcButtonRef}
                         disabled={isAddingToCart || atcWaitingForMockups || mockupLoading}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                         data-testid="button-add-to-cart"
