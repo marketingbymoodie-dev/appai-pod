@@ -31,6 +31,7 @@ interface CustomerInfo {
   id: string;
   email?: string;
   credits: number;
+  freeGenerationsUsed?: number;
   isLoggedIn: boolean;
 }
 
@@ -2011,8 +2012,12 @@ export default function EmbedDesign() {
         // Show remaining credits notification
         if (data.creditsRemaining > 0) {
           toast({
-            title: `${data.creditsRemaining} Free Artwork Generation${data.creditsRemaining === 1 ? '' : 's'} Remaining`,
-            description: "Tap \u24D8 next to 'Free artworks' for details on getting more.",
+            title: storefrontCustomerId
+              ? `${data.creditsRemaining} Artwork${data.creditsRemaining === 1 ? '' : 's'} Remaining`
+              : `${data.creditsRemaining} Free Artwork${data.creditsRemaining === 1 ? '' : 's'} Remaining`,
+            description: storefrontCustomerId
+              ? 'Credits are refunded when you complete a purchase.'
+              : "Tap \u24D8 next to 'Free artworks' for details on getting more.",
             duration: 5000,
           });
         } else {
@@ -3668,8 +3673,7 @@ export default function EmbedDesign() {
                                         if (data.ok) {
                                           const newCustomerId = data.customerId;
                                           setStorefrontCustomerId(newCustomerId);
-                                          setCustomer({ email: otpEmail.trim(), id: newCustomerId });
-                                          setCredits(data.credits || 0);
+                                          setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
                                           setGalleryLimit(data.galleryLimit || 10);
                                           try {
                                             localStorage.setItem('appai_customer_id', newCustomerId);
@@ -3717,8 +3721,7 @@ export default function EmbedDesign() {
                                       if (data.ok) {
                                         const newCustomerId = data.customerId;
                                         setStorefrontCustomerId(newCustomerId);
-                                        setCustomer({ email: otpEmail.trim(), id: newCustomerId });
-                                        setCredits(data.credits || 0);
+                                        setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
                                         setGalleryLimit(data.galleryLimit || 10);
                                         try {
                                           localStorage.setItem('appai_customer_id', newCustomerId);
@@ -3869,7 +3872,7 @@ export default function EmbedDesign() {
                               setCouponLoading(true);
                               setCouponError(null);
                               setCouponSuccess(null);
-                              safeFetch(`${API_BASE}/api/storefront/redeem-coupon`, {
+                              safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ code: couponCode.trim(), customerId: storefrontCustomerId, shop: shopDomain }),
@@ -3878,7 +3881,7 @@ export default function EmbedDesign() {
                                 .then(data => {
                                   if (data.ok) {
                                     setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
-                                    setCredits(data.newTotal);
+                                    setCustomer(prev => prev ? { ...prev, credits: data.newBalance } : prev);
                                     setCouponCode('');
                                   } else {
                                     setCouponError(data.error || 'Invalid code');
@@ -4009,7 +4012,14 @@ export default function EmbedDesign() {
                   </Button>
                   {(isShopify || isStorefront) && (
                     <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
-                      {credits > 0 ? `${credits} Free artworks` : customer ? '0 Free artworks' : '10 Free artworks'}
+                      {(() => {
+                        // Logged-in user with purchased credits → no "free" label
+                        if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
+                        // Anonymous or free-tier user
+                        if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
+                        if (customer) return '0 artworks remaining';
+                        return '10 free artworks';
+                      })()}
                       <Popover>
                         <PopoverTrigger asChild>
                           <button type="button" className="inline-flex items-center" aria-label="Pricing info">
