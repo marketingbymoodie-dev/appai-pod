@@ -13850,12 +13850,17 @@ ${textEdgeRestrictions}
 
         for (const product of products) {
           const variants: any[] = product.variants || [];
-          // Find design variants: option3 contains 'Design:' or starts with '#'
+          // Find design variants: any variant where option2 or option3 is not 'base', not null, and not a size
+          // These are the custom design variants created by resolve-design-variant
           const designVariants = variants.filter((v: any) => {
-            const opt3 = (v.option3 || "").toLowerCase();
-            const opt2 = (v.option2 || "").toLowerCase();
-            return opt3.includes("design:") || opt3.startsWith("#") ||
-                   opt2.includes("design:") || opt2.startsWith("#");
+            const title = (v.title || "").toLowerCase();
+            // Skip the base variant
+            if (title.endsWith("/ base") || v.option2 === "base" || v.option3 === "base") return false;
+            // Skip if it's a plain size variant (option2 is a size like 'iphone_14', '20oz', etc.)
+            if (!v.option2 || v.option2 === "base") return false;
+            // Include any variant that has a non-base option2 (these are design variants)
+            // Design variants have option2 like 'Slim Phone Cases · Minimal Line Art #pscu'
+            return true;
           });
 
           for (const variant of designVariants) {
