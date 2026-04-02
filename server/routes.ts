@@ -9303,8 +9303,13 @@ ${textEdgeRestrictions}
         }
         
         // Try title parts
-        if (!extractedSizeId && title && title.includes("/")) {
-          const parts = title.split("/").map((p: string) => p.trim());
+        // Use " / " (space-slash-space) split to preserve combined model names like "iPhone 12/12 Pro".
+        // Fall back to "/" split only if no " / " separator exists.
+        if (!extractedSizeId && title && (title.includes(" / ") || title.includes("/"))) {
+          const hasSeparator = title.includes(" / ");
+          const parts = hasSeparator
+            ? title.split(" / ").map((p: string) => p.trim())
+            : title.split("/").map((p: string) => p.trim());
           for (const part of parts) {
             const volumeMatch = part.match(/^(\d+)\s*oz$/i);
             if (volumeMatch) {
@@ -9321,6 +9326,29 @@ ${textEdgeRestrictions}
               }
               break;
             }
+            // Named sizes (Small, Medium, Large, King, Queen, One Size, etc.)
+            if (namedSizes.includes(part.toLowerCase())) {
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
+              }
+              break;
+            }
+            // Phone/device models (iPhone 14, Galaxy S23, Pixel 7, etc.)
+            // Combined model names like "iPhone 12/12 Pro" are preserved as a single token
+            // because we split on " / " above.
+            if (part.match(/^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i) ||
+                part.match(/^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i) ||
+                part.match(/^pixel\s+(\d|fold|pro)/i) ||
+                part.match(/^samsung\s+(galaxy|note)/i) ||
+                part.match(/^oneplus\s+\d/i) ||
+                part.match(/^for\s+(iphone|galaxy|pixel|samsung)/i)) {
+              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              if (!sizesMap.has(extractedSizeId)) {
+                sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
+              }
+              break;
+            }
           }
         }
         
@@ -9328,11 +9356,14 @@ ${textEdgeRestrictions}
         let colorName = "";
         if (options.color || options.colour || options.Color || options.Colour || options.frame_color) {
           colorName = options.color || options.colour || options.Color || options.Colour || options.frame_color;
-        } else if (title.includes("/")) {
-          const parts = title.split("/").map((p: string) => p.trim());
-          for (let i = parts.length - 1; i >= 0; i--) {
-            if (!looksLikeSize(parts[i])) {
-              colorName = parts[i];
+        } else if (title.includes(" / ") || title.includes("/")) {
+          // Use " / " split to preserve combined model names like "iPhone 12/12 Pro"
+          const _cParts = title.includes(" / ")
+            ? title.split(" / ").map((p: string) => p.trim())
+            : title.split("/").map((p: string) => p.trim());
+          for (let i = _cParts.length - 1; i >= 0; i--) {
+            if (!looksLikeSize(_cParts[i])) {
+              colorName = _cParts[i];
               break;
             }
           }
