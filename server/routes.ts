@@ -13816,7 +13816,7 @@ ${textEdgeRestrictions}
 
       // Get all active Shopify installations directly from DB
       const { rows: allInstallations } = await pool.query(
-        `SELECT id, shop, access_token as "accessToken" FROM shopify_installations WHERE status = 'active'`
+        `SELECT id, shop_domain as shop, access_token as "accessToken" FROM shopify_installations WHERE status = 'active'`
       );
       const installations = targetShop
         ? allInstallations.filter((i: any) => i.shop === targetShop)
