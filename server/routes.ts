@@ -13803,9 +13803,10 @@ ${textEdgeRestrictions}
   registerAdminBrandingRoutes(app);
 
   // POST /api/admin/fix-sold-out-variants
-  // One-click cleanup: finds all custom design variants (option3 contains 'Design:')
-  // across all Shopify products and sets inventory_management=null + inventory_policy='continue'
-  // so they can never be sold out. Safe to call multiple times.
+  // One-click cleanup: finds all custom design variants across all Shopify products
+  // and DELETES them so they get recreated fresh on next Add to Cart.
+  // This fixes variants that are stuck as "sold out" due to previous inventory tracking.
+  // Safe to call multiple times — next ATC will recreate variants correctly.
   app.post("/api/admin/fix-sold-out-variants", async (req: any, res: Response) => {
     try {
       // Simple secret key protection — no login required
@@ -13864,31 +13865,18 @@ ${textEdgeRestrictions}
           });
 
           for (const variant of designVariants) {
-            // Skip if already correct
-            if (variant.inventory_management === null && variant.inventory_policy === "continue") {
-              shopSkipped++;
-              continue;
-            }
+            console.log(`[FixSoldOutVariants] Deleting design variant ${variant.id} (${product.title}) title="${variant.title}"`);
 
-            console.log(`[FixSoldOutVariants] Fixing variant ${variant.id} (${product.title}) — inv_mgmt=${variant.inventory_management}`);
-
-            const updateRes = await fetch(`${apiBase}/variants/${variant.id}.json`, {
-              method: "PUT",
+            const deleteRes = await fetch(`${apiBase}/products/${product.id}/variants/${variant.id}.json`, {
+              method: "DELETE",
               headers,
-              body: JSON.stringify({
-                variant: {
-                  id: variant.id,
-                  inventory_management: null,
-                  inventory_policy: "continue",
-                },
-              }),
             });
 
-            if (updateRes.ok) {
+            if (deleteRes.ok || deleteRes.status === 404) {
               shopFixed++;
             } else {
-              const errText = await updateRes.text();
-              console.error(`[FixSoldOutVariants] Failed to fix variant ${variant.id}: ${errText.substring(0, 100)}`);
+              const errText = await deleteRes.text();
+              console.error(`[FixSoldOutVariants] Failed to delete variant ${variant.id}: ${errText.substring(0, 100)}`);
               shopFailed++;
             }
 
