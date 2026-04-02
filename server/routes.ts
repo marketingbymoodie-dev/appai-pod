@@ -6377,18 +6377,19 @@ ${textEdgeRestrictions}
       );
       if (existingVariant) {
         console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
-        // Strategy: set inventory_management=null (untracked) + inventory_policy=continue so
-        // Shopify never considers this variant sold-out regardless of previous cart activity.
-        // Also set available=999 as belt-and-suspenders in case tracking is re-enabled by Shopify.
+        // Strategy: set inventory_management='shopify' (tracked) + inventory_policy='continue' +
+        // quantity=999 so Shopify never considers this variant sold-out regardless of previous
+        // cart activity. Using null for inventory_management can leave the variant with no
+        // inventory level connected to a location, which Shopify treats as sold-out.
         const invItemId = existingVariant.inventory_item_id;
         try {
-          // 1. Set inventory_management=null (untracked) and inventory_policy=continue
+          // 1. Set inventory_management='shopify' and inventory_policy='continue'
           await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
             method: 'PUT',
             headers,
-            body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
+            body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: 'shopify', inventory_policy: 'continue' } }),
           });
-          // 2. Belt-and-suspenders: also set quantity=999 at primary location
+          // 2. Set quantity=999 at primary location so storefront never sees sold-out
           if (invItemId) await ensureInventoryAvailable(invItemId);
         } catch (invErr: any) {
           console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
@@ -6441,13 +6442,17 @@ ${textEdgeRestrictions}
         designOptionPosition = designOption?.position || existingOptions.length;
       }
 
-      // 4b. Create the new variant using the correct option position
+      // 4b. Create the new variant using the correct option position.
+      // Use inventory_management='shopify' (tracked) + inventory_policy='continue' so
+      // Shopify never shows the variant as sold-out. We then set quantity=999 via
+      // inventory_levels/set. Using null for inventory_management can leave the variant
+      // with no inventory level connected to a location, which Shopify treats as sold-out.
       const newVariantBody: any = {
         variant: {
           option1: opt1,
           [`option${designOptionPosition}`]: designOpt,
           price,
-          inventory_management: null,
+          inventory_management: 'shopify',
           inventory_policy: 'continue',
           taxable: baseVariant.taxable,
           requires_shipping: baseVariant.requires_shipping,
