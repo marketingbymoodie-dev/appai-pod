@@ -3854,10 +3854,31 @@ export default function EmbedDesign() {
                                   className="rounded-md overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors"
                                   onClick={() => {
                                     setShowSavedDesigns(false);
-                                    const params = new URLSearchParams(window.location.search);
-                                    params.set('loadDesignId', d.id);
-                                    window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                    window.location.reload();
+                                    // If this design belongs to a different product type, navigate
+                                    // the parent page to the correct customizer page first.
+                                    const currentProductTypeId = productTypeId ? String(productTypeId) : null;
+                                    const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
+                                    const needsNavigation = d.pageHandle && designProductTypeId && currentProductTypeId && designProductTypeId !== currentProductTypeId;
+                                    if (needsNavigation) {
+                                      // Navigate parent to the correct customizer page with loadDesignId
+                                      try {
+                                        const parentUrl = new URL(window.parent.location.href);
+                                        parentUrl.pathname = `/pages/${d.pageHandle}`;
+                                        parentUrl.searchParams.set('loadDesignId', d.id);
+                                        window.parent.location.href = parentUrl.toString();
+                                      } catch {
+                                        // Fallback: reload current page (cross-origin guard)
+                                        const params = new URLSearchParams(window.location.search);
+                                        params.set('loadDesignId', d.id);
+                                        window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
+                                        window.location.reload();
+                                      }
+                                    } else {
+                                      const params = new URLSearchParams(window.location.search);
+                                      params.set('loadDesignId', d.id);
+                                      window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
+                                      window.location.reload();
+                                    }
                                   }}
                                 >
                                   <div className="aspect-square relative bg-muted">
@@ -3878,6 +3899,26 @@ export default function EmbedDesign() {
                                     </div>
                                   )}
                                 </div>
+                                {/* Delete button — visible on hover (desktop) or always visible (mobile) */}
+                                <button
+                                  className="absolute top-1 right-1 z-10 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity hover:bg-red-600"
+                                  title="Delete design"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (!confirm('Delete this saved design?')) return;
+                                    try {
+                                      const r = await safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}`, {
+                                        method: 'DELETE',
+                                        headers: { 'Content-Type': 'application/json', ...(shopDomain ? { 'x-shop-domain': shopDomain } : {}) },
+                                      });
+                                      if (r.ok) {
+                                        setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
+                                      }
+                                    } catch {}
+                                  }}
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
                               </div>
                             ))}
                           </div>
