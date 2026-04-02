@@ -6376,16 +6376,20 @@ ${textEdgeRestrictions}
         v.option3 === designOpt
       );
       if (existingVariant) {
-        console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — reusing`);
-        // Ensure inventory_management=null (untracked) + inventory_policy='continue' so
-        // Shopify never shows this variant as sold-out. Untracked variants have no inventory
-        // level requirement and are always purchasable.
+        console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
+        // Strategy: set inventory_management=null (untracked) + inventory_policy=continue so
+        // Shopify never considers this variant sold-out regardless of previous cart activity.
+        // Also set available=999 as belt-and-suspenders in case tracking is re-enabled by Shopify.
+        const invItemId = existingVariant.inventory_item_id;
         try {
+          // 1. Set inventory_management=null (untracked) and inventory_policy=continue
           await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
             method: 'PUT',
             headers,
             body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
           });
+          // 2. Belt-and-suspenders: also set quantity=999 at primary location
+          if (invItemId) await ensureInventoryAvailable(invItemId);
         } catch (invErr: any) {
           console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
         }
@@ -6437,10 +6441,7 @@ ${textEdgeRestrictions}
         designOptionPosition = designOption?.position || existingOptions.length;
       }
 
-      // 4b. Create the new variant using the correct option position.
-      // Use inventory_management=null (untracked) + inventory_policy='continue' so
-      // Shopify never shows the variant as sold-out. Untracked variants have no inventory
-      // level requirement — they are always purchasable without needing inventory_levels/set.
+      // 4b. Create the new variant using the correct option position
       const newVariantBody: any = {
         variant: {
           option1: opt1,
@@ -6469,18 +6470,22 @@ ${textEdgeRestrictions}
       }
       const { variant: newVariant } = await createRes.json();
       console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId} — inventory_management=${newVariant.inventory_management} inventory_policy=${newVariant.inventory_policy}`);
-      // Ensure inventory_management=null (untracked) + inventory_policy='continue' is applied
-      // after creation (Shopify may override these on creation). Untracked variants are always
-      // purchasable without needing inventory_levels/set.
-      try {
-        await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
-          method: 'PUT',
-          headers,
-          body: JSON.stringify({ variant: { id: newVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
-        });
-        console.log(`[ResolveDesignVariant] Set inventory_management=null inventory_policy=continue on variant ${newVariant.id}`);
-      } catch (invErr: any) {
-        console.warn(`[ResolveDesignVariant] Inventory fix error on new variant (non-fatal):`, invErr?.message);
+      // Strategy: keep inventory tracked (so inventory_levels/set works) but set
+      // quantity=999 and inventory_policy=continue so the cart never sees sold-out.
+      const newInvItemId = newVariant.inventory_item_id;
+      if (newInvItemId) {
+        try {
+          // 1. Ensure inventory_policy=continue on the variant (Shopify may override on creation)
+          await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
+            method: 'PUT',
+            headers,
+            body: JSON.stringify({ variant: { id: newVariant.id, inventory_policy: 'continue' } }),
+          });
+          // 2. Set inventory quantity to 999 so storefront never sees sold-out
+          await ensureInventoryAvailable(newInvItemId);
+        } catch (invErr: any) {
+          console.warn(`[ResolveDesignVariant] Inventory fix error on new variant (non-fatal):`, invErr?.message);
+        }
       }
 
       // 5. Upload mockup image and assign it to the new variant
@@ -13801,100 +13806,6 @@ ${textEdgeRestrictions}
 
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
-
-  // POST /api/admin/fix-sold-out-variants
-  // One-click cleanup: finds all custom design variants across all Shopify products
-  // and DELETES them so they get recreated fresh on next Add to Cart.
-  // This fixes variants that are stuck as "sold out" due to previous inventory tracking.
-  // Safe to call multiple times — next ATC will recreate variants correctly.
-  app.post("/api/admin/fix-sold-out-variants", async (req: any, res: Response) => {
-    try {
-      // Simple secret key protection — no login required
-      const { secret, shop: targetShop } = req.body as { secret?: string; shop?: string };
-      if (secret !== "appai-fix-2026") {
-        return res.status(403).json({ error: "Invalid secret" });
-      }
-
-      // Get all active Shopify installations directly from DB
-      const { rows: allInstallations } = await pool.query(
-        `SELECT id, shop_domain as shop, access_token as "accessToken" FROM shopify_installations WHERE status = 'active'`
-      );
-      const installations = targetShop
-        ? allInstallations.filter((i: any) => i.shop === targetShop)
-        : allInstallations;
-      if (!installations.length) return res.status(404).json({ error: "No active Shopify installations found" });
-
-      const results: any[] = [];
-
-      for (const installation of installations) {
-        const shop = installation.shop;
-        const accessToken = installation.accessToken;
-        const apiBase = `https://${shop}/admin/api/2024-01`;
-        const headers: Record<string, string> = {
-          "X-Shopify-Access-Token": accessToken,
-          "Content-Type": "application/json",
-        };
-
-        console.log(`[FixSoldOutVariants] Processing shop: ${shop}`);
-
-        // Get all products
-        const productsRes = await fetch(`${apiBase}/products.json?limit=250&fields=id,title,variants`, { headers });
-        if (!productsRes.ok) {
-          results.push({ shop, error: `Failed to fetch products: ${productsRes.status}` });
-          continue;
-        }
-        const { products } = await productsRes.json();
-
-        let shopFixed = 0;
-        let shopSkipped = 0;
-        let shopFailed = 0;
-
-        for (const product of products) {
-          const variants: any[] = product.variants || [];
-          // Find design variants: any variant where option2 or option3 is not 'base', not null, and not a size
-          // These are the custom design variants created by resolve-design-variant
-          const designVariants = variants.filter((v: any) => {
-            const title = (v.title || "").toLowerCase();
-            // Skip the base variant
-            if (title.endsWith("/ base") || v.option2 === "base" || v.option3 === "base") return false;
-            // Skip if it's a plain size variant (option2 is a size like 'iphone_14', '20oz', etc.)
-            if (!v.option2 || v.option2 === "base") return false;
-            // Include any variant that has a non-base option2 (these are design variants)
-            // Design variants have option2 like 'Slim Phone Cases · Minimal Line Art #pscu'
-            return true;
-          });
-
-          for (const variant of designVariants) {
-            console.log(`[FixSoldOutVariants] Deleting design variant ${variant.id} (${product.title}) title="${variant.title}"`);
-
-            const deleteRes = await fetch(`${apiBase}/products/${product.id}/variants/${variant.id}.json`, {
-              method: "DELETE",
-              headers,
-            });
-
-            if (deleteRes.ok || deleteRes.status === 404) {
-              shopFixed++;
-            } else {
-              const errText = await deleteRes.text();
-              console.error(`[FixSoldOutVariants] Failed to delete variant ${variant.id}: ${errText.substring(0, 100)}`);
-              shopFailed++;
-            }
-
-            // Respect Shopify rate limit (2 req/sec)
-            await new Promise((r) => setTimeout(r, 600));
-          }
-        }
-
-        console.log(`[FixSoldOutVariants] Shop ${shop}: fixed=${shopFixed} skipped=${shopSkipped} failed=${shopFailed}`);
-        results.push({ shop, fixed: shopFixed, skipped: shopSkipped, failed: shopFailed, products: products.length });
-      }
-
-      res.json({ ok: true, results });
-    } catch (err: any) {
-      console.error("[FixSoldOutVariants] Error:", err);
-      res.status(500).json({ error: err.message || "Unknown error" });
-    }
-  });
 
   return httpServer;
 }

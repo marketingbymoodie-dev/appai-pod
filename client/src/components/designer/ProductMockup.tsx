@@ -271,7 +271,7 @@ export function ProductMockup({
             <img
               src={imageUrl}
               alt="Generated artwork"
-              className="absolute inset-0 w-full h-full object-contain"
+              className="absolute inset-0 w-full h-full object-cover"
               style={{
                 pointerEvents: "none",
                 borderRadius: printShape === "circle" ? "50%" : undefined,
@@ -327,7 +327,7 @@ export function ProductMockup({
         <img
           src={displayUrl}
           alt="Generated artwork"
-          className="absolute inset-0 w-full h-full object-contain"
+          className="absolute inset-0 w-full h-full object-cover"
           style={{
             pointerEvents: "none",
             borderRadius: printShape === "circle" ? "50%" : undefined,
