@@ -13802,5 +13802,99 @@ ${textEdgeRestrictions}
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
 
+  // POST /api/admin/fix-sold-out-variants
+  // One-click cleanup: finds all custom design variants (option3 contains 'Design:')
+  // across all Shopify products and sets inventory_management=null + inventory_policy='continue'
+  // so they can never be sold out. Safe to call multiple times.
+  app.post("/api/admin/fix-sold-out-variants", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+      // Get all Shopify installations for this merchant
+      const installations = await storage.getShopifyInstallationsByMerchant(merchant.id.toString());
+      if (!installations.length) return res.status(404).json({ error: "No Shopify installations found" });
+
+      const results: any[] = [];
+
+      for (const installation of installations) {
+        const shop = installation.shop;
+        const accessToken = installation.accessToken;
+        const apiBase = `https://${shop}/admin/api/2024-01`;
+        const headers: Record<string, string> = {
+          "X-Shopify-Access-Token": accessToken,
+          "Content-Type": "application/json",
+        };
+
+        console.log(`[FixSoldOutVariants] Processing shop: ${shop}`);
+
+        // Get all products
+        const productsRes = await fetch(`${apiBase}/products.json?limit=250&fields=id,title,variants`, { headers });
+        if (!productsRes.ok) {
+          results.push({ shop, error: `Failed to fetch products: ${productsRes.status}` });
+          continue;
+        }
+        const { products } = await productsRes.json();
+
+        let shopFixed = 0;
+        let shopSkipped = 0;
+        let shopFailed = 0;
+
+        for (const product of products) {
+          const variants: any[] = product.variants || [];
+          // Find design variants: option3 contains 'Design:' or starts with '#'
+          const designVariants = variants.filter((v: any) => {
+            const opt3 = (v.option3 || "").toLowerCase();
+            const opt2 = (v.option2 || "").toLowerCase();
+            return opt3.includes("design:") || opt3.startsWith("#") ||
+                   opt2.includes("design:") || opt2.startsWith("#");
+          });
+
+          for (const variant of designVariants) {
+            // Skip if already correct
+            if (variant.inventory_management === null && variant.inventory_policy === "continue") {
+              shopSkipped++;
+              continue;
+            }
+
+            console.log(`[FixSoldOutVariants] Fixing variant ${variant.id} (${product.title}) — inv_mgmt=${variant.inventory_management}`);
+
+            const updateRes = await fetch(`${apiBase}/variants/${variant.id}.json`, {
+              method: "PUT",
+              headers,
+              body: JSON.stringify({
+                variant: {
+                  id: variant.id,
+                  inventory_management: null,
+                  inventory_policy: "continue",
+                },
+              }),
+            });
+
+            if (updateRes.ok) {
+              shopFixed++;
+            } else {
+              const errText = await updateRes.text();
+              console.error(`[FixSoldOutVariants] Failed to fix variant ${variant.id}: ${errText.substring(0, 100)}`);
+              shopFailed++;
+            }
+
+            // Respect Shopify rate limit (2 req/sec)
+            await new Promise((r) => setTimeout(r, 600));
+          }
+        }
+
+        console.log(`[FixSoldOutVariants] Shop ${shop}: fixed=${shopFixed} skipped=${shopSkipped} failed=${shopFailed}`);
+        results.push({ shop, fixed: shopFixed, skipped: shopSkipped, failed: shopFailed, products: products.length });
+      }
+
+      res.json({ ok: true, results });
+    } catch (err: any) {
+      console.error("[FixSoldOutVariants] Error:", err);
+      res.status(500).json({ error: err.message || "Unknown error" });
+    }
+  });
+
   return httpServer;
 }
