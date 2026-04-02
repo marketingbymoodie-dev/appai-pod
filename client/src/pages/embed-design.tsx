@@ -2782,13 +2782,18 @@ export default function EmbedDesign() {
     // would send the previous color's mockup to the cart.
     const colorMatches = !selectedFrameColor || currentMockupColorRef.current === selectedFrameColor;
     const mockupFullUrl = colorMatches ? getPreferredMockupUrl() : '';
-    if (!mockupFullUrl) {
-      console.warn('[Design Studio] No mockup URL available for cart. colorMatches:', colorMatches,
-        'currentColor:', currentMockupColorRef.current, 'selected:', selectedFrameColor,
-        'printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
-    } else {
-      console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 120));
-    }
+    // Detailed diagnostic log — helps trace why mockupFullUrl may be empty
+    console.log('[Design Studio] ATC diagnostics:', {
+      mockupsStale,
+      colorMatches,
+      selectedFrameColor: selectedFrameColor || '(empty)',
+      currentMockupColorRef: currentMockupColorRef.current || '(empty)',
+      printifyMockupsCount: printifyMockups.length,
+      printifyMockupImagesCount: printifyMockupImages.length,
+      mockupFullUrl: mockupFullUrl ? mockupFullUrl.substring(0, 80) + '...' : '(empty)',
+      productId: productId || '(missing)',
+      shopDomain: shopDomain || '(missing)',
+    });
 
     // Build line item properties for Printify fulfillment
     // Use the same human-readable label as the cart-state broadcast so both
