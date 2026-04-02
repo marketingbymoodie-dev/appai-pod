@@ -34,6 +34,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "generation_jobs",       column: "design_state",                type: "JSON" },
   { table: 'generation_jobs',       column: 'user_prompt',                 type: 'TEXT' },
   { table: 'style_presets',         column: 'prompt_placeholder',          type: 'TEXT' },
+  { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
+  { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

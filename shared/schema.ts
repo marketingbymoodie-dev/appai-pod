@@ -427,6 +427,8 @@ export const publishedProducts = pgTable("published_products", {
   shopifyProductHandle: text("shopify_product_handle"),
   baseVariantId: text("base_variant_id").notNull(), // the original base variant
   status: text("status").notNull().default("active"), // active | archived
+  expiresAt: timestamp("expires_at"),                 // null = no expiry; set to 6h after creation, extended to 7d if added to cart
+  cartAddedAt: timestamp("cart_added_at"),             // set when customer adds to cart (used to extend expiry to 7d)
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

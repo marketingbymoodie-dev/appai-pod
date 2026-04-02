@@ -754,6 +754,28 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return row;
   }
 
+  /** Return all shadow products whose expiresAt has passed and are still active */
+  async getExpiredShadowProducts(): Promise<PublishedProduct[]> {
+    return db
+      .select()
+      .from(publishedProducts)
+      .where(
+        and(
+          eq(publishedProducts.status, "active"),
+          lte(publishedProducts.expiresAt, new Date())
+        )
+      );
+  }
+
+  /** Mark a shadow product as added-to-cart and extend its expiry to 7 days from now */
+  async markShadowProductCartAdded(id: string): Promise<void> {
+    const sevenDays = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await db
+      .update(publishedProducts)
+      .set({ cartAddedAt: new Date(), expiresAt: sevenDays, updatedAt: new Date() })
+      .where(eq(publishedProducts.id, id));
+  }
+
   // Generation Jobs
   async createGenerationJob(job: InsertGenerationJob): Promise<GenerationJob> {
     const [row] = await db.insert(generationJobs).values(job).returning();

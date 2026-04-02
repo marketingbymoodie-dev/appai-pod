@@ -6266,8 +6266,38 @@ ${textEdgeRestrictions}
   });
 
   // ==================== RESOLVE DESIGN VARIANT ====================
-  // Creates (or reuses) a unique Shopify variant per design so the checkout
-  // thumbnail is correct for every cart line item without Shopify Plus.
+  // ── Shadow product cart-added webhook ──────────────────────────────────────
+  // Called by the theme extension when a shadow product variant is added to cart,
+  // so we can extend its expiry from 6h to 7d.
+  app.post("/api/storefront/shadow-product/cart-added", async (req: Request, res: Response) => {
+    try {
+      const { shop, shadowProductId } = req.body;
+      if (!shop || !shadowProductId) return res.status(400).json({ error: "shop and shadowProductId required" });
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") return res.status(403).json({ error: "Shop not authorized" });
+      // Find the published product record by shopifyProductId
+      const rows = await db
+        .select()
+        .from(publishedProducts)
+        .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.shopifyProductId, String(shadowProductId))))
+        .limit(1);
+      if (rows.length > 0) {
+        await storage.markShadowProductCartAdded(rows[0].id);
+        console.log(`[ShadowProduct] Extended expiry to 7d for product ${shadowProductId} (cart-added)`);
+      }
+      return res.json({ success: true });
+    } catch (e: any) {
+      console.error("[ShadowProduct] cart-added error:", e?.message);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // ── Shadow product creation (replaces resolve-design-variant) ────────────────
+  // Creates one hidden Shopify product per design with a single variant.
+  // The shadow product is status=draft, not in any collection, tagged appai-shadow.
+  // Expiry: 6 hours from creation (extended to 7 days if added to cart).
+  // Reuse: if a shadow product already exists for this designId+shop, return it.
+  // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
       const { shop, productId, variantId, designId, mockupUrl } = req.body;
@@ -6285,245 +6315,101 @@ ${textEdgeRestrictions}
       const apiBase = `https://${shop}/admin/api/2025-10`;
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
 
-      // Helper: fetch the shop's primary location ID (cached per request)
-      let _primaryLocationId: number | null = null;
-      const getPrimaryLocationId = async (inventoryItemIdHint?: number): Promise<number | null> => {
-        if (_primaryLocationId !== null) return _primaryLocationId;
-        try {
-          // Primary: use locations.json (requires read_locations scope)
-          const locRes = await fetch(`${apiBase}/locations.json?limit=1`, { headers });
-          if (locRes.ok) {
-            const { locations } = await locRes.json();
-            if (locations && locations.length > 0) {
-              _primaryLocationId = locations[0].id;
-              return _primaryLocationId;
-            }
-          }
-          // Fallback 1: read location from the inventory item's existing levels (requires read_inventory)
-          if (inventoryItemIdHint) {
-            const levRes = await fetch(`${apiBase}/inventory_levels.json?inventory_item_ids=${inventoryItemIdHint}&limit=1`, { headers });
-            if (levRes.ok) {
-              const { inventory_levels } = await levRes.json();
-              if (inventory_levels && inventory_levels.length > 0) {
-                _primaryLocationId = inventory_levels[0].location_id;
-                console.log(`[ResolveDesignVariant] Got location ${_primaryLocationId} from inventory_levels fallback`);
-              }
-            }
-          }
-          // Fallback 2: use shop.json primary_location_id (always accessible with any token)
-          if (!_primaryLocationId) {
-            const shopRes = await fetch(`${apiBase}/shop.json`, { headers });
-            if (shopRes.ok) {
-              const { shop: shopData } = await shopRes.json();
-              if (shopData?.primary_location_id) {
-                _primaryLocationId = shopData.primary_location_id;
-                console.log(`[ResolveDesignVariant] Got location ${_primaryLocationId} from shop.json fallback`);
-              }
-            }
-          }
-        } catch (_) {}
-        return _primaryLocationId;
-      };
-
-      // Helper: set inventory quantity to 999 at primary location so cart never sees sold-out
-      const ensureInventoryAvailable = async (inventoryItemId: number) => {
-        try {
-          const locationId = await getPrimaryLocationId(inventoryItemId);
-          if (!locationId) { console.warn('[ResolveDesignVariant] No primary location found, skipping inventory set'); return; }
-          const setRes = await fetch(`${apiBase}/inventory_levels/set.json`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ location_id: locationId, inventory_item_id: inventoryItemId, available: 999 }),
-          });
-          if (setRes.ok) {
-            console.log(`[ResolveDesignVariant] Set inventory to 999 for item ${inventoryItemId} at location ${locationId}`);
-          } else {
-            const errText = await setRes.text();
-            console.warn(`[ResolveDesignVariant] inventory_levels/set failed (${setRes.status}): ${errText.substring(0, 200)}`);
-          }
-        } catch (e: any) {
-          console.warn('[ResolveDesignVariant] ensureInventoryAvailable error (non-fatal):', e?.message);
+      // ── Shadow product path ────────────────────────────────────────────────
+      // 1. Check if a shadow product already exists for this designId
+      const existing = await storage.getPublishedProduct(shop, designId);
+      if (existing && existing.status === "active") {
+        console.log(`[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} for design ${designId}`);
+        // Refresh expiry: if not yet cart-added, reset the 6h window from now
+        if (!existing.cartAddedAt) {
+          const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
+          await storage.updatePublishedProduct(existing.id, { expiresAt: sixHours });
         }
-      };
+        return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
+      }
 
-      // 1. Fetch the product to inspect its options and variants
+      // 2. Fetch the base variant to copy price/title/weight
       const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
       if (!productRes.ok) {
         const t = await productRes.text();
-        return res.status(productRes.status).json({ success: false, error: "Failed to fetch product", details: t.substring(0, 200) });
+        console.error(`[ShadowProduct] Failed to fetch base product ${productId}:`, t.substring(0, 200));
+        return res.status(productRes.status).json({ success: false, error: "Failed to fetch base product" });
       }
-      const { product } = await productRes.json();
-
-      // 2. Find the base variant to copy option1/option2/price
-      const baseVariant = product.variants.find((v: any) => String(v.id) === String(variantId));
+      const { product: baseProduct } = await productRes.json();
+      const baseVariant = baseProduct.variants.find((v: any) => String(v.id) === String(variantId));
       if (!baseVariant) {
-        // Fall back gracefully — return the original variantId so cart add still works
-        console.warn(`[ResolveDesignVariant] Base variant ${variantId} not found on product ${productId}, falling back`);
-        return res.json({ success: true, variantId: String(variantId), fallback: true });
-      }
-      const opt1 = baseVariant.option1 || "Default";
-      const opt2 = baseVariant.option2 || null;
-      const price = baseVariant.price;
-
-      // Use the designId directly as the option value (already human-readable from client).
-      // Truncate to fit Shopify's 255-char option value limit.
-      const designOpt = String(designId).substring(0, 255);
-
-      // 3. Check if a variant with this designOpt already exists (reuse it)
-      const existingVariant = product.variants.find((v: any) =>
-        v.option1 === opt1 &&
-        (!opt2 || v.option2 === opt2) &&
-        v.option3 === designOpt
-      );
-      if (existingVariant) {
-        console.log(`[ResolveDesignVariant] Found existing variant ${existingVariant.id} for design ${designId} — inventory_management=${existingVariant.inventory_management} inventory_policy=${existingVariant.inventory_policy}`);
-        // Strategy: set inventory_management=null (untracked) + inventory_policy=continue so
-        // Shopify never considers this variant sold-out regardless of previous cart activity.
-        // Also set available=999 as belt-and-suspenders in case tracking is re-enabled by Shopify.
-        const invItemId = existingVariant.inventory_item_id;
-        try {
-          // 1. Set inventory_management=null (untracked) and inventory_policy=continue
-          await fetch(`${apiBase}/variants/${existingVariant.id}.json`, {
-            method: 'PUT',
-            headers,
-            body: JSON.stringify({ variant: { id: existingVariant.id, inventory_management: null, inventory_policy: 'continue' } }),
-          });
-          // 2. Belt-and-suspenders: also set quantity=999 at primary location
-          if (invItemId) await ensureInventoryAvailable(invItemId);
-        } catch (invErr: any) {
-          console.warn(`[ResolveDesignVariant] inventory fix error (non-fatal):`, invErr?.message);
-        }
-        return res.json({ success: true, variantId: String(existingVariant.id), reused: true });
+        console.warn(`[ShadowProduct] Base variant ${variantId} not found on product ${productId}`);
+        return res.json({ success: false, error: "Base variant not found", fallback: true, variantId: String(variantId) });
       }
 
-      // 4. Ensure the product has a 'Design' option — Shopify requires the option
-      //    to exist on the product before variants can use it.
-      const existingOptions: any[] = product.options || [];
-      const hasDesignOption = existingOptions.some((o: any) => o.name === 'Design');
-      let designOptionPosition = existingOptions.length + 1; // default: new last option
+      // 3. Build a clean human-readable title from the base variant options
+      const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
+        .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
+        .join(' / ');
+      const shadowTitle = `${baseProduct.title}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
 
-      if (!hasDesignOption) {
-        console.log(`[ResolveDesignVariant] Adding 'Design' option to product ${productId}`);
-        // Shopify requires all existing options + the new one in the PUT body.
-        // We must also include a placeholder value for the new option on existing variants.
-        const updatedOptions = [
-          ...existingOptions.map((o: any) => ({ name: o.name, values: o.values })),
-          { name: 'Design', values: [designOpt] },
-        ];
-        designOptionPosition = updatedOptions.length;
+      // 4. Create the shadow product in Shopify (status=draft, tagged appai-shadow)
+      const sixHoursFromNow = new Date(Date.now() + 6 * 60 * 60 * 1000);
+      const createProductRes = await fetch(`${apiBase}/products.json`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          product: {
+            title: shadowTitle,
+            status: 'draft',                      // hidden from storefront
+            published: false,
+            tags: 'appai-shadow',
+            variants: [{
+              price: baseVariant.price,
+              compare_at_price: baseVariant.compare_at_price || null,
+              taxable: baseVariant.taxable,
+              requires_shipping: baseVariant.requires_shipping,
+              weight: baseVariant.weight,
+              weight_unit: baseVariant.weight_unit,
+              inventory_management: null,          // untracked — never sold-out
+              inventory_policy: 'continue',
+              fulfillment_service: 'manual',
+            }],
+            images: [{ src: mockupUrl }],
+          },
+        }),
+      });
+      if (!createProductRes.ok) {
+        const errText = await createProductRes.text();
+        console.error(`[ShadowProduct] Failed to create shadow product:`, createProductRes.status, errText.substring(0, 300));
+        return res.json({ success: false, error: errText.substring(0, 200), fallback: true, variantId: String(variantId) });
+      }
+      const { product: shadowProduct } = await createProductRes.json();
+      const shadowVariant = shadowProduct.variants[0];
+      console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId}`);
 
-        const updateProductRes = await fetch(`${apiBase}/products/${productId}.json`, {
+      // 5. Assign the mockup image to the variant
+      if (shadowProduct.images && shadowProduct.images.length > 0) {
+        const imgId = shadowProduct.images[0].id;
+        await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
           method: 'PUT',
           headers,
-          body: JSON.stringify({
-            product: {
-              id: productId,
-              options: updatedOptions,
-              // Shopify requires existing variants to have a value for the new option.
-              // We set it to a placeholder; only new design variants get real values.
-              variants: product.variants.map((v: any) => ({
-                id: v.id,
-                option1: v.option1,
-                option2: v.option2 || undefined,
-                [`option${designOptionPosition}`]: 'base',
-              })),
-            },
-          }),
-        });
-        if (!updateProductRes.ok) {
-          const errText = await updateProductRes.text();
-          console.error(`[ResolveDesignVariant] Failed to add Design option:`, updateProductRes.status, errText);
-          return res.json({ success: true, variantId: String(variantId), fallback: true, error: errText.substring(0, 200) });
-        }
-        console.log(`[ResolveDesignVariant] Design option added at position ${designOptionPosition}`);
-      } else {
-        const designOption = existingOptions.find((o: any) => o.name === 'Design');
-        designOptionPosition = designOption?.position || existingOptions.length;
+          body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
+        }).catch(() => { /* non-fatal */ });
       }
 
-      // 4b. Create the new variant using the correct option position
-      const newVariantBody: any = {
-        variant: {
-          option1: opt1,
-          [`option${designOptionPosition}`]: designOpt,
-          price,
-          inventory_management: null,
-          inventory_policy: 'continue',
-          taxable: baseVariant.taxable,
-          requires_shipping: baseVariant.requires_shipping,
-          weight: baseVariant.weight,
-          weight_unit: baseVariant.weight_unit,
-        }
-      };
-      if (opt2 && designOptionPosition !== 2) newVariantBody.variant.option2 = opt2;
+      // 6. Persist the shadow product record in our DB
+      await storage.createPublishedProduct({
+        shop,
+        designId,
+        customerKey: null,
+        shopifyProductId: String(shadowProduct.id),
+        shopifyVariantId: String(shadowVariant.id),
+        shopifyProductHandle: shadowProduct.handle || null,
+        baseVariantId: String(variantId),
+        status: 'active',
+        expiresAt: sixHoursFromNow,
+        cartAddedAt: null,
+      } as any);
 
-      const createRes = await fetch(`${apiBase}/products/${productId}/variants.json`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(newVariantBody),
-      });
-      if (!createRes.ok) {
-        const errText = await createRes.text();
-        console.error(`[ResolveDesignVariant] Failed to create variant:`, createRes.status, errText);
-        // Fall back to base variant so cart add still works
-        return res.json({ success: true, variantId: String(variantId), fallback: true, error: errText.substring(0, 200) });
-      }
-      const { variant: newVariant } = await createRes.json();
-      console.log(`[ResolveDesignVariant] Created variant ${newVariant.id} for design ${designId} — inventory_management=${newVariant.inventory_management} inventory_policy=${newVariant.inventory_policy}`);
-      // Strategy: keep inventory tracked (so inventory_levels/set works) but set
-      // quantity=999 and inventory_policy=continue so the cart never sees sold-out.
-      const newInvItemId = newVariant.inventory_item_id;
-      if (newInvItemId) {
-        try {
-          // 1. Ensure inventory_policy=continue on the variant (Shopify may override on creation)
-          await fetch(`${apiBase}/variants/${newVariant.id}.json`, {
-            method: 'PUT',
-            headers,
-            body: JSON.stringify({ variant: { id: newVariant.id, inventory_policy: 'continue' } }),
-          });
-          // 2. Set inventory quantity to 999 so storefront never sees sold-out
-          await ensureInventoryAvailable(newInvItemId);
-        } catch (invErr: any) {
-          console.warn(`[ResolveDesignVariant] Inventory fix error on new variant (non-fatal):`, invErr?.message);
-        }
-      }
-
-      // 5. Upload mockup image and assign it to the new variant
-      try {
-        const imgUploadRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ image: { src: mockupUrl, variant_ids: [newVariant.id] } }),
-        });
-        if (imgUploadRes.ok) {
-          console.log(`[ResolveDesignVariant] Mockup image assigned to variant ${newVariant.id}`);
-        } else {
-          const errText = await imgUploadRes.text();
-          console.warn(`[ResolveDesignVariant] Image upload failed (non-fatal):`, imgUploadRes.status, errText.substring(0, 200));
-        }
-      } catch (imgErr: any) {
-        console.warn(`[ResolveDesignVariant] Image upload error (non-fatal):`, imgErr?.message);
-      }
-
-      // 6. Store creation timestamp as metafield for future cleanup
-      try {
-        await fetch(`${apiBase}/variants/${newVariant.id}/metafields.json`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            metafield: {
-              namespace: "appai",
-              key: "design_variant_created_at",
-              value: new Date().toISOString(),
-              type: "single_line_text_field",
-            },
-          }),
-        });
-      } catch (_) { /* non-fatal */ }
-
-      return res.json({ success: true, variantId: String(newVariant.id), created: true });
+      return res.json({ success: true, variantId: String(shadowVariant.id), created: true });
     } catch (error: any) {
-      console.error("[ResolveDesignVariant] Error:", error);
+      console.error("[ShadowProduct] Error:", error);
       res.status(500).json({ success: false, error: error?.message || "Internal server error" });
     }
   });
@@ -7232,6 +7118,72 @@ ${textEdgeRestrictions}
     const result = await runDesignSkuCleanup();
     res.json({ ok: true, ...result });
   });
+
+  // ── Shadow product cleanup ──────────────────────────────────────────────────
+  // Runs every hour. Deletes Shopify shadow products whose expiresAt has passed
+  // and marks them as archived in the DB.
+  async function runShadowProductCleanup(): Promise<{ deleted: number; errors: number }> {
+    let deleted = 0;
+    let errors = 0;
+    try {
+      const expired = await storage.getExpiredShadowProducts();
+      if (expired.length === 0) return { deleted, errors };
+      console.log(`[ShadowProduct Cleanup] Found ${expired.length} expired shadow products to clean up`);
+
+      // Group by shop for efficient token lookup
+      const byShop: Record<string, typeof expired> = {};
+      for (const row of expired) {
+        if (!byShop[row.shop]) byShop[row.shop] = [];
+        byShop[row.shop].push(row);
+      }
+
+      for (const shopDomain of Object.keys(byShop)) {
+        const rows = byShop[shopDomain];
+        const installation = await storage.getShopifyInstallationByShop(shopDomain);
+        if (!installation?.accessToken) {
+          errors += rows.length;
+          continue;
+        }
+        for (const row of rows) {
+          try {
+            // Delete the shadow product from Shopify (also removes its variant + images)
+            const delRes = await fetch(
+              `https://${shopDomain}/admin/api/2025-10/products/${row.shopifyProductId}.json`,
+              { method: "DELETE", headers: { "X-Shopify-Access-Token": installation.accessToken } }
+            );
+            if (delRes.ok || delRes.status === 404) {
+              // 404 = already gone from Shopify, still clean up our record
+              await storage.updatePublishedProduct(row.id, { status: "archived" });
+              deleted++;
+            } else {
+              const errText = await delRes.text();
+              console.warn(`[ShadowProduct Cleanup] Shopify DELETE failed (${delRes.status}) for product ${row.shopifyProductId}: ${errText.substring(0, 150)}`);
+              errors++;
+            }
+          } catch (e: any) {
+            console.warn(`[ShadowProduct Cleanup] Error deleting product ${row.shopifyProductId}:`, e?.message);
+            errors++;
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error("[ShadowProduct Cleanup] Unexpected error:", e);
+      errors++;
+    }
+    console.log(`[ShadowProduct Cleanup] Done: deleted=${deleted} errors=${errors}`);
+    return { deleted, errors };
+  }
+
+  // Manual trigger endpoint
+  app.post("/api/admin/shadow-product-cleanup", isAuthenticated, async (_req: any, res: Response) => {
+    const result = await runShadowProductCleanup();
+    res.json({ ok: true, ...result });
+  });
+
+  // Auto-run shadow product cleanup every hour
+  setInterval(() => {
+    runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
+  }, 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern via Picsart
   // Accepts { imageUrl, pattern, scale, rotate, offsetX, offsetY, width, height }
