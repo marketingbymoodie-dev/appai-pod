@@ -4530,6 +4530,18 @@ export default function EmbedDesign() {
                 />
               </div>
 
+              {/* Product Details — desktop only, shown below prompt textarea in right panel */}
+              {(isStorefront || isShopify) && productTypeConfig?.description && (
+                <div className="hidden md:block space-y-1.5">
+                  <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product Details</Label>
+                  <div
+                    className="rounded-md border border-input bg-background px-3 py-2 text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none overflow-y-auto"
+                    style={{ maxHeight: '120px' }}
+                    dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
+                  />
+                </div>
+              )}
+
               {/* AOP Pattern Step — shown after generation for all-over-print products */}
               {showPatternStep && aopPendingMotifUrl && (
                 <PatternCustomizer
@@ -4838,9 +4850,9 @@ export default function EmbedDesign() {
               </div>
             )}
 
-            {/* Product Details — shown below gallery when in storefront/shopify mode */}
+            {/* Product Details — shown below gallery on mobile only (desktop version is in the right panel) */}
             {(isStorefront || isShopify) && productTypeConfig?.description && (
-              <div className="border-t pt-4 mt-2 space-y-2" data-testid="container-product-details">
+              <div className="md:hidden border-t pt-4 mt-2 space-y-2" data-testid="container-product-details">
                 <h3 className="text-sm font-semibold">Product Details</h3>
                 <div
                   className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none"
