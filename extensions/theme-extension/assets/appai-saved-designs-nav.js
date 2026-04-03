@@ -211,9 +211,9 @@
       '<span>Saved Designs</span>' +
       '<span id="appai-saved-count" style="' +
         'display:inline-flex;align-items:center;justify-content:center;' +
-        'background:currentColor;color:var(--color-background,#fff);' +
+        'background:#e5e7eb;color:#111827;' +
         'border-radius:999px;font-size:10px;font-weight:700;line-height:1;' +
-        'padding:2px 6px;min-width:18px;opacity:0.7;margin-left:2px;' +
+        'padding:2px 6px;min-width:18px;margin-left:4px;flex-shrink:0;' +
       '">' + designs.length + '</span>';
 
     a.addEventListener('click', function (e) {
