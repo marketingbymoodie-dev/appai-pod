@@ -581,6 +581,9 @@ export default function EmbedDesign() {
   const [bridgeError, setBridgeError] = useState<string | null>(null);
   const debugBridge = searchParams.get("debugBridge") === "1";
   const [transform, setTransform] = useState<ImageTransform>({ scale: 100, x: 50, y: 50 });
+  // Sequential box guide: 0 = off, 1-4 = which box is currently pulsing
+  const [guideActiveBox, setGuideActiveBox] = useState<0 | 1 | 2 | 3 | 4>(0);
+  const guideStoppedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Track the initial transform to detect changes for auto-save
@@ -1524,9 +1527,87 @@ export default function EmbedDesign() {
         console.log('[PreShadow] Shadow variant not ready after max polls — will create on demand');
       }
     };
-    preShadowPollRef.current = setTimeout(pollShadow, initialDelay);
+     preShadowPollRef.current = setTimeout(pollShadow, initialDelay);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Sequential box guide ────────────────────────────────────────────────────
+  // Read the theme's border colour once and set --appai-guide-color on the root element
+  useEffect(() => {
+    if (!isStorefront && !isShopify) return;
+    const timer = setTimeout(() => {
+      try {
+        // Try to read the border colour from a rendered select or input on the page
+        const el = document.querySelector('select, input[type="text"], textarea, button') as HTMLElement | null;
+        if (!el) return;
+        const borderColor = getComputedStyle(el).borderColor;
+        if (borderColor && borderColor !== 'rgba(0, 0, 0, 0)') {
+          document.documentElement.style.setProperty('--appai-guide-color', borderColor);
+        }
+      } catch (_) {}
+    }, 600);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStorefront, isShopify]);
+
+  // Pulses a border glow on boxes 1→2→3→4 in order to guide new customers.
+  // Stops permanently the first time the user interacts with any of the boxes.
+  useEffect(() => {
+    if (!isStorefront && !isShopify) return;
+    // Only run once per session
+    const sessionKey = 'appai_guide_shown';
+    try { if (sessionStorage.getItem(sessionKey)) return; } catch (_) {}
+
+    const BOXES: Array<0 | 1 | 2 | 3 | 4> = [1, 2, 3, 4];
+    // Each box gets 2 pulses at 600ms each = 1.2s, plus 100ms gap between boxes
+    const BOX_DURATION = 1300; // ms per box
+    const PAUSE_AFTER_CYCLE = 2000; // ms pause before repeating
+
+    let cycleTimeout: ReturnType<typeof setTimeout> | null = null;
+    let boxIdx = 0;
+
+    function runCycle() {
+      if (guideStoppedRef.current) return;
+      boxIdx = 0;
+      stepBox();
+    }
+
+    function stepBox() {
+      if (guideStoppedRef.current) return;
+      if (boxIdx >= BOXES.length) {
+        // End of cycle — pause then repeat
+        setGuideActiveBox(0);
+        cycleTimeout = setTimeout(runCycle, PAUSE_AFTER_CYCLE);
+        return;
+      }
+      setGuideActiveBox(BOXES[boxIdx]);
+      cycleTimeout = setTimeout(() => {
+        boxIdx++;
+        stepBox();
+      }, BOX_DURATION);
+    }
+
+    // Start after a short delay to let the page settle
+    cycleTimeout = setTimeout(runCycle, 800);
+
+    // Stop on any user interaction with the form boxes
+    function stopGuide() {
+      guideStoppedRef.current = true;
+      setGuideActiveBox(0);
+      if (cycleTimeout) clearTimeout(cycleTimeout);
+      try { sessionStorage.setItem(sessionKey, '1'); } catch (_) {}
+    }
+
+    const events = ['click', 'focus', 'keydown', 'touchstart'] as const;
+    events.forEach(ev => document.addEventListener(ev, stopGuide, { once: true, passive: true }));
+
+    return () => {
+      guideStoppedRef.current = true;
+      if (cycleTimeout) clearTimeout(cycleTimeout);
+      events.forEach(ev => document.removeEventListener(ev, stopGuide));
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStorefront, isShopify]);
 
   const fetchPrintifyMockups = useCallback(async (
     designImageUrl: string,
@@ -3609,6 +3690,24 @@ export default function EmbedDesign() {
 
   return (
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+      {/* Guide box pulse animation — uses theme border colour so it looks native */}
+      <style>{`
+        @keyframes appai-guide-pulse {
+          0%,100% { box-shadow: 0 0 0 0px var(--appai-guide-color,rgba(0,0,0,0.18)); }
+          50%      { box-shadow: 0 0 0 3px var(--appai-guide-color,rgba(0,0,0,0.18)), 0 0 8px 1px var(--appai-guide-color,rgba(0,0,0,0.10)); }
+        }
+        [data-guide-box="active"] {
+          border-radius: 6px;
+          animation: appai-guide-pulse 0.6s ease-in-out 2;
+          position: relative;
+          z-index: 1;
+        }
+        [data-guide-box="active"] select,
+        [data-guide-box="active"] textarea,
+        [data-guide-box="active"] button {
+          outline: none;
+        }
+      `}</style>
       <div className="max-w-6xl mx-auto space-y-4">
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
@@ -4332,7 +4431,7 @@ export default function EmbedDesign() {
                 </div>
 
                 {/* Upload reference image — right, narrower */}
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0" data-guide-box={guideActiveBox === 4 ? "active" : undefined}>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -4405,7 +4504,7 @@ export default function EmbedDesign() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Style Selection */}
                 {showPresetsParam && filteredStylePresets.length > 0 && (
-                  <div className="space-y-1">
+                  <div className="space-y-1" data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
                     <StyleSelector
                       stylePresets={filteredStylePresets}
                       selectedStyle={selectedPreset}
@@ -4419,7 +4518,7 @@ export default function EmbedDesign() {
 
                 {/* Size Selector */}
                 {printSizes.length > 0 && (
-                  <div className="space-y-1">
+                  <div className="space-y-1" data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
                     <SizeSelector
                       sizes={printSizes}
                       selectedSize={selectedSize}
@@ -4498,7 +4597,7 @@ export default function EmbedDesign() {
               })()}
 
               {/* Prompt Description */}
-              <div className="space-y-2">
+              <div className="space-y-2" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
                 <Label htmlFor="prompt" data-testid="label-prompt">
                   Describe your artwork
                 </Label>

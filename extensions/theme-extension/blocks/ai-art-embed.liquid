@@ -485,7 +485,8 @@
           <div class="ai-art-studio-embed__studio" style="height:600px;">
             <div class="ai-art-studio-embed__loading">
               <div class="ai-art-studio-embed__spinner"></div>
-              <p>Loading design studio...</p>
+              <p class="ai-art-studio-embed__loading-title">AI Art Studio</p>
+              <p class="ai-art-studio-embed__loading-subtitle">Loading Art Studio<span class="ai-art-ellipsis"></span></p>
             </div>
           </div>
         </div>
@@ -1881,6 +1882,57 @@
 
 @keyframes ai-art-embed-spin {
   to { transform: rotate(360deg); }
+}
+
+/* Loading screen title + subtitle */
+.ai-art-studio-embed__loading-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+  /* Left-to-right shimmer sweep over the text */
+  background: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 30%,
+    rgba(255,255,255,0.85) 50%,
+    currentColor 70%,
+    currentColor 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ai-art-title-shimmer 2.4s linear infinite;
+}
+
+.ai-art-studio-embed__loading-subtitle {
+  font-size: 16px;
+  font-weight: 500;
+  opacity: 0.65;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+/* Rolling ellipsis: cycles . → .. → ... */
+@keyframes ai-art-ellipsis {
+  0%   { content: '.';   }
+  33%  { content: '..';  }
+  66%  { content: '...'; }
+  100% { content: '.';   }
+}
+.ai-art-ellipsis::after {
+  content: '.';
+  animation: ai-art-ellipsis 1.2s steps(1, end) infinite;
+  display: inline-block;
+  width: 1.5em;
+  text-align: left;
+}
+
+/* Title shimmer keyframe */
+@keyframes ai-art-title-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
 }
 
 /* Parent-side Add to Cart button */
