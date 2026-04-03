@@ -2983,6 +2983,15 @@ export default function EmbedDesign() {
             const url = new URL(window.location.href);
             url.searchParams.delete('loadDesignId');
             window.history.replaceState({}, '', url.toString());
+            // Also clear loadDesignId from the PARENT page URL.
+            // parentLoadDesignId reads window.parent.location.search directly, so if the
+            // parent URL still has loadDesignId after the reset, effectiveLoadDesignId stays
+            // set and isLoadingSaved becomes true → infinite shimmer.
+            try {
+              const parentUrl = new URL(window.parent.location.href);
+              parentUrl.searchParams.delete('loadDesignId');
+              window.parent.history.replaceState({}, '', parentUrl.toString());
+            } catch (_) { /* cross-origin guard */ }
           }, 2500);
         } else {
           setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
