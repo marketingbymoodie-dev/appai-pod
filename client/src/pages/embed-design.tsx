@@ -4535,8 +4535,8 @@ export default function EmbedDesign() {
                 <div className="hidden md:block space-y-1.5">
                   <Label>Product Details</Label>
                   <div
-                    className="rounded-md border border-gray-300 bg-background px-3 py-2 text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none overflow-y-auto"
-                    style={{ maxHeight: '160px' }}
+                    className="rounded-md border-2 border-foreground bg-background px-3 py-2 text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none overflow-y-auto"
+                    style={{ maxHeight: '220px' }}
                     dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
                   />
                 </div>
