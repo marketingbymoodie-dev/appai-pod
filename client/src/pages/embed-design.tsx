@@ -1569,7 +1569,7 @@ export default function EmbedDesign() {
 
     const BOXES: Array<0 | 1 | 2 | 3 | 4> = [1, 2, 3, 4];
     // Each box gets 2 pulses at 600ms each = 1.2s, plus 100ms gap between boxes
-    const BOX_DURATION = 1300; // ms per box
+    const BOX_DURATION = 2400; // ms per box — matches the 2s CSS sweep animation + 400ms gap
     const PAUSE_AFTER_CYCLE = 2000; // ms pause before repeating
 
     let cycleTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -3706,25 +3706,30 @@ export default function EmbedDesign() {
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       {/* Guide box shimmer + title shimmer animations */}
       <style>{`
-        /* Left-to-right background shimmer sweep on guide boxes */
+        /* Single graceful left-to-right shimmer sweep on guide boxes */
         @keyframes appai-guide-sweep {
-          0%   { background-position: -200% center; }
-          100% { background-position: 200% center; }
+          0%   { transform: translateX(-120%); }
+          100% { transform: translateX(220%); }
         }
         [data-guide-box="active"] {
-          border-radius: 6px;
-          background-image: linear-gradient(
-            90deg,
-            transparent 0%,
-            var(--appai-guide-color, rgba(0,0,0,0.07)) 40%,
-            rgba(255,255,255,0.55) 50%,
-            var(--appai-guide-color, rgba(0,0,0,0.07)) 60%,
-            transparent 100%
-          );
-          background-size: 200% 100%;
-          animation: appai-guide-sweep 0.65s ease-in-out 2;
           position: relative;
-          z-index: 1;
+          overflow: hidden;
+          border-radius: 6px;
+        }
+        [data-guide-box="active"]::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(
+            105deg,
+            transparent 30%,
+            rgba(255,255,255,0.45) 50%,
+            transparent 70%
+          );
+          width: 60%;
+          animation: appai-guide-sweep 2s ease-in-out 1 forwards;
+          pointer-events: none;
+          z-index: 10;
         }
         /* Product title shimmer sweep */
         @keyframes appai-title-shimmer {
