@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, useState } from "react";
+import { useRef, useCallback } from "react";
 import { Sparkles } from "lucide-react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
@@ -32,272 +32,164 @@ interface ProductMockupProps {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   FlowLoader — Google Flow-style fluid grey blob animation with dissolve
+   CSS keyframes injected once into the document head
    ───────────────────────────────────────────────────────────────────────────── */
+const STYLES = `
+@keyframes appai-bg-spin {
+  from { transform: rotate(0deg) scale(1.45); }
+  to   { transform: rotate(360deg) scale(1.45); }
+}
+@keyframes appai-glow-drift {
+  0%   { transform: translate(-18%, -12%) scale(1.1); }
+  100% { transform: translate(18%, 12%) scale(0.92); }
+}
+@keyframes appai-shimmer-sweep {
+  0%   { background-position: 220% 0; }
+  100% { background-position: -220% 0; }
+}
+@keyframes appai-text-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+@keyframes appai-skeleton {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+`;
 
-interface FlowLoaderProps {
-  /** "generating" = blobs only; "mockups" = dissolve image in, show mockup text */
-  stage: "generating" | "mockups";
-  /** The generated artwork URL — used to dissolve in during "mockups" stage */
-  imageUrl?: string | null;
+let stylesInjected = false;
+function ensureStyles() {
+  if (stylesInjected || typeof document === "undefined") return;
+  const el = document.createElement("style");
+  el.textContent = STYLES;
+  document.head.appendChild(el);
+  stylesInjected = true;
 }
 
-// Pre-compute a noise field for the dissolve wipe (done once at module level)
-const NOISE_W = 340;
-const NOISE_H = 340;
-const noiseField = (() => {
-  const data = new Float32Array(NOISE_W * NOISE_H);
-  function rand(x: number, y: number) {
-    const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    return n - Math.floor(n);
-  }
-  function smooth(px: number, py: number, scale: number) {
-    const ix = Math.floor(px / scale), iy = Math.floor(py / scale);
-    const fx = px / scale - ix, fy = py / scale - iy;
-    const a = rand(ix, iy), b = rand(ix + 1, iy);
-    const c = rand(ix, iy + 1), d = rand(ix + 1, iy + 1);
-    const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-    return a * (1 - ux) * (1 - uy) + b * ux * (1 - uy) + c * (1 - ux) * uy + d * ux * uy;
-  }
-  for (let py = 0; py < NOISE_H; py++) {
-    for (let px = 0; px < NOISE_W; px++) {
-      data[py * NOISE_W + px] =
-        smooth(px, py, 60) * 0.5 +
-        smooth(px, py, 30) * 0.3 +
-        smooth(px, py, 15) * 0.2;
-    }
-  }
-  return data;
-})();
-
-const BLOB_DEFS = [
-  { ax: 0.31, ay: 0.27, px: 0.13, py: 0.07, r: 210, l: 65 },
-  { ax: 0.19, ay: 0.23, px: 0.41, py: 0.29, r: 185, l: 45 },
-  { ax: 0.27, ay: 0.17, px: 0.67, py: 0.53, r: 225, l: 78 },
-  { ax: 0.15, ay: 0.21, px: 0.89, py: 0.11, r: 165, l: 55 },
-  { ax: 0.22, ay: 0.30, px: 0.55, py: 0.75, r: 195, l: 38 },
-];
-
-function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
-function hex2(n: number) { return clamp(Math.round(n), 0, 255).toString(16).padStart(2, "0"); }
-
-function FlowLoader({ stage, imageUrl }: FlowLoaderProps) {
-  const blobCanvasRef = useRef<HTMLCanvasElement>(null);
-  const dissolveCanvasRef = useRef<HTMLCanvasElement>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const imgLoadedRef = useRef(false);
-  const rafRef = useRef<number>(0);
-  const timeRef = useRef(0);
-  const dissolveStartRef = useRef<number | null>(null);
-  const dissolveProgressRef = useRef(0);
-  const [statusText, setStatusText] = useState("Generating your design…");
-  const [pillVisible, setPillVisible] = useState(true);
-
-  // When stage switches to "mockups", pre-load the artwork image
-  useEffect(() => {
-    if (stage === "mockups" && imageUrl) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => { imgLoadedRef.current = true; };
-      img.src = imageUrl;
-      imgRef.current = img;
-    }
-  }, [stage, imageUrl]);
-
-  useEffect(() => {
-    const blobCanvas = blobCanvasRef.current;
-    const dissolveCanvas = dissolveCanvasRef.current;
-    if (!blobCanvas || !dissolveCanvas) return;
-
-    const bCtx = blobCanvas.getContext("2d");
-    const dCtx = dissolveCanvas.getContext("2d");
-    if (!bCtx || !dCtx) return;
-
-    const W = blobCanvas.width;
-    const H = blobCanvas.height;
-
-    // Speed: 0.008 (double the original 0.004)
-    const BLOB_SPEED = 0.008;
-    const DISSOLVE_DURATION = 1600; // ms — snappy dissolve
-
-    function drawBlobs(t: number, blobAlpha: number) {
-      bCtx!.globalAlpha = blobAlpha;
-      bCtx!.fillStyle = "#1c1c1c";
-      bCtx!.fillRect(0, 0, W, H);
-
-      bCtx!.globalCompositeOperation = "screen";
-      for (const b of BLOB_DEFS) {
-        const x = W / 2 + Math.sin(t * b.ax + b.px * Math.PI * 2) * W * 0.38;
-        const y = H / 2 + Math.cos(t * b.ay + b.py * Math.PI * 2) * H * 0.38;
-        const grad = bCtx!.createRadialGradient(x, y, 0, x, y, b.r);
-        const lc = hex2(b.l);
-        const lc2 = hex2(b.l * 0.25);
-        grad.addColorStop(0, `#${lc}${lc}${lc}`);
-        grad.addColorStop(0.4, `#${lc2}${lc2}${lc2}`);
-        grad.addColorStop(1, "#000000");
-        bCtx!.fillStyle = grad;
-        bCtx!.beginPath();
-        bCtx!.arc(x, y, b.r, 0, Math.PI * 2);
-        bCtx!.fill();
-      }
-      bCtx!.globalCompositeOperation = "source-over";
-      bCtx!.globalAlpha = 1;
-
-      // Subtle scan lines
-      for (let sy = 0; sy < H; sy += 4) {
-        bCtx!.fillStyle = "rgba(0,0,0,0.03)";
-        bCtx!.fillRect(0, sy, W, 1);
-      }
-    }
-
-    function drawDissolve(progress: number) {
-      if (progress <= 0) {
-        dCtx!.clearRect(0, 0, W, H);
-        return;
-      }
-      if (!imgLoadedRef.current || !imgRef.current) return;
-
-      // Draw the artwork image onto the dissolve canvas
-      dCtx!.clearRect(0, 0, W, H);
-      dCtx!.drawImage(imgRef.current, 0, 0, W, H);
-
-      // Apply noise-threshold mask: pixels where noise > (1 - progress) are hidden
-      // This creates a liquid blob wipe revealing the image
-      const imageData = dCtx!.getImageData(0, 0, W, H);
-      const d = imageData.data;
-      const edge = 0.1;
-      for (let i = 0; i < W * H; i++) {
-        const n = noiseField[i];
-        // alpha ramp: 0 = hidden, 1 = fully revealed
-        const a = clamp((progress - (1 - n) + edge) / edge, 0, 1);
-        d[i * 4 + 3] = Math.round(d[i * 4 + 3] * a);
-      }
-      dCtx!.putImageData(imageData, 0, 0);
-    }
-
-    function loop(now: number) {
-      timeRef.current += BLOB_SPEED;
-
-      let blobAlpha = 1;
-      let dissolveProgress = 0;
-
-      if (stage === "mockups") {
-        // Start dissolve timer on first frame in mockups stage
-        if (dissolveStartRef.current === null) {
-          dissolveStartRef.current = now;
-        }
-        const elapsed = now - dissolveStartRef.current;
-        dissolveProgress = clamp(elapsed / DISSOLVE_DURATION, 0, 1);
-        dissolveProgressRef.current = dissolveProgress;
-
-        // Ease in-out cubic
-        const t = dissolveProgress;
-        const eased = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
-        blobAlpha = 1 - eased;
-
-        // Text swap at midpoint
-        if (eased > 0.45 && statusText === "Generating your design…") {
-          setStatusText("Creating mockups…");
-        }
-
-        // Fade pill out after dissolve completes
-        if (eased >= 1) {
-          setPillVisible(false);
-        }
-
-        drawDissolve(eased);
-      } else {
-        dissolveStartRef.current = null;
-        dCtx!.clearRect(0, 0, W, H);
-      }
-
-      drawBlobs(timeRef.current, blobAlpha);
-
-      rafRef.current = requestAnimationFrame(loop);
-    }
-
-    rafRef.current = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(rafRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage]);
-
+/* ─────────────────────────────────────────────────────────────────────────────
+   GeneratingLoader — rotating dark conic gradient + shimmer + large pulsing text
+   ───────────────────────────────────────────────────────────────────────────── */
+function GeneratingLoader() {
+  ensureStyles();
   return (
-    <div className="absolute inset-0 overflow-hidden" style={{ background: "#1c1c1c" }}>
-      {/* Layer 1: fluid grey blobs */}
-      <canvas
-        ref={blobCanvasRef}
-        width={340}
-        height={340}
-        className="absolute inset-0 w-full h-full"
-        style={{ display: "block" }}
-      />
-      {/* Layer 2: dissolving artwork image */}
-      <canvas
-        ref={dissolveCanvasRef}
-        width={340}
-        height={340}
-        className="absolute inset-0 w-full h-full"
-        style={{ display: "block" }}
-      />
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#1a1a1a" }}>
+      {/* Rotating conic gradient */}
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "conic-gradient(from 0deg at 38% 42%, #1a1a1a 0deg, #2d2d2d 55deg, #3b3b3b 95deg, #262626 155deg, #1a1a1a 195deg, #323232 255deg, #1f1f1f 300deg, #1a1a1a 360deg)",
+        animation: "appai-bg-spin 9s linear infinite",
+        transformOrigin: "center",
+      }} />
+      {/* Drifting radial glow */}
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "radial-gradient(ellipse 65% 55% at 50% 50%, rgba(170,170,170,0.11) 0%, transparent 70%)",
+        animation: "appai-glow-drift 5.5s ease-in-out infinite alternate",
+      }} />
+      {/* Diagonal shimmer sweep */}
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "linear-gradient(108deg, transparent 28%, rgba(255,255,255,0.04) 46%, rgba(255,255,255,0.085) 50%, rgba(255,255,255,0.04) 54%, transparent 72%)",
+        backgroundSize: "200% 100%",
+        animation: "appai-shimmer-sweep 3.4s ease-in-out infinite",
+      }} />
       {/* Vignette */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background: "radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.4) 100%)",
-          zIndex: 5,
-        }}
-      />
-      {/* Status pill */}
-      {pillVisible && (
-        <div
-          className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full px-4 py-1.5 text-xs text-white/80 whitespace-nowrap z-10"
-          style={{
-            background: "rgba(255,255,255,0.09)",
-            backdropFilter: "blur(10px)",
-            border: "1px solid rgba(255,255,255,0.13)",
-            transition: "opacity 0.5s ease",
-          }}
-        >
-          <span
-            className="w-1.5 h-1.5 rounded-full bg-white/60"
-            style={{ animation: "appai-pulse-dot 1.6s ease-in-out infinite" }}
-          />
-          <span>{statusText}</span>
-        </div>
-      )}
-      <style>{`
-        @keyframes appai-pulse-dot {
-          0%, 100% { opacity: 0.3; transform: scale(0.8); }
-          50%       { opacity: 1;   transform: scale(1);   }
-        }
-      `}</style>
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.48) 100%)",
+        pointerEvents: "none",
+      }} />
+      {/* Large centred pulsing text */}
+      <div style={{
+        position: "absolute", inset: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        pointerEvents: "none",
+      }}>
+        <span style={{
+          fontSize: "22px", fontWeight: 700,
+          color: "rgba(255,255,255,0.9)",
+          textAlign: "center", lineHeight: 1.25,
+          letterSpacing: "-0.01em",
+          textShadow: "0 2px 20px rgba(0,0,0,0.7)",
+          animation: "appai-text-pulse 2.6s ease-in-out infinite",
+        }}>
+          Generating<br />Artwork
+        </span>
+      </div>
     </div>
   );
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   SkeletonLoader — grey shimmer for saved design loading
+   MockupsLoader — artwork visible + semi-transparent overlay + pulsing text
+   ───────────────────────────────────────────────────────────────────────────── */
+function MockupsLoader({ imageUrl, transform, printShape }: {
+  imageUrl: string;
+  transform: ImageTransform;
+  printShape: PrintShape;
+}) {
+  ensureStyles();
+  const scaleVal = transform.scale / 100;
+  const xOffset = transform.x - 50;
+  const yOffset = transform.y - 50;
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
+      {/* Artwork underneath */}
+      <img
+        src={imageUrl}
+        alt="Generated artwork"
+        style={{
+          position: "absolute", inset: 0,
+          width: "100%", height: "100%",
+          objectFit: "cover",
+          pointerEvents: "none",
+          borderRadius: printShape === "circle" ? "50%" : undefined,
+          transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
+          transformOrigin: "center center",
+        }}
+        draggable={false}
+      />
+      {/* Semi-transparent overlay with shimmer */}
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "rgba(0,0,0,0.44)",
+        backgroundImage: "linear-gradient(108deg, transparent 28%, rgba(255,255,255,0.025) 46%, rgba(255,255,255,0.055) 50%, rgba(255,255,255,0.025) 54%, transparent 72%)",
+        backgroundSize: "200% 100%",
+        animation: "appai-shimmer-sweep 3.4s ease-in-out infinite",
+      }} />
+      {/* Large centred pulsing text */}
+      <div style={{
+        position: "absolute", inset: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        pointerEvents: "none",
+      }}>
+        <span style={{
+          fontSize: "22px", fontWeight: 700,
+          color: "rgba(255,255,255,0.9)",
+          textAlign: "center", lineHeight: 1.25,
+          letterSpacing: "-0.01em",
+          textShadow: "0 2px 20px rgba(0,0,0,0.8)",
+          animation: "appai-text-pulse 2.6s ease-in-out infinite",
+        }}>
+          Creating<br />Mockups
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   SkeletonLoader — grey shimmer for saved design loading (no text, brief flash)
    ───────────────────────────────────────────────────────────────────────────── */
 function SkeletonLoader() {
+  ensureStyles();
   return (
-    <div
-      className="absolute inset-0"
-      style={{
-        background: "linear-gradient(90deg, #2c2c2c 25%, #393939 50%, #2c2c2c 75%)",
-        backgroundSize: "200% 100%",
-        animation: "appai-shimmer 1.8s ease-in-out infinite",
-      }}
-    >
-      <style>{`
-        @keyframes appai-shimmer {
-          0%   { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
-      `}</style>
-    </div>
+    <div style={{
+      position: "absolute", inset: 0,
+      background: "linear-gradient(90deg, #2a2a2a 25%, #3d3d3d 50%, #2a2a2a 75%)",
+      backgroundSize: "200% 100%",
+      animation: "appai-skeleton 1.8s ease-in-out infinite",
+    }} />
   );
 }
 
@@ -322,21 +214,17 @@ export function ProductMockup({
   blankImageUrl,
   aspectRatio,
 }: ProductMockupProps) {
-  // When a composite mockup URL is available (e.g. Printify mockup after generation),
-  // display it as a full-bleed image instead of the raw artwork overlaid on a blank.
   const displayUrl = mockupUrl ?? imageUrl;
-  // Debug: log to window to ensure we can see it
+
   if (typeof window !== "undefined") {
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
   }
   console.log("[ProductMockup] RENDER designerType:", designerType, "imageUrl:", imageUrl, "isLoading:", isLoading);
+
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  /**
-   * Determine whether the product is landscape (wider than tall).
-   */
   const isLandscape = (() => {
     if (aspectRatio) {
       const [w, h] = aspectRatio.split(":").map(Number);
@@ -362,17 +250,13 @@ export function ProductMockup({
       if (!isDraggingRef.current || !containerRef.current) return;
       e.preventDefault();
       e.stopPropagation();
-
       const rect = containerRef.current.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
-
       const dx = e.clientX - dragStartRef.current.x;
       const dy = e.clientY - dragStartRef.current.y;
       if (dx === 0 && dy === 0) return;
-
       const deltaX = (dx / rect.width) * 100;
       const deltaY = (dy / rect.height) * 100;
-
       onTransformChange({
         ...transform,
         x: Math.max(0, Math.min(100, transform.x + deltaX)),
@@ -389,40 +273,34 @@ export function ProductMockup({
   }, []);
 
   const getProductStyles = () => {
-    const baseRadius = "0.375rem";
-
     switch (designerType) {
       case "pillow":
-        return {
-          borderRadius: printShape === "circle" ? "50%" : "0.5rem",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
-        };
+        return { borderRadius: printShape === "circle" ? "50%" : "0.5rem", boxShadow: "0 4px 12px rgba(0,0,0,0.15)" };
       case "framed-print":
-        return { borderRadius: baseRadius };
+        return { borderRadius: "0.375rem" };
       case "mug":
         return { borderRadius: "0" };
       default:
-        return { borderRadius: baseRadius };
+        return { borderRadius: "0.375rem" };
     }
   };
 
+  /* ── Image content renderer ─────────────────────────────────────────────── */
   const renderImageContent = () => {
     if (isLoading) {
-      // ── Google Flow-style animation ──────────────────────────────
+      // Stage 1: artwork generation in progress
       if (loadingStage === "generating") {
-        return <FlowLoader stage="generating" imageUrl={imageUrl} />;
+        return <GeneratingLoader />;
       }
-
-      // ── Mockup generation: dissolve artwork in, keep blobs underneath ──
+      // Stage 2: mockup generation — artwork visible with overlay
       if (loadingStage === "mockups" && imageUrl) {
-        return <FlowLoader stage="mockups" imageUrl={imageUrl} />;
+        return <MockupsLoader imageUrl={imageUrl} transform={transform} printShape={printShape} />;
       }
-
-      // ── Fallback: skeleton shimmer (e.g. loading a saved design) ──
+      // Fallback: saved design or unknown loading state — skeleton shimmer
       return <SkeletonLoader />;
     }
 
-    // When a composite mockup URL exists, render it as a full-bleed product photo.
+    // Composite mockup (Printify) — full-bleed product photo
     if (mockupUrl) {
       console.log("[ProductMockup] Rendering composite mockup URL:", mockupUrl.substring(0, 80));
       return (
@@ -475,19 +353,13 @@ export function ProductMockup({
           />
         );
       }
-
       const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
           src={blankImageUrl}
           alt="Product blank"
           className="absolute inset-0 w-full h-full object-cover"
-          style={{
-            pointerEvents: "none",
-            opacity: 0.92,
-            transform: blankScale,
-            transformOrigin: "center center",
-          }}
+          style={{ pointerEvents: "none", opacity: 0.92, transform: blankScale, transformOrigin: "center center" }}
           draggable={false}
           data-testid="img-blank"
         />
@@ -502,9 +374,10 @@ export function ProductMockup({
     );
   };
 
+  /* ── Product-type renderers ─────────────────────────────────────────────── */
+
   const renderFramedPrint = () => {
     const showFrameOverlay = !mockupUrl && !!imageUrl;
-
     if (!showFrameOverlay) {
       return (
         <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
@@ -512,7 +385,6 @@ export function ProductMockup({
         </div>
       );
     }
-
     const getFrameInsets = () => {
       if (!selectedSize) return { outer: "0.75rem", inner: "1rem" };
       const sizeId = selectedSize.id;
@@ -520,18 +392,12 @@ export function ProductMockup({
       if (["12x16", "16x16"].includes(sizeId)) return { outer: "0.625rem", inner: "1.25rem" };
       return { outer: "0.75rem", inner: "1rem" };
     };
-
     const frameInsets = getFrameInsets();
-
     return (
       <>
         <div
           className="absolute rounded-sm flex items-center justify-center"
-          style={{
-            backgroundColor: selectedFrameColor?.hex || "#1a1a1a",
-            pointerEvents: "none",
-            inset: frameInsets.outer,
-          }}
+          style={{ backgroundColor: selectedFrameColor?.hex || "#1a1a1a", pointerEvents: "none", inset: frameInsets.outer }}
         >
           <div
             className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
@@ -546,63 +412,52 @@ export function ProductMockup({
 
   const renderPillow = () => {
     const productStyles = getProductStyles();
-
     return (
       <div
         className="absolute inset-4 flex items-center justify-center overflow-hidden bg-gray-100 dark:bg-gray-800"
         style={{ ...productStyles, pointerEvents: "none" }}
       >
         {printShape === "circle" && (
-          <div
-            className="absolute inset-0 rounded-full overflow-hidden"
-            style={{ clipPath: "circle(50% at 50% 50%)" }}
-          >
+          <div className="absolute inset-0 rounded-full overflow-hidden" style={{ clipPath: "circle(50% at 50% 50%)" }}>
             {renderImageContent()}
           </div>
         )}
         {printShape !== "circle" && renderImageContent()}
-        {showSafeZone && canvasConfig && (
-          <SafeZoneMask shape={printShape} canvasConfig={canvasConfig} showMask={true} />
-        )}
+        {showSafeZone && canvasConfig && <SafeZoneMask shape={printShape} canvasConfig={canvasConfig} showMask={true} />}
       </div>
     );
   };
 
-  const renderMug = () => {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
-        {renderImageContent()}
-        {showSafeZone && canvasConfig && (
-          <SafeZoneMask shape={printShape} canvasConfig={canvasConfig} showMask={true} />
-        )}
-      </div>
-    );
-  };
+  const renderMug = () => (
+    <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
+      {renderImageContent()}
+      {showSafeZone && canvasConfig && <SafeZoneMask shape={printShape} canvasConfig={canvasConfig} showMask={true} />}
+    </div>
+  );
 
   const renderGeneric = () => {
+    // For loading states and when displaying artwork/mockups, use inset-0 so the
+    // full container is used — avoids cropping tall portrait images (e.g. phone cases).
+    // Only apply inset-4 padding when showing the blank placeholder state.
+    const hasContent = isLoading || !!displayUrl || !!blankImageUrl;
+    const insetClass = hasContent ? "absolute inset-0" : "absolute inset-4";
     return (
       <div
-        className="absolute inset-4 flex items-center justify-center overflow-hidden bg-muted rounded-md"
+        className={`${insetClass} flex items-center justify-center overflow-hidden bg-muted rounded-md`}
         style={{ pointerEvents: "none" }}
       >
         {renderImageContent()}
-        {showSafeZone && canvasConfig && (
-          <SafeZoneMask shape={printShape} canvasConfig={canvasConfig} showMask={true} />
-        )}
+        {showSafeZone && canvasConfig && <SafeZoneMask shape={printShape} canvasConfig={canvasConfig} showMask={true} />}
       </div>
     );
   };
 
   const renderProductMockup = () => {
     switch (designerType) {
-      case "framed-print":
-        return renderFramedPrint();
-      case "pillow":
-        return renderPillow();
-      case "mug":
-        return renderMug();
-      default:
-        return renderGeneric();
+      case "framed-print": return renderFramedPrint();
+      case "pillow":       return renderPillow();
+      case "mug":          return renderMug();
+      default:             return renderGeneric();
     }
   };
 
@@ -610,18 +465,14 @@ export function ProductMockup({
 
   return (
     <div
-      className={`relative bg-muted rounded-md w-full h-full ${
-        isDragActive ? "cursor-move select-none" : ""
-      }`}
+      className={`relative bg-muted rounded-md w-full h-full ${isDragActive ? "cursor-move select-none" : ""}`}
       style={{ touchAction: isDragActive ? "none" : "pan-y" }}
-      {...(isDragActive
-        ? {
-            onMouseDown: handleMouseDown,
-            onMouseMove: handleMouseMove,
-            onMouseUp: handleMouseUp,
-            onMouseLeave: handleMouseUp,
-          }
-        : {})}
+      {...(isDragActive ? {
+        onMouseDown: handleMouseDown,
+        onMouseMove: handleMouseMove,
+        onMouseUp: handleMouseUp,
+        onMouseLeave: handleMouseUp,
+      } : {})}
       data-testid="product-mockup"
     >
       {renderProductMockup()}

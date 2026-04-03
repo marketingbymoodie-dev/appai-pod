@@ -4540,6 +4540,7 @@ export default function EmbedDesign() {
                 {(() => {
                   const isGeneratingArtwork = generateMutation.isPending;
                   const isGeneratingMockups = isStorefront && mockupLoading && !getPreferredMockupUrl();
+                  const isLoadingSaved = isLoadingSharedDesign;
                   const loadingStage: "generating" | "mockups" | null =
                     isGeneratingArtwork ? "generating" : isGeneratingMockups ? "mockups" : null;
 
@@ -4560,7 +4561,7 @@ export default function EmbedDesign() {
                     <ProductMockup
                       imageUrl={generatedDesign?.imageUrl}
                       mockupUrl={selectedMockupUrl}
-                      isLoading={isGeneratingArtwork || isGeneratingMockups}
+                      isLoading={isGeneratingArtwork || isGeneratingMockups || isLoadingSaved}
                       loadingStage={loadingStage}
                       selectedSize={selectedSizeConfig}
                       selectedFrameColor={selectedFrameColorConfig}
