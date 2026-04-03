@@ -3490,7 +3490,6 @@ export default function EmbedDesign() {
   );
 
   return (
-    <>
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <div className="max-w-6xl mx-auto space-y-4">
         {/* Free generation limit reached — prompt to create account */}
@@ -4687,10 +4686,9 @@ export default function EmbedDesign() {
         </>
         )}
       </div>
-    </div>
 
-    {/* Gallery Full Modal */}
-    {showGalleryFullModal && (
+      {/* Gallery Full Modal */}
+      {showGalleryFullModal && (
       <div
         className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
         style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
@@ -4738,6 +4736,6 @@ export default function EmbedDesign() {
         </div>
       </div>
     )}
-    </>
+    </div>
   );
 }
