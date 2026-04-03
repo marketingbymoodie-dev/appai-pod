@@ -1878,10 +1878,14 @@
 
 .ai-art-studio-embed__loading {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
+  background: #fafafa;
+  z-index: 10;
 }
 
 .ai-art-studio-embed__spinner {
@@ -1898,12 +1902,29 @@
   to { transform: rotate(360deg); }
 }
 
-/* Loading screen title */
+/* Loading screen title — left-to-right shimmer sweep, loops while loading */
+@keyframes ai-art-title-shimmer {
+  0%   { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
 .ai-art-studio-embed__loading-title {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.02em;
   margin: 0;
+  background: linear-gradient(
+    90deg,
+    #111 0%,
+    #111 30%,
+    #888 50%,
+    #111 70%,
+    #111 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ai-art-title-shimmer 2.4s linear infinite;
 }
 /* Page heading shimmer — single left-to-right sweep via ::after overlay, plays once */
 @keyframes appai-page-title-sweep {
@@ -1919,14 +1940,18 @@
   content: '';
   position: absolute;
   inset: 0;
+  /* Use a light-catching highlight that works on dark text on any background:
+     a translucent white band that catches the eye as it sweeps across */
   background: linear-gradient(
     105deg,
-    transparent 25%,
-    rgba(255,255,255,0.55) 50%,
-    transparent 75%
+    transparent 20%,
+    rgba(255,255,255,0.45) 45%,
+    rgba(255,255,255,0.75) 50%,
+    rgba(255,255,255,0.45) 55%,
+    transparent 80%
   );
-  width: 50%;
-  animation: appai-page-title-sweep 1.6s ease-in-out 1 forwards;
+  width: 60%;
+  animation: appai-page-title-sweep 1.8s ease-in-out 1 forwards;
   pointer-events: none;
 }
 
