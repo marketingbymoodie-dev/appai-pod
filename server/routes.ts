@@ -6359,8 +6359,8 @@ ${textEdgeRestrictions}
         body: JSON.stringify({
           product: {
             title: shadowTitle,
-            status: 'active',                     // must be active for storefront cart
-            published: true,
+            status: 'unlisted',                   // accessible by direct link, hidden from browse/search
+            published: false,
             tags: 'appai-shadow',
             variants: [{
               price: baseVariant.price,
@@ -6386,7 +6386,11 @@ ${textEdgeRestrictions}
       const shadowVariant = shadowProduct.variants[0];
       console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId}`);
 
-      // 5. Assign the mockup image to the variant
+      // 5. Ensure the shadow product is published to the Online Store sales channel
+      //    (required for unlisted products to be accessible via the storefront cart API)
+      try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
+
+      // 6. Assign the mockup image to the variant
       if (shadowProduct.images && shadowProduct.images.length > 0) {
         const imgId = shadowProduct.images[0].id;
         await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
