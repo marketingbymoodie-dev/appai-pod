@@ -4681,7 +4681,6 @@ export default function EmbedDesign() {
               </div>
             )}
           </div>
-          </div>
         </div>
         </>
         )}
