@@ -67,39 +67,39 @@ function ensureStyles() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   GeneratingLoader — rotating dark conic gradient + shimmer + large pulsing text
+   GeneratingLoader — light base, dark rotating conic gradient + dark shimmer
    ───────────────────────────────────────────────────────────────────────────── */
 function GeneratingLoader() {
   ensureStyles();
   return (
-    <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#1a1a1a" }}>
-      {/* Rotating conic gradient */}
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#e0e0e0" }}>
+      {/* Rotating light conic gradient */}
       <div style={{
         position: "absolute", inset: 0,
-        background: "conic-gradient(from 0deg at 38% 42%, #1a1a1a 0deg, #2d2d2d 55deg, #3b3b3b 95deg, #262626 155deg, #1a1a1a 195deg, #323232 255deg, #1f1f1f 300deg, #1a1a1a 360deg)",
+        background: "conic-gradient(from 0deg at 38% 42%, #d8d8d8 0deg, #e8e8e8 55deg, #f0f0f0 95deg, #dcdcdc 155deg, #d0d0d0 195deg, #e4e4e4 255deg, #d4d4d4 300deg, #d8d8d8 360deg)",
         animation: "appai-bg-spin 9s linear infinite",
         transformOrigin: "center",
       }} />
-      {/* Drifting radial glow */}
+      {/* Drifting dark radial centre */}
       <div style={{
         position: "absolute", inset: 0,
-        background: "radial-gradient(ellipse 65% 55% at 50% 50%, rgba(170,170,170,0.11) 0%, transparent 70%)",
+        background: "radial-gradient(ellipse 65% 55% at 50% 50%, rgba(0,0,0,0.06) 0%, transparent 70%)",
         animation: "appai-glow-drift 5.5s ease-in-out infinite alternate",
       }} />
-      {/* Diagonal shimmer sweep */}
+      {/* Dark diagonal shimmer sweep */}
       <div style={{
         position: "absolute", inset: 0,
-        background: "linear-gradient(108deg, transparent 28%, rgba(255,255,255,0.04) 46%, rgba(255,255,255,0.085) 50%, rgba(255,255,255,0.04) 54%, transparent 72%)",
+        background: "linear-gradient(108deg, transparent 28%, rgba(0,0,0,0.04) 46%, rgba(0,0,0,0.09) 50%, rgba(0,0,0,0.04) 54%, transparent 72%)",
         backgroundSize: "200% 100%",
         animation: "appai-shimmer-sweep 3.4s ease-in-out infinite",
       }} />
-      {/* Vignette */}
+      {/* Soft light vignette at edges */}
       <div style={{
         position: "absolute", inset: 0,
-        background: "radial-gradient(ellipse at center, transparent 42%, rgba(0,0,0,0.48) 100%)",
+        background: "radial-gradient(ellipse at center, transparent 42%, rgba(255,255,255,0.35) 100%)",
         pointerEvents: "none",
       }} />
-      {/* Large centred pulsing text */}
+      {/* Large centred dark pulsing text */}
       <div style={{
         position: "absolute", inset: 0,
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -107,10 +107,10 @@ function GeneratingLoader() {
       }}>
         <span style={{
           fontSize: "22px", fontWeight: 700,
-          color: "rgba(255,255,255,0.9)",
+          color: "rgba(0,0,0,0.75)",
           textAlign: "center", lineHeight: 1.25,
           letterSpacing: "-0.01em",
-          textShadow: "0 2px 20px rgba(0,0,0,0.7)",
+          textShadow: "0 1px 8px rgba(255,255,255,0.5)",
           animation: "appai-text-pulse 2.6s ease-in-out infinite",
         }}>
           Generating<br />Artwork
@@ -149,15 +149,15 @@ function MockupsLoader({ imageUrl, transform, printShape }: {
         }}
         draggable={false}
       />
-      {/* Semi-transparent overlay with shimmer */}
+      {/* Light semi-transparent overlay with dark shimmer */}
       <div style={{
         position: "absolute", inset: 0,
-        background: "rgba(0,0,0,0.44)",
-        backgroundImage: "linear-gradient(108deg, transparent 28%, rgba(255,255,255,0.025) 46%, rgba(255,255,255,0.055) 50%, rgba(255,255,255,0.025) 54%, transparent 72%)",
+        background: "rgba(255,255,255,0.52)",
+        backgroundImage: "linear-gradient(108deg, transparent 28%, rgba(0,0,0,0.03) 46%, rgba(0,0,0,0.07) 50%, rgba(0,0,0,0.03) 54%, transparent 72%)",
         backgroundSize: "200% 100%",
         animation: "appai-shimmer-sweep 3.4s ease-in-out infinite",
       }} />
-      {/* Large centred pulsing text */}
+      {/* Large centred dark pulsing text */}
       <div style={{
         position: "absolute", inset: 0,
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -165,10 +165,10 @@ function MockupsLoader({ imageUrl, transform, printShape }: {
       }}>
         <span style={{
           fontSize: "22px", fontWeight: 700,
-          color: "rgba(255,255,255,0.9)",
+          color: "rgba(0,0,0,0.75)",
           textAlign: "center", lineHeight: 1.25,
           letterSpacing: "-0.01em",
-          textShadow: "0 2px 20px rgba(0,0,0,0.8)",
+          textShadow: "0 1px 8px rgba(255,255,255,0.6)",
           animation: "appai-text-pulse 2.6s ease-in-out infinite",
         }}>
           Creating<br />Mockups
@@ -186,7 +186,7 @@ function SkeletonLoader() {
   return (
     <div style={{
       position: "absolute", inset: 0,
-      background: "linear-gradient(90deg, #2a2a2a 25%, #3d3d3d 50%, #2a2a2a 75%)",
+      background: "linear-gradient(90deg, #e0e0e0 25%, #c8c8c8 50%, #e0e0e0 75%)",
       backgroundSize: "200% 100%",
       animation: "appai-skeleton 1.8s ease-in-out infinite",
     }} />
