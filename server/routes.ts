@@ -5896,10 +5896,11 @@ ${textEdgeRestrictions}
 
   // ==================== STOREFRONT SAVE MOCKUP URLS ====================
   // Called by the client after mockups are generated, to persist them on the job record.
-  // This allows saved designs to be re-loaded with mockups already available.
+  // Also accepts optional baseProductId + baseVariantId to pre-create a shadow product
+  // in the background, so Add to Cart is instant when the user clicks it.
   app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, mockupUrls } = req.body;
+      const { shop, jobId, mockupUrls, baseProductId, baseVariantId } = req.body;
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
@@ -5915,6 +5916,135 @@ ${textEdgeRestrictions}
       const validUrls = mockupUrls.filter((u: any) => typeof u === 'string' && u.startsWith('http'));
       await storage.updateGenerationJob(jobId, { mockupUrls: validUrls } as any);
       console.log(`[SaveMockups] jobId=${jobId} saved ${validUrls.length} mockup URLs`);
+
+      // ── Pre-create shadow product in background ──────────────────────────────
+      // If the client provided base product/variant info and we have a mockup URL,
+      // kick off shadow product creation now so Add to Cart is instant.
+      // We respond immediately and let this run in the background.
+      const primaryMockupUrl = validUrls[0];
+      if (baseProductId && baseVariantId && primaryMockupUrl && installation.accessToken) {
+        const token = installation.accessToken;
+        const apiBase = `https://${shop}/admin/api/2025-10`;
+        const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
+
+        // Fire-and-forget: don't await, respond to client immediately
+        (async () => {
+          try {
+            // Check if shadow product already exists for this job
+            const freshJob = await storage.getGenerationJob(jobId);
+            if (freshJob?.shadowVariantId && freshJob?.shadowProductId) {
+              console.log(`[PreShadow] jobId=${jobId} already has shadow product ${freshJob.shadowProductId}`);
+              return;
+            }
+
+            // Check published_products table (existing shadow product for this designId)
+            const designId = jobId; // generationJob.id is used as designId in published_products
+            const existing = await storage.getPublishedProduct(shop, designId);
+            if (existing && existing.status === 'active') {
+              // Reuse existing shadow product — just store the IDs on the job
+              console.log(`[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId}`);
+              await storage.updateGenerationJob(jobId, {
+                shadowProductId: existing.shopifyProductId,
+                shadowVariantId: existing.shopifyVariantId,
+                shadowExpiresAt: existing.expiresAt,
+              } as any);
+              return;
+            }
+
+            // Fetch base product to get price/title
+            const productRes = await fetch(`${apiBase}/products/${baseProductId}.json`, { headers });
+            if (!productRes.ok) {
+              console.warn(`[PreShadow] Failed to fetch base product ${baseProductId}: ${productRes.status}`);
+              return;
+            }
+            const { product: baseProduct } = await productRes.json();
+            const baseVariant = baseProduct.variants.find((v: any) => String(v.id) === String(baseVariantId));
+            if (!baseVariant) {
+              console.warn(`[PreShadow] Base variant ${baseVariantId} not found on product ${baseProductId}`);
+              return;
+            }
+
+            // Build shadow product title
+            const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
+              .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
+              .join(' / ');
+            const shadowTitle = `${baseProduct.title}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
+
+            // Create the shadow product — expires in 1 hour if not added to cart
+            const oneHourFromNow = new Date(Date.now() + 1 * 60 * 60 * 1000);
+            const createRes = await fetch(`${apiBase}/products.json`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                product: {
+                  title: shadowTitle,
+                  status: 'unlisted',
+                  published: false,
+                  tags: 'appai-shadow',
+                  variants: [{
+                    price: baseVariant.price,
+                    compare_at_price: baseVariant.compare_at_price || null,
+                    taxable: baseVariant.taxable,
+                    requires_shipping: baseVariant.requires_shipping,
+                    weight: baseVariant.weight,
+                    weight_unit: baseVariant.weight_unit,
+                    inventory_management: null,
+                    inventory_policy: 'continue',
+                    fulfillment_service: 'manual',
+                  }],
+                  images: [{ src: primaryMockupUrl }],
+                },
+              }),
+            });
+            if (!createRes.ok) {
+              const errText = await createRes.text();
+              console.error(`[PreShadow] Failed to create shadow product: ${createRes.status}`, errText.substring(0, 200));
+              return;
+            }
+            const { product: shadowProduct } = await createRes.json();
+            const shadowVariant = shadowProduct.variants[0];
+            console.log(`[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId}`);
+
+            // Publish to Online Store channel
+            try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
+
+            // Assign mockup image to the variant
+            if (shadowProduct.images?.length > 0) {
+              const imgId = shadowProduct.images[0].id;
+              await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
+                method: 'PUT', headers,
+                body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
+              }).catch(() => {});
+            }
+
+            // Persist in published_products table
+            await storage.createPublishedProduct({
+              shop,
+              designId,
+              customerKey: null,
+              shopifyProductId: String(shadowProduct.id),
+              shopifyVariantId: String(shadowVariant.id),
+              shopifyProductHandle: shadowProduct.handle || null,
+              baseVariantId: String(baseVariantId),
+              status: 'active',
+              expiresAt: oneHourFromNow,
+              cartAddedAt: null,
+            } as any);
+
+            // Store shadow product IDs on the job record for instant cart add
+            await storage.updateGenerationJob(jobId, {
+              shadowProductId: String(shadowProduct.id),
+              shadowVariantId: String(shadowVariant.id),
+              shadowExpiresAt: oneHourFromNow,
+            } as any);
+
+            console.log(`[PreShadow] jobId=${jobId} shadow product ready — variantId=${shadowVariant.id}`);
+          } catch (bgErr: any) {
+            console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
+          }
+        })();
+      }
+
       return res.json({ saved: true });
     } catch (err: any) {
       console.error("[SaveMockups]", err);
@@ -5943,6 +6073,36 @@ ${textEdgeRestrictions}
     } catch (err: any) {
       console.error("[SaveState]", err);
       return res.status(500).json({ error: "Failed to save design state" });
+    }
+  });
+
+  // ==================== STOREFRONT GET SHADOW VARIANT ====================
+  // Lightweight endpoint to check if a pre-created shadow product is ready for a job.
+  // Called by the client after save-mockups to get the shadowVariantId for instant cart add.
+  app.get("/api/storefront/shadow-variant/:jobId", async (req: Request, res: Response) => {
+    try {
+      const shop = req.query.shop as string;
+      const { jobId } = req.params;
+      if (!shop || !jobId) {
+        return res.status(400).json({ error: "shop and jobId are required" });
+      }
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation || installation.status !== "active") {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      const shadowVariantId = (job as any).shadowVariantId || null;
+      const shadowProductId = (job as any).shadowProductId || null;
+      const shadowExpiresAt = (job as any).shadowExpiresAt || null;
+      const ready = !!(shadowVariantId && shadowProductId);
+      console.log(`[ShadowVariant] jobId=${jobId} ready=${ready} variantId=${shadowVariantId}`);
+      return res.json({ ready, shadowVariantId, shadowProductId, shadowExpiresAt });
+    } catch (err: any) {
+      console.error("[ShadowVariant]", err);
+      return res.status(500).json({ error: "Failed to get shadow variant" });
     }
   });
 

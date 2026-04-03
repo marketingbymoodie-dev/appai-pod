@@ -36,6 +36,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'style_presets',         column: 'prompt_placeholder',          type: 'TEXT' },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
+  { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
+  { table: 'generation_jobs',       column: 'shadow_variant_id',           type: 'TEXT' },
+  { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

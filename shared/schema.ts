@@ -375,6 +375,10 @@ export const generationJobs = pgTable("generation_jobs", {
   designState: json("design_state"),             // Full design state snapshot (transform, size, color, preset)
   designId: text("design_id"),
   errorMessage: text("error_message"),
+  // Pre-created shadow product for instant Add to Cart
+  shadowProductId: text("shadow_product_id"),   // Shopify product GID (pre-created after generation)
+  shadowVariantId: text("shadow_variant_id"),   // Shopify variant GID (used directly for cart add)
+  shadowExpiresAt: timestamp("shadow_expires_at"), // 1h after creation; extended to 48h on cart add
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

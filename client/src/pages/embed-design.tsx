@@ -444,6 +444,9 @@ export default function EmbedDesign() {
     return id;
   });
 
+  // Ref for the pre-shadow product poll timer — declared early so the mount cleanup can reference it.
+  const preShadowPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Merge anonymous session into customer account when customer is logged in.
   // Fire once on mount; backend is idempotent so re-merging is safe.
   const mergeSessionRan = useRef(false);
@@ -498,7 +501,11 @@ export default function EmbedDesign() {
       console.error('[EmbedDesign] BUG: isStorefront=true but requiresSessionToken=true — this should never happen');
     }
 
-    return () => { __embedInstanceActive = false; };
+    return () => {
+      __embedInstanceActive = false;
+      // Clean up pre-shadow poll timer on unmount
+      if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
@@ -1566,13 +1573,51 @@ export default function EmbedDesign() {
         currentMockupColorRef.current = colorId;
         mockupColorCacheRef.current[colorId] = { urls: absUrls, images: absImages };
         console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for color', colorId);
-        // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups
+        // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups.
+        // Also pass base product/variant info so the server can pre-create the shadow product
+        // in the background — enabling instant Add to Cart.
         if (isStorefront && savedJobIdRef.current && shopDomain) {
+          const baseVariantForShadow = selectedVariantParam || overrideVariantId || '';
           safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jobId: savedJobIdRef.current, shop: shopDomain, mockupUrls: result.mockupUrls }),
+            body: JSON.stringify({
+              jobId: savedJobIdRef.current,
+              shop: shopDomain,
+              mockupUrls: result.mockupUrls,
+              ...(productId && baseVariantForShadow ? { baseProductId: productId, baseVariantId: baseVariantForShadow } : {}),
+            }),
           }).catch(() => {}); // fire-and-forget, non-critical
+
+          // Poll for the pre-created shadow variant (server creates it in background ~5-15s)
+          // Once ready, store it so Add to Cart can use it instantly.
+          if (productId && baseVariantForShadow) {
+            const jobIdForPoll = savedJobIdRef.current;
+            setPreShadowVariantId(null); // reset for this new design
+            if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
+            let pollAttempts = 0;
+            const maxAttempts = 12; // poll for up to ~60s (5s intervals)
+            const pollShadow = async () => {
+              try {
+                const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobIdForPoll}?shop=${encodeURIComponent(shopDomain)}`);
+                if (r.ok) {
+                  const data = await r.json();
+                  if (data.ready && data.shadowVariantId) {
+                    console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId);
+                    setPreShadowVariantId(data.shadowVariantId);
+                    return; // done
+                  }
+                }
+              } catch (_) { /* non-fatal */ }
+              pollAttempts++;
+              if (pollAttempts < maxAttempts) {
+                preShadowPollRef.current = setTimeout(pollShadow, 5000);
+              } else {
+                console.log('[PreShadow] Shadow variant not ready after max polls — will create on demand');
+              }
+            };
+            preShadowPollRef.current = setTimeout(pollShadow, 5000); // first check after 5s
+          }
         }
       } else if (!result.success) {
         throw new Error(result.message || "Mockup generation returned unsuccessful");
@@ -1785,9 +1830,13 @@ export default function EmbedDesign() {
   // Takes precedence over selectedVariantParam so the customer's dropdown choice is honoured.
   const [overrideVariantId, setOverrideVariantId] = useState<string | null>(null);
 
+  // Pre-created shadow variant ID — set after save-mockups triggers background shadow product creation.
+  // When set, Add to Cart uses this directly instead of calling resolve-design-variant (instant).
+  const [preShadowVariantId, setPreShadowVariantId] = useState<string | null>(null);
+
   // Shopify variants with prices delivered from the embed parent via BRIDGE_ACK postMessage.
   // Used to render a variant selector inside the generator on customizer pages.
-  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>([]);
+  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>();
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
 
   const getPreferredMockupUrl = useCallback((): string => {
@@ -2093,6 +2142,9 @@ export default function EmbedDesign() {
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      // Reset pre-created shadow variant for this new design
+      setPreShadowVariantId(null);
+      if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
       console.log('[AutoSave] isStorefront:', isStorefront, 'customerId:', saveCustomerId, 'jobId:', data.jobId);
       if (isStorefront && saveCustomerId && data.jobId) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
@@ -2780,11 +2832,24 @@ export default function EmbedDesign() {
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
 
     // Resolve the unique design variant before adding to cart.
-    // This ensures the cart always gets the correct variant ID with the mockup image.
+    // Fast path: use pre-created shadow variant if available (created in background after mockups).
+    // Slow path: call resolve-design-variant on demand (creates shadow product synchronously).
     let finalVariantId = normalizedVariant;
-    if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
+    if (preShadowVariantId) {
+      // Instant — shadow product was pre-created in the background
+      finalVariantId = preShadowVariantId;
+      console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
+      // Extend the shadow product expiry to 48h now that it's been added to cart
+      if (savedJobIdRef.current && shopDomain) {
+        safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ shop: shopDomain, variantId: finalVariantId }),
+        }).catch(() => {});
+      }
+    } else if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
       try {
-        console.log('[Design Studio] Resolving unique design variant before cart add...');
+        console.log('[Design Studio] Resolving unique design variant before cart add (on demand)...');
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout for variant creation
         const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
@@ -2804,7 +2869,7 @@ export default function EmbedDesign() {
           const data = await resolveRes.json();
           if (data.success && data.variantId) {
             finalVariantId = data.variantId;
-            console.log('[Design Studio] Resolved unique variant:', finalVariantId);
+            console.log('[Design Studio] Resolved unique variant (on demand):', finalVariantId);
           }
         } else {
           console.warn('[Design Studio] resolve-design-variant failed:', resolveRes.status);
