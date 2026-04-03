@@ -584,6 +584,8 @@ export default function EmbedDesign() {
   // Sequential box guide: 0 = off, 1-4 = which box is currently pulsing
   const [guideActiveBox, setGuideActiveBox] = useState<0 | 1 | 2 | 3 | 4>(0);
   const guideStoppedRef = useRef(false);
+  // Title shimmer: true while the product title is animating on first load
+  const [titleShimmerActive, setTitleShimmerActive] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Track the initial transform to detect changes for auto-save
@@ -1531,6 +1533,15 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Title shimmer ────────────────────────────────────────────────────
+  // Runs the shimmer on the product title for ~3s then stops
+  useEffect(() => {
+    if (!isStorefront && !isShopify) return;
+    const t = setTimeout(() => setTitleShimmerActive(false), 3000);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStorefront, isShopify]);
+
   // ── Sequential box guide ────────────────────────────────────────────────────
   // Read the theme's border colour once and set --appai-guide-color on the root element
   useEffect(() => {
@@ -1554,9 +1565,7 @@ export default function EmbedDesign() {
   // Stops permanently the first time the user interacts with any of the boxes.
   useEffect(() => {
     if (!isStorefront && !isShopify) return;
-    // Only run once per session
-    const sessionKey = 'appai_guide_shown';
-    try { if (sessionStorage.getItem(sessionKey)) return; } catch (_) {}
+    // Only run once per page load (guideStoppedRef resets on each mount)
 
     const BOXES: Array<0 | 1 | 2 | 3 | 4> = [1, 2, 3, 4];
     // Each box gets 2 pulses at 600ms each = 1.2s, plus 100ms gap between boxes
@@ -1595,7 +1604,7 @@ export default function EmbedDesign() {
       guideStoppedRef.current = true;
       setGuideActiveBox(0);
       if (cycleTimeout) clearTimeout(cycleTimeout);
-      try { sessionStorage.setItem(sessionKey, '1'); } catch (_) {}
+      // guideStoppedRef already set above — no sessionStorage needed
     }
 
     const events = ['click', 'focus', 'keydown', 'touchstart'] as const;
@@ -3663,6 +3672,11 @@ export default function EmbedDesign() {
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
+    // In storefront/Shopify mode the bridge loading screen already covers the page,
+    // so returning anything here causes a double-up. Return a transparent placeholder.
+    if (isStorefront || isShopify) {
+      return <div className="bg-transparent" data-testid="container-loading" />;
+    }
     return (
       <div className={`p-4 ${isEmbedded ? "bg-transparent" : "bg-background min-h-screen"}`}>
         <div className="max-w-2xl mx-auto space-y-4">
@@ -3690,22 +3704,47 @@ export default function EmbedDesign() {
 
   return (
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
-      {/* Guide box pulse animation — uses theme border colour so it looks native */}
+      {/* Guide box shimmer + title shimmer animations */}
       <style>{`
-        @keyframes appai-guide-pulse {
-          0%,100% { box-shadow: 0 0 0 0px var(--appai-guide-color,rgba(0,0,0,0.18)); }
-          50%      { box-shadow: 0 0 0 3px var(--appai-guide-color,rgba(0,0,0,0.18)), 0 0 8px 1px var(--appai-guide-color,rgba(0,0,0,0.10)); }
+        /* Left-to-right background shimmer sweep on guide boxes */
+        @keyframes appai-guide-sweep {
+          0%   { background-position: -200% center; }
+          100% { background-position: 200% center; }
         }
         [data-guide-box="active"] {
           border-radius: 6px;
-          animation: appai-guide-pulse 0.6s ease-in-out 2;
+          background-image: linear-gradient(
+            90deg,
+            transparent 0%,
+            var(--appai-guide-color, rgba(0,0,0,0.07)) 40%,
+            rgba(255,255,255,0.55) 50%,
+            var(--appai-guide-color, rgba(0,0,0,0.07)) 60%,
+            transparent 100%
+          );
+          background-size: 200% 100%;
+          animation: appai-guide-sweep 0.65s ease-in-out 2;
           position: relative;
           z-index: 1;
         }
-        [data-guide-box="active"] select,
-        [data-guide-box="active"] textarea,
-        [data-guide-box="active"] button {
-          outline: none;
+        /* Product title shimmer sweep */
+        @keyframes appai-title-shimmer {
+          0%   { background-position: 200% center; }
+          100% { background-position: -200% center; }
+        }
+        .appai-title-shimmer {
+          background: linear-gradient(
+            90deg,
+            currentColor 0%,
+            currentColor 30%,
+            rgba(255,255,255,0.9) 50%,
+            currentColor 70%,
+            currentColor 100%
+          );
+          background-size: 200% auto;
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          animation: appai-title-shimmer 1.8s linear infinite;
         }
       `}</style>
       <div className="max-w-6xl mx-auto space-y-4">
@@ -4238,7 +4277,10 @@ export default function EmbedDesign() {
             {/* Product title + price */}
             {(isStorefront || isShopify) && (
               <div className="space-y-1">
-                <h1 className="text-xl font-bold leading-tight" data-testid="text-product-title">
+                <h1
+                  className={`text-xl font-bold leading-tight${titleShimmerActive ? ' appai-title-shimmer' : ''}`}
+                  data-testid="text-product-title"
+                >
                   {productTypeConfig?.name || displayName || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
