@@ -1836,7 +1836,7 @@ export default function EmbedDesign() {
 
   // Shopify variants with prices delivered from the embed parent via BRIDGE_ACK postMessage.
   // Used to render a variant selector inside the generator on customizer pages.
-  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>();
+  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
 
   const getPreferredMockupUrl = useCallback((): string => {
