@@ -3680,7 +3680,7 @@ export default function EmbedDesign() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Generator/form panel — right on desktop, first on mobile */}
-          <div className="space-y-4 order-1 md:order-2">
+          <div className="flex flex-col gap-4 order-1 md:order-2">
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
@@ -4142,7 +4142,7 @@ export default function EmbedDesign() {
                 })()}
               </div>
             )}
-            <div className="space-y-4 mt-4">
+            <div className="flex flex-col gap-4 mt-4 flex-1 min-h-0">
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
@@ -4532,11 +4532,10 @@ export default function EmbedDesign() {
 
               {/* Product Details — desktop only, shown below prompt textarea in right panel */}
               {(isStorefront || isShopify) && productTypeConfig?.description && (
-                <div className="hidden md:block space-y-1.5">
-                  <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product Details</Label>
+                <div className="hidden md:flex md:flex-col md:flex-1 space-y-1.5 min-h-0">
+                  <Label>Product Details</Label>
                   <div
-                    className="rounded-md border border-input bg-background px-3 py-2 text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none overflow-y-auto"
-                    style={{ maxHeight: '120px' }}
+                    className="flex-1 min-h-0 rounded-md border border-input bg-background px-3 py-2 text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none overflow-y-auto"
                     dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
                   />
                 </div>
