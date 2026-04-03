@@ -486,7 +486,6 @@
             <div class="ai-art-studio-embed__loading">
               <div class="ai-art-studio-embed__spinner"></div>
               <p class="ai-art-studio-embed__loading-title">AI Art Studio</p>
-              <p class="ai-art-studio-embed__loading-subtitle">Loading Art Studio<span class="ai-art-ellipsis"></span></p>
             </div>
           </div>
         </div>
@@ -537,8 +536,8 @@
     iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';
     
     iframe.onload = function() {
-      const loading = studioContainer.querySelector('.ai-art-studio-embed__loading');
-      if (loading) loading.remove();
+      // Loading screen is removed on BRIDGE_ACK (when React app is fully mounted),
+      // not here — iframe.onload fires before the React app has rendered.
     };
     
     studioContainer.appendChild(iframe);
@@ -976,6 +975,13 @@
         bridgeAcked = true;
         if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         console.log(B, 'Handshake COMPLETE. parent:', BRIDGE_VERSION, 'iframe:', data._bridgeVersion, 'after', heartbeatN, 'heartbeats');
+        // Remove the loading screen now that the React app is fully mounted and rendered.
+        const loadingEl = studioContainer.querySelector('.ai-art-studio-embed__loading');
+        if (loadingEl) {
+          loadingEl.style.transition = 'opacity 0.2s ease';
+          loadingEl.style.opacity = '0';
+          setTimeout(function() { if (loadingEl.parentNode) loadingEl.remove(); }, 220);
+        }
 
         // Push Shopify variants (with prices) into the iframe so the generator
         // can render a variant selector internally.
@@ -1781,9 +1787,17 @@
           el.style.display = 'none';
         });
 
+        // Add a single shimmer sweep to the page heading (e.g. "Slim Phone Cases")
+        var pageH1 = document.querySelector('h1');
+        if (pageH1 && !pageH1.classList.contains('appai-page-title-shimmer')) {
+          pageH1.classList.add('appai-page-title-shimmer');
+          // Remove class after animation completes so it doesn't replay on re-render
+          pageH1.addEventListener('animationend', function() {
+            pageH1.classList.remove('appai-page-title-shimmer');
+          }, { once: true });
+        }
         var shopDomain = (window.Shopify && window.Shopify.shop) || '';
-
-        var studioEl = createDesignStudio({
+        var studioEl = createDesignStudio({{
           appUrl:               config.appUrl,
           shopDomain:           shopDomain,
           productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
@@ -1884,55 +1898,36 @@
   to { transform: rotate(360deg); }
 }
 
-/* Loading screen title + subtitle */
+/* Loading screen title */
 .ai-art-studio-embed__loading-title {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  margin: 0 0 6px;
-  /* Left-to-right shimmer sweep over the text */
-  background: linear-gradient(
-    90deg,
-    currentColor 0%,
-    currentColor 30%,
-    rgba(255,255,255,0.85) 50%,
-    currentColor 70%,
-    currentColor 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: ai-art-title-shimmer 2.4s linear infinite;
-}
-
-.ai-art-studio-embed__loading-subtitle {
-  font-size: 16px;
-  font-weight: 500;
-  opacity: 0.65;
   margin: 0;
-  letter-spacing: 0.01em;
 }
-
-/* Rolling ellipsis: cycles . → .. → ... */
-@keyframes ai-art-ellipsis {
-  0%   { content: '.';   }
-  33%  { content: '..';  }
-  66%  { content: '...'; }
-  100% { content: '.';   }
+/* Page heading shimmer — single left-to-right sweep via ::after overlay, plays once */
+@keyframes appai-page-title-sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
 }
-.ai-art-ellipsis::after {
-  content: '.';
-  animation: ai-art-ellipsis 1.2s steps(1, end) infinite;
+.appai-page-title-shimmer {
+  position: relative;
+  overflow: hidden;
   display: inline-block;
-  width: 1.5em;
-  text-align: left;
 }
-
-/* Title shimmer keyframe */
-@keyframes ai-art-title-shimmer {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
+.appai-page-title-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 25%,
+    rgba(255,255,255,0.55) 50%,
+    transparent 75%
+  );
+  width: 50%;
+  animation: appai-page-title-sweep 1.6s ease-in-out 1 forwards;
+  pointer-events: none;
 }
 
 /* Parent-side Add to Cart button */

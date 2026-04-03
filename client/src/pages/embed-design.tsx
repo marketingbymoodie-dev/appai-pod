@@ -584,8 +584,6 @@ export default function EmbedDesign() {
   // Sequential box guide: 0 = off, 1-4 = which box is currently pulsing
   const [guideActiveBox, setGuideActiveBox] = useState<0 | 1 | 2 | 3 | 4>(0);
   const guideStoppedRef = useRef(false);
-  // Title shimmer: true while the product title is animating on first load
-  const [titleShimmerActive, setTitleShimmerActive] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Track the initial transform to detect changes for auto-save
@@ -1533,14 +1531,7 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Title shimmer ────────────────────────────────────────────────────
-  // Runs the shimmer on the product title for ~3s then stops
-  useEffect(() => {
-    if (!isStorefront && !isShopify) return;
-    const t = setTimeout(() => setTitleShimmerActive(false), 3000);
-    return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStorefront, isShopify]);
+
 
   // ── Sequential box guide ────────────────────────────────────────────────────
   // Read the theme's border colour once and set --appai-guide-color on the root element
@@ -3731,26 +3722,7 @@ export default function EmbedDesign() {
           pointer-events: none;
           z-index: 10;
         }
-        /* Product title shimmer sweep */
-        @keyframes appai-title-shimmer {
-          0%   { background-position: 200% center; }
-          100% { background-position: -200% center; }
-        }
-        .appai-title-shimmer {
-          background: linear-gradient(
-            90deg,
-            currentColor 0%,
-            currentColor 30%,
-            rgba(255,255,255,0.9) 50%,
-            currentColor 70%,
-            currentColor 100%
-          );
-          background-size: 200% auto;
-          -webkit-background-clip: text;
-          background-clip: text;
-          -webkit-text-fill-color: transparent;
-          animation: appai-title-shimmer 1.8s linear infinite;
-        }
+
       `}</style>
       <div className="max-w-6xl mx-auto space-y-4">
         {/* Free generation limit reached — prompt to create account */}
@@ -4283,7 +4255,7 @@ export default function EmbedDesign() {
             {(isStorefront || isShopify) && (
               <div className="space-y-1">
                 <h1
-                  className={`text-xl font-bold leading-tight${titleShimmerActive ? ' appai-title-shimmer' : ''}`}
+                  className="text-xl font-bold leading-tight"
                   data-testid="text-product-title"
                 >
                   {productTypeConfig?.name || displayName || productTitle}
