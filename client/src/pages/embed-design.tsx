@@ -700,6 +700,9 @@ export default function EmbedDesign() {
   const [printifyMockups, setPrintifyMockups] = useState<string[]>([]);
   const [printifyMockupImages, setPrintifyMockupImages] = useState<{ url: string; label: string }[]>([]);
   const [mockupLoading, setMockupLoading] = useState(false);
+  // mockupTriggered: set true synchronously in onSuccess before fetchPrintifyMockups is called,
+  // so there's no render-cycle gap between generateMutation.isPending=false and mockupLoading=true.
+  const [mockupTriggered, setMockupTriggered] = useState(false);
   const [mockupError, setMockupError] = useState<string | null>(null);
   const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
@@ -1645,6 +1648,7 @@ export default function EmbedDesign() {
       setMockupFailed(true);
     } finally {
       setMockupLoading(false);
+      setMockupTriggered(false);
       // Clear the "Artwork Generating" overlay on the parent page
       if (runtimeMode !== 'standalone') {
         window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
@@ -2225,6 +2229,9 @@ export default function EmbedDesign() {
           setShowPatternStep(true);
         } else {
           console.log('[Mockups] Triggering mockup generation');
+          // Set mockupTriggered synchronously so the overlay stays up between
+          // generateMutation.isPending=false and mockupLoading=true (no gap flash).
+          setMockupTriggered(true);
           fetchPrintifyMockups(toAbsoluteImageUrl(imageUrl), productTypeConfig!.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
         }
       }
@@ -3972,6 +3979,16 @@ export default function EmbedDesign() {
                                         window.location.reload();
                                       }
                                     } else {
+                                      // Update both the parent page URL and the iframe URL so
+                                      // parentLoadDesignId (which takes priority) picks up the
+                                      // correct design after the iframe reloads.
+                                      try {
+                                        const parentUrl = new URL(window.parent.location.href);
+                                        parentUrl.searchParams.set('loadDesignId', d.id);
+                                        window.parent.history.replaceState({}, '', parentUrl.toString());
+                                      } catch {
+                                        // cross-origin guard — fall back to iframe-only
+                                      }
                                       const params = new URLSearchParams(window.location.search);
                                       params.set('loadDesignId', d.id);
                                       window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
@@ -4539,8 +4556,12 @@ export default function EmbedDesign() {
               <div className="absolute inset-0">
                 {(() => {
                   const isGeneratingArtwork = generateMutation.isPending;
-                  const isGeneratingMockups = isStorefront && mockupLoading && !getPreferredMockupUrl();
-                  const isLoadingSaved = isLoadingSharedDesign;
+                  // mockupTriggered bridges the gap between isPending=false and mockupLoading=true
+                  const isGeneratingMockups = isStorefront && (mockupLoading || mockupTriggered) && !getPreferredMockupUrl();
+                  // isLoadingSaved: true while a shared design OR a saved design (loadDesignId) is
+                  // being restored and generatedDesign hasn't been set yet — shows skeleton shimmer
+                  // instead of the blank product mockup.
+                  const isLoadingSaved = isLoadingSharedDesign || (!!effectiveLoadDesignId && !generatedDesign?.imageUrl);
                   const loadingStage: "generating" | "mockups" | null =
                     isGeneratingArtwork ? "generating" : isGeneratingMockups ? "mockups" : null;
 
