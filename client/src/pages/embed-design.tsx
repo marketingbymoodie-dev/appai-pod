@@ -2674,6 +2674,7 @@ export default function EmbedDesign() {
    */
   const addToCartStorefront = (payload: {
     variantId: string;
+    baseVariantId?: string;
     quantity: number;
     properties: Record<string, string>;
   }): Promise<{ success: boolean; error?: string }> => {
@@ -2732,6 +2733,7 @@ export default function EmbedDesign() {
         type: 'AI_ART_STUDIO_ADD_TO_CART',
         correlationId,
         variantId: payload.variantId,
+        baseVariantId: payload.baseVariantId,
         quantity: payload.quantity,
         properties: payload.properties,
         _bridgeVersion: '1.0.0',
@@ -2925,6 +2927,7 @@ export default function EmbedDesign() {
       try {
         const result = await addToCartStorefront({
           variantId: finalVariantId,
+          baseVariantId: normalizedVariant,
           quantity: 1,
           properties,
         });

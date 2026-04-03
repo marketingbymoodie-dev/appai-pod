@@ -1088,8 +1088,12 @@
 
         var atcMockupUrl = (data.properties && data.properties['_mockup_url']) || '';
         var atcDesignId = (data.properties && data.properties['_design_id']) || '';
+        // Use baseVariantId (the original base product variant) for resolveDesignSku so the
+        // server can look it up on the base product and create a fresh shadow product if needed.
+        // data.variantId may be a pre-created shadow variant ID that has since expired.
+        var atcBaseVariantId = data.baseVariantId || data.variantId;
 
-        resolveDesignSku(data.variantId, atcDesignId, atcMockupUrl)
+        resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl)
           .then(function(sku) {
             return addToCart(sku.variantId, data.quantity, data.properties);
           })
