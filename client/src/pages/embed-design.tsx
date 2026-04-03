@@ -4497,7 +4497,34 @@ export default function EmbedDesign() {
                     return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
                   })()}
                   value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
+                  onChange={(e) => {
+                    // If the user starts typing while a saved design is loaded, silently
+                    // trigger "Start Fresh Design" first so they can't accidentally
+                    // add the old saved design to cart with a new prompt.
+                    if (generatedDesign && loadDesignAppliedRef.current && effectiveLoadDesignId) {
+                      setGeneratedDesign(null);
+                      setDesignSource(null);
+                      setAddedToCart(false);
+                      loadDesignAppliedRef.current = false;
+                      setBridgeLoadDesignId('');
+                      setPrintifyMockups([]);
+                      setPrintifyMockupImages([]);
+                      setSelectedMockupIndex(0);
+                      try {
+                        const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                        sessionStorage.removeItem(stateKey);
+                      } catch (_) {}
+                      const url = new URL(window.location.href);
+                      url.searchParams.delete('loadDesignId');
+                      window.history.replaceState({}, '', url.toString());
+                      try {
+                        const parentUrl = new URL(window.parent.location.href);
+                        parentUrl.searchParams.delete('loadDesignId');
+                        window.parent.history.replaceState({}, '', parentUrl.toString());
+                      } catch (_) {}
+                    }
+                    setPrompt(e.target.value);
+                  }}
                   className="min-h-[80px]"
                 />
               </div>
@@ -4577,7 +4604,15 @@ export default function EmbedDesign() {
                   // isLoadingSaved: true while a shared design OR a saved design (loadDesignId) is
                   // being restored and generatedDesign hasn't been set yet — shows skeleton shimmer
                   // instead of the blank product mockup.
-                  const isLoadingSaved = isLoadingSharedDesign || (!!effectiveLoadDesignId && !generatedDesign?.imageUrl);
+                  // IMPORTANT: only show skeleton while the design is still being applied
+                  // (loadDesignAppliedRef.current === false). Once applied, even if the user
+                  // clicks "Start Fresh Design" (clearing generatedDesign), we must NOT re-show
+                  // the skeleton — otherwise it runs infinitely after add-to-cart resets state.
+                  const isLoadingSaved = isLoadingSharedDesign || (
+                    !!effectiveLoadDesignId &&
+                    !generatedDesign?.imageUrl &&
+                    !loadDesignAppliedRef.current
+                  );
                   const loadingStage: "generating" | "mockups" | null =
                     isGeneratingArtwork ? "generating" : isGeneratingMockups ? "mockups" : null;
 
