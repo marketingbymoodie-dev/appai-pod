@@ -3907,9 +3907,12 @@ export default function EmbedDesign() {
                                     e.stopPropagation();
                                     if (!confirm('Delete this saved design?')) return;
                                     try {
-                                      const r = await safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}`, {
+                                      const deleteParams = new URLSearchParams();
+                                      if (shopDomain) deleteParams.set('shop', shopDomain);
+                                      if (storefrontCustomerId) deleteParams.set('customerId', storefrontCustomerId);
+                                      const r = await safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}?${deleteParams.toString()}`, {
                                         method: 'DELETE',
-                                        headers: { 'Content-Type': 'application/json', ...(shopDomain ? { 'x-shop-domain': shopDomain } : {}) },
+                                        headers: { 'Content-Type': 'application/json' },
                                       });
                                       if (r.ok) {
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));

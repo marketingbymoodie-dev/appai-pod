@@ -5949,7 +5949,9 @@ ${textEdgeRestrictions}
   // ==================== STOREFRONT DELETE SAVED DESIGN ====================
   app.delete("/api/storefront/customizer/my-designs/:id", async (req: Request, res: Response) => {
     try {
-      const { shop, customerId } = req.body;
+      // Support both req.body (POST-style) and req.query (DELETE with no body)
+      const shop = req.body?.shop || req.query?.shop as string;
+      const customerId = req.body?.customerId || req.query?.customerId as string;
       const jobId = req.params.id;
       if (!shop || !customerId || !jobId) {
         return res.status(400).json({ error: "shop, customerId, and id are required" });
