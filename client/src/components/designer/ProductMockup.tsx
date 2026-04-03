@@ -443,7 +443,7 @@ export function ProductMockup({
     const insetClass = hasContent ? "absolute inset-0" : "absolute inset-4";
     return (
       <div
-        className={`${insetClass} flex items-center justify-center overflow-hidden bg-black rounded-md`}
+        className={`${insetClass} flex items-center justify-center overflow-hidden ${isLoading ? "bg-black" : "bg-transparent"} rounded-md`}
         style={{ pointerEvents: "none" }}
       >
         {renderImageContent()}
@@ -465,7 +465,7 @@ export function ProductMockup({
 
   return (
     <div
-      className={`relative bg-black rounded-md w-full h-full ${isDragActive ? "cursor-move select-none" : ""}`}
+      className={`relative rounded-md w-full h-full ${isDragActive ? "cursor-move select-none" : ""}`}
       style={{ touchAction: isDragActive ? "none" : "pan-y" }}
       {...(isDragActive ? {
         onMouseDown: handleMouseDown,

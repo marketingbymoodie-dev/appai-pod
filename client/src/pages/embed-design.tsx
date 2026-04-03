@@ -1359,7 +1359,23 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLoadDesignId, shopDomain]);
 
-  // Restore design state from sessionStorage on load (survives page refresh / back navigation)
+  // Clear sessionStorage when the user navigates away so returning to the page
+  // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
+  useEffect(() => {
+    const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+    const clearOnExit = () => {
+      try { sessionStorage.removeItem(stateKey); } catch (_) {}
+    };
+    window.addEventListener('beforeunload', clearOnExit);
+    window.addEventListener('pagehide', clearOnExit); // mobile Safari
+    return () => {
+      window.removeEventListener('beforeunload', clearOnExit);
+      window.removeEventListener('pagehide', clearOnExit);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shopDomain, productHandle]);
+
+  // Restore design state from sessionStorage on load (survives hard refresh only)
   useEffect(() => {
     // Don't restore if we already have a design (e.g., from shared link) or are loading one
     // Also skip if loadDesignId is present — the saved design restore will handle it instead
@@ -1369,8 +1385,8 @@ export default function EmbedDesign() {
       const saved = sessionStorage.getItem(stateKey);
       if (!saved) return;
       const state = JSON.parse(saved);
-      // Only restore if saved within the last 30 minutes
-      if (state.savedAt && Date.now() - state.savedAt < 30 * 60 * 1000 && state.imageUrl) {
+      // Only restore if saved within the last 5 minutes (hard refresh window only)
+      if (state.savedAt && Date.now() - state.savedAt < 5 * 60 * 1000 && state.imageUrl) {
         console.log('[Design Studio] Restoring design from sessionStorage:', state.designId);
         setGeneratedDesign({
           id: state.designId || crypto.randomUUID(),
