@@ -672,7 +672,8 @@ export default function EmbedDesign() {
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
     try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
   });
-  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; createdAt: string}>>([]);
+  const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
+  const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
   const [galleryLimit, setGalleryLimit] = useState(20);
   const [showSavedDesigns, setShowSavedDesigns] = useState(false);
@@ -1994,6 +1995,9 @@ export default function EmbedDesign() {
           setLoginError("Please log in to your account to create designs.");
         } else if (data.requiresCredits) {
           setLoginError("No credits remaining. Please purchase more credits to continue.");
+        } else if (data.error === 'GALLERY_FULL') {
+          setShowGalleryFullModal(true);
+          throw new Error('GALLERY_FULL');
         }
         throw new Error(data.error || "Failed to generate design");
       }
@@ -3486,6 +3490,7 @@ export default function EmbedDesign() {
   );
 
   return (
+    <>
     <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       <div className="max-w-6xl mx-auto space-y-4">
         {/* Free generation limit reached — prompt to create account */}
@@ -3907,9 +3912,10 @@ export default function EmbedDesign() {
                                     e.stopPropagation();
                                     if (!confirm('Delete this saved design?')) return;
                                     try {
+                                      const effectiveCustomerId = storefrontCustomerId || d.customerId || '';
                                       const deleteParams = new URLSearchParams();
                                       if (shopDomain) deleteParams.set('shop', shopDomain);
-                                      if (storefrontCustomerId) deleteParams.set('customerId', storefrontCustomerId);
+                                      if (effectiveCustomerId) deleteParams.set('customerId', effectiveCustomerId);
                                       const r = await safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}?${deleteParams.toString()}`, {
                                         method: 'DELETE',
                                         headers: { 'Content-Type': 'application/json' },
@@ -4647,7 +4653,7 @@ export default function EmbedDesign() {
               </div>
             )}
 
-            {generateMutation.isError && (
+            {generateMutation.isError && generateMutation.error?.message !== 'GALLERY_FULL' && (
               <p className="text-destructive text-sm" data-testid="text-error">
                 {generateMutation.error?.message || "Failed to generate design. Please try again."}
               </p>
@@ -4676,11 +4682,62 @@ export default function EmbedDesign() {
               </div>
             )}
           </div>
+          </div>
         </div>
-
         </>
         )}
       </div>
     </div>
+
+    {/* Gallery Full Modal */}
+    {showGalleryFullModal && (
+      <div
+        className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+        style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+        onClick={() => setShowGalleryFullModal(false)}
+      >
+        <div
+          className="bg-background rounded-xl shadow-2xl max-w-sm w-full p-6 space-y-4"
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+              </div>
+              <h2 className="text-base font-semibold">Your design gallery is full</h2>
+            </div>
+            <button
+              onClick={() => setShowGalleryFullModal(false)}
+              className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1 flex-shrink-0"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            You've reached your {galleryLimit}-design limit. To generate a new design, open your <strong>Saved Designs</strong> gallery and delete one or more designs you no longer need.
+          </p>
+          <div className="flex gap-2 pt-1">
+            <button
+              className="flex-1 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+              onClick={() => { setShowGalleryFullModal(false); setShowSavedDesigns(true); }}
+            >
+              Open Saved Designs
+            </button>
+            <button
+              className="px-4 py-2 rounded-md border text-sm font-medium hover:bg-muted transition-colors"
+              onClick={() => setShowGalleryFullModal(false)}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

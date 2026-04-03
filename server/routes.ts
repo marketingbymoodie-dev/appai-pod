@@ -6750,6 +6750,7 @@ ${textEdgeRestrictions}
           productTypeId: d.productTypeId,
           baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
           pageHandle: d.productTypeId ? (handleMap[d.productTypeId] || null) : null,
+          customerId: d.customerId,
           createdAt: d.createdAt,
         }))
       });
