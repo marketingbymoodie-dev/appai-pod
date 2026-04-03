@@ -3851,7 +3851,18 @@ export default function EmbedDesign() {
                         ) : savedDesigns.length === 0 ? (
                           <p className="text-sm text-muted-foreground py-2">No saved designs yet. Generate a design to see it here.</p>
                         ) : (
-                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto overscroll-contain pr-1">
+                          <div
+                            className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto overscroll-contain pr-1"
+                            onWheel={(e) => {
+                              const el = e.currentTarget;
+                              const atTop = el.scrollTop === 0;
+                              const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+                              // Prevent scroll from bubbling to the parent page (iframe boundary)
+                              if (!(atTop && e.deltaY < 0) && !(atBottom && e.deltaY > 0)) {
+                                e.stopPropagation();
+                              }
+                            }}
+                          >
                             {savedDesigns.map((d: any) => (
                               <div key={d.id} className="relative group">
                                 <div
