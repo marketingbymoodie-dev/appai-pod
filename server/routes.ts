@@ -6348,7 +6348,10 @@ ${textEdgeRestrictions}
         .join(' / ');
       const shadowTitle = `${baseProduct.title}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
 
-      // 4. Create the shadow product in Shopify (status=draft, tagged appai-shadow)
+      // 4. Create the shadow product in Shopify
+      // Must be status=active + published=true so the storefront cart API can add it.
+      // It stays hidden from customers because it is not added to any collection and
+      // is not linked from navigation — Shopify only surfaces products in collections.
       const sixHoursFromNow = new Date(Date.now() + 6 * 60 * 60 * 1000);
       const createProductRes = await fetch(`${apiBase}/products.json`, {
         method: 'POST',
@@ -6356,8 +6359,8 @@ ${textEdgeRestrictions}
         body: JSON.stringify({
           product: {
             title: shadowTitle,
-            status: 'draft',                      // hidden from storefront
-            published: false,
+            status: 'active',                     // must be active for storefront cart
+            published: true,
             tags: 'appai-shadow',
             variants: [{
               price: baseVariant.price,
