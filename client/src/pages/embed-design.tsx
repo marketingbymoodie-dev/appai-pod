@@ -4535,8 +4535,16 @@ export default function EmbedDesign() {
                 <div className="hidden md:block space-y-1.5">
                   <Label>Product Details</Label>
                   <div
-                    className="rounded-md border-2 border-foreground bg-background px-3 py-2 text-sm leading-relaxed prose prose-sm max-w-none overflow-y-auto overscroll-contain"
-                    style={{ maxHeight: '220px' }}
+                    className="rounded-md border-2 border-foreground bg-background px-3 py-2 text-sm leading-relaxed prose prose-sm max-w-none overflow-y-auto"
+                    style={{ maxHeight: '220px', color: 'inherit' }}
+                    onWheel={(e) => {
+                      const el = e.currentTarget;
+                      const atTop = el.scrollTop === 0 && e.deltaY < 0;
+                      const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 1 && e.deltaY > 0;
+                      if (!atTop && !atBottom) {
+                        e.stopPropagation();
+                      }
+                    }}
                     dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
                   />
                 </div>
