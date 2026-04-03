@@ -1259,6 +1259,12 @@ export default function EmbedDesign() {
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
+    // Immediately poll for a pre-existing shadow product for this design.
+    // If the shadow product was created within the last 7 days, it will be returned
+    // instantly and the Add to Cart will be instant without calling resolve-design-variant.
+    if (isStorefront && shopDomain) {
+      startShadowVariantPoll(designId, shopDomain, 0);
+    }
     if (ds && typeof ds === 'object') {
       console.log('[LoadDesign] Restoring designState:', ds);
       if (ds.scale !== undefined || ds.x !== undefined || ds.y !== undefined) {
@@ -1469,6 +1475,40 @@ export default function EmbedDesign() {
     }
   }, [runtimeMode, productId, productHandle]);
 
+  // Poll for the pre-created shadow variant for a given jobId.
+  // Once ready, stores shadowVariantId and shadowProductId in state so Add to Cart is instant.
+  // initialDelay: ms before first poll (5000 for new designs, 0 for loaded saved designs)
+  const startShadowVariantPoll = useCallback((jobId: string | null, shop: string, initialDelay = 0) => {
+    if (!jobId || !shop) return;
+    setPreShadowVariantId(null);
+    setPreShadowProductId(null);
+    if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
+    let pollAttempts = 0;
+    const maxAttempts = 12;
+    const pollShadow = async () => {
+      try {
+        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?shop=${encodeURIComponent(shop)}`);
+        if (r.ok) {
+          const data = await r.json();
+          if (data.ready && data.shadowVariantId) {
+            console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId, 'product:', data.shadowProductId);
+            setPreShadowVariantId(data.shadowVariantId);
+            setPreShadowProductId(data.shadowProductId || null);
+            return;
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+      pollAttempts++;
+      if (pollAttempts < maxAttempts) {
+        preShadowPollRef.current = setTimeout(pollShadow, 5000);
+      } else {
+        console.log('[PreShadow] Shadow variant not ready after max polls — will create on demand');
+      }
+    };
+    preShadowPollRef.current = setTimeout(pollShadow, initialDelay);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const fetchPrintifyMockups = useCallback(async (
     designImageUrl: string,
     ptId: number,
@@ -1593,30 +1633,7 @@ export default function EmbedDesign() {
           // Once ready, store it so Add to Cart can use it instantly.
           if (productId && baseVariantForShadow) {
             const jobIdForPoll = savedJobIdRef.current;
-            setPreShadowVariantId(null); // reset for this new design
-            if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
-            let pollAttempts = 0;
-            const maxAttempts = 12; // poll for up to ~60s (5s intervals)
-            const pollShadow = async () => {
-              try {
-                const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobIdForPoll}?shop=${encodeURIComponent(shopDomain)}`);
-                if (r.ok) {
-                  const data = await r.json();
-                  if (data.ready && data.shadowVariantId) {
-                    console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId);
-                    setPreShadowVariantId(data.shadowVariantId);
-                    return; // done
-                  }
-                }
-              } catch (_) { /* non-fatal */ }
-              pollAttempts++;
-              if (pollAttempts < maxAttempts) {
-                preShadowPollRef.current = setTimeout(pollShadow, 5000);
-              } else {
-                console.log('[PreShadow] Shadow variant not ready after max polls — will create on demand');
-              }
-            };
-            preShadowPollRef.current = setTimeout(pollShadow, 5000); // first check after 5s
+            startShadowVariantPoll(jobIdForPoll, shopDomain, 5000);
           }
         }
       } else if (!result.success) {
@@ -1833,6 +1850,7 @@ export default function EmbedDesign() {
   // Pre-created shadow variant ID — set after save-mockups triggers background shadow product creation.
   // When set, Add to Cart uses this directly instead of calling resolve-design-variant (instant).
   const [preShadowVariantId, setPreShadowVariantId] = useState<string | null>(null);
+  const [preShadowProductId, setPreShadowProductId] = useState<string | null>(null);
 
   // Shopify variants with prices delivered from the embed parent via BRIDGE_ACK postMessage.
   // Used to render a variant selector inside the generator on customizer pages.
@@ -2839,12 +2857,12 @@ export default function EmbedDesign() {
       // Instant — shadow product was pre-created in the background
       finalVariantId = preShadowVariantId;
       console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
-      // Extend the shadow product expiry to 48h now that it's been added to cart
-      if (savedJobIdRef.current && shopDomain) {
+      // Extend the shadow product expiry to 7 days now that it's been added to cart
+      if (preShadowProductId && shopDomain) {
         safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shop: shopDomain, variantId: finalVariantId }),
+          body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
         }).catch(() => {});
       }
     } else if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
