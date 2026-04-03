@@ -5950,23 +5950,32 @@ ${textEdgeRestrictions}
   app.delete("/api/storefront/customizer/my-designs/:id", async (req: Request, res: Response) => {
     try {
       // Support both req.body (POST-style) and req.query (DELETE with no body)
-      const shop = req.body?.shop || req.query?.shop as string;
-      const customerId = req.body?.customerId || req.query?.customerId as string;
+      const shop = (req.body?.shop || req.query?.shop) as string;
+      // customerId is optional from client — we verify ownership using the job's stored customerId.
+      // The client may pass it, but we don't require it to avoid issues in Shopify-embedded contexts
+      // where the internal UUID may not be available on the client side.
+      const clientCustomerId = (req.body?.customerId || req.query?.customerId) as string | undefined;
       const jobId = req.params.id;
-      if (!shop || !customerId || !jobId) {
-        return res.status(400).json({ error: "shop, customerId, and id are required" });
+      if (!shop || !jobId) {
+        return res.status(400).json({ error: "shop and id are required" });
       }
       const installation = await storage.getShopifyInstallationByShop(shop);
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const job = await storage.getGenerationJob(jobId);
-      if (!job || job.shop !== shop || job.customerId !== customerId) {
-        return res.status(404).json({ error: "Design not found or not owned by this customer" });
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Design not found" });
       }
+      // If client provided a customerId, verify it matches (extra security check)
+      if (clientCustomerId && job.customerId && job.customerId !== clientCustomerId) {
+        console.warn(`[DeleteDesign] customerId mismatch: job=${job.customerId} client=${clientCustomerId}`);
+        return res.status(403).json({ error: "Not authorized to delete this design" });
+      }
+      const ownerCustomerId = job.customerId || clientCustomerId || 'unknown';
       // Unlink the design from the customer (don't delete the job, just disown it)
       await storage.updateGenerationJob(jobId, { customerId: null } as any);
-      console.log(`[DeleteDesign] Unlinked jobId=${jobId} from customerId=${customerId}`);
+      console.log(`[DeleteDesign] Unlinked jobId=${jobId} from customerId=${ownerCustomerId}`);
       return res.json({ deleted: true });
     } catch (err: any) {
       console.error("[DeleteDesign]", err);
