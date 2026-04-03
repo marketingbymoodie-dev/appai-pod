@@ -218,6 +218,13 @@
   - Mounts the full customizer UI automatically — no theme block required on the page.
 {% endcomment %}
 <script src="{{ 'appai-customizer-embed.js' | asset_url }}" defer></script>
+{% comment %}
+  appai-saved-designs-nav.js:
+  - Runs on every page; checks localStorage for a logged-in AppAI customer.
+  - If the customer has saved designs, injects a "Saved Designs" link as the
+    first item in the Customizer nav dropdown and wires up a slide-out drawer.
+{% endcomment %}
+<script src="{{ 'appai-saved-designs-nav.js' | asset_url }}" defer></script>
 <script>
 (function () {
   'use strict';
