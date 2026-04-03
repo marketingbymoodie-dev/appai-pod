@@ -41,6 +41,13 @@
  *   3. Inside that ancestor, find the <ul> or <div> that holds those links
  *   4. Skip any match that is inside the footer
  *   5. Inject the "Saved Designs" item as the first child of that container
+ *
+ * RE-INJECTION ON DOM CHANGES
+ * ────────────────────────────
+ * Some Shopify themes re-render the nav when the URL changes via
+ * history.replaceState (e.g. after add-to-cart resets the page URL),
+ * which removes the injected nav item from the DOM. A MutationObserver
+ * watches the document body and re-injects whenever the nav item disappears.
  */
 ;(function () {
   'use strict';
@@ -225,7 +232,7 @@
     wrapper.appendChild(a);
     container.insertBefore(wrapper, container.firstChild);
 
-      console.log('[AppAI Nav] Injected Saved Designs nav item into container', suffix || 0, '| Designs:', designs.length);
+    console.log('[AppAI Nav] Injected Saved Designs nav item into container', suffix || 0, '| Designs:', designs.length);
   }
 
   // ─── Slide-out drawer ────────────────────────────────────────────────────
@@ -268,8 +275,8 @@
       '}',
       '@media(min-width:400px){#appai-drawer-grid{grid-template-columns:repeat(3,1fr);}}',
       '.appai-design-card{',
-        'border-radius:12px;overflow:hidden;border:1.5px solid #e5e7eb;',
-        'cursor:pointer;transition:border-color 180ms,box-shadow 180ms,transform 180ms;',
+        'border-radius:10px;overflow:hidden;border:1.5px solid #e5e7eb;',
+        'cursor:pointer;transition:border-color 150ms,box-shadow 150ms,transform 150ms;',
         'background:#f9fafb;',
       '}',
       '.appai-design-card:hover{border-color:#6366f1;box-shadow:0 4px 16px rgba(99,102,241,0.18);transform:translateY(-1px);}',
@@ -433,27 +440,54 @@
       var designs = data.designs;
       console.log('[AppAI Nav] Customer has', designs.length, 'saved designs. Attempting nav injection...');
 
-      var attempts = 0;
+      // Inject into all matching containers
       function tryInject() {
         var containers = findCustomizerDropdownContainers();
         if (containers.length > 0) {
           containers.forEach(function(container, idx) {
             injectNavItem(container, designs, idx === 0 ? '' : '-' + idx);
           });
-          return;
+          return true;
         }
+        return false;
+      }
+
+      // Initial injection with retry backoff
+      var attempts = 0;
+      function retryInject() {
+        if (tryInject()) return;
         attempts++;
         if (attempts < 8) {
-          setTimeout(tryInject, attempts * 500);
+          setTimeout(retryInject, attempts * 500);
         } else {
           console.warn('[AppAI Nav] Could not find Customizer dropdown after', attempts, 'attempts.');
         }
       }
-
-      tryInject();
+      retryInject();
 
       window.__APPAI_SAVED_DESIGNS__ = designs;
       window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(designs); };
+
+      // ── MutationObserver: re-inject if the nav item is removed from the DOM ──
+      // Some Shopify themes re-render the nav when the URL changes via
+      // history.replaceState (e.g. after add-to-cart resets the page URL),
+      // which removes the injected nav item. Watch for this and re-inject.
+      var reinjecting = false;
+      var observer = new MutationObserver(function () {
+        // Check if any of our nav items have been removed
+        var primaryItem = document.getElementById(NAV_ITEM_ID);
+        if (!primaryItem && !reinjecting) {
+          reinjecting = true;
+          // Small debounce to let the theme finish its DOM update
+          setTimeout(function () {
+            console.log('[AppAI Nav] Nav item removed from DOM — re-injecting...');
+            tryInject();
+            reinjecting = false;
+          }, 150);
+        }
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
 
     }).catch(function (e) {
       console.warn('[AppAI Nav] Failed to fetch saved designs:', e);
