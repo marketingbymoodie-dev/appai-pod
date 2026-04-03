@@ -3685,43 +3685,44 @@ export default function EmbedDesign() {
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
                 {isLoggedIn ? (
-                  <div className="flex flex-wrap gap-2" data-testid="user-actions">
-                    <div
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 truncate max-w-[200px]"
-                      title={customer?.email}
-                    >
-                      {customer?.email || 'Signed in'}
+                  <div className="flex flex-nowrap gap-2 overflow-x-auto" data-testid="user-actions">
+                    {/* Combined account button: shows email on hover, click signs out */}
+                    <div className="relative group flex-shrink-0">
+                      <button
+                        onClick={() => {
+                          setCustomer(null);
+                          setStorefrontCustomerId(null);
+                          setOtpEmail('');
+                          try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
+                          setShowSavedDesigns(false);
+                          setShowCouponInput(false);
+                        }}
+                        className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5"
+                        title={customer?.email}
+                      >
+                        {/* Default label: Sign out */}
+                        <span className="group-hover:hidden">Sign out</span>
+                        {/* Hover label: show email */}
+                        <span className="hidden group-hover:inline truncate max-w-[160px]">{customer?.email || 'Signed in'}</span>
+                      </button>
                     </div>
                     <button
                       onClick={() => { setShowSavedDesigns(!showSavedDesigns); setShowCouponInput(false); }}
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap"
+                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                     >
                       Saved Designs{savedDesigns.length > 0 ? ` (${savedDesigns.length})` : ''}
                     </button>
                     <button
                       onClick={() => { setShowCouponInput(!showCouponInput); setShowSavedDesigns(false); setCouponError(null); setCouponSuccess(null); }}
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap"
+                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap flex-shrink-0"
                     >
                       Redeem Code
                     </button>
                     {credits > 0 && (
-                      <div className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 whitespace-nowrap">
+                      <div className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 whitespace-nowrap flex-shrink-0">
                         {credits} credit{credits !== 1 ? 's' : ''}
                       </div>
                     )}
-                    <button
-                      onClick={() => {
-                        setCustomer(null);
-                        setStorefrontCustomerId(null);
-                        setOtpEmail('');
-                        try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
-                        setShowSavedDesigns(false);
-                        setShowCouponInput(false);
-                      }}
-                      className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                      Sign out
-                    </button>
                   </div>
                 ) : (
                   <button
@@ -4145,7 +4146,7 @@ export default function EmbedDesign() {
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
-                <div className="flex-[3] min-w-0">
+                <div className="flex-1 min-w-0">
                   {(isShopify || isStorefront) && generatedDesign ? (
                     /* ── Add to Cart state ── */
                     addedToCart ? (
@@ -4319,7 +4320,7 @@ export default function EmbedDesign() {
                 </div>
 
                 {/* Upload reference image — right, narrower */}
-                <div className="flex-[2] min-w-0">
+                <div className="flex-1 min-w-0">
                   <input
                     ref={fileInputRef}
                     type="file"
