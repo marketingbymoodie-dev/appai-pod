@@ -92,13 +92,12 @@
   // ─── Cross-theme dropdown detection ─────────────────────────────────────
 
   /**
-   * Find the container element that holds the Customizer dropdown items.
-   * Returns the <ul>, <div>, or <details> that we should prepend our item to,
-   * or null if not found.
+   * Find ALL container elements that hold Customizer dropdown items.
+   * Returns an array of containers (ul/div/nav) to inject into — covers
+   * both the desktop header dropdown and the mobile drawer.
    */
-  function findCustomizerDropdownContainer() {
+  function findCustomizerDropdownContainers() {
     // Step 1: collect all DOM nodes whose direct visible text is "Customizer"
-    // We use a TreeWalker over text nodes for accuracy
     var customizerNodes = [];
     try {
       var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
@@ -109,6 +108,9 @@
         }
       }
     } catch (_) {}
+
+    var containers = [];
+    var seen = [];
 
     // Step 2: for each candidate, walk up to find a container with /pages/ links
     for (var i = 0; i < customizerNodes.length; i++) {
@@ -123,16 +125,19 @@
       while (el && el !== document.body && depth < 8) {
         var pageLinks = el.querySelectorAll('a[href*="/pages/"]');
         if (pageLinks.length > 0) {
-          // Found the right ancestor — now find the best container to inject into
           var container = findBestContainer(el, pageLinks);
-          if (container) return container;
+          if (container && seen.indexOf(container) === -1) {
+            seen.push(container);
+            containers.push(container);
+          }
+          break;
         }
         el = el.parentElement;
         depth++;
       }
     }
 
-    return null;
+    return containers;
   }
 
   /**
@@ -174,15 +179,16 @@
 
   // ─── Nav item injection ──────────────────────────────────────────────────
 
-  function injectNavItem(container, designs) {
-    if (document.getElementById(NAV_ITEM_ID)) return;
+  function injectNavItem(container, designs, suffix) {
+    var itemId = NAV_ITEM_ID + (suffix || '');
+    if (document.getElementById(itemId)) return;
 
     // Determine what tag to use for the wrapper (mirror existing items)
     var firstChild = container.querySelector('li');
     var wrapperTag = firstChild ? 'li' : 'div';
 
     var wrapper = document.createElement(wrapperTag);
-    wrapper.id = NAV_ITEM_ID;
+    wrapper.id = itemId;
     // Copy classes from the first existing item for theme-consistent styling
     if (firstChild) wrapper.className = firstChild.className;
 
@@ -219,7 +225,7 @@
     wrapper.appendChild(a);
     container.insertBefore(wrapper, container.firstChild);
 
-    console.log('[AppAI Nav] Injected Saved Designs nav item. Designs:', designs.length);
+      console.log('[AppAI Nav] Injected Saved Designs nav item into container', suffix || 0, '| Designs:', designs.length);
   }
 
   // ─── Slide-out drawer ────────────────────────────────────────────────────
@@ -429,10 +435,11 @@
 
       var attempts = 0;
       function tryInject() {
-        if (document.getElementById(NAV_ITEM_ID)) return;
-        var container = findCustomizerDropdownContainer();
-        if (container) {
-          injectNavItem(container, designs);
+        var containers = findCustomizerDropdownContainers();
+        if (containers.length > 0) {
+          containers.forEach(function(container, idx) {
+            injectNavItem(container, designs, idx === 0 ? '' : '-' + idx);
+          });
           return;
         }
         attempts++;
