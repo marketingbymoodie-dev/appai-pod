@@ -2284,7 +2284,7 @@ console.log("[shopify/session] installation ok", {
   // Requires valid session token from /api/shopify/session
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
+      const { prompt, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -2505,26 +2505,31 @@ ${textEdgeRestrictions}
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
-      // Resolve customer reference image
-      let embedCustomerImageUrl: string | null = null;
-      if (referenceImage) {
+      // Resolve customer reference image(s) — supports both single and array
+      const embedCustomerImageUrls: string[] = [];
+      const rawRefImages: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
+        ? referenceImagesArr
+        : referenceImage ? [referenceImage] : [];
+      for (const refImg of rawRefImages.slice(0, 5)) {
         try {
-          if (referenceImage.startsWith("data:")) {
-            embedCustomerImageUrl = referenceImage;
-          } else if (referenceImage.startsWith("http")) {
-            embedCustomerImageUrl = referenceImage;
-          } else if (referenceImage.startsWith("/objects/")) {
+          let resolvedUrl: string | null = null;
+          if (refImg.startsWith("data:")) {
+            resolvedUrl = refImg;
+          } else if (refImg.startsWith("http")) {
+            resolvedUrl = refImg;
+          } else if (refImg.startsWith("/objects/")) {
             const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
-            embedCustomerImageUrl = `${appUrl}${referenceImage}`;
+            resolvedUrl = `${appUrl}${refImg}`;
           }
-          if (embedCustomerImageUrl) {
-            console.log(`[Shopify Generate] Reference image: type=${embedCustomerImageUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${embedCustomerImageUrl.length} chars`);
+          if (resolvedUrl) {
+            embedCustomerImageUrls.push(resolvedUrl);
+            console.log(`[Shopify Generate] Reference image ${embedCustomerImageUrls.length}: type=${resolvedUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${resolvedUrl.length} chars`);
           }
         } catch (refErr) {
-          console.warn("[Shopify Generate] Could not process reference image, generating without it:", refErr);
-          embedCustomerImageUrl = null;
+          console.warn("[Shopify Generate] Could not process reference image, skipping:", refErr);
         }
       }
+      const embedCustomerImageUrl: string | null = embedCustomerImageUrls[0] || null;
 
       // Check if this is an apparel product (covers both DB and hardcoded styles)
       let isApparel = productType?.designerType === "apparel";
@@ -2535,13 +2540,15 @@ ${textEdgeRestrictions}
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
       if (embedStyleBaseImageUrl) embedImageInputUrls.push(embedStyleBaseImageUrl);
-      if (embedCustomerImageUrl) embedImageInputUrls.push(embedCustomerImageUrl);
+      for (const u of embedCustomerImageUrls) embedImageInputUrls.push(u);
       const inputImageUrl: string | string[] | null = embedImageInputUrls.length > 1 ? embedImageInputUrls : embedImageInputUrls[0] || null;
 
       if (embedImageInputUrls.length > 0) {
         let refInstruction: string;
-        if (embedStyleBaseImageUrl && embedCustomerImageUrl) {
-          refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
+        if (embedStyleBaseImageUrl && embedCustomerImageUrls.length > 0) {
+          refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The remaining image(s) are the customer's subject(s) — incorporate them into the design as focal elements. Do NOT duplicate or repeat subjects.`;
+        } else if (embedCustomerImageUrls.length > 1) {
+          refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
         } else if (embedCustomerImageUrl) {
           const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
           refInstruction = isTextStyle
@@ -5236,7 +5243,7 @@ ${textEdgeRestrictions}
     }
 
     try {
-      const { prompt, userPrompt: rawUserPrompt, stylePreset, size, frameColor, referenceImage, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
+      const { prompt, userPrompt: rawUserPrompt, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArrSf, shop, bgRemovalSensitivity, productTypeId, sessionId, customerId, baseImageUrl: clientBaseImageUrlSf } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
 
       if (!shop) {
@@ -5624,39 +5631,48 @@ ${textEdgeRestrictions}
           await storage.updateGenerationJob(jobId, { status: "running" });
           console.log(`${W} worker started jobId=${jobId} +${Date.now() - wStart}ms`);
 
-          // Resolve customer reference image
-          let sfCustomerImageUrl: string | null = null;
-          if (referenceImage) {
+          // Resolve customer reference image(s) — supports both single and array
+          const sfCustomerImageUrls: string[] = [];
+          const sfRawRefImages: string[] = Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0
+            ? referenceImagesArrSf
+            : referenceImage ? [referenceImage] : [];
+          for (const refImg of sfRawRefImages.slice(0, 5)) {
             try {
-              if (referenceImage.startsWith("data:")) {
-                sfCustomerImageUrl = referenceImage;
-              } else if (referenceImage.startsWith("http")) {
-                sfCustomerImageUrl = referenceImage;
-              } else if (referenceImage.startsWith("/objects/")) {
-                sfCustomerImageUrl = `${appUrl}${referenceImage}`;
+              let resolvedUrl: string | null = null;
+              if (refImg.startsWith("data:")) {
+                resolvedUrl = refImg;
+              } else if (refImg.startsWith("http")) {
+                resolvedUrl = refImg;
+              } else if (refImg.startsWith("/objects/")) {
+                resolvedUrl = `${appUrl}${refImg}`;
               }
-              if (sfCustomerImageUrl) {
-                const urlType = sfCustomerImageUrl.startsWith("data:") ? "data-url" : "http-url";
-                console.log(`${W} Reference image: type=${urlType}, size=${sfCustomerImageUrl.length} chars`);
-                await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : sfCustomerImageUrl });
+              if (resolvedUrl) {
+                sfCustomerImageUrls.push(resolvedUrl);
+                const urlType = resolvedUrl.startsWith("data:") ? "data-url" : "http-url";
+                console.log(`${W} Reference image ${sfCustomerImageUrls.length}: type=${urlType}, size=${resolvedUrl.length} chars`);
+                if (sfCustomerImageUrls.length === 1) {
+                  await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : resolvedUrl });
+                }
               }
             } catch (refErr) {
-              console.warn(`${W} Could not process reference image, continuing without it:`, refErr);
-              sfCustomerImageUrl = null;
+              console.warn(`${W} Could not process reference image, skipping:`, refErr);
             }
           }
+          const sfCustomerImageUrl: string | null = sfCustomerImageUrls[0] || null;
           console.log(`${W} ref image resolved +${Date.now() - wStart}ms`);
 
-          // Build image input array: style base image + customer reference
+          // Build image input array: style base image + customer reference(s)
           const sfImageInputUrls: string[] = [];
           if (sfStyleBaseImageUrl) sfImageInputUrls.push(sfStyleBaseImageUrl);
-          if (sfCustomerImageUrl) sfImageInputUrls.push(sfCustomerImageUrl);
+          for (const u of sfCustomerImageUrls) sfImageInputUrls.push(u);
           const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
 
           if (sfImageInputUrls.length > 0) {
             let refInstruction: string;
-            if (sfStyleBaseImageUrl && sfCustomerImageUrl) {
-              refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The SECOND is the customer's subject — incorporate it as the focal element. Do NOT duplicate the subject.`;
+            if (sfStyleBaseImageUrl && sfCustomerImageUrls.length > 0) {
+              refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The remaining image(s) are the customer's subject(s) — incorporate them as focal elements. Do NOT duplicate subjects.`;
+            } else if (sfCustomerImageUrls.length > 1) {
+              refInstruction = `Multiple reference images are provided by the customer. Incorporate all subjects and elements from these images into a cohesive design. Do NOT duplicate subjects.`;
             } else if (sfCustomerImageUrl) {
               const isTextStyle = stylePreset && ["opinionated", "quotes"].includes(stylePreset);
               refInstruction = isTextStyle

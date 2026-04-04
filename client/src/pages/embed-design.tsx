@@ -573,8 +573,8 @@ export default function EmbedDesign() {
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
-  const [referenceImage, setReferenceImage] = useState<File | null>(null);
-  const [referencePreview, setReferencePreview] = useState<string | null>(null);
+  const [referenceImages, setReferenceImages] = useState<File[]>([]);
+  const [referencePreviews, setReferencePreviews] = useState<string[]>([]);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -2072,7 +2072,7 @@ export default function EmbedDesign() {
       size: string;
       frameColor: string;
       stylePreset?: string;
-      referenceImage?: string;
+      referenceImages?: string[];
       baseImageUrl?: string;
       shop?: string;
       sessionToken?: string;
@@ -2356,22 +2356,33 @@ export default function EmbedDesign() {
   });
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setReferenceImage(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setReferenceImages(prev => {
+      const remaining = 5 - prev.length;
+      return [...prev, ...files.slice(0, remaining)];
+    });
+    files.slice(0, 5).forEach(file => {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setReferencePreview(reader.result as string);
+        setReferencePreviews(prev => {
+          if (prev.length >= 5) return prev;
+          return [...prev, reader.result as string];
+        });
       };
       reader.readAsDataURL(file);
-    }
+    });
+    // Reset input so same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
-
-  const clearReferenceImage = () => {
-    setReferenceImage(null);
-    setReferencePreview(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+  const clearReferenceImage = (index?: number) => {
+    if (index !== undefined) {
+      setReferenceImages(prev => prev.filter((_, i) => i !== index));
+      setReferencePreviews(prev => prev.filter((_, i) => i !== index));
+    } else {
+      setReferenceImages([]);
+      setReferencePreviews([]);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -2418,17 +2429,18 @@ export default function EmbedDesign() {
     fullPrompt +=
       ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
 
-    let referenceImageBase64: string | undefined;
-    if (referenceImage) {
-      referenceImageBase64 = await new Promise<string>((resolve) => {
+    // Convert all reference images to base64
+    const referenceImagesBase64: string[] = [];
+    for (const imgFile of referenceImages) {
+      const b64 = await new Promise<string>((resolve) => {
         const reader = new FileReader();
         reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(referenceImage);
+        reader.readAsDataURL(imgFile);
       });
-      // Validate base64 size (max 5MB encoded)
-      if (referenceImageBase64 && referenceImageBase64.length > 5 * 1024 * 1024) {
-        throw new Error('Reference image is too large. Please use a smaller image (max 5MB).');
+      if (b64 && b64.length > 5 * 1024 * 1024) {
+        throw new Error('One or more reference images are too large. Please use smaller images (max 5MB each).');
       }
+      referenceImagesBase64.push(b64);
     }
 
     console.log('[Generate] clicked', {
@@ -2443,7 +2455,7 @@ export default function EmbedDesign() {
 
     console.log('[Generate] Mutating with payload size:', {
       prompt: fullPrompt.length,
-      referenceImage: referenceImageBase64?.length ?? 0,
+      referenceImages: referenceImagesBase64.length,
       shop: (isShopify || isStorefront) ? shopDomain : undefined,
     });
 
@@ -2454,7 +2466,7 @@ export default function EmbedDesign() {
         size: selectedSize,
         frameColor: selectedFrameColor || "black",
         stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : undefined,
-        referenceImage: referenceImageBase64,
+        referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
         sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
@@ -3064,8 +3076,8 @@ export default function EmbedDesign() {
             setDesignSource(null);
             loadDesignAppliedRef.current = false;
             setBridgeLoadDesignId('');
-            setReferenceImage(null);
-            setReferencePreview(null);
+            setReferenceImages([]);
+            setReferencePreviews([]);
             if (fileInputRef.current) fileInputRef.current.value = '';
             setSelectedPreset('');
             setSelectedStyleOption('');
@@ -4408,8 +4420,8 @@ export default function EmbedDesign() {
                           setAddedToCart(false);
                           loadDesignAppliedRef.current = false;
                           setBridgeLoadDesignId('');
-                          setReferenceImage(null);
-                          setReferencePreview(null);
+                          setReferenceImages([]);
+                          setReferencePreviews([]);
                           if (fileInputRef.current) fileInputRef.current.value = '';
                           setSelectedPreset('');
                           setSelectedStyleOption('');
@@ -4466,6 +4478,7 @@ export default function EmbedDesign() {
                     ref={fileInputRef}
                     type="file"
                     accept="image/*"
+                    multiple
                     onChange={handleFileChange}
                     className="hidden"
                     data-testid="input-reference-file"
@@ -4491,35 +4504,37 @@ export default function EmbedDesign() {
                     variant="outline"
                     className="w-full h-11"
                     onClick={() => fileInputRef.current?.click()}
+                    disabled={referenceImages.length >= 5}
                     data-testid="button-upload-reference"
                   >
                     <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
-                    {isImporting ? "Importing..." : "Upload"}
+                    {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : "Upload"}
                   </Button>
                   <p className="text-xs text-muted-foreground mt-1 text-center">
-                    Reference Image (optional)
+                    Reference Images (optional, up to 5)
                   </p>
-                  {referencePreview && (
-                    <div className="flex items-center gap-2 mt-1">
-                      <div className="relative shrink-0">
-                        <img
-                          src={referencePreview}
-                          alt="Reference"
-                          className="w-8 h-8 object-cover rounded"
-                          data-testid="img-reference-preview"
-                        />
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="icon"
-                          className="absolute -top-1.5 -right-1.5 w-4 h-4"
-                          onClick={clearReferenceImage}
-                          data-testid="button-clear-reference"
-                        >
-                          <X className="w-2.5 h-2.5" />
-                        </Button>
-                      </div>
-                      <span className="text-xs text-muted-foreground truncate">Image selected</span>
+                  {referencePreviews.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {referencePreviews.map((preview, idx) => (
+                        <div key={idx} className="relative shrink-0">
+                          <img
+                            src={preview}
+                            alt={`Reference ${idx + 1}`}
+                            className="w-9 h-9 object-cover rounded"
+                            data-testid={`img-reference-preview-${idx}`}
+                          />
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="icon"
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                            onClick={() => clearReferenceImage(idx)}
+                            data-testid={`button-clear-reference-${idx}`}
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </Button>
+                        </div>
+                      ))}
                     </div>
                   )}
                   {importError && (
@@ -4583,7 +4598,7 @@ export default function EmbedDesign() {
                 if (!activePreset?.options) return null;
                 const { label, choices } = activePreset.options;
                 return (
-                  <div className="space-y-2">
+                  <div className="space-y-2 border rounded-md p-3">
                     <Label>{label}</Label>
                     <div className="flex flex-wrap gap-2">
                       {choices.map((choice) => (
@@ -4591,9 +4606,13 @@ export default function EmbedDesign() {
                           key={choice.id}
                           type="button"
                           onClick={() => setSelectedStyleOption(choice.id)}
-                          className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                          style={selectedStyleOption === choice.id
+                            ? { backgroundColor: '#4f46e5', color: '#ffffff', borderColor: '#4f46e5', borderWidth: '2px', borderStyle: 'solid' }
+                            : { borderWidth: '1px', borderStyle: 'solid' }
+                          }
+                          className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
                             selectedStyleOption === choice.id
-                              ? "bg-primary text-primary-foreground border-primary"
+                              ? ""
                               : "bg-background text-foreground border-border hover:border-primary/60"
                           }`}
                         >
@@ -4602,7 +4621,7 @@ export default function EmbedDesign() {
                       ))}
                     </div>
                     {activePreset.options.required && selectedStyleOption === "" && (
-                      <p className="text-xs text-muted-foreground">Please choose a layout to continue</p>
+                      <p className="text-xs text-amber-600 font-medium">Please choose a style option to continue</p>
                     )}
                   </div>
                 );
