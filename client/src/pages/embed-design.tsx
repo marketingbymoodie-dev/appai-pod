@@ -4598,30 +4598,28 @@ export default function EmbedDesign() {
                 if (!activePreset?.options) return null;
                 const { label, choices } = activePreset.options;
                 return (
-                  <div className="space-y-2 border rounded-md p-3">
-                    <Label>{label}</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {choices.map((choice) => (
-                        <button
-                          key={choice.id}
-                          type="button"
-                          onClick={() => setSelectedStyleOption(choice.id)}
-                          style={selectedStyleOption === choice.id
-                            ? { backgroundColor: '#4f46e5', color: '#ffffff', borderColor: '#4f46e5', borderWidth: '2px', borderStyle: 'solid' }
-                            : { borderWidth: '1px', borderStyle: 'solid' }
-                          }
-                          className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                            selectedStyleOption === choice.id
-                              ? ""
-                              : "bg-background text-foreground border-border hover:border-primary/60"
-                          }`}
-                        >
-                          {choice.name}
-                        </button>
-                      ))}
+                  <div style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '12px', marginTop: '4px' }}>
+                    <Label style={{ display: 'block', marginBottom: '8px' }}>{label}</Label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {choices.map((choice) => {
+                        const isSelected = selectedStyleOption === choice.id;
+                        return (
+                          <button
+                            key={choice.id}
+                            type="button"
+                            onClick={() => setSelectedStyleOption(choice.id)}
+                            style={isSelected
+                              ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
+                              : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
+                            }
+                          >
+                            {choice.name}
+                          </button>
+                        );
+                      })}
                     </div>
                     {activePreset.options.required && selectedStyleOption === "" && (
-                      <p className="text-xs text-amber-600 font-medium">Please choose a style option to continue</p>
+                      <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose a style option to continue</p>
                     )}
                   </div>
                 );

@@ -8601,9 +8601,19 @@ ${textEdgeRestrictions}
       if (!merchant) {
         return res.json([]);
       }
-
       const presets = await storage.getStylePresetsByMerchant(merchant.id);
-      res.json(presets);
+      // Enrich each DB record with hardcoded options/promptPlaceholder when the DB column is null
+      // (styles seeded before the options column was added won't have these fields populated)
+      const enriched = presets.map((s: any) => {
+        const hardcoded = STYLE_PRESETS.find((h: any) => h.id === s.id.toString() || h.name === s.name);
+        return {
+          ...s,
+          options: s.options ?? (hardcoded as any)?.options ?? null,
+          promptPlaceholder: s.promptPlaceholder ?? (hardcoded as any)?.promptPlaceholder ?? null,
+          baseImageUrl: s.baseImageUrl ?? (hardcoded as any)?.baseImageUrl ?? null,
+        };
+      });
+      res.json(enriched);
     } catch (error) {
       console.error("Error fetching style presets:", error);
       res.status(500).json({ error: "Failed to fetch style presets" });
@@ -8620,12 +8630,11 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder, options } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
       }
-
       const preset = await storage.createStylePreset({
         merchantId: merchant.id,
         name,
@@ -8635,8 +8644,8 @@ ${textEdgeRestrictions}
         sortOrder: sortOrder || 0,
         baseImageUrl: baseImageUrl || null,
         promptPlaceholder: promptPlaceholder || null,
-      });
-
+        ...(options !== undefined ? { options: options || null } : {}),
+      } as any);
       res.json(preset);
     } catch (error) {
       console.error("Error creating style preset:", error);

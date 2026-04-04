@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Palette, Plus, Trash2, Edit2, Frame, Shirt, RefreshCw } from "lucide-react";
+import { Palette, Plus, Trash2, Edit2, Frame, Shirt, RefreshCw, ImagePlus } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -31,6 +31,18 @@ interface StyleOptions {
   label: string;
   required: boolean;
   choices: SubStyleChoice[];
+}
+
+/** Auto-resize a textarea to fit its content */
+function useAutoResize(value: string) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.style.height = "auto";
+      ref.current.style.height = `${ref.current.scrollHeight}px`;
+    }
+  }, [value]);
+  return ref;
 }
 
 export default function AdminStyles() {
@@ -53,9 +65,13 @@ export default function AdminStyles() {
   const [subStyleLabel, setSubStyleLabel] = useState("Style");
   const [subStyleRequired, setSubStyleRequired] = useState(true);
   const [subStyleChoices, setSubStyleChoices] = useState<SubStyleChoice[]>([]);
+  const [uploadingChoiceIdx, setUploadingChoiceIdx] = useState<number | null>(null);
 
   // Filter
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("show-all");
+
+  // Auto-resize prompt textarea
+  const promptTextareaRef = useAutoResize(stylePrompt);
 
   // ── Queries ───────────────────────────────────────────────────────────────
   const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
@@ -158,6 +174,8 @@ export default function AdminStyles() {
     setStyleBaseImageUrl((style as any).baseImageUrl || "");
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
 
+    // The server now merges hardcoded options into the response, so style.options
+    // will contain the hardcoded sub-styles for existing styles like Pet Portraits
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
       setSubStylesEnabled(true);
@@ -189,6 +207,24 @@ export default function AdminStyles() {
       toast({ title: "Upload failed", description: String(err), variant: "destructive" });
     } finally {
       setIsUploadingBaseImage(false);
+    }
+  };
+
+  const handleChoiceImageUpload = async (idx: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingChoiceIdx(idx);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      if (!res.ok) throw new Error("Upload failed");
+      const data = await res.json();
+      updateSubStyleChoice(idx, "baseImageUrl", data.url || data.objectUrl || "");
+    } catch (err) {
+      toast({ title: "Upload failed", description: String(err), variant: "destructive" });
+    } finally {
+      setUploadingChoiceIdx(null);
     }
   };
 
@@ -447,14 +483,16 @@ export default function AdminStyles() {
                 </p>
               </div>
 
-              {/* Prompt Prefix */}
+              {/* Prompt Prefix — auto-resizing textarea */}
               <div className="space-y-2">
                 <Label htmlFor="style-prompt">Prompt Prefix</Label>
                 <Textarea
                   id="style-prompt"
+                  ref={promptTextareaRef}
                   value={stylePrompt}
                   onChange={(e) => setStylePrompt(e.target.value)}
                   placeholder="A beautiful watercolor painting of..."
+                  className="resize-none overflow-hidden min-h-[96px]"
                   rows={4}
                   data-testid="input-style-prompt"
                 />
@@ -582,6 +620,7 @@ export default function AdminStyles() {
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-medium text-muted-foreground">
                               Choice {idx + 1}
+                              {choice.name ? ` — ${choice.name}` : ""}
                             </span>
                             <Button
                               type="button"
@@ -634,6 +673,50 @@ export default function AdminStyles() {
                               rows={2}
                               className="text-sm resize-none"
                             />
+                          </div>
+                          {/* Per-choice reference image */}
+                          <div className="space-y-1">
+                            <Label className="text-xs">
+                              Style Reference Image{" "}
+                              <span className="text-muted-foreground font-normal">(optional)</span>
+                            </Label>
+                            <div className="flex items-center gap-2">
+                              {choice.baseImageUrl ? (
+                                <div className="relative shrink-0">
+                                  <img
+                                    src={choice.baseImageUrl}
+                                    alt={choice.name}
+                                    className="w-10 h-10 rounded object-cover border"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => updateSubStyleChoice(idx, "baseImageUrl", "")}
+                                    className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="w-10 h-10 rounded border border-dashed flex items-center justify-center bg-muted/50 shrink-0">
+                                  <ImagePlus className="h-4 w-4 text-muted-foreground" />
+                                </div>
+                              )}
+                              <div className="flex-1">
+                                <Input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(e) => handleChoiceImageUpload(idx, e)}
+                                  disabled={uploadingChoiceIdx === idx}
+                                  className="text-xs h-8"
+                                />
+                                {uploadingChoiceIdx === idx && (
+                                  <p className="text-xs text-muted-foreground mt-0.5">Uploading...</p>
+                                )}
+                              </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              AI uses this as a visual reference when this sub-style is selected
+                            </p>
                           </div>
                         </div>
                       ))}
