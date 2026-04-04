@@ -1606,8 +1606,22 @@ export default function EmbedDesign() {
       if (cycleTimeout) clearTimeout(cycleTimeout);
       events.forEach(ev => document.removeEventListener(ev, stopGuide));
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStorefront, isShopify]);
+
+  // Deferred BRIDGE_ACK: send ACK only after the React UI is fully rendered
+  // (configLoading === false). This keeps the parent loading screen visible
+  // until the customizer content is ready, preventing the brief blank overlay.
+  const bridgeAckSentRef = useRef(false);
+  useEffect(() => {
+    if (!bridgeReady || configLoading || bridgeAckSentRef.current) return;
+    bridgeAckSentRef.current = true;
+    window.parent.postMessage({
+      type: 'AI_ART_STUDIO_BRIDGE_ACK',
+      _bridgeVersion: '1.0.0',
+    }, '*');
+    console.log('[Design Studio] Deferred BRIDGE_ACK sent (configLoading resolved)');
+  }, [bridgeReady, configLoading]);
 
   const fetchPrintifyMockups = useCallback(async (
     designImageUrl: string,
@@ -3229,11 +3243,8 @@ export default function EmbedDesign() {
         setBridgeReady(true);
         setBridgeError(null);
         (window as any).__aiArtBridgeReady = true;
-        // Send ACK so parent stops the heartbeat
-        window.parent.postMessage({
-          type: 'AI_ART_STUDIO_BRIDGE_ACK',
-          _bridgeVersion: '1.0.0',
-        }, '*');
+        // ACK is deferred — sent only after configLoading is false (see deferred ACK useEffect below)
+        // so the parent loading screen stays visible until the React UI is fully rendered.
       }
 
       // Legacy PING from parent — respond with PONG (backwards compat)

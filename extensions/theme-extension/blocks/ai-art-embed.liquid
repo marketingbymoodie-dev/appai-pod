@@ -1907,11 +1907,12 @@
   0%   { background-position: 200% center; }
   100% { background-position: -200% center; }
 }
-.ai-art-studio-embed__loading-title {
-  font-size: 22px !important;
-  font-weight: 700 !important;
-  letter-spacing: -0.02em !important;
-  margin: 0 !important;
+.ai-art-studio-embed__loading .ai-art-studio-embed__loading-title,
+.ai-art-studio-embed__loading p.ai-art-studio-embed__loading-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
   background: linear-gradient(
     90deg,
     #111 0%,
@@ -1919,22 +1920,23 @@
     #888 50%,
     #111 70%,
     #111 100%
-  ) !important;
-  background-size: 200% auto !important;
-  -webkit-background-clip: text !important;
-  background-clip: text !important;
-  -webkit-text-fill-color: transparent !important;
-  color: transparent !important;
-  animation: ai-art-title-shimmer 2.4s linear infinite !important;
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: ai-art-title-shimmer 2.4s linear infinite;
 }
 /* Page heading shimmer — text colour sweep from dark to light-grey and back, plays once */
 @keyframes appai-page-title-sweep {
   0%   { background-position: 200% center; }
   100% { background-position: -200% center; }
 }
-.appai-page-title-shimmer {
+h1.appai-page-title-shimmer,
+h2.appai-page-title-shimmer {
   /* Universal shimmer: dark text fades to light-grey mid-point and back.
-     Works on any dark-text-on-light-background theme. */
+     Higher specificity (h1.class) beats theme's h1 rules. */
   background: linear-gradient(
     90deg,
     #111 0%,
@@ -1942,13 +1944,13 @@
     #aaa 50%,
     #111 70%,
     #111 100%
-  ) !important;
-  background-size: 200% auto !important;
-  -webkit-background-clip: text !important;
-  background-clip: text !important;
-  -webkit-text-fill-color: transparent !important;
-  color: transparent !important;
-  animation: appai-page-title-sweep 1.8s ease-in-out 1 forwards !important;
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: appai-page-title-sweep 1.8s ease-in-out 1 forwards;
   display: inline-block;
 }
 
