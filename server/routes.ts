@@ -1294,13 +1294,16 @@ export async function registerRoutes(
               // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
               // promptPlaceholder: prefer DB value (merchant-editable), fall back to hardcoded default
               const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
+              // Prefer DB-stored options (merchant-edited) over hardcoded defaults
+              const dbOptions = (s as any).options ?? null;
+              const hardcodedOptions = (hardcoded as any)?.options ?? null;
               return {
                 id: s.id.toString(),
                 name: s.name,
                 promptSuffix: s.promptPrefix,
                 category: s.category || "all",
                 promptPlaceholder: (s as any).promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-                options: (hardcoded as any)?.options,
+                options: dbOptions || hardcodedOptions,
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
               };
             })
@@ -8657,7 +8660,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder, options } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -8667,7 +8670,8 @@ ${textEdgeRestrictions}
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
         baseImageUrl: baseImageUrl !== undefined ? (baseImageUrl || null) : (preset as any).baseImageUrl,
         promptPlaceholder: promptPlaceholder !== undefined ? (promptPlaceholder || null) : (preset as any).promptPlaceholder,
-      });
+        ...(options !== undefined ? { options: options || null } : {}),
+      } as any);
 
       configCache.delete("global"); // invalidate so storefront picks up new placeholder
       res.json(updated);
