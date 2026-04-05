@@ -23,7 +23,8 @@ interface SubStyleChoice {
   id: string;
   name: string;
   promptFragment: string;
-  baseImageUrl?: string;
+  baseImageUrl?: string;       // legacy single image (backwards compat)
+  baseImageUrls?: string[];   // new: up to 5 images
 }
 
 interface StyleOptions {
@@ -71,9 +72,10 @@ export default function AdminStyles() {
   const [stylePrompt, setStylePrompt] = useState("");
   // Category stored as Set of "decor" | "apparel" — empty means "all"
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
-  const [styleBaseImageUrl, setStyleBaseImageUrl] = useState<string>("");
+  const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
+  const MAX_BASE_IMAGES = 5;
 
   // Sub-style options
   const [subStylesEnabled, setSubStylesEnabled] = useState(false);
@@ -194,7 +196,7 @@ export default function AdminStyles() {
     setStyleName("");
     setStylePrompt("");
     setSelectedCategories(new Set());
-    setStyleBaseImageUrl("");
+    setStyleBaseImageUrls([]);
     setStylePromptPlaceholder("");
     setSubStylesEnabled(false);
     setSubStyleLabel("Style");
@@ -235,7 +237,10 @@ export default function AdminStyles() {
     setStyleName(style.name);
     setStylePrompt(style.promptPrefix || "");
     setSelectedCategories(dbValueToCategories(style.category));
-    setStyleBaseImageUrl((style as any).baseImageUrl || "");
+    // Load base images: prefer new array, fall back to legacy single URL
+    const existingBaseUrls: string[] = (style as any).baseImageUrls ||
+      ((style as any).baseImageUrl ? [(style as any).baseImageUrl] : []);
+    setStyleBaseImageUrls(existingBaseUrls);
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
 
     const opts: StyleOptions | null = (style as any).options ?? null;
@@ -255,34 +260,62 @@ export default function AdminStyles() {
   };
 
   const handleBaseImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     setIsUploadingBaseImage(true);
     try {
-      const objectPath = await uploadFile(file);
-      setStyleBaseImageUrl(objectPath);
+      const newPaths: string[] = [];
+      for (const file of files) {
+        if (styleBaseImageUrls.length + newPaths.length >= MAX_BASE_IMAGES) break;
+        const objectPath = await uploadFile(file);
+        newPaths.push(objectPath);
+      }
+      setStyleBaseImageUrls((prev) => [...prev, ...newPaths].slice(0, MAX_BASE_IMAGES));
     } catch (err) {
       toast({ title: "Upload failed", description: String(err), variant: "destructive" });
     } finally {
       setIsUploadingBaseImage(false);
-      // Reset input so same file can be re-selected
       e.target.value = "";
     }
   };
 
+  const removeBaseImage = (urlIdx: number) => {
+    setStyleBaseImageUrls((prev) => prev.filter((_, i) => i !== urlIdx));
+  };
+
   const handleChoiceImageUpload = async (idx: number, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
     setUploadingChoiceIdx(idx);
     try {
-      const objectPath = await uploadFile(file);
-      updateSubStyleChoice(idx, "baseImageUrl", objectPath);
+      const existing = subStyleChoices[idx]?.baseImageUrls ||
+        (subStyleChoices[idx]?.baseImageUrl ? [subStyleChoices[idx].baseImageUrl!] : []);
+      const newPaths: string[] = [];
+      for (const file of files) {
+        if (existing.length + newPaths.length >= MAX_BASE_IMAGES) break;
+        const objectPath = await uploadFile(file);
+        newPaths.push(objectPath);
+      }
+      const merged = [...existing, ...newPaths].slice(0, MAX_BASE_IMAGES);
+      setSubStyleChoices((prev) =>
+        prev.map((c, i) => i === idx ? { ...c, baseImageUrls: merged, baseImageUrl: merged[0] || "" } : c)
+      );
     } catch (err) {
       toast({ title: "Upload failed", description: String(err), variant: "destructive" });
     } finally {
       setUploadingChoiceIdx(null);
       e.target.value = "";
     }
+  };
+
+  const removeChoiceImage = (choiceIdx: number, urlIdx: number) => {
+    setSubStyleChoices((prev) =>
+      prev.map((c, i) => {
+        if (i !== choiceIdx) return c;
+        const urls = (c.baseImageUrls || (c.baseImageUrl ? [c.baseImageUrl] : [])).filter((_, j) => j !== urlIdx);
+        return { ...c, baseImageUrls: urls, baseImageUrl: urls[0] || "" };
+      })
+    );
   };
 
   const handleSaveStyle = () => {
@@ -301,7 +334,9 @@ export default function AdminStyles() {
       name: styleName,
       promptPrefix: stylePrompt,
       category,
-      baseImageUrl: styleBaseImageUrl || null,
+      // Send both: new array for multi-image support, legacy single for backwards compat
+      baseImageUrl: styleBaseImageUrls[0] || null,
+      baseImageUrls: styleBaseImageUrls.length > 0 ? styleBaseImageUrls : null,
       promptPlaceholder: stylePromptPlaceholder || null,
       options,
     };
@@ -317,7 +352,7 @@ export default function AdminStyles() {
   const addSubStyleChoice = () => {
     setSubStyleChoices((prev) => [
       ...prev,
-      { id: `choice-${Date.now()}`, name: "", promptFragment: "", baseImageUrl: "" },
+      { id: `choice-${Date.now()}`, name: "", promptFragment: "", baseImageUrl: "", baseImageUrls: [] },
     ]);
   };
 
@@ -610,37 +645,39 @@ export default function AdminStyles() {
                 </p>
               </div>
 
-              {/* Base Reference Image */}
+              {/* Base Reference Images — up to 5 */}
               <div className="space-y-2">
                 <Label>
-                  Base Reference Image{" "}
-                  <span className="text-muted-foreground font-normal">(optional)</span>
+                  Base Reference Images{" "}
+                  <span className="text-muted-foreground font-normal">(optional, up to {MAX_BASE_IMAGES})</span>
                 </Label>
-                <div className="flex items-center gap-3">
-                  {styleBaseImageUrl ? (
-                    <div className="relative shrink-0">
-                      <img
-                        src={styleBaseImageUrl}
-                        alt="Base"
-                        className="w-12 h-12 rounded object-cover border"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setStyleBaseImageUrl("")}
-                        className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
-                      >
-                        <X className="h-2.5 w-2.5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="w-12 h-12 rounded border border-dashed flex items-center justify-center bg-muted/50 shrink-0">
-                      <ImagePlus className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                  )}
-                  <div className="flex-1">
+                {/* Thumbnail grid */}
+                {styleBaseImageUrls.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {styleBaseImageUrls.map((url, urlIdx) => (
+                      <div key={urlIdx} className="relative shrink-0">
+                        <img
+                          src={url}
+                          alt={`Base ${urlIdx + 1}`}
+                          className="w-14 h-14 rounded object-cover border"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeBaseImage(urlIdx)}
+                          className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {styleBaseImageUrls.length < MAX_BASE_IMAGES && (
+                  <div>
                     <Input
                       type="file"
                       accept="image/*"
+                      multiple
                       onChange={handleBaseImageUpload}
                       disabled={isUploadingBaseImage}
                       className="text-xs"
@@ -649,9 +686,9 @@ export default function AdminStyles() {
                       <p className="text-xs text-muted-foreground mt-1">Uploading...</p>
                     )}
                   </div>
-                </div>
+                )}
                 <p className="text-xs text-muted-foreground">
-                  AI will use this image as a visual foundation alongside the customer's prompt and reference image
+                  AI uses these as visual references alongside the customer's prompt. Add up to {MAX_BASE_IMAGES} images.
                 </p>
               </div>
 
@@ -767,48 +804,58 @@ export default function AdminStyles() {
                               className="text-sm resize-none"
                             />
                           </div>
-                          {/* Per-choice reference image */}
+                          {/* Per-choice reference images — up to 5 */}
                           <div className="space-y-1">
                             <Label className="text-xs">
-                              Style Reference Image{" "}
-                              <span className="text-muted-foreground font-normal">(optional)</span>
+                              Style Reference Images{" "}
+                              <span className="text-muted-foreground font-normal">(optional, up to {MAX_BASE_IMAGES})</span>
                             </Label>
-                            <div className="flex items-center gap-2">
-                              {choice.baseImageUrl ? (
-                                <div className="relative shrink-0">
-                                  <img
-                                    src={choice.baseImageUrl}
-                                    alt={choice.name}
-                                    className="w-10 h-10 rounded object-cover border"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => updateSubStyleChoice(idx, "baseImageUrl", "")}
-                                    className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
-                                  >
-                                    <X className="h-2.5 w-2.5" />
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="w-10 h-10 rounded border border-dashed flex items-center justify-center bg-muted/50 shrink-0">
-                                  <ImagePlus className="h-4 w-4 text-muted-foreground" />
-                                </div>
-                              )}
-                              <div className="flex-1">
-                                <Input
-                                  type="file"
-                                  accept="image/*"
-                                  onChange={(e) => handleChoiceImageUpload(idx, e)}
-                                  disabled={uploadingChoiceIdx === idx}
-                                  className="text-xs h-8"
-                                />
-                                {uploadingChoiceIdx === idx && (
-                                  <p className="text-xs text-muted-foreground mt-0.5">Uploading...</p>
-                                )}
-                              </div>
-                            </div>
+                            {/* Thumbnail grid for this choice */}
+                            {(() => {
+                              const choiceImgs = choice.baseImageUrls ||
+                                (choice.baseImageUrl ? [choice.baseImageUrl] : []);
+                              return (
+                                <>
+                                  {choiceImgs.length > 0 && (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {choiceImgs.map((url, urlIdx) => (
+                                        <div key={urlIdx} className="relative shrink-0">
+                                          <img
+                                            src={url}
+                                            alt={`${choice.name} ref ${urlIdx + 1}`}
+                                            className="w-10 h-10 rounded object-cover border"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => removeChoiceImage(idx, urlIdx)}
+                                            className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
+                                          >
+                                            <X className="h-2.5 w-2.5" />
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {choiceImgs.length < MAX_BASE_IMAGES && (
+                                    <div>
+                                      <Input
+                                        type="file"
+                                        accept="image/*"
+                                        multiple
+                                        onChange={(e) => handleChoiceImageUpload(idx, e)}
+                                        disabled={uploadingChoiceIdx === idx}
+                                        className="text-xs h-8"
+                                      />
+                                      {uploadingChoiceIdx === idx && (
+                                        <p className="text-xs text-muted-foreground mt-0.5">Uploading...</p>
+                                      )}
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
                             <p className="text-xs text-muted-foreground">
-                              AI uses this as a visual reference when this sub-style is selected
+                              AI uses these as visual references when this sub-style is selected
                             </p>
                           </div>
                         </div>

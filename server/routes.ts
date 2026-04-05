@@ -1544,7 +1544,12 @@ export async function registerRoutes(
           if (selectedStyle && selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
             styleCategory = selectedStyle.category || "all";
-            if (selectedStyle.baseImageUrl) styleBaseImageUrl = selectedStyle.baseImageUrl;
+            // Prefer baseImageUrls array, fall back to single baseImageUrl
+            const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
+              (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
+            if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
+            // Store all URLs for later use
+            (req as any)._styleBaseImageUrls = dbBaseUrls;
           }
         }
         // Fall back to hardcoded STYLE_PRESETS only if no merchant context or no match
@@ -1797,9 +1802,11 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Build image input array: style base image + customer reference image
+      // Build image input array: all style base images + customer reference image
       const imageInputUrls: string[] = [];
-      if (styleBaseImageUrl) imageInputUrls.push(styleBaseImageUrl);
+      const allStyleBaseUrls: string[] = (req as any)._styleBaseImageUrls ||
+        (styleBaseImageUrl ? [styleBaseImageUrl] : []);
+      imageInputUrls.push(...allStyleBaseUrls);
       if (customerImageUrl) imageInputUrls.push(customerImageUrl);
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
 
@@ -2373,13 +2380,17 @@ console.log("[shopify/session] installation ok", {
       let stylePromptPrefix = "";
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
+      let embedStyleBaseImageUrls: string[] = [];
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
           embedStyleCategory = selectedStyle.category || "all";
-          if (selectedStyle.baseImageUrl) embedStyleBaseImageUrl = selectedStyle.baseImageUrl;
+          const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
+            (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
+          embedStyleBaseImageUrls = dbBaseUrls;
+          if (dbBaseUrls.length > 0) embedStyleBaseImageUrl = dbBaseUrls[0];
         }
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
@@ -2391,6 +2402,7 @@ console.log("[shopify/session] installation ok", {
       }
       if (!embedStyleBaseImageUrl && clientBaseImageUrlEmbed) {
         embedStyleBaseImageUrl = clientBaseImageUrlEmbed;
+        embedStyleBaseImageUrls = [clientBaseImageUrlEmbed];
       }
 
       // Load product type config if provided
@@ -2542,7 +2554,8 @@ ${textEdgeRestrictions}
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
-      if (embedStyleBaseImageUrl) embedImageInputUrls.push(embedStyleBaseImageUrl);
+      // Push all style base images (up to 5), not just the first one
+      for (const u of embedStyleBaseImageUrls) embedImageInputUrls.push(u);
       for (const u of embedCustomerImageUrls) embedImageInputUrls.push(u);
       const inputImageUrl: string | string[] | null = embedImageInputUrls.length > 1 ? embedImageInputUrls : embedImageInputUrls[0] || null;
 
@@ -5374,6 +5387,7 @@ ${textEdgeRestrictions}
       let stylePromptPrefix = "";
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
+      let sfStyleBaseImageUrls: string[] = [];
       if (stylePreset && installation.merchantId) {
         t1 = Date.now();
         const dbStyles = await withTimeout(
@@ -5384,7 +5398,10 @@ ${textEdgeRestrictions}
         if (selectedStyle && selectedStyle.promptPrefix) {
           stylePromptPrefix = selectedStyle.promptPrefix;
           sfStyleCategory = selectedStyle.category || "all";
-          if (selectedStyle.baseImageUrl) sfStyleBaseImageUrl = selectedStyle.baseImageUrl;
+          const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
+            (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
+          sfStyleBaseImageUrls = dbBaseUrls;
+          if (dbBaseUrls.length > 0) sfStyleBaseImageUrl = dbBaseUrls[0];
         }
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
@@ -5396,6 +5413,7 @@ ${textEdgeRestrictions}
       }
       if (!sfStyleBaseImageUrl && clientBaseImageUrlSf) {
         sfStyleBaseImageUrl = clientBaseImageUrlSf;
+        sfStyleBaseImageUrls = [clientBaseImageUrlSf];
       }
 
       // Load product type config
@@ -5664,9 +5682,9 @@ ${textEdgeRestrictions}
           const sfCustomerImageUrl: string | null = sfCustomerImageUrls[0] || null;
           console.log(`${W} ref image resolved +${Date.now() - wStart}ms`);
 
-          // Build image input array: style base image + customer reference(s)
+          // Build image input array: all style base images (up to 5) + customer reference(s)
           const sfImageInputUrls: string[] = [];
-          if (sfStyleBaseImageUrl) sfImageInputUrls.push(sfStyleBaseImageUrl);
+          for (const u of sfStyleBaseImageUrls) sfImageInputUrls.push(u);
           for (const u of sfCustomerImageUrls) sfImageInputUrls.push(u);
           const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
 
@@ -8611,6 +8629,7 @@ ${textEdgeRestrictions}
           options: s.options ?? (hardcoded as any)?.options ?? null,
           promptPlaceholder: s.promptPlaceholder ?? (hardcoded as any)?.promptPlaceholder ?? null,
           baseImageUrl: s.baseImageUrl ?? (hardcoded as any)?.baseImageUrl ?? null,
+          baseImageUrls: s.baseImageUrls ?? null,
         };
       });
       res.json(enriched);
@@ -8630,7 +8649,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder, options } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, options } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -8645,6 +8664,7 @@ ${textEdgeRestrictions}
         baseImageUrl: baseImageUrl || null,
         promptPlaceholder: promptPlaceholder || null,
         ...(options !== undefined ? { options: options || null } : {}),
+        ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
       res.json(preset);
     } catch (error) {
@@ -8669,7 +8689,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, promptPlaceholder, options } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, options } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -8680,6 +8700,7 @@ ${textEdgeRestrictions}
         baseImageUrl: baseImageUrl !== undefined ? (baseImageUrl || null) : (preset as any).baseImageUrl,
         promptPlaceholder: promptPlaceholder !== undefined ? (promptPlaceholder || null) : (preset as any).promptPlaceholder,
         ...(options !== undefined ? { options: options || null } : {}),
+        ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
 
       configCache.delete("global"); // invalidate so storefront picks up new placeholder
