@@ -1,5 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { generatePattern, type PatternType } from "./picsart-client";
+import { generatePattern, removeBackground, type PatternType } from "./picsart-client";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
@@ -7402,8 +7402,11 @@ ${textEdgeRestrictions}
   }, 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern via Picsart
-  // Accepts { imageUrl, pattern, scale, rotate, offsetX, offsetY, width, height }
+  // Accepts { imageUrl, pattern, scale, rotate, offsetX, offsetY, width, height, bgColor }
   // Returns { patternUrl }
+  // Pipeline: (1) Picsart removebg strips the AI chroma-key background, replacing it
+  //           with bgColor (or transparency if omitted), then (2) Picsart pattern tiler
+  //           tiles the clean motif into the repeating pattern.
   app.post("/api/pattern/preview", async (req: any, res: Response) => {
     try {
       const {
@@ -7415,6 +7418,7 @@ ${textEdgeRestrictions}
         offsetY = 0,
         width = 1024,
         height = 1024,
+        bgColor,
       } = req.body as {
         imageUrl: string;
         pattern?: PatternType;
@@ -7424,6 +7428,8 @@ ${textEdgeRestrictions}
         offsetY?: number;
         width?: number;
         height?: number;
+        /** Optional hex colour (e.g. "#ffffff") to fill behind the subject after bg removal */
+        bgColor?: string;
       };
 
       if (!imageUrl) {
@@ -7439,8 +7445,26 @@ ${textEdgeRestrictions}
         console.log("[Pattern Preview] Converted relative URL:", absoluteImageUrl);
       }
 
+      // Step 1: Remove the AI chroma-key (#FF00FF) background via Picsart removebg.
+      // If bgColor is provided the subject is composited onto that solid colour;
+      // otherwise a transparent PNG cutout is used as the motif for tiling.
+      console.log("[Pattern Preview] Running removebg, bgColor:", bgColor ?? "transparent");
+      let motifUrl = absoluteImageUrl;
+      try {
+        const removeBgResult = await removeBackground({
+          imageUrl: absoluteImageUrl,
+          bgColor: bgColor || undefined,
+        });
+        motifUrl = removeBgResult.url;
+        console.log("[Pattern Preview] removebg complete:", motifUrl.substring(0, 80));
+      } catch (removeBgErr: any) {
+        console.warn("[Pattern Preview] removebg failed, using original motif:", removeBgErr.message);
+        // Fall back to original image so the pattern step still runs
+      }
+
+      // Step 2: Tile the clean motif into a seamless pattern
       const result = await generatePattern({
-        imageUrl: absoluteImageUrl,
+        imageUrl: motifUrl,
         pattern,
         scale,
         rotate,

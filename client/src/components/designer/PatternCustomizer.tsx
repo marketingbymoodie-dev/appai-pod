@@ -4,6 +4,11 @@
  * After the AI generates a motif, AOP products need it tiled into a seamless
  * pattern via Picsart before the mockup can be generated.
  *
+ * Pipeline:
+ *   1. Picsart removebg — strips the AI chroma-key (#FF00FF) background,
+ *      replacing it with the user-chosen background colour (or transparency).
+ *   2. Picsart pattern tiler — tiles the clean motif into a seamless repeat.
+ *
  * Usage:
  *   <PatternCustomizer
  *     motifUrl={generatedImageUrl}
@@ -44,9 +49,21 @@ const PATTERN_OPTIONS: PatternOption[] = [
   { value: "diamond", label: "Diamond", description: "Diagonal diamond grid" },
 ];
 
+/** Preset background colours shown as quick-pick swatches */
+const BG_PRESETS = [
+  { label: "Transparent", value: "" },
+  { label: "White",       value: "#ffffff" },
+  { label: "Black",       value: "#000000" },
+  { label: "Navy",        value: "#1e3a5f" },
+  { label: "Forest",      value: "#2d5a27" },
+  { label: "Burgundy",    value: "#800020" },
+  { label: "Sky",         value: "#87ceeb" },
+  { label: "Cream",       value: "#fffdd0" },
+];
+
 const PREVIEW_SIZE = 1024;
 const APPLY_CAP = 2048;
-const COUNTDOWN_SECONDS = 5;
+const COUNTDOWN_SECONDS = 8; // removebg + pattern = two API calls
 
 export interface PatternApplyOptions {
   mirrorLegs: boolean;
@@ -73,12 +90,17 @@ export function PatternCustomizer({
   isLoading = false,
 }: PatternCustomizerProps) {
   const [pattern, setPattern] = useState<PatternType>("tile");
-  const [scale, setScale] = useState<number>(1.5);
+  // Default scale reduced to 0.5× so motifs tile smaller (more repeats visible)
+  const [scale, setScale] = useState<number>(0.5);
   const [mirrorLegs, setMirrorLegs] = useState<boolean>(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Background colour — empty string means transparent
+  const [bgColor, setBgColor] = useState<string>("#ffffff");
+  const [customBgColor, setCustomBgColor] = useState<string>("#ffffff");
 
   // Countdown state
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -113,7 +135,8 @@ export function PatternCustomizer({
 
   const callPatternApi = useCallback(async (width: number, height: number): Promise<string | null> => {
     setError(null);
-    const body = { imageUrl: motifUrl, pattern, scale, width, height };
+    const body: Record<string, unknown> = { imageUrl: motifUrl, pattern, scale, width, height };
+    if (bgColor) body.bgColor = bgColor;
     const res = await fetch("/api/pattern/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -126,7 +149,7 @@ export function PatternCustomizer({
     }
     const data = await res.json();
     return data.patternUrl ?? null;
-  }, [motifUrl, pattern, scale]);
+  }, [motifUrl, pattern, scale, bgColor]);
 
   const handlePreview = async () => {
     setIsPreviewing(true);
@@ -157,7 +180,7 @@ export function PatternCustomizer({
 
   const busy = isPreviewing || isApplying || isLoading;
   const showSpinner = isPreviewing || isApplying;
-  const spinnerLabel = isApplying ? "Applying pattern to product…" : "Expanding pattern…";
+  const spinnerLabel = isApplying ? "Applying pattern to product…" : "Removing background & tiling…";
 
   return (
     <div className="space-y-4 p-4 border rounded-lg bg-muted/30">
@@ -182,7 +205,10 @@ export function PatternCustomizer({
         </div>
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground text-center">Pattern preview</p>
-          <div className="aspect-square rounded overflow-hidden border bg-background flex items-center justify-center relative">
+          <div
+            className="aspect-square rounded overflow-hidden border flex items-center justify-center relative"
+            style={{ backgroundColor: bgColor || "transparent" }}
+          >
             {previewUrl && !showSpinner ? (
               <img
                 src={previewUrl}
@@ -245,7 +271,7 @@ export function PatternCustomizer({
             Scale <span className="text-muted-foreground">({scale.toFixed(1)}x)</span>
           </Label>
           <Slider
-            min={0.5}
+            min={0.2}
             max={5}
             step={0.1}
             value={[scale]}
@@ -257,6 +283,52 @@ export function PatternCustomizer({
             <span>Larger</span>
           </div>
         </div>
+      </div>
+
+      {/* Background colour picker */}
+      <div className="space-y-2">
+        <Label className="text-xs">Background colour</Label>
+        <div className="flex flex-wrap gap-2 items-center">
+          {BG_PRESETS.map((preset) => (
+            <button
+              key={preset.value}
+              type="button"
+              title={preset.label}
+              onClick={() => { setBgColor(preset.value); setCustomBgColor(preset.value || "#ffffff"); setPreviewUrl(null); }}
+              className="w-7 h-7 rounded-full border-2 flex-shrink-0 transition-transform hover:scale-110"
+              style={{
+                backgroundColor: preset.value || "transparent",
+                borderColor: bgColor === preset.value ? "#111827" : "#d1d5db",
+                backgroundImage: preset.value === ""
+                  ? "linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)"
+                  : undefined,
+                backgroundSize: preset.value === "" ? "6px 6px" : undefined,
+                backgroundPosition: preset.value === "" ? "0 0, 0 3px, 3px -3px, -3px 0px" : undefined,
+                outline: bgColor === preset.value ? "2px solid #111827" : "none",
+                outlineOffset: "2px",
+              }}
+            />
+          ))}
+          {/* Custom colour input */}
+          <div className="flex items-center gap-1.5">
+            <input
+              type="color"
+              value={customBgColor}
+              onChange={(e) => {
+                setCustomBgColor(e.target.value);
+                setBgColor(e.target.value);
+                setPreviewUrl(null);
+              }}
+              className="w-7 h-7 rounded cursor-pointer border border-gray-300"
+              title="Custom colour"
+            />
+            <span className="text-xs text-muted-foreground">Custom</span>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          The AI background will be removed and replaced with this colour.
+          {bgColor === "" && " Transparent = subject only, no fill."}
+        </p>
       </div>
 
       {/* Mirror toggle — only shown for products with paired left/right panels */}

@@ -1,15 +1,90 @@
 /**
- * Picsart Pattern Generator API client.
- * Docs: https://docs.picsart.io/reference/image-generate-pattern
+ * Picsart API client.
  *
- * Endpoint: POST https://api.picsart.io/tools/1.0/background/pattern
+ * Endpoints used:
+ *   POST /tools/1.0/removebg          — Remove (or replace) background
+ *   POST /tools/1.0/background/pattern — Tile a motif into a seamless pattern
  *
- * Takes a source motif image and tiles it into a seamless repeating pattern
- * at a requested output size. Used for All-Over-Print (AOP) products where
- * the same pattern is applied across all panels.
+ * Docs:
+ *   https://docs.picsart.io/reference/image-remove-background
+ *   https://docs.picsart.io/reference/image-generate-pattern
  */
 
 const PICSART_API_BASE = "https://api.picsart.io/tools/1.0";
+
+// ─── Remove Background ────────────────────────────────────────────────────────
+
+export interface RemoveBgParams {
+  /** URL of the source image (must be publicly accessible) */
+  imageUrl: string;
+  /**
+   * Optional background colour to fill instead of transparency.
+   * Hex code (e.g. "#ffffff") or colour name (e.g. "white").
+   * If omitted the result will be a transparent PNG.
+   */
+  bgColor?: string;
+}
+
+export interface RemoveBgResult {
+  url: string;
+  id: string;
+}
+
+/**
+ * Remove (or replace) the background of an image using Picsart.
+ * When bgColor is provided the subject is composited onto that solid colour.
+ * When bgColor is omitted the result is a transparent PNG cutout.
+ */
+export async function removeBackground(params: RemoveBgParams): Promise<RemoveBgResult> {
+  const apiKey = process.env.PICSART_API_KEY;
+  if (!apiKey) {
+    throw new Error("PICSART_API_KEY environment variable is not set");
+  }
+
+  const formData = new FormData();
+  formData.append("image_url", params.imageUrl);
+  formData.append("output_type", "cutout");
+  formData.append("format", "PNG");
+  if (params.bgColor) {
+    // Strip leading # — Picsart accepts both formats
+    formData.append("bg_color", params.bgColor.replace(/^#/, ""));
+  }
+
+  const response = await fetch(`${PICSART_API_BASE}/removebg`, {
+    method: "POST",
+    headers: {
+      "X-Picsart-API-Key": apiKey,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const errJson = await response.json() as { detail?: string; message?: string };
+      detail = errJson.detail ?? errJson.message ?? "";
+    } catch {
+      detail = await response.text();
+    }
+    throw new Error(`Picsart removebg API error ${response.status}: ${detail}`);
+  }
+
+  const data = await response.json() as {
+    data?: { id: string; url: string };
+    status?: string;
+  };
+
+  const resultId = data.data?.id ?? "";
+  const resultUrl = data.data?.url ?? "";
+
+  if (!resultUrl) {
+    throw new Error("Picsart removebg API returned no image URL");
+  }
+
+  return { url: resultUrl, id: resultId };
+}
+
+// ─── Pattern Generator ────────────────────────────────────────────────────────
 
 export type PatternType = "hex" | "mirror" | "diamond" | "hex2" | "tile";
 
