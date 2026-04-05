@@ -2,12 +2,13 @@
  * PatternCustomizer — two-step AOP pattern tool.
  *
  * After the AI generates a motif, AOP products need it tiled into a seamless
- * pattern via Picsart before the mockup can be generated.
+ * pattern before the mockup can be generated.
  *
  * Pipeline:
- *   1. Picsart removebg — strips the AI chroma-key (#FF00FF) background,
- *      replacing it with the user-chosen background colour (or transparency).
- *   2. Picsart pattern tiler — tiles the clean motif into a seamless repeat.
+ *   1. Picsart removebg — strips the AI white background, producing a
+ *      transparent PNG cutout of the motif.
+ *   2. Sharp tileImage (server-side) — tiles the clean motif into a seamless
+ *      grid pattern. Replaces Picsart pattern API to avoid geometric distortion.
  *
  * Usage:
  *   <PatternCustomizer
@@ -33,7 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-export type PatternType = "tile" | "hex" | "mirror" | "diamond" | "hex2";
+export type PatternType = "grid" | "brick" | "half";
 
 interface PatternOption {
   value: PatternType;
@@ -42,11 +43,9 @@ interface PatternOption {
 }
 
 const PATTERN_OPTIONS: PatternOption[] = [
-  { value: "tile",    label: "Grid",    description: "Classic straight repeat" },
-  { value: "mirror",  label: "Mirror",  description: "Reflected on each tile" },
-  { value: "hex",     label: "Hex",     description: "Honeycomb offset repeat" },
-  { value: "hex2",    label: "Hex Alt", description: "Alternate honeycomb" },
-  { value: "diamond", label: "Diamond", description: "Diagonal diamond grid" },
+  { value: "grid",  label: "Grid",        description: "Classic straight repeat" },
+  { value: "brick", label: "Brick offset", description: "Each row offset by 50%" },
+  { value: "half",  label: "Half-drop",   description: "Each column offset by 50%" },
 ];
 
 /** Preset background colours shown as quick-pick swatches */
@@ -63,7 +62,7 @@ const BG_PRESETS = [
 
 const PREVIEW_SIZE = 1024;
 const APPLY_CAP = 2048;
-const COUNTDOWN_SECONDS = 8; // removebg + pattern = two API calls
+const COUNTDOWN_SECONDS = 10; // removebg (Picsart) + tiling (Sharp) = two steps
 
 export interface PatternApplyOptions {
   mirrorLegs: boolean;
@@ -89,7 +88,7 @@ export function PatternCustomizer({
   onApply,
   isLoading = false,
 }: PatternCustomizerProps) {
-  const [pattern, setPattern] = useState<PatternType>("tile");
+  const [pattern, setPattern] = useState<PatternType>("grid");
   // Default scale 1.5× — Picsart minimum is 1.0, 1.5 gives a good number of repeats
   const [scale, setScale] = useState<number>(1.5);
   const [mirrorLegs, setMirrorLegs] = useState<boolean>(true);

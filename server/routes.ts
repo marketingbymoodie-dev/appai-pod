@@ -1,5 +1,6 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import { generatePattern, removeBackground, type PatternType } from "./picsart-client";
+import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
@@ -7429,31 +7430,29 @@ ${textEdgeRestrictions}
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
 
-  // POST /api/pattern/preview - Generate a tiled AOP pattern via Picsart
-  // Accepts { imageUrl, pattern, scale, rotate, offsetX, offsetY, width, height, bgColor }
+  // POST /api/pattern/preview - Generate a tiled AOP pattern
+  // Accepts { imageUrl, pattern, scale, width, height, bgColor }
   // Returns { patternUrl }
-  // Pipeline: (1) Picsart removebg strips the AI chroma-key background, replacing it
-  //           with bgColor (or transparency if omitted), then (2) Picsart pattern tiler
-  //           tiles the clean motif into the repeating pattern.
+  // Pipeline:
+  //   (1) Picsart removebg — strips the AI white background, producing a transparent PNG cutout.
+  //       If bgColor is provided, the cutout is composited onto that colour by Picsart.
+  //       We pass bgColor="" to get a transparent cutout, then Sharp fills the canvas bg.
+  //   (2) Sharp tileImage — tiles the clean motif into a seamless grid pattern.
+  //       This replaces the Picsart pattern API to avoid geometric distortion.
   app.post("/api/pattern/preview", async (req: any, res: Response) => {
     try {
       const {
         imageUrl,
-        pattern = "tile",
-        scale = 1.0,
-        rotate = 0,
-        offsetX = 0,
-        offsetY = 0,
+        pattern = "grid",
+        scale = 1.5,
         width = 1024,
         height = 1024,
         bgColor,
       } = req.body as {
         imageUrl: string;
-        pattern?: PatternType;
+        /** Tiling mode: "grid" | "brick" | "half" (default: "grid") */
+        pattern?: string;
         scale?: number;
-        rotate?: number;
-        offsetX?: number;
-        offsetY?: number;
         width?: number;
         height?: number;
         /** Optional hex colour (e.g. "#ffffff") to fill behind the subject after bg removal */
@@ -7464,7 +7463,7 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "imageUrl is required" });
       }
 
-      // Convert relative /objects/ paths to absolute public URLs for Picsart
+      // Convert relative /objects/ paths to absolute public URLs for Picsart removebg
       let absoluteImageUrl = imageUrl;
       if (imageUrl.startsWith("/objects/")) {
         const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
@@ -7473,47 +7472,59 @@ ${textEdgeRestrictions}
         console.log("[Pattern Preview] Converted relative URL:", absoluteImageUrl);
       }
 
-      // Step 1: Remove the AI chroma-key (#FF00FF) background via Picsart removebg.
-      // If bgColor is provided the subject is composited onto that solid colour;
-      // otherwise a transparent PNG cutout is used as the motif for tiling.
-      console.log("[Pattern Preview] Running removebg, bgColor:", bgColor ?? "transparent");
-      let motifUrl = absoluteImageUrl;
+      // Step 1: Picsart removebg — remove the AI-generated white background.
+      // We always request a transparent cutout here (no bgColor to Picsart);
+      // Sharp will fill the canvas background in step 2.
+      console.log("[Pattern Preview] Running Picsart removebg (transparent cutout)...");
+      let motifBuffer: Buffer;
       try {
         const removeBgResult = await removeBackground({
           imageUrl: absoluteImageUrl,
-          bgColor: bgColor || undefined,
+          // No bgColor — we want a transparent PNG cutout for Sharp tiling
         });
-        motifUrl = removeBgResult.url;
-        console.log("[Pattern Preview] removebg complete:", motifUrl.substring(0, 80));
+        const motifResponse = await fetch(removeBgResult.url);
+        if (!motifResponse.ok) {
+          throw new Error(`Failed to download removebg result (${motifResponse.status})`);
+        }
+        motifBuffer = Buffer.from(await motifResponse.arrayBuffer());
+        console.log("[Pattern Preview] removebg complete, motif buffer:", motifBuffer.length, "bytes");
       } catch (removeBgErr: any) {
-        console.warn("[Pattern Preview] removebg failed, using original motif:", removeBgErr.message);
-        // Fall back to original image so the pattern step still runs
+        console.warn("[Pattern Preview] removebg failed, fetching original motif:", removeBgErr.message);
+        // Fall back to original image
+        const origResponse = await fetch(absoluteImageUrl);
+        if (!origResponse.ok) {
+          throw new Error(`Failed to fetch original image (${origResponse.status})`);
+        }
+        motifBuffer = Buffer.from(await origResponse.arrayBuffer());
       }
 
-      // Step 2: Tile the clean motif into a seamless pattern
-      const result = await generatePattern({
-        imageUrl: motifUrl,
-        pattern,
+      // Step 2: Sharp tileImage — tile the transparent motif onto a canvas with bgColor fill.
+      // Map legacy Picsart pattern names to Sharp TileMode
+      const modeMap: Record<string, TileMode> = {
+        tile: "grid",
+        grid: "grid",
+        mirror: "grid",   // mirror not supported, fall back to grid
+        hex: "brick",     // closest approximation
+        hex2: "brick",
+        diamond: "half",  // closest approximation
+        brick: "brick",
+        half: "half",
+      };
+      const tileMode: TileMode = modeMap[pattern] ?? "grid";
+
+      console.log(`[Pattern Preview] Tiling with Sharp: mode=${tileMode} scale=${scale} size=${width}x${height} bg=${bgColor ?? "transparent"}`);
+      const tileResult = await tileImage({
+        motifBuffer,
+        outputWidth: Math.min(width, 4096),
+        outputHeight: Math.min(height, 4096),
         scale,
-        rotate,
-        offsetX,
-        offsetY,
-        width,
-        height,
+        mode: tileMode,
+        bgColor: bgColor || "",
       });
+      const patternBuffer = tileResult.buffer;
+      console.log(`[Pattern Preview] Sharp tiling complete: ${tileResult.cols}x${tileResult.rows} tiles, buffer=${patternBuffer.length} bytes`);
 
-      if (!result.url) {
-        return res.status(500).json({ error: "Picsart returned no pattern URL" });
-      }
-
-      // Download the pattern from Picsart CDN and persist locally so
-      // Printify (and our own server) can always reach it.
-      console.log("[Pattern Preview] Downloading pattern from Picsart CDN:", result.url.substring(0, 80));
-      const picsartResponse = await fetch(result.url);
-      if (!picsartResponse.ok) {
-        throw new Error(`Failed to download pattern from Picsart CDN (${picsartResponse.status})`);
-      }
-      const patternBuffer = Buffer.from(await picsartResponse.arrayBuffer());
+      // Persist the pattern so Printify (and our own server) can always reach it.
       const patternId = crypto.randomUUID();
       const patternFilename = `pattern_${patternId}.png`;
 
@@ -7547,7 +7558,7 @@ ${textEdgeRestrictions}
         patternUrl = `/objects/designs/${patternFilename}`;
       }
 
-      res.json({ patternUrl, patternId: result.id });
+      res.json({ patternUrl, patternId });
     } catch (error: any) {
       console.error("[Pattern Preview] Error:", error);
       res.status(500).json({ error: error.message ?? "Failed to generate pattern" });

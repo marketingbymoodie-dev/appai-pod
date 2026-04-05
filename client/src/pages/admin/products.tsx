@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
@@ -285,6 +286,22 @@ export default function AdminProducts() {
     onError: (error: Error) => {
       setRefreshVariantsMutatingId(null);
       toast({ title: "Failed to refresh variants", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Toggle isAllOverPrint flag
+  const toggleAopMutation = useMutation({
+    mutationFn: async (data: { id: number; isAllOverPrint: boolean }) => {
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        isAllOverPrint: data.isAllOverPrint,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update AOP flag", description: error.message, variant: "destructive" });
     },
   });
 
@@ -579,6 +596,19 @@ export default function AdminProducts() {
                       <div>Aspect Ratio: {pt.aspectRatio}</div>
                       <div>Sizes: {JSON.parse(pt.sizes || "[]").length}</div>
                       <div>Colors: {JSON.parse(pt.frameColors || "[]").length}</div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-3">
+                      <Switch
+                        id={`aop-toggle-${pt.id}`}
+                        checked={!!pt.isAllOverPrint}
+                        onCheckedChange={(checked) =>
+                          toggleAopMutation.mutate({ id: pt.id, isAllOverPrint: checked })
+                        }
+                        data-testid={`switch-aop-${pt.id}`}
+                      />
+                      <Label htmlFor={`aop-toggle-${pt.id}`} className="text-sm cursor-pointer">
+                        All-Over Print (AOP)
+                      </Label>
                     </div>
                     <div className="flex gap-2 mt-4 flex-wrap">
                       <Button 
