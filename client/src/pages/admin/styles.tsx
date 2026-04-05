@@ -10,14 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Palette, Plus, Trash2, Edit2, Frame, Shirt, RefreshCw, ImagePlus } from "lucide-react";
+import { Palette, Plus, Trash2, Edit2, Frame, Shirt, RefreshCw, ImagePlus, X } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
-type StyleCategory = "all" | "decor" | "apparel";
 type FilterCategory = "show-all" | "all" | "decor" | "apparel";
 
 interface SubStyleChoice {
@@ -33,16 +32,22 @@ interface StyleOptions {
   choices: SubStyleChoice[];
 }
 
-/** Auto-resize a textarea to fit its content */
-function useAutoResize(value: string) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.style.height = "auto";
-      ref.current.style.height = `${ref.current.scrollHeight}px`;
-    }
-  }, [value]);
-  return ref;
+// ── Upload helper ─────────────────────────────────────────────────────────────
+// Uses the correct endpoint: POST /api/uploads/upload with raw binary body.
+// Returns the public path, e.g. "/objects/uploads/uuid.png"
+async function uploadFile(file: File): Promise<string> {
+  const res = await fetch("/api/uploads/upload", {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Upload failed (${res.status}): ${err}`);
+  }
+  const data = await res.json();
+  // Response: { objectPath: "/objects/uploads/uuid.png" }
+  return data.objectPath as string;
 }
 
 export default function AdminStyles() {
@@ -55,7 +60,8 @@ export default function AdminStyles() {
   // Main style fields
   const [styleName, setStyleName] = useState("");
   const [stylePrompt, setStylePrompt] = useState("");
-  const [styleCategory, setStyleCategory] = useState<StyleCategory>("all");
+  // Category stored as Set of "decor" | "apparel" — empty means "all"
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [styleBaseImageUrl, setStyleBaseImageUrl] = useState<string>("");
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
@@ -70,8 +76,16 @@ export default function AdminStyles() {
   // Filter
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("show-all");
 
-  // Auto-resize prompt textarea
-  const promptTextareaRef = useAutoResize(stylePrompt);
+  // Textarea ref for auto-resize
+  const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize textarea whenever value changes
+  useEffect(() => {
+    const el = promptTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + 2}px`;
+  }, [stylePrompt, styleDialogOpen]);
 
   // ── Queries ───────────────────────────────────────────────────────────────
   const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
@@ -157,7 +171,7 @@ export default function AdminStyles() {
     setEditingStyle(null);
     setStyleName("");
     setStylePrompt("");
-    setStyleCategory("all");
+    setSelectedCategories(new Set());
     setStyleBaseImageUrl("");
     setStylePromptPlaceholder("");
     setSubStylesEnabled(false);
@@ -166,16 +180,42 @@ export default function AdminStyles() {
     setSubStyleChoices([]);
   };
 
+  // Convert Set<string> to the DB category string
+  const categoriesToDbValue = (cats: Set<string>): string => {
+    if (cats.has("decor") && cats.has("apparel")) return "all";
+    if (cats.has("decor")) return "decor";
+    if (cats.has("apparel")) return "apparel";
+    return "all"; // default: show for all
+  };
+
+  // Convert DB category string to Set<string>
+  const dbValueToCategories = (cat: string | null | undefined): Set<string> => {
+    if (!cat || cat === "all") return new Set(["decor", "apparel"]);
+    if (cat === "decor") return new Set(["decor"]);
+    if (cat === "apparel") return new Set(["apparel"]);
+    return new Set(["decor", "apparel"]);
+  };
+
+  const toggleCategory = (cat: string) => {
+    setSelectedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) {
+        next.delete(cat);
+      } else {
+        next.add(cat);
+      }
+      return next;
+    });
+  };
+
   const handleEditStyle = (style: StylePresetDB) => {
     setEditingStyle(style);
     setStyleName(style.name);
-    setStylePrompt(style.promptPrefix);
-    setStyleCategory((style.category as StyleCategory) || "all");
+    setStylePrompt(style.promptPrefix || "");
+    setSelectedCategories(dbValueToCategories(style.category));
     setStyleBaseImageUrl((style as any).baseImageUrl || "");
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
 
-    // The server now merges hardcoded options into the response, so style.options
-    // will contain the hardcoded sub-styles for existing styles like Pet Portraits
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
       setSubStylesEnabled(true);
@@ -197,16 +237,14 @@ export default function AdminStyles() {
     if (!file) return;
     setIsUploadingBaseImage(true);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Upload failed");
-      const data = await res.json();
-      setStyleBaseImageUrl(data.url || data.objectUrl || "");
+      const objectPath = await uploadFile(file);
+      setStyleBaseImageUrl(objectPath);
     } catch (err) {
       toast({ title: "Upload failed", description: String(err), variant: "destructive" });
     } finally {
       setIsUploadingBaseImage(false);
+      // Reset input so same file can be re-selected
+      e.target.value = "";
     }
   };
 
@@ -215,20 +253,19 @@ export default function AdminStyles() {
     if (!file) return;
     setUploadingChoiceIdx(idx);
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await fetch("/api/upload", { method: "POST", body: formData });
-      if (!res.ok) throw new Error("Upload failed");
-      const data = await res.json();
-      updateSubStyleChoice(idx, "baseImageUrl", data.url || data.objectUrl || "");
+      const objectPath = await uploadFile(file);
+      updateSubStyleChoice(idx, "baseImageUrl", objectPath);
     } catch (err) {
       toast({ title: "Upload failed", description: String(err), variant: "destructive" });
     } finally {
       setUploadingChoiceIdx(null);
+      e.target.value = "";
     }
   };
 
   const handleSaveStyle = () => {
+    const category = categoriesToDbValue(selectedCategories);
+
     const options: StyleOptions | null =
       subStylesEnabled && subStyleChoices.length > 0
         ? {
@@ -241,9 +278,9 @@ export default function AdminStyles() {
     const payload = {
       name: styleName,
       promptPrefix: stylePrompt,
-      category: styleCategory,
-      baseImageUrl: styleBaseImageUrl || undefined,
-      promptPlaceholder: stylePromptPlaceholder || undefined,
+      category,
+      baseImageUrl: styleBaseImageUrl || null,
+      promptPlaceholder: stylePromptPlaceholder || null,
       options,
     };
 
@@ -276,7 +313,7 @@ export default function AdminStyles() {
     switch (category) {
       case "decor": return "Decor";
       case "apparel": return "Apparel";
-      default: return "All Products";
+      default: return "Decor + Apparel";
     }
   };
 
@@ -291,9 +328,8 @@ export default function AdminStyles() {
   const filteredStyles = useMemo(() => {
     if (!styles) return [];
     if (filterCategory === "show-all") return styles;
-    if (filterCategory === "decor" || filterCategory === "apparel") {
-      return styles.filter((s) => s.category === filterCategory || s.category === "all");
-    }
+    if (filterCategory === "decor") return styles.filter((s) => s.category === "decor" || s.category === "all");
+    if (filterCategory === "apparel") return styles.filter((s) => s.category === "apparel" || s.category === "all");
     return styles.filter((s) => s.category === filterCategory);
   }, [styles, filterCategory]);
 
@@ -330,7 +366,6 @@ export default function AdminStyles() {
               <Palette className="h-4 w-4 mr-2" />
               Show All
             </TabsTrigger>
-            <TabsTrigger value="all" data-testid="tab-all-products">All Products</TabsTrigger>
             <TabsTrigger value="decor" data-testid="tab-decor">
               <Frame className="h-4 w-4 mr-2" />
               Decor
@@ -361,7 +396,7 @@ export default function AdminStyles() {
                   <CardHeader className="pb-2">
                     <div className="flex items-start justify-between gap-2">
                       <CardTitle className="text-base">{style.name}</CardTitle>
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap justify-end">
                         <Badge variant="outline" className="text-xs flex items-center gap-1">
                           {getCategoryIcon(style.category || "all")}
                           {getCategoryLabel(style.category || "all")}
@@ -453,6 +488,7 @@ export default function AdminStyles() {
 
             {/* Scrollable body */}
             <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+
               {/* Style Name */}
               <div className="space-y-2">
                 <Label htmlFor="style-name">Style Name</Label>
@@ -465,35 +501,68 @@ export default function AdminStyles() {
                 />
               </div>
 
-              {/* Product Category */}
+              {/* Product Category — checkboxes so both can be selected */}
               <div className="space-y-2">
-                <Label htmlFor="style-category">Product Category</Label>
-                <Select value={styleCategory} onValueChange={(v) => setStyleCategory(v as StyleCategory)}>
-                  <SelectTrigger data-testid="select-style-category">
-                    <SelectValue placeholder="Select category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Products</SelectItem>
-                    <SelectItem value="decor">Decor (Prints, Posters, Frames)</SelectItem>
-                    <SelectItem value="apparel">Apparel (T-shirts, Clothing)</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label>Product Category</Label>
+                <div className="flex gap-6">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <Checkbox
+                      checked={selectedCategories.has("decor")}
+                      onCheckedChange={() => toggleCategory("decor")}
+                    />
+                    <span className="text-sm flex items-center gap-1.5">
+                      <Frame className="h-3.5 w-3.5" />
+                      Decor
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <Checkbox
+                      checked={selectedCategories.has("apparel")}
+                      onCheckedChange={() => toggleCategory("apparel")}
+                    />
+                    <span className="text-sm flex items-center gap-1.5">
+                      <Shirt className="h-3.5 w-3.5" />
+                      Apparel
+                    </span>
+                  </label>
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  Decor styles use full-bleed artwork; Apparel styles use centered graphics
+                  Select both to show this style for all product types. Decor uses full-bleed artwork; Apparel uses centered graphics.
                 </p>
               </div>
 
               {/* Prompt Prefix — auto-resizing textarea */}
               <div className="space-y-2">
                 <Label htmlFor="style-prompt">Prompt Prefix</Label>
-                <Textarea
+                <textarea
                   id="style-prompt"
                   ref={promptTextareaRef}
                   value={stylePrompt}
                   onChange={(e) => setStylePrompt(e.target.value)}
                   placeholder="A beautiful watercolor painting of..."
-                  className="resize-none overflow-hidden min-h-[96px]"
                   rows={4}
+                  style={{
+                    width: "100%",
+                    minHeight: "96px",
+                    resize: "none",
+                    overflow: "hidden",
+                    padding: "8px 12px",
+                    fontSize: "14px",
+                    lineHeight: "1.5",
+                    border: "1px solid hsl(var(--border))",
+                    borderRadius: "calc(var(--radius) - 2px)",
+                    backgroundColor: "hsl(var(--background))",
+                    color: "hsl(var(--foreground))",
+                    outline: "none",
+                    fontFamily: "inherit",
+                    boxSizing: "border-box",
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.boxShadow = "0 0 0 2px hsl(var(--ring))";
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.boxShadow = "none";
+                  }}
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
@@ -526,7 +595,7 @@ export default function AdminStyles() {
                   <span className="text-muted-foreground font-normal">(optional)</span>
                 </Label>
                 <div className="flex items-center gap-3">
-                  {styleBaseImageUrl && (
+                  {styleBaseImageUrl ? (
                     <div className="relative shrink-0">
                       <img
                         src={styleBaseImageUrl}
@@ -538,11 +607,15 @@ export default function AdminStyles() {
                         onClick={() => setStyleBaseImageUrl("")}
                         className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
                       >
-                        ×
+                        <X className="h-2.5 w-2.5" />
                       </button>
                     </div>
+                  ) : (
+                    <div className="w-12 h-12 rounded border border-dashed flex items-center justify-center bg-muted/50 shrink-0">
+                      <ImagePlus className="h-5 w-5 text-muted-foreground" />
+                    </div>
                   )}
-                  <div>
+                  <div className="flex-1">
                     <Input
                       type="file"
                       accept="image/*"
@@ -556,8 +629,7 @@ export default function AdminStyles() {
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  AI will use this image as a visual foundation alongside the customer's prompt and
-                  reference image
+                  AI will use this image as a visual foundation alongside the customer's prompt and reference image
                 </p>
               </div>
 
@@ -619,8 +691,7 @@ export default function AdminStyles() {
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-medium text-muted-foreground">
-                              Choice {idx + 1}
-                              {choice.name ? ` — ${choice.name}` : ""}
+                              {choice.name ? choice.name : `Choice ${idx + 1}`}
                             </span>
                             <Button
                               type="button"
@@ -693,7 +764,7 @@ export default function AdminStyles() {
                                     onClick={() => updateSubStyleChoice(idx, "baseImageUrl", "")}
                                     className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground rounded-full text-xs flex items-center justify-center"
                                   >
-                                    ×
+                                    <X className="h-2.5 w-2.5" />
                                   </button>
                                 </div>
                               ) : (
