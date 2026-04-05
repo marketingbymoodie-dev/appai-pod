@@ -1679,7 +1679,21 @@ export async function registerRoutes(
       // Different requirements for apparel vs wall art
       let sizingRequirements: string;
       
-      if (isApparel) {
+      if (isApparel && isAllOverPrint) {
+        // AOP: solid white background so Picsart removebg can cleanly strip it
+        sizingRequirements = `
+MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
+1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
+2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
+3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
+7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+`;
+      } else if (isApparel) {
         // Apparel uses #FF00FF chroma key background for precise pixel-based removal
         const isDarkTier = colorTier === "dark";
         const designColors = isDarkTier 
@@ -5510,7 +5524,21 @@ ${textEdgeRestrictions}
 
       let sizingRequirements: string;
 
-      if (isApparel) {
+      if (isApparel && isAllOverPrint) {
+        // AOP: solid white background so Picsart removebg can cleanly strip it
+        sizingRequirements = `
+MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
+1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
+2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
+3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
+7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+`;
+      } else if (isApparel) {
         // Apparel: #FF00FF chroma key background for precise removal
         const frameColor = req.body.frameColor;
         let colorTier: ColorTier = "light";

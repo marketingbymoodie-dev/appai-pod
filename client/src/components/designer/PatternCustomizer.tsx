@@ -90,8 +90,8 @@ export function PatternCustomizer({
   isLoading = false,
 }: PatternCustomizerProps) {
   const [pattern, setPattern] = useState<PatternType>("tile");
-  // Default scale reduced to 0.5× so motifs tile smaller (more repeats visible)
-  const [scale, setScale] = useState<number>(0.5);
+  // Default scale 1.5× — Picsart minimum is 1.0, 1.5 gives a good number of repeats
+  const [scale, setScale] = useState<number>(1.5);
   const [mirrorLegs, setMirrorLegs] = useState<boolean>(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
@@ -271,11 +271,11 @@ export function PatternCustomizer({
             Scale <span className="text-muted-foreground">({scale.toFixed(1)}x)</span>
           </Label>
           <Slider
-            min={0.2}
-            max={5}
-            step={0.1}
-            value={[scale]}
-            onValueChange={([v]) => { setScale(v); setPreviewUrl(null); }}
+          min={1.0}
+          max={5}
+          step={0.1}
+          value={[scale]}
+          onValueChange={([v]) => { setScale(v); setPreviewUrl(null); }}
             className="mt-2"
           />
           <div className="flex justify-between text-xs text-muted-foreground">
