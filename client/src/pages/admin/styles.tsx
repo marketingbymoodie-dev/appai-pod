@@ -33,13 +33,22 @@ interface StyleOptions {
 }
 
 // ── Upload helper ─────────────────────────────────────────────────────────────
-// Uses the correct endpoint: POST /api/uploads/upload with raw binary body.
+// Uses POST /api/uploads/upload with JSON { dataUrl, name } body.
+// The server uses express.json() globally so raw binary bodies don't work —
+// we must convert to base64 data URL first.
 // Returns the public path, e.g. "/objects/uploads/uuid.png"
 async function uploadFile(file: File): Promise<string> {
+  // Convert file to base64 data URL
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
   const res = await fetch("/api/uploads/upload", {
     method: "POST",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
-    body: file,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataUrl, name: file.name }),
   });
   if (!res.ok) {
     const err = await res.text();
@@ -76,16 +85,29 @@ export default function AdminStyles() {
   // Filter
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("show-all");
 
-  // Textarea ref for auto-resize
+   // Textarea ref for auto-resize
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-resize textarea whenever value changes
-  useEffect(() => {
+  // Resize helper — sets height to fit content
+  const resizeTextarea = () => {
     const el = promptTextareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
-  }, [stylePrompt, styleDialogOpen]);
+  };
+
+  // Auto-resize whenever the value changes
+  useEffect(() => {
+    resizeTextarea();
+  }, [stylePrompt]);
+
+  // When the dialog opens, wait for the animation to finish then resize
+  useEffect(() => {
+    if (!styleDialogOpen) return;
+    // Radix Dialog animates in over ~150ms; wait for it to finish
+    const t = setTimeout(() => resizeTextarea(), 200);
+    return () => clearTimeout(t);
+  }, [styleDialogOpen]);
 
   // ── Queries ───────────────────────────────────────────────────────────────
   const { data: styles, isLoading: stylesLoading } = useQuery<StylePresetDB[]>({
