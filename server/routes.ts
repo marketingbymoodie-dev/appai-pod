@@ -430,14 +430,44 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
 
   let buffer: Buffer = Buffer.from(base64Data, "base64");
 
-  // For apparel, remove #FF00FF chroma key background — UNLESS it's AOP
-  // AOP patterns need to fill the entire canvas with no transparency
-  if (isApparel && !isAllOverPrint) {
-    console.log("Removing #FF00FF chroma key background for apparel...");
-    buffer = await removeChromaKeyBackground(buffer);
-    extension = "png";
-    actualMimeType = "image/png";
-    console.log("Chroma key removal complete - image now has transparency");
+  // For apparel, remove background using Picsart — including AOP
+  // This ensures the motif is clean before tiling or placement
+  if (isApparel) {
+    console.log(`[saveImageToStorage] Removing background for apparel (AOP=${isAllOverPrint})...`);
+    try {
+      // 1. Upload temporary file to Supabase to get a public URL for Picsart
+      const tempImageId = `temp_${crypto.randomUUID()}`;
+      const tempFilename = `${tempImageId}.${extension}`;
+      const tempUrl = await uploadDesignFileToSupabase({
+        buffer,
+        filename: tempFilename,
+        contentType: actualMimeType,
+      });
+
+      if (tempUrl) {
+        // 2. Call Picsart removebg
+        const picsartResult = await removeBackground({ imageUrl: tempUrl });
+        
+        // 3. Download the result
+        const response = await fetch(picsartResult.url);
+        if (response.ok) {
+          buffer = Buffer.from(await response.arrayBuffer());
+          extension = "png";
+          actualMimeType = "image/png";
+          console.log("[saveImageToStorage] Picsart background removal successful");
+        } else {
+          throw new Error(`Failed to download Picsart result: ${response.statusText}`);
+        }
+      }
+    } catch (err) {
+      console.error("[saveImageToStorage] Picsart removebg failed, falling back to chroma key:", (err as Error).message);
+      // Fallback to chroma key if Picsart fails (only for non-AOP)
+      if (!isAllOverPrint) {
+        buffer = await removeChromaKeyBackground(buffer);
+        extension = "png";
+        actualMimeType = "image/png";
+      }
+    }
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -1680,37 +1710,17 @@ export async function registerRoutes(
       // Different requirements for apparel vs wall art
       let sizingRequirements: string;
       
-      if (isApparel && isAllOverPrint) {
-        // AOP: solid white background so Picsart removebg can cleanly strip it
+      if (isApparel) {
+        // All apparel (AOP and standard) now uses white background for Picsart removebg
         sizingRequirements = `
-MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
-1. ISOLATED MOTIF: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery. This motif will be tiled into a repeating pattern.
+MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
+1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
 2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
 3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
 4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
 5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
 6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
-7. PRINT-READY: This is for all-over print fabric — create an isolated motif graphic.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
-      } else if (isApparel) {
-        // Apparel uses #FF00FF chroma key background for precise pixel-based removal
-        const isDarkTier = colorTier === "dark";
-        const designColors = isDarkTier 
-          ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-          : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
-        
-        sizingRequirements = `
-
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
+7. PRINT-READY: This is for apparel printing — create an isolated graphic that can be printed on fabric.
 8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
 9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
 `;
