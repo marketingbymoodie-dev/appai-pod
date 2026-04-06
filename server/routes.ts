@@ -7431,32 +7431,44 @@ ${textEdgeRestrictions}
   }, 60 * 60 * 1000);
 
   // POST /api/pattern/preview - Generate a tiled AOP pattern
-  // Accepts { imageUrl, pattern, scale, width, height, bgColor }
+  // Accepts { imageUrl, mode, pattern, scale, width, height, bgColor,
+  //           singleScale, singleRotation, singlePosX, singlePosY }
   // Returns { patternUrl }
-  // Pipeline:
-  //   (1) Picsart removebg — strips the AI white background, producing a transparent PNG cutout.
-  //       If bgColor is provided, the cutout is composited onto that colour by Picsart.
-  //       We pass bgColor="" to get a transparent cutout, then Sharp fills the canvas bg.
-  //   (2) Sharp tileImage — tiles the clean motif into a seamless grid pattern.
-  //       This replaces the Picsart pattern API to avoid geometric distortion.
+  //
+  // mode="pattern" pipeline:
+  //   (1) Picsart removebg — transparent PNG cutout.
+  //   (2) Sharp tileImage — seamless grid/brick/half-drop tile.
+  //
+  // mode="single" pipeline:
+  //   (1) Picsart removebg — transparent PNG cutout.
+  //   (2) Sharp composite — place artwork at specified transform on a blank canvas.
   app.post("/api/pattern/preview", async (req: any, res: Response) => {
     try {
       const {
         imageUrl,
+        mode: editorMode = "pattern",
         pattern = "grid",
         scale = 1.5,
         width = 1024,
         height = 1024,
         bgColor,
+        // Single image transform params
+        singleScale = 1.0,
+        singleRotation = 0,
+        singlePosX = 0,
+        singlePosY = 0,
       } = req.body as {
         imageUrl: string;
-        /** Tiling mode: "grid" | "brick" | "half" (default: "grid") */
+        mode?: string;
         pattern?: string;
         scale?: number;
         width?: number;
         height?: number;
-        /** Optional hex colour (e.g. "#ffffff") to fill behind the subject after bg removal */
         bgColor?: string;
+        singleScale?: number;
+        singleRotation?: number;
+        singlePosX?: number;
+        singlePosY?: number;
       };
 
       if (!imageUrl) {
@@ -7473,14 +7485,11 @@ ${textEdgeRestrictions}
       }
 
       // Step 1: Picsart removebg — remove the AI-generated white background.
-      // We always request a transparent cutout here (no bgColor to Picsart);
-      // Sharp will fill the canvas background in step 2.
-      console.log("[Pattern Preview] Running Picsart removebg (transparent cutout)...");
+      console.log(`[Pattern Preview] Running Picsart removebg (mode=${editorMode})...`);
       let motifBuffer: Buffer;
       try {
         const removeBgResult = await removeBackground({
           imageUrl: absoluteImageUrl,
-          // No bgColor — we want a transparent PNG cutout for Sharp tiling
         });
         const motifResponse = await fetch(removeBgResult.url);
         if (!motifResponse.ok) {
@@ -7490,7 +7499,6 @@ ${textEdgeRestrictions}
         console.log("[Pattern Preview] removebg complete, motif buffer:", motifBuffer.length, "bytes");
       } catch (removeBgErr: any) {
         console.warn("[Pattern Preview] removebg failed, fetching original motif:", removeBgErr.message);
-        // Fall back to original image
         const origResponse = await fetch(absoluteImageUrl);
         if (!origResponse.ok) {
           throw new Error(`Failed to fetch original image (${origResponse.status})`);
@@ -7498,31 +7506,89 @@ ${textEdgeRestrictions}
         motifBuffer = Buffer.from(await origResponse.arrayBuffer());
       }
 
-      // Step 2: Sharp tileImage — tile the transparent motif onto a canvas with bgColor fill.
-      // Map legacy Picsart pattern names to Sharp TileMode
-      const modeMap: Record<string, TileMode> = {
-        tile: "grid",
-        grid: "grid",
-        mirror: "grid",   // mirror not supported, fall back to grid
-        hex: "brick",     // closest approximation
-        hex2: "brick",
-        diamond: "half",  // closest approximation
-        brick: "brick",
-        half: "half",
-      };
-      const tileMode: TileMode = modeMap[pattern] ?? "grid";
+      // Step 2a (Single Image mode): Sharp composite — place artwork at transform on blank canvas.
+      let patternBuffer: Buffer;
 
-      console.log(`[Pattern Preview] Tiling with Sharp: mode=${tileMode} scale=${scale} size=${width}x${height} bg=${bgColor ?? "transparent"}`);
-      const tileResult = await tileImage({
-        motifBuffer,
-        outputWidth: Math.min(width, 4096),
-        outputHeight: Math.min(height, 4096),
-        scale,
-        mode: tileMode,
-        bgColor: bgColor || "",
-      });
-      const patternBuffer = tileResult.buffer;
-      console.log(`[Pattern Preview] Sharp tiling complete: ${tileResult.cols}x${tileResult.rows} tiles, buffer=${patternBuffer.length} bytes`);
+      if (editorMode === "single") {
+        const sharp = (await import("sharp")).default;
+        const outW = Math.min(width, 4096);
+        const outH = Math.min(height, 4096);
+
+        // Get motif dimensions
+        const motifMeta = await sharp(motifBuffer).metadata();
+        const motifW = motifMeta.width ?? 512;
+        const motifH = motifMeta.height ?? 512;
+
+        // Base size: fit to canvas
+        const imgAR = motifW / motifH;
+        const canvasAR = outW / outH;
+        let baseW: number, baseH: number;
+        if (imgAR > canvasAR) { baseW = outW; baseH = Math.round(outW / imgAR); }
+        else { baseH = outH; baseW = Math.round(outH * imgAR); }
+
+        const iw = Math.round(baseW * singleScale);
+        const ih = Math.round(baseH * singleScale);
+
+        // Centre + position offset
+        const cx = Math.round(outW / 2 + (singlePosX / 100) * outW);
+        const cy = Math.round(outH / 2 + (singlePosY / 100) * outH);
+
+        // Resize motif to target size
+        const resizedMotif = await sharp(motifBuffer)
+          .resize(iw, ih, { fit: "fill" })
+          .rotate(singleRotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+          .toBuffer();
+
+        // Get rotated dimensions (rotation may change bounding box)
+        const rotatedMeta = await sharp(resizedMotif).metadata();
+        const rw = rotatedMeta.width ?? iw;
+        const rh = rotatedMeta.height ?? ih;
+
+        // Build canvas with background colour
+        const bgRgb = bgColor && bgColor !== "transparent"
+          ? { r: parseInt(bgColor.slice(1, 3), 16), g: parseInt(bgColor.slice(3, 5), 16), b: parseInt(bgColor.slice(5, 7), 16), alpha: 255 }
+          : { r: 255, g: 255, b: 255, alpha: 0 };
+
+        const left = cx - Math.round(rw / 2);
+        const top = cy - Math.round(rh / 2);
+
+        const canvas = sharp({
+          create: { width: outW, height: outH, channels: 4, background: bgRgb },
+        });
+
+        patternBuffer = await canvas
+          .composite([{ input: resizedMotif, left, top, blend: "over" }])
+          .png()
+          .toBuffer();
+
+        console.log(`[Pattern Preview] Single image composite complete: ${outW}x${outH} canvas, motif at (${left},${top}) size ${rw}x${rh}`);
+
+      } else {
+        // Step 2b (Pattern mode): Sharp tileImage — tile the transparent motif onto a canvas.
+        const modeMap: Record<string, TileMode> = {
+          tile: "grid",
+          grid: "grid",
+          mirror: "grid",
+          hex: "brick",
+          hex2: "brick",
+          diamond: "half",
+          brick: "brick",
+          half: "half",
+        };
+        const tileMode: TileMode = modeMap[pattern] ?? "grid";
+
+        console.log(`[Pattern Preview] Tiling with Sharp: mode=${tileMode} scale=${scale} size=${width}x${height} bg=${bgColor ?? "transparent"}`);
+        const tileResult = await tileImage({
+          motifBuffer,
+          outputWidth: Math.min(width, 4096),
+          outputHeight: Math.min(height, 4096),
+          scale,
+          mode: tileMode,
+          bgColor: bgColor || "",
+        });
+        patternBuffer = tileResult.buffer;
+        console.log(`[Pattern Preview] Sharp tiling complete: ${tileResult.cols}x${tileResult.rows} tiles, buffer=${patternBuffer.length} bytes`);
+      }
 
       // Persist the pattern so Printify (and our own server) can always reach it.
       const patternId = crypto.randomUUID();
