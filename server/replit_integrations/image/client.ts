@@ -290,7 +290,6 @@ async function runVersionPrediction(
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
-        "Prefer": "wait",
       },
       body: JSON.stringify({ version: versionHash, input }),
     }
@@ -314,7 +313,6 @@ async function runModelPrediction(
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
-        "Prefer": "wait",
       },
       body: JSON.stringify({ input }),
     }
