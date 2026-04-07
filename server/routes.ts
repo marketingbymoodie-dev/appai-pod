@@ -8397,13 +8397,15 @@ ${textEdgeRestrictions}
         });
       }
 
-      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken } = req.body;
+      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken, selectedAiModel, hasAgreedToAiCosts } = req.body;
       
       const updated = await storage.updateMerchant(merchant.id, {
         printifyApiToken: printifyApiToken || merchant.printifyApiToken,
         printifyShopId: printifyShopId || merchant.printifyShopId,
         useBuiltInNanoBanana: useBuiltInNanoBanana !== undefined ? useBuiltInNanoBanana : merchant.useBuiltInNanoBanana,
         customNanoBananaToken: customNanoBananaToken || merchant.customNanoBananaToken,
+        ...(selectedAiModel !== undefined && { selectedAiModel }),
+        ...(hasAgreedToAiCosts !== undefined && { hasAgreedToAiCosts }),
       });
 
       res.json(updated);
