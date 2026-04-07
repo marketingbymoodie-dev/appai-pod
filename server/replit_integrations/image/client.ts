@@ -103,6 +103,7 @@ export type GenerateImageParams = {
   aspectRatio?: string;
   inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
+  isAllOverPrint?: boolean;
   model?: string;
 };
 
@@ -148,10 +149,26 @@ function aspectRatioToSize(aspectRatio: string): { width: number; height: number
 
 const PROMPT_MAX_LENGTH = 900;
 
-function compressPrompt(raw: string, isApparel: boolean): string {
+function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint: boolean = false): string {
   let compressed: string;
 
-  if (isApparel) {
+  if (isApparel && isAllOverPrint) {
+    // AOP: white background for Picsart removebg, seamless tiling motif
+    compressed = raw.replace(
+      /\n*MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
+      ""
+    );
+    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
+    compressed = compressed.trim();
+
+    const shortAopConstraints =
+      "Isolated centered motif on a SOLID FLAT WHITE (#FFFFFF) background. " +
+      "Every pixel not part of the design must be exactly #FFFFFF. " +
+      "Do NOT use white in the design itself. " +
+      "Vibrant bold colors, clean hard edges, no gradients into background, no rectangular frames. " +
+      "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
+    compressed = shortAopConstraints + compressed;
+  } else if (isApparel) {
     compressed = raw.replace(
       /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
       ""
@@ -431,7 +448,7 @@ export async function generateImageBase64(
       console.log(`[Replicate] Retry #${attempt} — switching aspect_ratio to "${aspectRatio}"`);
     }
 
-    const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);
+    const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false, params.isAllOverPrint ?? false);
     const input = buildInput(modelStr, compressedPrompt, aspectRatio, params.inputImageUrl);
 
     try {

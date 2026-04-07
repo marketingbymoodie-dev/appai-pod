@@ -1857,6 +1857,7 @@ ${textEdgeRestrictions}
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
         isApparel,
+        isAllOverPrint,
         model: merchant.selectedAiModel,
       });
 console.log("[api/generate] replicate returned", {
@@ -5758,6 +5759,7 @@ ${textEdgeRestrictions}
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
             isApparel,
+            isAllOverPrint,
             model: selectedModel,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
