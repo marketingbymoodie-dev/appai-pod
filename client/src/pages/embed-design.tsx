@@ -4842,45 +4842,50 @@ export default function EmbedDesign() {
                 </div>
               )}
 
-              {/* AOP Pattern Step overlay — shown after generation for all-over-print products */}
+              {/* AOP Pattern Step — placeholder while overlay is shown above canvas */}
               {showPatternStep && aopPendingMotifUrl && (
-                <div className="absolute inset-0 z-30 overflow-y-auto">
-                  <PatternCustomizer
-                    motifUrl={aopPendingMotifUrl}
-                    productWidth={(() => {
-                      const positions = productTypeConfig?.placeholderPositions || [];
-                      return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
-                    })()}
-                    productHeight={(() => {
-                      const positions = productTypeConfig?.placeholderPositions || [];
-                      return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
-                    })()}
-                    hasPairedPanels={(() => {
-                      const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
-                      return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
-                    })()}
-                    onApply={async (appliedPatternUrl: string, options) => {
-                      setAopPatternUrl(appliedPatternUrl);
-                      setShowPatternStep(false);
-                      if (productTypeConfig) {
-                        fetchPrintifyMockups(
-                          aopPendingMotifUrl,
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || 'default',
-                          defaultZoom,
-                          50,
-                          50,
-                          appliedPatternUrl,
-                          options.mirrorLegs
-                        );
-                      }
-                    }}
-                    isLoading={mockupLoading}
-                  />
-                </div>
+                <div className="absolute inset-0 z-10 bg-background/60" />
               )}
             </div>
+
+            {/* AOP Pattern Step — full-width panel shown directly in the artwork column, above the canvas */}
+            {showPatternStep && aopPendingMotifUrl && (
+              <div className="w-full rounded-lg border bg-background shadow-lg overflow-y-auto" style={{ maxHeight: '80vh' }}>
+                <PatternCustomizer
+                  motifUrl={aopPendingMotifUrl}
+                  productWidth={(() => {
+                    const positions = productTypeConfig?.placeholderPositions || [];
+                    return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
+                  })()}
+                  productHeight={(() => {
+                    const positions = productTypeConfig?.placeholderPositions || [];
+                    return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
+                  })()}
+                  hasPairedPanels={(() => {
+                    const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
+                    return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
+                  })()}
+                  onApply={async (appliedPatternUrl: string, options) => {
+                    setAopPatternUrl(appliedPatternUrl);
+                    setShowPatternStep(false);
+                    if (productTypeConfig) {
+                      fetchPrintifyMockups(
+                        aopPendingMotifUrl,
+                        productTypeConfig.id,
+                        selectedSize,
+                        selectedFrameColor || 'default',
+                        defaultZoom,
+                        50,
+                        50,
+                        appliedPatternUrl,
+                        options.mirrorLegs
+                      );
+                    }
+                  }}
+                  isLoading={mockupLoading}
+                />
+              </div>
+            )}
 
             {/* Carousel indicators with labels — directly under image */}
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (() => {

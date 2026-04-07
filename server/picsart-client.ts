@@ -17,8 +17,10 @@ const REMOVE_BG_API_BASE = "https://api.remove.bg/v1.0";
 // ─── Remove Background ────────────────────────────────────────────────────────
 
 export interface RemoveBgParams {
-  /** URL of the source image (must be publicly accessible) */
-  imageUrl: string;
+  /** URL of the source image (must be publicly accessible). Use imageBuffer instead for internal images. */
+  imageUrl?: string;
+  /** Raw image buffer — preferred over imageUrl for internal/private images to avoid public URL issues. */
+  imageBuffer?: Buffer;
   /**
    * Optional background colour to fill instead of transparency.
    * Hex code (e.g. "#ffffff") or colour name (e.g. "white").
@@ -42,8 +44,18 @@ export async function removeBackground(params: RemoveBgParams): Promise<RemoveBg
     throw new Error("REMOVE_BG_API_KEY environment variable is not set");
   }
 
+  if (!params.imageUrl && !params.imageBuffer) {
+    throw new Error("Either imageUrl or imageBuffer must be provided");
+  }
+
   const formData = new FormData();
-  formData.append("image_url", params.imageUrl);
+  if (params.imageBuffer) {
+    // Send as binary file upload — avoids public URL accessibility issues for internal images
+    const blob = new Blob([params.imageBuffer], { type: "image/png" });
+    formData.append("image_file", blob, "image.png");
+  } else {
+    formData.append("image_url", params.imageUrl!);
+  }
   formData.append("size", "auto");
   formData.append("format", "png");
   if (params.bgColor) {

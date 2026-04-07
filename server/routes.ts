@@ -7494,41 +7494,48 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "imageUrl is required" });
       }
 
-      // Convert relative /objects/ paths to absolute public URLs for Picsart removebg
-      let absoluteImageUrl = imageUrl;
-      if (imageUrl.startsWith("/objects/")) {
-        const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
-        const protocol = req.protocol || "https";
-        absoluteImageUrl = `${protocol}://${host}${imageUrl}`;
-        console.log("[Pattern Preview] Converted relative URL:", absoluteImageUrl);
-      }
-
-      // Step 1: remove.bg — remove the AI-generated white background.
-      console.log(`[Pattern Preview] Running remove.bg (mode=${editorMode})...`);
+      // Step 1: Fetch the source image buffer directly from local storage (avoids public URL issues).
+      // Then pass the buffer to remove.bg for background removal.
+      console.log(`[Pattern Preview] Fetching source image and running remove.bg (mode=${editorMode})...`);
       let motifBuffer: Buffer;
       try {
-        const removeBgResult = await removeBackground({
-          imageUrl: absoluteImageUrl,
-        });
-        // remove.bg returns a data URL directly — no second fetch needed
-        if (removeBgResult.url.startsWith("data:")) {
-          const base64Data = removeBgResult.url.split(",")[1];
-          motifBuffer = Buffer.from(base64Data, "base64");
+        // Fetch the image buffer directly — works for both /objects/ paths and https:// URLs
+        let sourceBuffer: Buffer;
+        if (imageUrl.startsWith("/objects/")) {
+          // Read directly from local R2/S3 storage path
+          const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
+          const protocol = req.protocol || "https";
+          const absoluteUrl = `${protocol}://${host}${imageUrl}`;
+          console.log("[Pattern Preview] Fetching source from:", absoluteUrl);
+          const srcResponse = await fetch(absoluteUrl, { signal: AbortSignal.timeout(10000) });
+          if (!srcResponse.ok) throw new Error(`Failed to fetch source image (${srcResponse.status})`);
+          sourceBuffer = Buffer.from(await srcResponse.arrayBuffer());
         } else {
-          const motifResponse = await fetch(removeBgResult.url);
-          if (!motifResponse.ok) {
-            throw new Error(`Failed to download removebg result (${motifResponse.status})`);
-          }
-          motifBuffer = Buffer.from(await motifResponse.arrayBuffer());
+          // External https:// URL
+          const srcResponse = await fetch(imageUrl, { signal: AbortSignal.timeout(10000) });
+          if (!srcResponse.ok) throw new Error(`Failed to fetch source image (${srcResponse.status})`);
+          sourceBuffer = Buffer.from(await srcResponse.arrayBuffer());
         }
+        console.log("[Pattern Preview] Source image fetched:", sourceBuffer.length, "bytes");
+
+        // Send buffer directly to remove.bg — no public URL needed
+        const removeBgResult = await removeBackground({ imageBuffer: sourceBuffer });
+        const base64Data = removeBgResult.url.split(",")[1];
+        motifBuffer = Buffer.from(base64Data, "base64");
         console.log("[Pattern Preview] remove.bg complete, motif buffer:", motifBuffer.length, "bytes");
       } catch (removeBgErr: any) {
-        console.warn("[Pattern Preview] remove.bg failed, fetching original motif:", removeBgErr.message);
-        const origResponse = await fetch(absoluteImageUrl);
-        if (!origResponse.ok) {
-          throw new Error(`Failed to fetch original image (${origResponse.status})`);
+        console.warn("[Pattern Preview] remove.bg failed, using original image:", removeBgErr.message);
+        // Fallback: use the original image without background removal
+        try {
+          const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN;
+          const protocol = req.protocol || "https";
+          const absoluteUrl = imageUrl.startsWith("/") ? `${protocol}://${host}${imageUrl}` : imageUrl;
+          const origResponse = await fetch(absoluteUrl, { signal: AbortSignal.timeout(10000) });
+          if (!origResponse.ok) throw new Error(`Failed to fetch fallback image (${origResponse.status})`);
+          motifBuffer = Buffer.from(await origResponse.arrayBuffer());
+        } catch (fallbackErr: any) {
+          return res.status(500).json({ error: `Failed to load image: ${fallbackErr.message}` });
         }
-        motifBuffer = Buffer.from(await origResponse.arrayBuffer());
       }
 
       // Step 2a (Single Image mode): Sharp composite — place artwork at transform on blank canvas.
