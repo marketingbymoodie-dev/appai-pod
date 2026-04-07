@@ -218,6 +218,7 @@ export const stylePresets = pgTable("style_presets", {
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   baseImageUrl: text("base_image_url"),
+  baseImageUrls: json("base_image_urls"),
   promptPlaceholder: text("prompt_placeholder"),
   options: json("options"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
