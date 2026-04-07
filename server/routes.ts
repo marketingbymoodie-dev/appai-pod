@@ -7498,9 +7498,15 @@ ${textEdgeRestrictions}
       console.log(`[Pattern Preview] Running Picsart removebg (mode=${editorMode})...`);
       let motifBuffer: Buffer;
       try {
-        const removeBgResult = await removeBackground({
+        // Add 15-second timeout for Picsart removebg
+        const removeBgPromise = removeBackground({
           imageUrl: absoluteImageUrl,
         });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Picsart removebg timeout (15s)")), 15000)
+        );
+        const removeBgResult = await Promise.race([removeBgPromise, timeoutPromise]) as any;
+        
         const motifResponse = await fetch(removeBgResult.url);
         if (!motifResponse.ok) {
           throw new Error(`Failed to download removebg result (${motifResponse.status})`);
@@ -7508,16 +7514,27 @@ ${textEdgeRestrictions}
         motifBuffer = Buffer.from(await motifResponse.arrayBuffer());
         console.log("[Pattern Preview] removebg complete, motif buffer:", motifBuffer.length, "bytes");
       } catch (removeBgErr: any) {
-        console.warn("[Pattern Preview] removebg failed, fetching original motif:", removeBgErr.message);
-        const origResponse = await fetch(absoluteImageUrl);
-        if (!origResponse.ok) {
-          throw new Error(`Failed to fetch original image (${origResponse.status})`);
+        console.warn("[Pattern Preview] removebg failed or timed out, fetching original motif:", removeBgErr.message);
+        try {
+          const origResponse = await fetch(absoluteImageUrl, { signal: AbortSignal.timeout(10000) });
+          if (!origResponse.ok) {
+            throw new Error(`Failed to fetch original image (${origResponse.status})`);
+          }
+          motifBuffer = Buffer.from(await origResponse.arrayBuffer());
+        } catch (fetchErr: any) {
+          console.error("[Pattern Preview] Failed to fetch original image:", fetchErr.message);
+          throw new Error("Could not load image for pattern generation");
         }
-        motifBuffer = Buffer.from(await origResponse.arrayBuffer());
       }
 
       // Step 2a (Single Image mode): Sharp composite — place artwork at transform on blank canvas.
       let patternBuffer: Buffer;
+      
+      // Add CORS headers to allow cross-origin requests from Shopify iframe
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.setHeader("Cache-Control", "public, max-age=3600");
 
       if (editorMode === "single") {
         const sharp = (await import("sharp")).default;
