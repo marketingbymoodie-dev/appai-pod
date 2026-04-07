@@ -273,8 +273,14 @@ export async function generateImageBase64(
   
   // Use provided model or fall back to default version
   let version = getReplicateModelVersion();
-  if (params.model && params.model.startsWith("replicate:")) {
-    version = params.model.replace("replicate:", "");
+  if (params.model) {
+    if (params.model.startsWith("replicate:")) {
+      // Strip the "replicate:" prefix to get the version/model identifier
+      version = params.model.replace("replicate:", "");
+    } else {
+      // Bare version hash (e.g. Nano Banana stored directly as a hash)
+      version = params.model;
+    }
   }
 
   const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);

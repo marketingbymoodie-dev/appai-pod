@@ -32,7 +32,7 @@ const AI_MODELS: AiModel[] = [
     estimatedTime: "15-25s",
     costPerGen: 1,
     isFast: false,
-    replicateModel: "replicate:5bdc2c7cd642ae33611d8c33f79615f98ff02509ab8db9d8ec1cc6c36d378fba",
+    replicateModel: "5bdc2c7cd642ae33611d8c33f79615f98ff02509ab8db9d8ec1cc6c36d378fba",
   },
   {
     id: "sdxl-lightning",
