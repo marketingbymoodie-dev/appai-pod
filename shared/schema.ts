@@ -11,6 +11,9 @@ export * from "./colorUtils";
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique(),
+  email: text("email"),
+  otpCode: varchar("otp_code", { length: 6 }),
+  otpExpiresAt: timestamp("otp_expires_at"),
   credits: integer("credits").notNull().default(5),
   freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
   totalGenerations: integer("total_generations").notNull().default(0),
@@ -216,6 +219,7 @@ export const stylePresets = pgTable("style_presets", {
   sortOrder: integer("sort_order").notNull().default(0),
   baseImageUrl: text("base_image_url"),
   promptPlaceholder: text("prompt_placeholder"),
+  options: json("options"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
