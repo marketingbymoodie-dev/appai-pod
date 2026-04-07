@@ -1,18 +1,16 @@
 /**
  * Replicate image generation client
  *
- * Exports a single helper that returns base64 image data + mimeType, compatible
- * with the rest of the server that expects base64 image payloads.
+ * Supports two call modes:
+ *   1. Version-hash mode: POST /v1/predictions with { version, input }
+ *      Used for: Nano Banana, SDXL (any bare SHA-256 hash)
+ *
+ *   2. Model-name mode: POST /v1/models/{owner}/{name}/predictions with { input }
+ *      Used for: Flux Schnell, SDXL Lightning, SD3, etc.
+ *      Stored as "model:owner/name" in the DB (e.g. "model:black-forest-labs/flux-schnell")
  *
  * Required env:
  *   REPLICATE_API_TOKEN=...
- *
- * Optional env:
- *   REPLICATE_MODEL_VERSION=<version_hash> (defaults to nano-banana-pro)
- *
- * Notes:
- * - Replicate returns hosted image URLs; we fetch the image and convert to base64.
- * - We poll the prediction until it finishes.
  */
 
 type ReplicatePrediction = {
@@ -33,8 +31,7 @@ function getReplicateToken() {
 }
 
 function getReplicateModelVersion() {
-  // Default to Nano Banana (standard version - faster and cheaper than Pro)
-  // Version hash from: https://replicate.com/google/nano-banana
+  // Default to Nano Banana
   return process.env.REPLICATE_MODEL_VERSION || "5bdc2c7cd642ae33611d8c33f79615f98ff02509ab8db9d8ec1cc6c36d378fba";
 }
 
@@ -110,7 +107,6 @@ export type GenerateImageParams = {
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
-// Supported: "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"
 function mapToSupportedAspectRatio(aspectRatio?: string): string {
   if (!aspectRatio) return "1:1";
 
@@ -121,7 +117,6 @@ function mapToSupportedAspectRatio(aspectRatio?: string): string {
 
   const ratio = w / h;
 
-  // Map to closest supported aspect ratio
   if (ratio >= 2.1) return "21:9";
   if (ratio >= 1.65) return "16:9";
   if (ratio >= 1.4) return "3:2";
@@ -134,20 +129,29 @@ function mapToSupportedAspectRatio(aspectRatio?: string): string {
   return "9:16";
 }
 
+// Map aspect ratio string to width/height for models that need explicit dimensions
+function aspectRatioToSize(aspectRatio: string): { width: number; height: number } {
+  const map: Record<string, { width: number; height: number }> = {
+    "1:1": { width: 1024, height: 1024 },
+    "2:3": { width: 768, height: 1152 },
+    "3:2": { width: 1152, height: 768 },
+    "3:4": { width: 768, height: 1024 },
+    "4:3": { width: 1024, height: 768 },
+    "4:5": { width: 896, height: 1120 },
+    "5:4": { width: 1120, height: 896 },
+    "9:16": { width: 576, height: 1024 },
+    "16:9": { width: 1024, height: 576 },
+    "21:9": { width: 1344, height: 576 },
+  };
+  return map[aspectRatio] || { width: 1024, height: 1024 };
+}
+
 const PROMPT_MAX_LENGTH = 900;
 
-/**
- * Strip the verbose canvas-requirements block injected by the route handler and
- * replace it with a compact version that fits the model's context window better.
- *
- * For apparel: strips the verbose block and prepends a compact chroma-key constraint.
- * For non-apparel (wall art / decor): strips and prepends a compact full-bleed constraint.
- */
 function compressPrompt(raw: string, isApparel: boolean): string {
   let compressed: string;
 
   if (isApparel) {
-    // Strip the verbose apparel sizing block
     compressed = raw.replace(
       /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
       ""
@@ -155,7 +159,6 @@ function compressPrompt(raw: string, isApparel: boolean): string {
     compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
     compressed = compressed.trim();
 
-    // Compact apparel constraint with chroma key background + no-added-text rule
     const shortApparelConstraints =
       "Isolated centered graphic on a SOLID HOT PINK (#FF00FF) background. " +
       "Every pixel not part of the design must be exactly #FF00FF. " +
@@ -178,7 +181,6 @@ function compressPrompt(raw: string, isApparel: boolean): string {
     compressed = shortConstraints + compressed;
   }
 
-  // Hard truncate — but preserve the end of the prompt (user's description) over the middle
   if (compressed.length > PROMPT_MAX_LENGTH) {
     compressed = compressed.substring(0, PROMPT_MAX_LENGTH);
   }
@@ -187,35 +189,146 @@ function compressPrompt(raw: string, isApparel: boolean): string {
 }
 
 /**
- * Run a single Replicate prediction and return the result.
+ * Determine if the model string is a version hash (64-char hex) or a model name (owner/name).
  */
-async function runPrediction(
-  token: string,
-  version: string,
-  input: Record<string, any>,
-): Promise<{ mimeType: string; data: string }> {
-  console.log("[Replicate] Creating prediction with version:", version);
-  const imgInput = input.image_input;
-  const imgType = imgInput?.[0]?.startsWith?.("data:") ? "data-url" : imgInput?.[0] ? "http-url" : "none";
-  const imgSize = imgInput?.[0]?.length || 0;
-  console.log("[Replicate] Input aspect_ratio:", input.aspect_ratio, "output_format:", input.output_format, "image_input:", imgType, `(${imgSize} chars)`);
-  console.log("[Replicate] Prompt length:", input.prompt?.length, "first 200 chars:", input.prompt?.substring(0, 200));
+function parseModelString(modelStr: string): { type: "version"; hash: string } | { type: "model"; owner: string; name: string } {
+  // Strip legacy "replicate:" prefix
+  const clean = modelStr.startsWith("replicate:") ? modelStr.slice("replicate:".length) : modelStr;
+  // Strip "model:" prefix
+  const noModelPrefix = clean.startsWith("model:") ? clean.slice("model:".length) : clean;
 
-  const created: ReplicatePrediction = await fetchJson(
+  // If it looks like a SHA-256 hash (64 hex chars), it's a version hash
+  if (/^[0-9a-f]{64}$/i.test(noModelPrefix)) {
+    return { type: "version", hash: noModelPrefix };
+  }
+
+  // Otherwise treat as owner/name
+  const parts = noModelPrefix.split("/");
+  if (parts.length >= 2) {
+    return { type: "model", owner: parts[0], name: parts.slice(1).join("/") };
+  }
+
+  // Fallback: treat as version hash anyway
+  return { type: "version", hash: noModelPrefix };
+}
+
+/**
+ * Build the input payload for a given model type.
+ * Different models have different input schemas.
+ */
+function buildInput(
+  modelIdentifier: string,
+  prompt: string,
+  aspectRatio: string,
+  inputImageUrl?: string | string[] | null
+): Record<string, any> {
+  const parsed = parseModelString(modelIdentifier);
+  const modelName = parsed.type === "model" ? `${parsed.owner}/${parsed.name}` : "";
+
+  // Flux Schnell / Flux Dev
+  if (modelName.includes("flux-schnell") || modelName.includes("flux-dev")) {
+    const input: Record<string, any> = {
+      prompt,
+      aspect_ratio: aspectRatio,
+      output_format: "png",
+      num_inference_steps: 4,
+    };
+    return input;
+  }
+
+  // SDXL Lightning (bytedance)
+  if (modelName.includes("sdxl-lightning")) {
+    const size = aspectRatioToSize(aspectRatio);
+    const input: Record<string, any> = {
+      prompt,
+      width: size.width,
+      height: size.height,
+      num_inference_steps: 4,
+      scheduler: "K_EULER",
+    };
+    return input;
+  }
+
+  // Stable Diffusion 3
+  if (modelName.includes("stable-diffusion-3")) {
+    const input: Record<string, any> = {
+      prompt,
+      aspect_ratio: aspectRatio,
+      output_format: "png",
+    };
+    return input;
+  }
+
+  // Default / Nano Banana / SDXL (version-hash based models)
+  const input: Record<string, any> = {
+    prompt,
+    aspect_ratio: aspectRatio,
+    output_format: "png",
+  };
+
+  if (inputImageUrl) {
+    const urls = Array.isArray(inputImageUrl) ? inputImageUrl : [inputImageUrl];
+    input.image_input = urls.filter(Boolean);
+  }
+
+  return input;
+}
+
+/**
+ * Run a prediction using the version-hash endpoint.
+ */
+async function runVersionPrediction(
+  token: string,
+  versionHash: string,
+  input: Record<string, any>,
+): Promise<ReplicatePrediction> {
+  console.log("[Replicate] Creating version prediction with hash:", versionHash.substring(0, 16) + "...");
+  return await fetchJson(
     "https://api.replicate.com/v1/predictions",
     {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
+        "Prefer": "wait",
       },
-      body: JSON.stringify({ version, input }),
+      body: JSON.stringify({ version: versionHash, input }),
     }
   );
+}
 
-  console.log("[Replicate] Prediction created:", created.id, "status:", created.status);
+/**
+ * Run a prediction using the model-name endpoint (for official/deployment models).
+ */
+async function runModelPrediction(
+  token: string,
+  owner: string,
+  name: string,
+  input: Record<string, any>,
+): Promise<ReplicatePrediction> {
+  console.log("[Replicate] Creating model prediction for:", `${owner}/${name}`);
+  return await fetchJson(
+    `https://api.replicate.com/v1/models/${owner}/${name}/predictions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Prefer": "wait",
+      },
+      body: JSON.stringify({ input }),
+    }
+  );
+}
 
-  let prediction = created;
+/**
+ * Poll a prediction until it completes.
+ */
+async function pollPrediction(
+  token: string,
+  predictionId: string,
+): Promise<ReplicatePrediction> {
+  let prediction: ReplicatePrediction = { id: predictionId, status: "starting" };
 
   for (let i = 0; i < 120; i++) {
     if (prediction.status === "succeeded") break;
@@ -224,7 +337,6 @@ async function runPrediction(
         predictionId: prediction.id,
         status: prediction.status,
         error: prediction.error,
-        fullPrediction: JSON.stringify(prediction).substring(0, 2000),
       });
       throw new Error(
         `Replicate generation ${prediction.status} (id=${prediction.id}): ${JSON.stringify(prediction.error) || "Unknown error"}`
@@ -234,7 +346,7 @@ async function runPrediction(
     await sleep(1000);
 
     prediction = await fetchJson(
-      `https://api.replicate.com/v1/predictions/${prediction.id}`,
+      `https://api.replicate.com/v1/predictions/${predictionId}`,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
@@ -246,7 +358,40 @@ async function runPrediction(
     throw new Error(`Replicate generation timed out (status=${prediction.status})`);
   }
 
-  console.log("[Replicate] Prediction succeeded, output:", JSON.stringify(prediction.output));
+  return prediction;
+}
+
+/**
+ * Run a single Replicate prediction (version-hash or model-name) and return base64 image.
+ */
+async function runPrediction(
+  token: string,
+  modelStr: string,
+  input: Record<string, any>,
+): Promise<{ mimeType: string; data: string }> {
+  const parsed = parseModelString(modelStr);
+
+  console.log("[Replicate] Model type:", parsed.type, parsed.type === "version" ? parsed.hash.substring(0, 16) + "..." : `${parsed.owner}/${parsed.name}`);
+  console.log("[Replicate] Input aspect_ratio:", input.aspect_ratio, "prompt length:", input.prompt?.length);
+  console.log("[Replicate] Prompt first 200 chars:", input.prompt?.substring(0, 200));
+
+  let created: ReplicatePrediction;
+
+  if (parsed.type === "version") {
+    created = await runVersionPrediction(token, parsed.hash, input);
+  } else {
+    created = await runModelPrediction(token, parsed.owner, parsed.name, input);
+  }
+
+  console.log("[Replicate] Prediction created:", created.id, "status:", created.status);
+
+  // If the prediction already succeeded (via Prefer: wait), skip polling
+  let prediction = created;
+  if (prediction.status !== "succeeded") {
+    prediction = await pollPrediction(token, created.id);
+  }
+
+  console.log("[Replicate] Prediction succeeded, output:", JSON.stringify(prediction.output)?.substring(0, 200));
 
   const imageUrl = pickFirstImageUrl(prediction.output);
   if (!imageUrl) {
@@ -270,20 +415,10 @@ export async function generateImageBase64(
   data: string;
 }> {
   const token = getReplicateToken();
-  
-  // Use provided model or fall back to default version
-  let version = getReplicateModelVersion();
-  if (params.model) {
-    if (params.model.startsWith("replicate:")) {
-      // Strip the "replicate:" prefix to get the version/model identifier
-      version = params.model.replace("replicate:", "");
-    } else {
-      // Bare version hash (e.g. Nano Banana stored directly as a hash)
-      version = params.model;
-    }
-  }
 
-  const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);
+  // Use provided model or fall back to default version
+  const modelStr = params.model || getReplicateModelVersion();
+
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 
   // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4
@@ -298,22 +433,18 @@ export async function generateImageBase64(
       console.log(`[Replicate] Retry #${attempt} — switching aspect_ratio to "${aspectRatio}"`);
     }
 
-    const input: Record<string, any> = {
-      prompt: compressedPrompt,
-      aspect_ratio: aspectRatio,
-      output_format: "png",
-    };
-
-    if (params.inputImageUrl) {
-      const urls = Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl];
-      input.image_input = urls.filter(Boolean);
-    }
+    const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);
+    const input = buildInput(modelStr, compressedPrompt, aspectRatio, params.inputImageUrl);
 
     try {
-      return await runPrediction(token, version, input);
+      return await runPrediction(token, modelStr, input);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.error(`[Replicate] Attempt ${attempt + 1}/${fallbackRatios.length} failed:`, lastError.message);
+      // Don't retry on 422 (invalid model/version) — it will always fail
+      if (lastError.message.includes("status=422")) {
+        break;
+      }
     }
   }
 

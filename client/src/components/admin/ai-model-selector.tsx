@@ -42,7 +42,7 @@ const AI_MODELS: AiModel[] = [
     estimatedTime: "3-5s",
     costPerGen: 1,
     isFast: true,
-    replicateModel: "replicate:lucataco/sdxl-lightning-4step:727e49a643e999d602a896c774a0658ffefea21465756a6ce24b7af4165eba9a",
+    replicateModel: "model:bytedance/sdxl-lightning-4step",
   },
   {
     id: "flux-schnell",
@@ -52,7 +52,7 @@ const AI_MODELS: AiModel[] = [
     estimatedTime: "4-6s",
     costPerGen: 1.5,
     isFast: true,
-    replicateModel: "replicate:black-forest-labs/flux-schnell",
+    replicateModel: "model:black-forest-labs/flux-schnell",
   },
   {
     id: "stable-diffusion-3",
@@ -62,7 +62,7 @@ const AI_MODELS: AiModel[] = [
     estimatedTime: "15-20s",
     costPerGen: 2,
     isFast: false,
-    replicateModel: "replicate:stability-ai/stable-diffusion-3",
+    replicateModel: "model:stability-ai/stable-diffusion-3",
   },
   {
     id: "sdxl",
@@ -72,7 +72,7 @@ const AI_MODELS: AiModel[] = [
     estimatedTime: "15-25s",
     costPerGen: 1,
     isFast: false,
-    replicateModel: "replicate:stability-ai/sdxl:7762fd0e0f370ed7a503f304e2a75a1ca53bc52447c5713b71e8fdc5704ff232",
+    replicateModel: "model:stability-ai/sdxl",
   },
 ];
 
