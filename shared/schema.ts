@@ -11,9 +11,6 @@ export * from "./colorUtils";
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().unique(),
-  email: text("email"),
-  otpCode: varchar("otp_code", { length: 6 }),
-  otpExpiresAt: timestamp("otp_expires_at"),
   credits: integer("credits").notNull().default(5),
   freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
   totalGenerations: integer("total_generations").notNull().default(0),
@@ -43,9 +40,6 @@ export const merchants = pgTable("merchants", {
   monthlyGenerationLimit: integer("monthly_generation_limit").notNull().default(100),
   generationsThisMonth: integer("generations_this_month").notNull().default(0),
   brandingSettings: json("branding_settings"),
-  selectedAiModel: text("selected_ai_model").notNull().default("5bdc2c7cd642ae33611d8c33f79615f98ff02509ab8db9d8ec1cc6c36d378fba"),
-  aiModelSettings: json("ai_model_settings").notNull().default({}),
-  hasAgreedToAiCosts: boolean("has_agreed_to_ai_costs").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -218,9 +212,7 @@ export const stylePresets = pgTable("style_presets", {
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   baseImageUrl: text("base_image_url"),
-  baseImageUrls: json("base_image_urls"),
   promptPlaceholder: text("prompt_placeholder"),
-  options: json("options"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

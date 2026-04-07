@@ -1857,8 +1857,6 @@ ${textEdgeRestrictions}
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
         isApparel,
-        isAllOverPrint,
-        model: merchant.selectedAiModel,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -5749,18 +5747,11 @@ ${textEdgeRestrictions}
           // Call AI image generation
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
-          
-          // Get merchant settings for AI model
-          const merchant = await storage.getMerchantByShop(shop);
-          const selectedModel = merchant?.selectedAiModel;
-
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
             isApparel,
-            isAllOverPrint,
-            model: selectedModel,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
@@ -7507,48 +7498,26 @@ ${textEdgeRestrictions}
       console.log(`[Pattern Preview] Running Picsart removebg (mode=${editorMode})...`);
       let motifBuffer: Buffer;
       try {
-        // Add 20-second timeout for Picsart removebg (increased from 15s)
-        const removeBgPromise = removeBackground({
+        const removeBgResult = await removeBackground({
           imageUrl: absoluteImageUrl,
         });
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Picsart removebg timeout (20s)")), 20000)
-        );
-        const removeBgResult = await Promise.race([removeBgPromise, timeoutPromise]) as any;
-        
-        console.log("[Pattern Preview] Picsart removebg result URL:", removeBgResult.url);
-        
-        // Add 10-second timeout for fetching the result
-        const motifResponse = await fetch(removeBgResult.url, { signal: AbortSignal.timeout(10000) });
+        const motifResponse = await fetch(removeBgResult.url);
         if (!motifResponse.ok) {
           throw new Error(`Failed to download removebg result (${motifResponse.status})`);
         }
         motifBuffer = Buffer.from(await motifResponse.arrayBuffer());
         console.log("[Pattern Preview] removebg complete, motif buffer:", motifBuffer.length, "bytes");
       } catch (removeBgErr: any) {
-        console.warn("[Pattern Preview] removebg failed or timed out, fetching original motif:", removeBgErr.message);
-        try {
-          // Add 10-second timeout for fetching the original image
-          const origResponse = await fetch(absoluteImageUrl, { signal: AbortSignal.timeout(10000) });
-          if (!origResponse.ok) {
-            throw new Error(`Failed to fetch original image (${origResponse.status})`);
-          }
-          motifBuffer = Buffer.from(await origResponse.arrayBuffer());
-          console.log("[Pattern Preview] Successfully fell back to original motif");
-        } catch (fetchErr: any) {
-          console.error("[Pattern Preview] Failed to fetch original image:", fetchErr.message);
-          throw new Error(`Could not load image for pattern generation: ${fetchErr.message}`);
+        console.warn("[Pattern Preview] removebg failed, fetching original motif:", removeBgErr.message);
+        const origResponse = await fetch(absoluteImageUrl);
+        if (!origResponse.ok) {
+          throw new Error(`Failed to fetch original image (${origResponse.status})`);
         }
+        motifBuffer = Buffer.from(await origResponse.arrayBuffer());
       }
 
       // Step 2a (Single Image mode): Sharp composite — place artwork at transform on blank canvas.
       let patternBuffer: Buffer;
-      
-      // Add CORS headers to allow cross-origin requests from Shopify iframe
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      res.setHeader("Cache-Control", "public, max-age=3600");
 
       if (editorMode === "single") {
         const sharp = (await import("sharp")).default;
@@ -8399,15 +8368,13 @@ ${textEdgeRestrictions}
         });
       }
 
-      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken, selectedAiModel, hasAgreedToAiCosts } = req.body;
+      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken } = req.body;
       
       const updated = await storage.updateMerchant(merchant.id, {
         printifyApiToken: printifyApiToken || merchant.printifyApiToken,
         printifyShopId: printifyShopId || merchant.printifyShopId,
         useBuiltInNanoBanana: useBuiltInNanoBanana !== undefined ? useBuiltInNanoBanana : merchant.useBuiltInNanoBanana,
         customNanoBananaToken: customNanoBananaToken || merchant.customNanoBananaToken,
-        ...(selectedAiModel !== undefined && { selectedAiModel }),
-        ...(hasAgreedToAiCosts !== undefined && { hasAgreedToAiCosts }),
       });
 
       res.json(updated);

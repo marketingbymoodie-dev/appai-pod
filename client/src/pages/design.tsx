@@ -1087,7 +1087,7 @@ export default function DesignPage() {
     ) : null;
 
   const zoomControls =
-    generatedDesign?.generatedImageUrl && !designerConfig?.isAllOverPrint ? (
+    generatedDesign?.generatedImageUrl ? (
       <div className="flex items-center gap-2 p-2 bg-muted/50 rounded-md">
         <ZoomIn className="h-4 w-4 text-muted-foreground shrink-0" />
         <Slider
@@ -1564,6 +1564,49 @@ export default function DesignPage() {
             {/* Left column: Controls */}
             <div className="w-72 shrink-0 space-y-3 overflow-y-auto">
               {reuseBanner}
+              {showPatternStep && aopPendingMotifUrl && designerConfig && (
+                <PatternCustomizer
+                  motifUrl={aopPendingMotifUrl}
+                  productWidth={(() => {
+                    const positions = designerConfig?.placeholderPositions || [];
+                    return positions.reduce((max, p) => Math.max(max, p.width), 2000);
+                  })()}
+                  productHeight={(() => {
+                    const positions = designerConfig?.placeholderPositions || [];
+                    return positions.reduce((max, p) => Math.max(max, p.height), 2000);
+                  })()}
+                  hasPairedPanels={(() => {
+                    const positions = (designerConfig?.placeholderPositions || []).map((p) => p.position);
+                    return positions.some((p) => p.startsWith("left")) && positions.some((p) => p.startsWith("right"));
+                  })()}
+                  onApply={async (appliedPatternUrl: string, options) => {
+                    setShowPatternStep(false);
+                    setAopPendingMotifUrl(null);
+                    if (designerConfig && selectedSize && selectedFrameColor) {
+                      const motifUrl = aopPendingMotifUrl || generatedDesign?.generatedImageUrl;
+                      const imageUrl = motifUrl?.startsWith("http")
+                        ? motifUrl
+                        : motifUrl
+                          ? window.location.origin + motifUrl
+                          : "";
+                      if (imageUrl) {
+                        fetchPrintifyMockups(
+                          imageUrl,
+                          designerConfig.id,
+                          selectedSize,
+                          selectedFrameColor,
+                          imageScale,
+                          imagePosition.x,
+                          imagePosition.y,
+                          appliedPatternUrl,
+                          options.mirrorLegs
+                        );
+                      }
+                    }
+                  }}
+                  isLoading={mockupLoading}
+                />
+              )}
               {!showPatternStep && (
                 <>
                   {styleSelector}
@@ -1576,53 +1619,7 @@ export default function DesignPage() {
             </div>
 
             {/* Center: Main preview */}
-            <div className="flex-1 flex flex-col items-center min-w-0 relative">
-              {/* Pattern Editor Overlay */}
-              {showPatternStep && aopPendingMotifUrl && designerConfig && (
-                <div className="absolute top-0 left-0 z-50 bg-background/95 backdrop-blur-sm rounded-lg shadow-lg border p-4 max-w-sm max-h-[90vh] overflow-y-auto">
-                  <PatternCustomizer
-                    motifUrl={aopPendingMotifUrl}
-                    productWidth={(() => {
-                      const positions = designerConfig?.placeholderPositions || [];
-                      return positions.reduce((max, p) => Math.max(max, p.width), 2000);
-                    })()}
-                    productHeight={(() => {
-                      const positions = designerConfig?.placeholderPositions || [];
-                      return positions.reduce((max, p) => Math.max(max, p.height), 2000);
-                    })()}
-                    hasPairedPanels={(() => {
-                      const positions = (designerConfig?.placeholderPositions || []).map((p) => p.position);
-                      return positions.some((p) => p.startsWith("left")) && positions.some((p) => p.startsWith("right"));
-                    })()}
-                    onApply={async (appliedPatternUrl: string, options) => {
-                      setShowPatternStep(false);
-                      setAopPendingMotifUrl(null);
-                      if (designerConfig && selectedSize && selectedFrameColor) {
-                        const motifUrl = aopPendingMotifUrl || generatedDesign?.generatedImageUrl;
-                        const imageUrl = motifUrl?.startsWith("http")
-                          ? motifUrl
-                          : motifUrl
-                            ? window.location.origin + motifUrl
-                            : "";
-                        if (imageUrl) {
-                          fetchPrintifyMockups(
-                            imageUrl,
-                            designerConfig.id,
-                            selectedSize,
-                            selectedFrameColor,
-                            imageScale,
-                            imagePosition.x,
-                            imagePosition.y,
-                            appliedPatternUrl,
-                            options.mirrorLegs
-                          );
-                        }
-                      }
-                    }}
-                    isLoading={mockupLoading}
-                  />
-                </div>
-              )}
+            <div className="flex-1 flex flex-col items-center min-w-0">
               <h3 className="text-sm font-medium mb-2">
                 {printifyMockupImages.length > 0 && selectedMockupIndex < printifyMockupImages.length
                   ? printifyMockupImages[selectedMockupIndex].label.charAt(0).toUpperCase() +
@@ -1652,9 +1649,8 @@ export default function DesignPage() {
                       <img
                         src={printifyMockups[selectedMockupIndex]}
                         alt={printifyMockupImages[selectedMockupIndex]?.label || "Mockup preview"}
-                        className="w-full h-full object-contain rounded-md select-none"
+                        className="w-full h-full object-contain rounded-md"
                         data-testid="img-selected-mockup"
-                        draggable={false}
                       />
                       {mockupLoading && (
                         <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-md">
@@ -1670,10 +1666,8 @@ export default function DesignPage() {
                   )}
                 </div>
               </div>
-              {/* Hide tweak link when pattern editor is open */}
-              {!showPatternStep && <div className="mt-1 h-6 flex items-center justify-center">{tweakLink}</div>}
-              {/* Hide tweak panel when pattern editor is open */}
-              {!showPatternStep && tweakPanel && <div className="mt-2 w-full max-w-xs">{tweakPanel}</div>}
+              <div className="mt-1 h-6 flex items-center justify-center">{tweakLink}</div>
+              {tweakPanel && <div className="mt-2 w-full max-w-xs">{tweakPanel}</div>}
             </div>
 
             {/* Right: Secondary view / Mockup gallery */}
@@ -1752,9 +1746,8 @@ export default function DesignPage() {
 
           {/* Bottom: Zoom and action buttons */}
           <div className="shrink-0 pt-3 flex items-center gap-4">
-            {/* Zoom controls disabled for AOP products */}
-            {!designerConfig?.isAllOverPrint && <div className="flex-1">{zoomControls}</div>}
-            <div className={designerConfig?.isAllOverPrint ? "flex-1" : "w-72"}>{actionButtons}</div>
+            <div className="flex-1">{zoomControls}</div>
+            <div className="w-72">{actionButtons}</div>
           </div>
         </div>
       </main>
@@ -1811,8 +1804,7 @@ export default function DesignPage() {
                 </Button>
               </div>
 
-              {/* Zoom controls disabled for AOP products */}
-              {!designerConfig?.isAllOverPrint && zoomControls}
+              {zoomControls}
 
               {mobileViewMode === "front" ? (
                 <div className="space-y-1">

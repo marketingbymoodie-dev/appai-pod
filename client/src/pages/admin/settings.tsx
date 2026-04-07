@@ -11,7 +11,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Save, CheckCircle, AlertCircle, Loader2, Store, RefreshCw, ExternalLink, FileCode, Link2 } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import BrandingSettingsComponent from "@/components/admin/branding-settings";
-import AiModelSelector from "@/components/admin/ai-model-selector";
 import type { Merchant } from "@shared/schema";
 
 interface ShopifyInstallation {
@@ -335,7 +334,6 @@ export default function AdminSettings() {
           </CardContent>
         </Card>
 
-        <AiModelSelector />
         <BrandingSettingsComponent />
 
         <div className="flex justify-end pt-4">

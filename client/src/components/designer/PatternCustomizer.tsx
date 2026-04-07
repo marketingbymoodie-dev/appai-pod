@@ -260,34 +260,18 @@ export function PatternCustomizer({
       body.singlePosY = singlePosY;
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
-
-    try {
-      const res = await fetch("/api/pattern/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Unknown error" }));
-        setError(err.error || "Pattern generation failed");
-        return null;
-      }
-      const data = await res.json();
-      return data.patternUrl ?? null;
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      if (err.name === "AbortError") {
-        setError("Pattern generation timed out (30s). Please try again.");
-      } else {
-        setError(err.message || "Pattern generation failed");
-      }
+    const res = await fetch("/api/pattern/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Unknown error" }));
+      setError(err.error || "Pattern generation failed");
       return null;
     }
+    const data = await res.json();
+    return data.patternUrl ?? null;
   }, [motifUrl, mode, pattern, scale, bgColor, singleScale, singleRotation, singlePosX, singlePosY]);
 
   const handlePreview = async () => {
