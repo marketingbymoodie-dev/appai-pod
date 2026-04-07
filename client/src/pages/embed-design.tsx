@@ -2114,6 +2114,10 @@ export default function EmbedDesign() {
             setFreeLimitReached(true);
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
           }
+          if (jobData.error === 'GALLERY_FULL') {
+            setShowGalleryFullModal(true);
+            throw new Error('GALLERY_FULL');
+          }
           if (!isStorefront) {
             if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
             else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
@@ -2388,6 +2392,12 @@ export default function EmbedDesign() {
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return;
+
+    // Pre-check: block generation immediately if gallery is full
+    if (savedDesigns.length >= galleryLimit) {
+      setShowGalleryFullModal(true);
+      return;
+    }
     
     // Validate required fields
     if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
