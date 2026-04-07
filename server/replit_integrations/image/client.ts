@@ -106,6 +106,7 @@ export type GenerateImageParams = {
   aspectRatio?: string;
   inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
+  model?: string;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -269,7 +270,12 @@ export async function generateImageBase64(
   data: string;
 }> {
   const token = getReplicateToken();
-  const version = getReplicateModelVersion();
+  
+  // Use provided model or fall back to default version
+  let version = getReplicateModelVersion();
+  if (params.model && params.model.startsWith("replicate:")) {
+    version = params.model.replace("replicate:", "");
+  }
 
   const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);

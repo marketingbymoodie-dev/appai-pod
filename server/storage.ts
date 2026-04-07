@@ -34,6 +34,7 @@ export interface IStorage {
   getMerchantByUserId(userId: string): Promise<Merchant | undefined>;
   createMerchant(merchant: InsertMerchant): Promise<Merchant>;
   updateMerchant(id: string, updates: Partial<Merchant>): Promise<Merchant | undefined>;
+  getMerchantByShop(shopDomain: string): Promise<Merchant | undefined>;
   
   // Designs
   getDesign(id: number): Promise<Design | undefined>;
@@ -225,11 +226,9 @@ export class DatabaseStorage implements IStorage {
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(merchants.id, id))
       .returning();
-
     return updated;
   }
 
-  // Shopify helpers
   async getMerchantByShop(shop: string): Promise<Merchant | undefined> {
     const userId = `shopify:merchant:${shop}`;
     return this.getMerchantByUserId(userId);

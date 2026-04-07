@@ -40,6 +40,9 @@ export const merchants = pgTable("merchants", {
   monthlyGenerationLimit: integer("monthly_generation_limit").notNull().default(100),
   generationsThisMonth: integer("generations_this_month").notNull().default(0),
   brandingSettings: json("branding_settings"),
+  selectedAiModel: text("selected_ai_model").notNull().default("replicate:lucataco/sdxl-lightning-4step:727e49a643e999d602a896c774a0658ffefea21465756a6ce24b7af4165eba9a"),
+  aiModelSettings: json("ai_model_settings").notNull().default({}),
+  hasAgreedToAiCosts: boolean("has_agreed_to_ai_costs").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

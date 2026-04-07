@@ -1857,6 +1857,7 @@ ${textEdgeRestrictions}
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
         isApparel,
+        model: merchant.selectedAiModel,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -5747,11 +5748,17 @@ ${textEdgeRestrictions}
           // Call AI image generation
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
+          
+          // Get merchant settings for AI model
+          const merchant = await storage.getMerchantByShop(shop);
+          const selectedModel = merchant?.selectedAiModel;
+
           const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
             prompt: fullPrompt,
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
             isApparel,
+            model: selectedModel,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
