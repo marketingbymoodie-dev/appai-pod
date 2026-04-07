@@ -7498,16 +7498,19 @@ ${textEdgeRestrictions}
       console.log(`[Pattern Preview] Running Picsart removebg (mode=${editorMode})...`);
       let motifBuffer: Buffer;
       try {
-        // Add 15-second timeout for Picsart removebg
+        // Add 20-second timeout for Picsart removebg (increased from 15s)
         const removeBgPromise = removeBackground({
           imageUrl: absoluteImageUrl,
         });
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Picsart removebg timeout (15s)")), 15000)
+          setTimeout(() => reject(new Error("Picsart removebg timeout (20s)")), 20000)
         );
         const removeBgResult = await Promise.race([removeBgPromise, timeoutPromise]) as any;
         
-        const motifResponse = await fetch(removeBgResult.url);
+        console.log("[Pattern Preview] Picsart removebg result URL:", removeBgResult.url);
+        
+        // Add 10-second timeout for fetching the result
+        const motifResponse = await fetch(removeBgResult.url, { signal: AbortSignal.timeout(10000) });
         if (!motifResponse.ok) {
           throw new Error(`Failed to download removebg result (${motifResponse.status})`);
         }
@@ -7516,14 +7519,16 @@ ${textEdgeRestrictions}
       } catch (removeBgErr: any) {
         console.warn("[Pattern Preview] removebg failed or timed out, fetching original motif:", removeBgErr.message);
         try {
+          // Add 10-second timeout for fetching the original image
           const origResponse = await fetch(absoluteImageUrl, { signal: AbortSignal.timeout(10000) });
           if (!origResponse.ok) {
             throw new Error(`Failed to fetch original image (${origResponse.status})`);
           }
           motifBuffer = Buffer.from(await origResponse.arrayBuffer());
+          console.log("[Pattern Preview] Successfully fell back to original motif");
         } catch (fetchErr: any) {
           console.error("[Pattern Preview] Failed to fetch original image:", fetchErr.message);
-          throw new Error("Could not load image for pattern generation");
+          throw new Error(`Could not load image for pattern generation: ${fetchErr.message}`);
         }
       }
 
