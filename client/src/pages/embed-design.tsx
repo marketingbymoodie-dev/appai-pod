@@ -4718,42 +4718,7 @@ export default function EmbedDesign() {
                 </div>
               )}
 
-              {/* AOP Pattern Step — shown after generation for all-over-print products */}
-              {showPatternStep && aopPendingMotifUrl && (
-                <PatternCustomizer
-                  motifUrl={aopPendingMotifUrl}
-                  productWidth={(() => {
-                    const positions = productTypeConfig?.placeholderPositions || [];
-                    return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
-                  })()}
-                  productHeight={(() => {
-                    const positions = productTypeConfig?.placeholderPositions || [];
-                    return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
-                  })()}
-                  hasPairedPanels={(() => {
-                    const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
-                    return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
-                  })()}
-                  onApply={async (appliedPatternUrl: string, options) => {
-                    setAopPatternUrl(appliedPatternUrl);
-                    setShowPatternStep(false);
-                    if (productTypeConfig) {
-                      fetchPrintifyMockups(
-                        aopPendingMotifUrl,
-                        productTypeConfig.id,
-                        selectedSize,
-                        selectedFrameColor || 'default',
-                        defaultZoom,
-                        50,
-                        50,
-                        appliedPatternUrl,
-                        options.mirrorLegs
-                      );
-                    }
-                  }}
-                  isLoading={mockupLoading}
-                />
-              )}
+
 
 
             </div>
@@ -4874,6 +4839,45 @@ export default function EmbedDesign() {
                   <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
                     Refresh your Mockups
                   </span>
+                </div>
+              )}
+
+              {/* AOP Pattern Step overlay — shown after generation for all-over-print products */}
+              {showPatternStep && aopPendingMotifUrl && (
+                <div className="absolute inset-0 z-30 overflow-y-auto">
+                  <PatternCustomizer
+                    motifUrl={aopPendingMotifUrl}
+                    productWidth={(() => {
+                      const positions = productTypeConfig?.placeholderPositions || [];
+                      return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
+                    })()}
+                    productHeight={(() => {
+                      const positions = productTypeConfig?.placeholderPositions || [];
+                      return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
+                    })()}
+                    hasPairedPanels={(() => {
+                      const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
+                      return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
+                    })()}
+                    onApply={async (appliedPatternUrl: string, options) => {
+                      setAopPatternUrl(appliedPatternUrl);
+                      setShowPatternStep(false);
+                      if (productTypeConfig) {
+                        fetchPrintifyMockups(
+                          aopPendingMotifUrl,
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || 'default',
+                          defaultZoom,
+                          50,
+                          50,
+                          appliedPatternUrl,
+                          options.mirrorLegs
+                        );
+                      }
+                    }}
+                    isLoading={mockupLoading}
+                  />
                 </div>
               )}
             </div>

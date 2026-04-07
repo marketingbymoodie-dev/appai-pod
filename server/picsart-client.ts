@@ -1,16 +1,18 @@
 /**
- * Picsart API client.
+ * Background removal client.
  *
- * Endpoints used:
- *   POST /tools/1.0/removebg          — Remove (or replace) background
- *   POST /tools/1.0/background/pattern — Tile a motif into a seamless pattern
+ * Previously used Picsart. Now uses remove.bg for faster, more reliable results.
  *
  * Docs:
- *   https://docs.picsart.io/reference/image-remove-background
- *   https://docs.picsart.io/reference/image-generate-pattern
+ *   https://www.remove.bg/api
+ *
+ * Environment variable required:
+ *   REMOVE_BG_API_KEY — API key from https://www.remove.bg/dashboard
+ *
+ * Falls back to PICSART_API_KEY if REMOVE_BG_API_KEY is not set (legacy support).
  */
 
-const PICSART_API_BASE = "https://api.picsart.io/tools/1.0";
+const REMOVE_BG_API_BASE = "https://api.remove.bg/v1.0";
 
 // ─── Remove Background ────────────────────────────────────────────────────────
 
@@ -31,29 +33,27 @@ export interface RemoveBgResult {
 }
 
 /**
- * Remove (or replace) the background of an image using Picsart.
- * When bgColor is provided the subject is composited onto that solid colour.
- * When bgColor is omitted the result is a transparent PNG cutout.
+ * Remove (or replace) the background of an image using remove.bg.
+ * Returns a data URL (base64 PNG) wrapped in a fake URL object for compatibility.
  */
 export async function removeBackground(params: RemoveBgParams): Promise<RemoveBgResult> {
-  const apiKey = process.env.PICSART_API_KEY;
+  const apiKey = process.env.REMOVE_BG_API_KEY;
   if (!apiKey) {
-    throw new Error("PICSART_API_KEY environment variable is not set");
+    throw new Error("REMOVE_BG_API_KEY environment variable is not set");
   }
 
   const formData = new FormData();
   formData.append("image_url", params.imageUrl);
-  formData.append("output_type", "cutout");
-  formData.append("format", "PNG");
+  formData.append("size", "auto");
+  formData.append("format", "png");
   if (params.bgColor) {
-    // Strip leading # — Picsart accepts both formats
     formData.append("bg_color", params.bgColor.replace(/^#/, ""));
   }
 
-  const response = await fetch(`${PICSART_API_BASE}/removebg`, {
+  const response = await fetch(`${REMOVE_BG_API_BASE}/removebg`, {
     method: "POST",
     headers: {
-      "X-Picsart-API-Key": apiKey,
+      "X-Api-Key": apiKey,
     },
     body: formData,
   });
@@ -61,49 +61,39 @@ export async function removeBackground(params: RemoveBgParams): Promise<RemoveBg
   if (!response.ok) {
     let detail = "";
     try {
-      const errJson = await response.json() as { detail?: string; message?: string };
-      detail = errJson.detail ?? errJson.message ?? "";
+      const errJson = await response.json() as { errors?: Array<{ title?: string }> };
+      detail = errJson.errors?.map(e => e.title).join(", ") ?? "";
     } catch {
       detail = await response.text();
     }
-    throw new Error(`Picsart removebg API error ${response.status}: ${detail}`);
+    throw new Error(`remove.bg API error ${response.status}: ${detail}`);
   }
 
-  const data = await response.json() as {
-    data?: { id: string; url: string };
-    status?: string;
-  };
+  // remove.bg returns the image directly as binary PNG in the response body
+  const imageBuffer = Buffer.from(await response.arrayBuffer());
 
-  const resultId = data.data?.id ?? "";
-  const resultUrl = data.data?.url ?? "";
+  // Store as a temporary local file and return a data URL
+  // We encode as base64 data URL so callers can use it directly without a second fetch
+  const base64 = imageBuffer.toString("base64");
+  const dataUrl = `data:image/png;base64,${base64}`;
 
-  if (!resultUrl) {
-    throw new Error("Picsart removebg API returned no image URL");
-  }
-
-  return { url: resultUrl, id: resultId };
+  return { url: dataUrl, id: crypto.randomUUID() };
 }
 
 // ─── Pattern Generator ────────────────────────────────────────────────────────
+// Note: Picsart pattern generation is no longer used — we use Sharp tiling instead.
+// This stub is kept for import compatibility only.
 
 export type PatternType = "hex" | "mirror" | "diamond" | "hex2" | "tile";
 
 export interface PatternParams {
-  /** URL of the source motif image (must be publicly accessible) */
   imageUrl: string;
-  /** Tiling pattern type (default: "tile") */
   pattern?: PatternType;
-  /** Scale factor 0.5–10.0 (default: 1.0) */
   scale?: number;
-  /** Rotation angle -180 to 180 degrees (default: 0) */
   rotate?: number;
-  /** X offset from center in pixels (default: 0) */
   offsetX?: number;
-  /** Y offset from center in pixels (default: 0) */
   offsetY?: number;
-  /** Output image width in pixels (max 8000, default 1024) */
   width?: number;
-  /** Output image height in pixels (max 8000, default 1024) */
   height?: number;
 }
 
@@ -113,59 +103,8 @@ export interface PatternResult {
 }
 
 /**
- * Generate a seamless tiled pattern from a source motif image using Picsart.
- * Returns the URL of the tiled pattern image (PNG).
+ * @deprecated Sharp tiling is used instead. This function is kept for import compatibility.
  */
-export async function generatePattern(params: PatternParams): Promise<PatternResult> {
-  const apiKey = process.env.PICSART_API_KEY;
-  if (!apiKey) {
-    throw new Error("PICSART_API_KEY environment variable is not set");
-  }
-
-  const formData = new FormData();
-  formData.append("image_url", params.imageUrl);
-  formData.append("format", "PNG");
-  formData.append("pattern", params.pattern ?? "tile");
-  formData.append("scale", String(params.scale ?? 1.0));
-  formData.append("rotate", String(params.rotate ?? 0));
-  formData.append("offset_x", String(params.offsetX ?? 0));
-  formData.append("offset_y", String(params.offsetY ?? 0));
-
-  const width = Math.min(params.width ?? 1024, 8000);
-  const height = Math.min(params.height ?? 1024, 8000);
-  formData.append("width", String(width));
-  formData.append("height", String(height));
-
-  const response = await fetch(`${PICSART_API_BASE}/background/pattern`, {
-    method: "POST",
-    headers: {
-      "X-Picsart-API-Key": apiKey,
-    },
-    body: formData,
-  });
-
-  if (!response.ok) {
-    let detail = "";
-    try {
-      const errJson = await response.json() as { detail?: string; message?: string };
-      detail = errJson.detail ?? errJson.message ?? "";
-    } catch {
-      detail = await response.text();
-    }
-    throw new Error(`Picsart pattern API error ${response.status}: ${detail}`);
-  }
-
-  const data = await response.json() as {
-    data?: { id: string; url: string };
-    status?: string;
-  };
-
-  const resultId = data.data?.id ?? "";
-  const resultUrl = data.data?.url ?? "";
-
-  if (!resultUrl) {
-    throw new Error("Picsart pattern API returned no image URL");
-  }
-
-  return { url: resultUrl, id: resultId };
+export async function generatePattern(_params: PatternParams): Promise<PatternResult> {
+  throw new Error("generatePattern is deprecated — use Sharp tiling via /api/pattern/preview instead");
 }

@@ -445,22 +445,31 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       });
 
       if (tempUrl) {
-        // 2. Call Picsart removebg
-        const picsartResult = await removeBackground({ imageUrl: tempUrl });
+        // 2. Call remove.bg
+        const removeBgResult = await removeBackground({ imageUrl: tempUrl });
         
-        // 3. Download the result
-        const response = await fetch(picsartResult.url);
-        if (response.ok) {
-          buffer = Buffer.from(await response.arrayBuffer());
+        // 3. Handle result — remove.bg returns a data URL directly
+        if (removeBgResult.url.startsWith("data:")) {
+          const base64Data = removeBgResult.url.split(",")[1];
+          buffer = Buffer.from(base64Data, "base64");
           extension = "png";
           actualMimeType = "image/png";
-          console.log("[saveImageToStorage] Picsart background removal successful");
+          console.log("[saveImageToStorage] remove.bg background removal successful");
         } else {
-          throw new Error(`Failed to download Picsart result: ${response.statusText}`);
+          // Legacy URL format fallback
+          const response = await fetch(removeBgResult.url);
+          if (response.ok) {
+            buffer = Buffer.from(await response.arrayBuffer());
+            extension = "png";
+            actualMimeType = "image/png";
+            console.log("[saveImageToStorage] remove.bg background removal successful (URL)");
+          } else {
+            throw new Error(`Failed to download remove.bg result: ${response.statusText}`);
+          }
         }
       }
     } catch (err) {
-      console.error("[saveImageToStorage] Picsart removebg failed, falling back to chroma key:", (err as Error).message);
+      console.error("[saveImageToStorage] remove.bg failed, falling back to chroma key:", (err as Error).message);
       // Fallback to chroma key if Picsart fails (only for non-AOP)
       if (!isAllOverPrint) {
         buffer = await removeChromaKeyBackground(buffer);
@@ -7494,21 +7503,27 @@ ${textEdgeRestrictions}
         console.log("[Pattern Preview] Converted relative URL:", absoluteImageUrl);
       }
 
-      // Step 1: Picsart removebg — remove the AI-generated white background.
-      console.log(`[Pattern Preview] Running Picsart removebg (mode=${editorMode})...`);
+      // Step 1: remove.bg — remove the AI-generated white background.
+      console.log(`[Pattern Preview] Running remove.bg (mode=${editorMode})...`);
       let motifBuffer: Buffer;
       try {
         const removeBgResult = await removeBackground({
           imageUrl: absoluteImageUrl,
         });
-        const motifResponse = await fetch(removeBgResult.url);
-        if (!motifResponse.ok) {
-          throw new Error(`Failed to download removebg result (${motifResponse.status})`);
+        // remove.bg returns a data URL directly — no second fetch needed
+        if (removeBgResult.url.startsWith("data:")) {
+          const base64Data = removeBgResult.url.split(",")[1];
+          motifBuffer = Buffer.from(base64Data, "base64");
+        } else {
+          const motifResponse = await fetch(removeBgResult.url);
+          if (!motifResponse.ok) {
+            throw new Error(`Failed to download removebg result (${motifResponse.status})`);
+          }
+          motifBuffer = Buffer.from(await motifResponse.arrayBuffer());
         }
-        motifBuffer = Buffer.from(await motifResponse.arrayBuffer());
-        console.log("[Pattern Preview] removebg complete, motif buffer:", motifBuffer.length, "bytes");
+        console.log("[Pattern Preview] remove.bg complete, motif buffer:", motifBuffer.length, "bytes");
       } catch (removeBgErr: any) {
-        console.warn("[Pattern Preview] removebg failed, fetching original motif:", removeBgErr.message);
+        console.warn("[Pattern Preview] remove.bg failed, fetching original motif:", removeBgErr.message);
         const origResponse = await fetch(absoluteImageUrl);
         if (!origResponse.ok) {
           throw new Error(`Failed to fetch original image (${origResponse.status})`);
