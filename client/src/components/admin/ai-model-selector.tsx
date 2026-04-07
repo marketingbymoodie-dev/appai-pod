@@ -25,6 +25,16 @@ interface AiModel {
 
 const AI_MODELS: AiModel[] = [
   {
+    id: "nano-banana",
+    name: "Nano Banana (Current Default)",
+    provider: "Replicate",
+    description: "The model you've been using. Reliable, well-tested, and optimised for your store's style presets.",
+    estimatedTime: "15-25s",
+    costPerGen: 1,
+    isFast: false,
+    replicateModel: "replicate:5bdc2c7cd642ae33611d8c33f79615f98ff02509ab8db9d8ec1cc6c36d378fba",
+  },
+  {
     id: "sdxl-lightning",
     name: "SDXL Lightning (Fastest)",
     provider: "Replicate",
@@ -68,7 +78,8 @@ const AI_MODELS: AiModel[] = [
 
 export default function AiModelSelector() {
   const { toast } = useToast();
-  const [selectedModelId, setSelectedModelId] = useState<string>("sdxl-lightning");
+  const [selectedModelId, setSelectedModelId] = useState<string>("nano-banana");
+  const [activeModelId, setActiveModelId] = useState<string>("nano-banana");
   const [hasAgreed, setHasAgreed] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
 
@@ -78,10 +89,11 @@ export default function AiModelSelector() {
 
   useEffect(() => {
     if (merchant) {
+      // Find the currently saved model
       const currentModel = AI_MODELS.find(m => m.replicateModel === merchant.selectedAiModel);
-      if (currentModel) {
-        setSelectedModelId(currentModel.id);
-      }
+      const modelId = currentModel ? currentModel.id : "nano-banana";
+      setSelectedModelId(modelId);
+      setActiveModelId(modelId); // track what's actually saved
       setHasAgreed(merchant.hasAgreedToAiCosts || false);
     }
   }, [merchant]);
@@ -145,6 +157,12 @@ export default function AiModelSelector() {
         </CardTitle>
         <CardDescription>
           Choose the AI model used for generating artwork. Faster models provide a better experience for AOP pattern editing.
+          {merchant?.selectedAiModel && (
+            <span className="ml-2 inline-flex items-center gap-1 bg-primary/10 text-primary text-[11px] font-semibold px-2 py-0.5 rounded-full">
+              <CheckCircle2 className="h-3 w-3" />
+              Currently using: {AI_MODELS.find(m => m.replicateModel === merchant.selectedAiModel)?.name ?? "Nano Banana (Current Default)"}
+            </span>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -169,11 +187,18 @@ export default function AiModelSelector() {
               >
                 <div className="flex w-full justify-between items-center mb-1">
                   <span className="font-bold text-base">{model.name}</span>
-                  {model.isFast && (
-                    <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                      <Zap className="h-3 w-3" /> FAST
-                    </span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {activeModelId === model.id && (
+                      <span className="bg-primary/10 text-primary text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" /> ACTIVE
+                      </span>
+                    )}
+                    {model.isFast && (
+                      <span className="bg-green-100 text-green-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <Zap className="h-3 w-3" /> FAST
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <p className="text-sm text-muted-foreground mb-3">{model.description}</p>
                 <div className="flex gap-4 text-xs font-medium">
