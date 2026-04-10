@@ -2,24 +2,28 @@
  * PatternCustomizer — AOP pattern/placement tool.
  *
  * Two modes:
- *   • Pattern  — tiles the motif across all panels (Sharp server-side tiling).
- *   • Single Image — places the full AI artwork on each panel with free-transform
- *                    (scale, rotation, position X/Y, canvas drag).
+ *   • Pattern      — tiles the motif across all panels using client-side Canvas (instant live preview).
+ *   • Single Image — places the full AI artwork on each panel with free-transform.
  *
  * Pipeline (Pattern mode):
- *   1. Picsart removebg — strips the AI white background → transparent PNG cutout.
- *   2. Sharp tileImage (server-side) — tiles the clean motif into a seamless grid.
+ *   1. [Optional] remove.bg — user can trigger background removal as a separate step.
+ *   2. Client-side Canvas tiling — instant live preview, no server round-trip.
+ *   3. On "Apply Pattern" — server generates high-res version via /api/pattern/preview.
  *
  * Pipeline (Single Image mode):
- *   1. Picsart removebg (optional — user can skip bg removal for single image).
- *   2. Sharp composite — places the artwork at the specified transform on each panel.
+ *   1. Client-side Canvas live preview with drag/scale/rotate.
+ *   2. On "Apply to Product" — server generates high-res composite.
+ *
+ * Key design principle (from research of Repper, Printify, Canva/PatternedAI):
+ *   All top tools do client-side tiling for instant feedback. Background removal
+ *   is a separate optional step, never blocking the preview.
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Loader2, LayoutGrid, ImageIcon, RotateCcw } from "lucide-react";
+import { Loader2, LayoutGrid, ImageIcon, RotateCcw, Scissors } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -56,9 +60,7 @@ const BG_PRESETS = [
   { label: "Cream",       value: "#fffdd0" },
 ];
 
-const PREVIEW_SIZE = 1024;
 const APPLY_CAP = 2048;
-const COUNTDOWN_SECONDS = 10;
 
 export interface PatternApplyOptions {
   mirrorLegs: boolean;
@@ -84,6 +86,72 @@ interface PatternCustomizerProps {
   isLoading?: boolean;
 }
 
+// ── Client-side Canvas tiling ────────────────────────────────────────────────
+
+/**
+ * Draws a tiled pattern onto a canvas using the given motif image.
+ * Supports grid, brick-offset, and half-drop repeat modes.
+ * This runs entirely in the browser — no server call needed.
+ */
+function drawTiledPattern(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement,
+  opts: {
+    pattern: PatternType;
+    scale: number;
+    bgColor: string;
+  }
+) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const W = canvas.width;
+  const H = canvas.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Checkerboard background (shows transparency)
+  const sz = 12;
+  for (let y = 0; y < H; y += sz) {
+    for (let x = 0; x < W; x += sz) {
+      ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
+      ctx.fillRect(x, y, sz, sz);
+    }
+  }
+
+  // Solid background colour fill
+  if (opts.bgColor) {
+    ctx.fillStyle = opts.bgColor;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Tile size: scale controls how many tiles fit across the canvas
+  // scale=1 → motif fills 1/3 of width; scale=3 → fills full width
+  const tileW = Math.round(W / (opts.scale * 2));
+  const tileH = Math.round(tileW * (img.height / img.width));
+
+  const cols = Math.ceil(W / tileW) + 2;
+  const rows = Math.ceil(H / tileH) + 2;
+
+  for (let row = -1; row < rows; row++) {
+    for (let col = -1; col < cols; col++) {
+      let x = col * tileW;
+      let y = row * tileH;
+
+      // Brick offset: odd rows shifted by half tile width
+      if (opts.pattern === "brick" && row % 2 !== 0) {
+        x += tileW / 2;
+      }
+      // Half-drop: odd columns shifted by half tile height
+      if (opts.pattern === "half" && col % 2 !== 0) {
+        y += tileH / 2;
+      }
+
+      ctx.drawImage(img, x, y, tileW, tileH);
+    }
+  }
+}
+
 export function PatternCustomizer({
   motifUrl,
   productWidth = 2000,
@@ -107,108 +175,111 @@ export function PatternCustomizer({
 
   // ── Shared state ──────────────────────────────────────────────────────────
   const [mirrorLegs, setMirrorLegs] = useState<boolean>(true);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [isPreviewing, setIsPreviewing] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bgColor, setBgColor] = useState<string>("#ffffff");
   const [customBgColor, setCustomBgColor] = useState<string>("#ffffff");
 
-  // ── Canvas drag state (single image mode) ─────────────────────────────────
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // ── Background removal state ──────────────────────────────────────────────
+  const [isRemovingBg, setIsRemovingBg] = useState(false);
+  const [bgRemovedUrl, setBgRemovedUrl] = useState<string | null>(null);
+  const [bgRemoveError, setBgRemoveError] = useState<string | null>(null);
+
+  // The active motif URL: use bg-removed version if available, else original
+  const activeMotifUrl = bgRemovedUrl || motifUrl;
+
+  // ── Canvas refs ───────────────────────────────────────────────────────────
+  const patternCanvasRef = useRef<HTMLCanvasElement>(null);
+  const singleCanvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
-  // ── Countdown ─────────────────────────────────────────────────────────────
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ── Loaded motif image (for client-side canvas) ───────────────────────────
+  const motifImgRef = useRef<HTMLImageElement | null>(null);
+  const [motifLoaded, setMotifLoaded] = useState(false);
 
-  const startCountdown = useCallback(() => {
-    setCountdown(COUNTDOWN_SECONDS);
-    if (countdownRef.current) clearInterval(countdownRef.current);
-    const started = Date.now();
-    countdownRef.current = setInterval(() => {
-      const elapsed = (Date.now() - started) / 1000;
-      const remaining = Math.max(0, COUNTDOWN_SECONDS - elapsed);
-      setCountdown(Math.ceil(remaining));
-      if (remaining <= 0 && countdownRef.current) clearInterval(countdownRef.current);
-    }, 250);
-  }, []);
-
-  const stopCountdown = useCallback(() => {
-    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
-    setCountdown(null);
-  }, []);
-
-  useEffect(() => () => { if (countdownRef.current) clearInterval(countdownRef.current); }, []);
-
-  // ── Canvas preview for Single Image mode ─────────────────────────────────
-  // Draws the motif on a canvas with the current transform so the user sees
-  // live feedback without a server round-trip.
+  // Load motif image whenever activeMotifUrl changes
   useEffect(() => {
-    if (mode !== "single") return;
-    const canvas = canvasRef.current;
+    setMotifLoaded(false);
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      motifImgRef.current = img;
+      setMotifLoaded(true);
+    };
+    img.onerror = () => {
+      // Try without crossOrigin if CORS fails
+      const img2 = new window.Image();
+      img2.onload = () => { motifImgRef.current = img2; setMotifLoaded(true); };
+      img2.src = activeMotifUrl;
+    };
+    img.src = activeMotifUrl;
+  }, [activeMotifUrl]);
+
+  // ── Live pattern canvas (Pattern mode) ───────────────────────────────────
+  useEffect(() => {
+    if (mode !== "pattern" || !motifLoaded || !motifImgRef.current) return;
+    const canvas = patternCanvasRef.current;
+    if (!canvas) return;
+    drawTiledPattern(canvas, motifImgRef.current, { pattern, scale, bgColor });
+  }, [mode, motifLoaded, pattern, scale, bgColor]);
+
+  // ── Live single-image canvas ──────────────────────────────────────────────
+  useEffect(() => {
+    if (mode !== "single" || !motifLoaded || !motifImgRef.current) return;
+    const canvas = singleCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const img = new window.Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const W = canvas.width;
-      const H = canvas.height;
-      ctx.clearRect(0, 0, W, H);
+    const img = motifImgRef.current;
+    const W = canvas.width;
+    const H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
 
-      // Checkerboard background
-      const sz = 10;
-      for (let y = 0; y < H; y += sz) {
-        for (let x = 0; x < W; x += sz) {
-          ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
-          ctx.fillRect(x, y, sz, sz);
-        }
+    // Checkerboard background
+    const sz = 10;
+    for (let y = 0; y < H; y += sz) {
+      for (let x = 0; x < W; x += sz) {
+        ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
+        ctx.fillRect(x, y, sz, sz);
       }
+    }
 
-      // Background colour fill
-      if (bgColor) {
-        ctx.fillStyle = bgColor;
-        ctx.fillRect(0, 0, W, H);
-      }
+    if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
 
-      // Compute base size (fit to canvas)
-      const imgAR = img.width / img.height;
-      const canvasAR = W / H;
-      let baseW: number, baseH: number;
-      if (imgAR > canvasAR) { baseW = W; baseH = W / imgAR; }
-      else { baseH = H; baseW = H * imgAR; }
-      const iw = baseW * singleScale;
-      const ih = baseH * singleScale;
-      const cx = W / 2 + (singlePosX / 100) * W;
-      const cy = H / 2 + (singlePosY / 100) * H;
+    const imgAR = img.width / img.height;
+    const canvasAR = W / H;
+    let baseW: number, baseH: number;
+    if (imgAR > canvasAR) { baseW = W; baseH = W / imgAR; }
+    else { baseH = H; baseW = H * imgAR; }
+    const iw = baseW * singleScale;
+    const ih = baseH * singleScale;
+    const cx = W / 2 + (singlePosX / 100) * W;
+    const cy = H / 2 + (singlePosY / 100) * H;
 
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate((singleRotation * Math.PI) / 180);
-      ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
-      ctx.restore();
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((singleRotation * Math.PI) / 180);
+    ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+    ctx.restore();
 
-      // Dashed bounding box
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate((singleRotation * Math.PI) / 180);
-      ctx.strokeStyle = "rgba(99,102,241,0.8)";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([5, 3]);
-      ctx.strokeRect(-iw / 2, -ih / 2, iw, ih);
-      ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(99,102,241,1)";
-      [[-iw / 2, -ih / 2], [iw / 2, -ih / 2], [iw / 2, ih / 2], [-iw / 2, ih / 2]].forEach(([hx, hy]) => {
-        ctx.beginPath(); ctx.arc(hx, hy, 4, 0, Math.PI * 2); ctx.fill();
-      });
-      ctx.restore();
-    };
-    img.src = motifUrl;
-  }, [mode, motifUrl, singleScale, singleRotation, singlePosX, singlePosY, bgColor]);
+    // Dashed bounding box
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((singleRotation * Math.PI) / 180);
+    ctx.strokeStyle = "rgba(99,102,241,0.8)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 3]);
+    ctx.strokeRect(-iw / 2, -ih / 2, iw, ih);
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(99,102,241,1)";
+    [[-iw / 2, -ih / 2], [iw / 2, -ih / 2], [iw / 2, ih / 2], [-iw / 2, ih / 2]].forEach(([hx, hy]) => {
+      ctx.beginPath(); ctx.arc(hx, hy, 4, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.restore();
+  }, [mode, motifLoaded, singleScale, singleRotation, singlePosX, singlePosY, bgColor]);
 
-  // ── Canvas drag handlers ──────────────────────────────────────────────────
+  // ── Canvas drag handlers (single image mode) ──────────────────────────────
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (mode !== "single") return;
     const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
@@ -222,7 +293,7 @@ export function PatternCustomizer({
 
   const handleCanvasMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!dragRef.current || mode !== "single") return;
-    const canvas = canvasRef.current;
+    const canvas = singleCanvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const dx = e.clientX - rect.left - dragRef.current.startX;
@@ -231,19 +302,44 @@ export function PatternCustomizer({
     const newY = Math.max(-100, Math.min(100, Math.round(dragRef.current.origY + (dy / canvas.height) * 100)));
     setSinglePosX(newX);
     setSinglePosY(newY);
-    setPreviewUrl(null);
   }, [mode]);
 
   const handleCanvasMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
-  // ── API calls ─────────────────────────────────────────────────────────────
+  // ── Background removal ────────────────────────────────────────────────────
+  const handleRemoveBg = async () => {
+    setIsRemovingBg(true);
+    setBgRemoveError(null);
+    try {
+      const res = await fetch("/api/pattern/remove-bg", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl: motifUrl }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Background removal failed" }));
+        throw new Error(err.error || "Background removal failed");
+      }
+      const data = await res.json();
+      if (data.url) {
+        setBgRemovedUrl(data.url);
+      }
+    } catch (err: any) {
+      setBgRemoveError(err.message || "Background removal failed");
+    } finally {
+      setIsRemovingBg(false);
+    }
+  };
+
+  // ── Server call for final high-res Apply ──────────────────────────────────
   const applyWidth = Math.min(productWidth, APPLY_CAP);
   const applyHeight = Math.min(productHeight, APPLY_CAP);
 
   const callPatternApi = useCallback(async (width: number, height: number): Promise<string | null> => {
     setError(null);
     const body: Record<string, unknown> = {
-      imageUrl: motifUrl,
+      imageUrl: activeMotifUrl,
       mode,
       width,
       height,
@@ -264,6 +360,7 @@ export function PatternCustomizer({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Unknown error" }));
@@ -272,27 +369,13 @@ export function PatternCustomizer({
     }
     const data = await res.json();
     return data.patternUrl ?? null;
-  }, [motifUrl, mode, pattern, scale, bgColor, singleScale, singleRotation, singlePosX, singlePosY]);
-
-  const handlePreview = async () => {
-    setIsPreviewing(true);
-    startCountdown();
-    try {
-      const url = await callPatternApi(PREVIEW_SIZE, PREVIEW_SIZE);
-      if (url) setPreviewUrl(url);
-    } finally {
-      stopCountdown();
-      setIsPreviewing(false);
-    }
-  };
+  }, [activeMotifUrl, mode, pattern, scale, bgColor, singleScale, singleRotation, singlePosX, singlePosY]);
 
   const handleApply = async () => {
     setIsApplying(true);
-    startCountdown();
     try {
       const url = await callPatternApi(applyWidth, applyHeight);
       if (url) {
-        setPreviewUrl(url);
         await onApply(url, {
           mirrorLegs,
           mode,
@@ -302,7 +385,6 @@ export function PatternCustomizer({
         });
       }
     } finally {
-      stopCountdown();
       setIsApplying(false);
     }
   };
@@ -312,12 +394,9 @@ export function PatternCustomizer({
     setSingleRotation(0);
     setSinglePosX(0);
     setSinglePosY(0);
-    setPreviewUrl(null);
   };
 
-  const busy = isPreviewing || isApplying || isLoading;
-  const showSpinner = isPreviewing || isApplying;
-  const spinnerLabel = isApplying ? "Applying to product…" : "Processing image…";
+  const busy = isApplying || isLoading;
 
   return (
     <div className="space-y-4 p-4 border rounded-lg bg-muted/30">
@@ -328,7 +407,7 @@ export function PatternCustomizer({
         <div className="ml-auto flex gap-1 rounded-md border p-0.5 bg-background">
           <button
             type="button"
-            onClick={() => { setMode("pattern"); setPreviewUrl(null); }}
+            onClick={() => setMode("pattern")}
             disabled={busy}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors ${
               mode === "pattern"
@@ -341,7 +420,7 @@ export function PatternCustomizer({
           </button>
           <button
             type="button"
-            onClick={() => { setMode("single"); setPreviewUrl(null); }}
+            onClick={() => setMode("single")}
             disabled={busy}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors ${
               mode === "single"
@@ -355,26 +434,95 @@ export function PatternCustomizer({
         </div>
       </div>
 
+      {/* ── Background removal ── */}
+      <div className="flex items-center gap-3 rounded-md border px-3 py-2 bg-background">
+        <div className="flex-1 space-y-0.5">
+          <p className="text-xs font-medium">Remove AI background</p>
+          <p className="text-xs text-muted-foreground">
+            {bgRemovedUrl
+              ? "✓ Background removed — using clean cutout"
+              : "Strip the white background for a clean subject-only motif"}
+          </p>
+          {bgRemoveError && <p className="text-xs text-destructive">{bgRemoveError}</p>}
+        </div>
+        {bgRemovedUrl ? (
+          <button
+            type="button"
+            onClick={() => { setBgRemovedUrl(null); setBgRemoveError(null); }}
+            className="text-xs text-muted-foreground hover:text-foreground underline shrink-0"
+          >
+            Undo
+          </button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRemoveBg}
+            disabled={isRemovingBg || busy}
+            className="shrink-0"
+          >
+            {isRemovingBg ? (
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Removing…
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <Scissors className="h-3.5 w-3.5" />
+                Remove BG
+              </span>
+            )}
+          </Button>
+        )}
+      </div>
+
       {/* ── Preview area ── */}
       <div className="grid grid-cols-2 gap-3">
         {/* Motif */}
         <div className="space-y-1">
-          <p className="text-xs text-muted-foreground text-center">Your motif</p>
-          <div className="aspect-square rounded overflow-hidden border bg-background flex items-center justify-center">
-            <img src={motifUrl} alt="Motif" className="w-full h-full object-contain" />
+          <p className="text-xs text-muted-foreground text-center">
+            {bgRemovedUrl ? "Clean cutout" : "Your motif"}
+          </p>
+          <div className="aspect-square rounded overflow-hidden border bg-background flex items-center justify-center"
+            style={{
+              backgroundImage: "linear-gradient(45deg, #e5e7eb 25%, transparent 25%), linear-gradient(-45deg, #e5e7eb 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e5e7eb 75%), linear-gradient(-45deg, transparent 75%, #e5e7eb 75%)",
+              backgroundSize: "12px 12px",
+              backgroundPosition: "0 0, 0 6px, 6px -6px, -6px 0px",
+            }}
+          >
+            <img src={activeMotifUrl} alt="Motif" className="w-full h-full object-contain" />
           </div>
         </div>
 
-        {/* Preview */}
+        {/* Live pattern preview */}
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground text-center">
-            {mode === "single" ? "Live preview (drag to reposition)" : "Pattern preview"}
+            {mode === "single" ? "Live preview (drag to reposition)" : "Live pattern preview"}
           </p>
           <div className="aspect-square rounded overflow-hidden border relative">
+            {/* Pattern mode: client-side canvas tiling */}
+            {mode === "pattern" && (
+              <>
+                {motifLoaded ? (
+                  <canvas
+                    ref={patternCanvasRef}
+                    width={256}
+                    height={256}
+                    className="w-full h-full"
+                    style={{ display: "block" }}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-muted/30">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                )}
+              </>
+            )}
+
             {/* Single image mode: live canvas preview */}
             {mode === "single" && (
               <canvas
-                ref={canvasRef}
+                ref={singleCanvasRef}
                 width={256}
                 height={256}
                 className="w-full h-full"
@@ -385,40 +533,6 @@ export function PatternCustomizer({
                 onMouseLeave={handleCanvasMouseUp}
               />
             )}
-
-            {/* Pattern mode: server-rendered preview image */}
-            {mode === "pattern" && (
-              <div
-                className="w-full h-full flex items-center justify-center"
-                style={{ backgroundColor: bgColor || "transparent" }}
-              >
-                {previewUrl && !showSpinner ? (
-                  <img src={previewUrl} alt="Pattern preview" className="w-full h-full object-cover" />
-                ) : showSpinner ? null : (
-                  <span className="text-xs text-muted-foreground px-2 text-center">
-                    Click "Preview" to see the tiled pattern
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Spinner overlay */}
-            {showSpinner && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80 z-10 gap-2">
-                <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                <p className="text-xs font-medium text-muted-foreground">{spinnerLabel}</p>
-                {countdown !== null && countdown > 0 && (
-                  <span className="text-lg font-semibold tabular-nums text-primary">{countdown}s</span>
-                )}
-                {countdown === 0 && (
-                  <span className="text-xs text-muted-foreground">Almost there…</span>
-                )}
-              </div>
-            )}
-            {/* Keep previous preview faintly visible behind spinner */}
-            {previewUrl && showSpinner && mode === "pattern" && (
-              <img src={previewUrl} alt="Previous pattern" className="absolute inset-0 w-full h-full object-cover opacity-30" />
-            )}
           </div>
         </div>
       </div>
@@ -428,7 +542,7 @@ export function PatternCustomizer({
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label className="text-xs">Pattern type</Label>
-            <Select value={pattern} onValueChange={(v) => { setPattern(v as PatternType); setPreviewUrl(null); }}>
+            <Select value={pattern} onValueChange={(v) => setPattern(v as PatternType)}>
               <SelectTrigger className="h-9 text-sm">
                 <SelectValue />
               </SelectTrigger>
@@ -449,7 +563,7 @@ export function PatternCustomizer({
             <Slider
               min={1.0} max={5} step={0.1}
               value={[scale]}
-              onValueChange={([v]) => { setScale(v); setPreviewUrl(null); }}
+              onValueChange={([v]) => setScale(v)}
               className="mt-2"
             />
             <div className="flex justify-between text-xs text-muted-foreground">
@@ -472,11 +586,7 @@ export function PatternCustomizer({
               <Label className="text-xs">Scale</Label>
               <span className="text-xs text-muted-foreground tabular-nums">{singleScale.toFixed(2)}×</span>
             </div>
-            <Slider
-              min={0.1} max={4} step={0.01}
-              value={[singleScale]}
-              onValueChange={([v]) => { setSingleScale(v); setPreviewUrl(null); }}
-            />
+            <Slider min={0.1} max={4} step={0.01} value={[singleScale]} onValueChange={([v]) => setSingleScale(v)} />
           </div>
 
           {/* Rotation */}
@@ -485,11 +595,7 @@ export function PatternCustomizer({
               <Label className="text-xs">Rotation</Label>
               <span className="text-xs text-muted-foreground tabular-nums">{singleRotation}°</span>
             </div>
-            <Slider
-              min={-180} max={180} step={1}
-              value={[singleRotation]}
-              onValueChange={([v]) => { setSingleRotation(v); setPreviewUrl(null); }}
-            />
+            <Slider min={-180} max={180} step={1} value={[singleRotation]} onValueChange={([v]) => setSingleRotation(v)} />
           </div>
 
           {/* Position X */}
@@ -498,11 +604,7 @@ export function PatternCustomizer({
               <Label className="text-xs">Position X</Label>
               <span className="text-xs text-muted-foreground tabular-nums">{singlePosX}%</span>
             </div>
-            <Slider
-              min={-100} max={100} step={1}
-              value={[singlePosX]}
-              onValueChange={([v]) => { setSinglePosX(v); setPreviewUrl(null); }}
-            />
+            <Slider min={-100} max={100} step={1} value={[singlePosX]} onValueChange={([v]) => setSinglePosX(v)} />
           </div>
 
           {/* Position Y */}
@@ -511,11 +613,7 @@ export function PatternCustomizer({
               <Label className="text-xs">Position Y</Label>
               <span className="text-xs text-muted-foreground tabular-nums">{singlePosY}%</span>
             </div>
-            <Slider
-              min={-100} max={100} step={1}
-              value={[singlePosY]}
-              onValueChange={([v]) => { setSinglePosY(v); setPreviewUrl(null); }}
-            />
+            <Slider min={-100} max={100} step={1} value={[singlePosY]} onValueChange={([v]) => setSinglePosY(v)} />
           </div>
 
           {/* Reset */}
@@ -540,7 +638,7 @@ export function PatternCustomizer({
               key={preset.value}
               type="button"
               title={preset.label}
-              onClick={() => { setBgColor(preset.value); setCustomBgColor(preset.value || "#ffffff"); setPreviewUrl(null); }}
+              onClick={() => { setBgColor(preset.value); setCustomBgColor(preset.value || "#ffffff"); }}
               className="w-7 h-7 rounded-full border-2 flex-shrink-0 transition-transform hover:scale-110"
               style={{
                 backgroundColor: preset.value || "transparent",
@@ -559,7 +657,7 @@ export function PatternCustomizer({
             <input
               type="color"
               value={customBgColor}
-              onChange={(e) => { setCustomBgColor(e.target.value); setBgColor(e.target.value); setPreviewUrl(null); }}
+              onChange={(e) => { setCustomBgColor(e.target.value); setBgColor(e.target.value); }}
               className="w-7 h-7 rounded cursor-pointer border border-gray-300"
               title="Custom colour"
             />
@@ -568,7 +666,7 @@ export function PatternCustomizer({
         </div>
         <p className="text-xs text-muted-foreground">
           {mode === "pattern"
-            ? "The AI background will be removed and replaced with this colour."
+            ? "Fill colour behind the motif in the tiled pattern."
             : "Fill colour behind the artwork on each panel."}
           {bgColor === "" && " Transparent = subject only, no fill."}
         </p>
@@ -596,41 +694,31 @@ export function PatternCustomizer({
 
       {error && <p className="text-xs text-destructive">{error}</p>}
 
-      {/* ── Actions ── */}
-      <div className="flex gap-2">
-        {mode === "pattern" && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handlePreview}
-            disabled={busy}
-            className="flex-1"
-          >
-            {isPreviewing ? (
-              <span className="flex items-center gap-1.5">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Generating…
-              </span>
-            ) : (
-              "Preview Pattern"
-            )}
-          </Button>
-        )}
+      {/* ── Apply action ── */}
+      <div className="space-y-2">
         <Button
           size="sm"
           onClick={handleApply}
           disabled={busy}
-          className="flex-1"
+          className="w-full"
         >
           {isApplying ? (
             <span className="flex items-center gap-1.5">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Applying…
+              Generating high-res pattern…
+            </span>
+          ) : isLoading ? (
+            <span className="flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Applying to product…
             </span>
           ) : (
             mode === "single" ? "Apply to Product" : "Apply Pattern"
           )}
         </Button>
+        <p className="text-xs text-muted-foreground text-center">
+          Preview updates instantly. Apply generates the final high-res version.
+        </p>
       </div>
     </div>
   );
