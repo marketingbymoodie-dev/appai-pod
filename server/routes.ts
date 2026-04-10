@@ -1876,6 +1876,7 @@ ${textEdgeRestrictions}
         aspectRatio: geminiAspectRatio,
         inputImageUrl,
         isApparel,
+        isAllOverPrint,
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -2088,9 +2089,11 @@ MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
       // Generate the new image (Replicate)
+      const recolorIsAllOverPrint = !!(productType as any)?.isAllOverPrint;
 const { data: base64Data, mimeType } = await generateImageBase64({
   prompt: fullPrompt,
   isApparel: true,
+  isAllOverPrint: recolorIsAllOverPrint,
 });
 
 // Match the old Gemini shape so the rest of the code still works
@@ -2638,6 +2641,7 @@ ${textEdgeRestrictions}
         aspectRatio: geminiAspectRatio ?? "1:1",
         inputImageUrl,
         isApparel,
+        isAllOverPrint,
       });
 
       if (!base64Data) {
@@ -5795,6 +5799,7 @@ ${textEdgeRestrictions}
             aspectRatio: geminiAspectRatio ?? "1:1",
             inputImageUrl,
             isApparel,
+            isAllOverPrint,
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 

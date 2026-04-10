@@ -106,6 +106,7 @@ export type GenerateImageParams = {
   aspectRatio?: string;
   inputImageUrl?: string | string[] | null;
   isApparel?: boolean;
+  isAllOverPrint?: boolean;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -139,13 +140,31 @@ const PROMPT_MAX_LENGTH = 900;
  * Strip the verbose canvas-requirements block injected by the route handler and
  * replace it with a compact version that fits the model's context window better.
  *
+ * For AOP: strips the AOP block and prepends a compact white-background constraint.
  * For apparel: strips the verbose block and prepends a compact chroma-key constraint.
  * For non-apparel (wall art / decor): strips and prepends a compact full-bleed constraint.
  */
-function compressPrompt(raw: string, isApparel: boolean): string {
+function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolean): string {
   let compressed: string;
 
-  if (isApparel) {
+  if (isApparel && isAllOverPrint) {
+    // Strip the verbose AOP sizing block
+    compressed = raw.replace(
+      /\n*MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT \(AOP\)[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
+      ""
+    );
+    compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
+    compressed = compressed.trim();
+
+    // Compact AOP constraint: isolated motif on solid white background
+    const shortAopConstraints =
+      "Isolated centered motif on a SOLID WHITE (#FFFFFF) background. " +
+      "Every pixel not part of the design must be exactly #FFFFFF. " +
+      "Do NOT use pure white anywhere in the design itself. " +
+      "Clean hard edges, no gradients into background, no rectangular frames. " +
+      "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
+    compressed = shortAopConstraints + compressed;
+  } else if (isApparel) {
     // Strip the verbose apparel sizing block
     compressed = raw.replace(
       /\n*MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING[\s\S]*?(?==== ARTWORK DESCRIPTION|$)/,
@@ -271,7 +290,7 @@ export async function generateImageBase64(
   const token = getReplicateToken();
   const version = getReplicateModelVersion();
 
-  const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false);
+  const compressedPrompt = compressPrompt(params.prompt, params.isApparel ?? false, params.isAllOverPrint ?? false);
   const requestedAspectRatio = mapToSupportedAspectRatio(params.aspectRatio);
 
   // Attempt 0: requested aspect ratio, Attempt 1: 1:1, Attempt 2: 3:4
