@@ -2391,7 +2391,8 @@ export default function EmbedDesign() {
   };
 
   const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+    const activePresetForCheck = filteredStylePresets.find(p => p.id === selectedPreset);
+    if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     // Pre-check: block generation immediately if gallery is full
     if (savedDesigns.length >= galleryLimit) {
@@ -4395,7 +4396,7 @@ export default function EmbedDesign() {
                         }
                         handleGenerate();
                       }}
-                      disabled={!!effectiveLoadDesignId || !prompt.trim() || generateMutation.isPending || freeLimitReached || credits <= 0}
+                      disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || freeLimitReached || credits <= 0}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >

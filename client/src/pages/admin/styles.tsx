@@ -74,6 +74,7 @@ export default function AdminStyles() {
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
+  const [descriptionOptional, setDescriptionOptional] = useState(false);
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const MAX_BASE_IMAGES = 5;
 
@@ -198,6 +199,7 @@ export default function AdminStyles() {
     setSelectedCategories(new Set());
     setStyleBaseImageUrls([]);
     setStylePromptPlaceholder("");
+    setDescriptionOptional(false);
     setSubStylesEnabled(false);
     setSubStyleLabel("Style");
     setSubStyleRequired(true);
@@ -242,6 +244,7 @@ export default function AdminStyles() {
       ((style as any).baseImageUrl ? [(style as any).baseImageUrl] : []);
     setStyleBaseImageUrls(existingBaseUrls);
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
+    setDescriptionOptional(!!(style as any).descriptionOptional);
 
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
@@ -338,6 +341,7 @@ export default function AdminStyles() {
       baseImageUrl: styleBaseImageUrls[0] || null,
       baseImageUrls: styleBaseImageUrls.length > 0 ? styleBaseImageUrls : null,
       promptPlaceholder: stylePromptPlaceholder || null,
+      descriptionOptional,
       options,
     };
 
@@ -643,6 +647,24 @@ export default function AdminStyles() {
                 <p className="text-xs text-muted-foreground">
                   Hint text shown inside the customer's prompt box when this style is selected
                 </p>
+              </div>
+
+              {/* Description Optional Toggle */}
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5">
+                  <Label htmlFor="description-optional" className="text-sm font-medium">
+                    Description optional
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    When on, customers can generate without entering a description. If they do enter text, it is always used.
+                  </p>
+                </div>
+                <Switch
+                  id="description-optional"
+                  checked={descriptionOptional}
+                  onCheckedChange={setDescriptionOptional}
+                  data-testid="switch-description-optional"
+                />
               </div>
 
               {/* Base Reference Images — up to 5 */}

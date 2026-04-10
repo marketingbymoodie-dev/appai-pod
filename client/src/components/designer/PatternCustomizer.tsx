@@ -227,10 +227,25 @@ export function PatternCustomizer({
   const handleRemoveBg = async () => {
     setIsRemovingBg(true); setBgRemoveError(null);
     try {
+      // Convert to data URL first so the server doesn't need to fetch a proxy-prefixed URL
+      let imageDataUrl: string;
+      if (motifUrl.startsWith("data:")) {
+        imageDataUrl = motifUrl;
+      } else {
+        const imgRes = await fetch(motifUrl, { signal: AbortSignal.timeout(15000) });
+        if (!imgRes.ok) throw new Error(`Failed to load motif image (${imgRes.status})`);
+        const blob = await imgRes.blob();
+        imageDataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read image"));
+          reader.readAsDataURL(blob);
+        });
+      }
       const res = await fetch("/api/pattern/remove-bg", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl: motifUrl }),
+        body: JSON.stringify({ imageUrl: imageDataUrl }),
         signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Failed"); }
@@ -247,8 +262,27 @@ export function PatternCustomizer({
   const handleApply = async () => {
     setIsApplying(true); setError(null);
     try {
+      // Always convert the motif to a data URL before sending to the server.
+      // This avoids proxy-prefixed relative URLs (/apps/appai/objects/...) that
+      // the server cannot fetch from Node.js.
+      let imageDataUrl: string;
+      if (activeMotifUrl.startsWith("data:")) {
+        imageDataUrl = activeMotifUrl;
+      } else {
+        // Fetch via the browser (which handles proxy routing) and convert to data URL
+        const imgRes = await fetch(activeMotifUrl, { signal: AbortSignal.timeout(15000) });
+        if (!imgRes.ok) throw new Error(`Failed to load motif image (${imgRes.status})`);
+        const blob = await imgRes.blob();
+        imageDataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = () => reject(new Error("Failed to read image"));
+          reader.readAsDataURL(blob);
+        });
+      }
+
       const body: Record<string, unknown> = {
-        imageUrl: activeMotifUrl,
+        imageUrl: imageDataUrl,
         mode,
         width:  Math.min(productWidth,  APPLY_CAP),
         height: Math.min(productHeight, APPLY_CAP),

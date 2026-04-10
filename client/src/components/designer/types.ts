@@ -27,6 +27,7 @@ export interface StylePreset {
   category?: "all" | "decor" | "apparel";
   promptPlaceholder?: string;
   baseImageUrl?: string;
+  descriptionOptional?: boolean;
   options?: {
     label: string;
     required: boolean;

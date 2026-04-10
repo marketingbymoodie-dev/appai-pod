@@ -1306,6 +1306,7 @@ export async function registerRoutes(
       promptPlaceholder: (s as any).promptPlaceholder,
       options: (s as any).options,
       baseImageUrl: (s as any).baseImageUrl,
+      descriptionOptional: false,
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -1345,6 +1346,7 @@ export async function registerRoutes(
                 promptPlaceholder: (s as any).promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
                 options: dbOptions || hardcodedOptions,
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+                descriptionOptional: !!(s as any).descriptionOptional,
               };
             })
           : hardcodedFallback;
@@ -1559,7 +1561,7 @@ export async function registerRoutes(
         });
       }
 
-      const { prompt, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -1703,17 +1705,25 @@ export async function registerRoutes(
       }
 
       // Apply style prompt prefix - use dark tier variant for apparel on dark colors
+      // User description comes first so the AI treats it as the primary subject.
+      const userDescAdmin = (rawUserPromptAdmin || "").trim();
       let fullPrompt: string;
       
       if (isApparel && colorTier === "dark" && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
         // Use dark tier prompt for dark apparel (light designs on dark background)
         const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
-        fullPrompt = darkTierPrompt ? `${darkTierPrompt} ${prompt}` : prompt;
+        if (darkTierPrompt) {
+          fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
+        } else {
+          fullPrompt = prompt;
+        }
         console.log(`[Generate] Using dark tier prompt for ${stylePreset}`);
       } else {
-        fullPrompt = stylePromptPrefix 
-          ? `${stylePromptPrefix} ${prompt}` 
-          : prompt;
+        if (stylePromptPrefix) {
+          fullPrompt = userDescAdmin ? `${userDescAdmin}, ${stylePromptPrefix}` : stylePromptPrefix;
+        } else {
+          fullPrompt = prompt;
+        }
       }
 
       // Different requirements for apparel vs wall art
@@ -2328,7 +2338,7 @@ console.log("[shopify/session] installation ok", {
   // Requires valid session token from /api/shopify/session
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     try {
-      const { prompt, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
+      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -2476,9 +2486,21 @@ console.log("[shopify/session] installation ok", {
       }
 
       // Apply style prompt prefix if available
-      let fullPrompt = stylePromptPrefix 
-        ? `${stylePromptPrefix} ${prompt}` 
-        : prompt;
+      // When user provides a description, it becomes the subject; style prefix provides the artistic direction.
+      // Pattern: "[userDescription], rendered as [stylePrefix]" so the AI prioritises the user's intent.
+      const userDescEmbed = (rawUserPromptEmbed || "").trim();
+      let fullPrompt: string;
+      if (stylePromptPrefix) {
+        if (userDescEmbed) {
+          // User description first so the model treats it as the primary subject
+          fullPrompt = `${userDescEmbed}, ${stylePromptPrefix}`;
+        } else {
+          // No description — style prefix drives the generation (uses reference image as subject)
+          fullPrompt = stylePromptPrefix;
+        }
+      } else {
+        fullPrompt = prompt;
+      }
 
       // Build shape-specific safe zone instructions
       const printShape = productType?.printShape || "rectangle";
@@ -5538,9 +5560,19 @@ ${textEdgeRestrictions}
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      let fullPrompt = stylePromptPrefix
-        ? `${stylePromptPrefix} ${prompt}`
-        : prompt;
+      // When user provides a description, it becomes the subject; style prefix provides artistic direction.
+      // Pattern: "[userDescription], [stylePrefix]" so the AI prioritises the user's intent.
+      const userDescSf = (rawUserPrompt || "").trim();
+      let fullPrompt: string;
+      if (stylePromptPrefix) {
+        if (userDescSf) {
+          fullPrompt = `${userDescSf}, ${stylePromptPrefix}`;
+        } else {
+          fullPrompt = stylePromptPrefix;
+        }
+      } else {
+        fullPrompt = prompt;
+      }
 
       let sizingRequirements: string;
 
@@ -5577,7 +5609,9 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
         // Use dark tier prompt variant if available
         if (isDarkTier && stylePreset && APPAREL_DARK_TIER_PROMPTS[stylePreset]) {
           const darkTierPrompt = APPAREL_DARK_TIER_PROMPTS[stylePreset];
-          fullPrompt = darkTierPrompt ? `${darkTierPrompt} ${prompt}` : fullPrompt;
+          if (darkTierPrompt) {
+            fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;
+          }
         }
 
         sizingRequirements = `
@@ -8831,7 +8865,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, options } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -8845,6 +8879,7 @@ ${textEdgeRestrictions}
         sortOrder: sortOrder || 0,
         baseImageUrl: baseImageUrl || null,
         promptPlaceholder: promptPlaceholder || null,
+        descriptionOptional: !!descriptionOptional,
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
@@ -8871,7 +8906,7 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, options } = req.body;
+      const { name, promptPrefix, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -8881,6 +8916,7 @@ ${textEdgeRestrictions}
         sortOrder: sortOrder !== undefined ? sortOrder : preset.sortOrder,
         baseImageUrl: baseImageUrl !== undefined ? (baseImageUrl || null) : (preset as any).baseImageUrl,
         promptPlaceholder: promptPlaceholder !== undefined ? (promptPlaceholder || null) : (preset as any).promptPlaceholder,
+        descriptionOptional: descriptionOptional !== undefined ? !!descriptionOptional : !!(preset as any).descriptionOptional,
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
@@ -13534,7 +13570,7 @@ ${textEdgeRestrictions}
 
     // Fetch style presets so the storefront iframe doesn't need a separate
     // /api/config round-trip (which can fail/timeout in CORS-restricted envs).
-    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string }> = [];
+    let stylePresets: Array<{ id: string; name: string; promptSuffix: string; category: string; promptPlaceholder?: string; options?: any; baseImageUrl?: string; descriptionOptional?: boolean }> = [];
     try {
       const dbStyles = await storage.getAllActiveStylePresets();
       stylePresets = dbStyles.map((s: any) => {
@@ -13544,9 +13580,10 @@ ${textEdgeRestrictions}
           name: s.name,
           promptSuffix: s.promptPrefix,
           category: s.category || "all",
-          promptPlaceholder: (hardcoded as any)?.promptPlaceholder,
-          options: (hardcoded as any)?.options,
+          promptPlaceholder: s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
+          options: s.options || (hardcoded as any)?.options,
           baseImageUrl: s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
+          descriptionOptional: !!s.descriptionOptional,
         };
       });
     } catch (e) {
