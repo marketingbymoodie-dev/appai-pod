@@ -1,5 +1,6 @@
 import { useRef, useCallback } from "react";
 import { Sparkles } from "lucide-react";
+import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
 
@@ -10,7 +11,9 @@ interface ProductMockupProps {
   mockupUrl?: string | null;
   isLoading?: boolean;
   /** Which phase of loading is active, used for stage-specific spinner text. */
-  loadingStage?: "generating" | "mockups" | null;
+  loadingStage?: "generating" | "mockups" | "pattern" | null;
+  /** Whether this is an AOP product — changes loading messages during generation */
+  isAop?: boolean;
   selectedSize?: PrintSize | null;
   selectedFrameColor?: FrameColor | null;
   transform: ImageTransform;
@@ -69,8 +72,29 @@ function ensureStyles() {
 /* ─────────────────────────────────────────────────────────────────────────────
    GeneratingLoader — light base, dark rotating conic gradient + dark shimmer
    ───────────────────────────────────────────────────────────────────────────── */
-function GeneratingLoader() {
+const GENERATING_MESSAGES = [
+  { line1: "Generating", line2: "Artwork" },
+  { line1: "May take up", line2: "to 20 seconds..." },
+  { line1: "Generating", line2: "Artwork" },
+  { line1: "Almost", line2: "there..." },
+];
+
+function GeneratingLoader({ isAop = false }: { isAop?: boolean }) {
   ensureStyles();
+  const messages = isAop
+    ? [
+        { line1: "Generating", line2: "Artwork" },
+        { line1: "May take up", line2: "to 20 seconds..." },
+        { line1: "Generating", line2: "Artwork" },
+        { line1: "Rendering", line2: "Pattern Styles..." },
+      ]
+    : GENERATING_MESSAGES;
+  const [msgIdx, setMsgIdx] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setMsgIdx(i => (i + 1) % messages.length), 5000);
+    return () => clearInterval(t);
+  }, [messages.length]);
+  const msg = messages[msgIdx];
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#e0e0e0" }}>
       {/* Rotating light conic gradient */}
@@ -112,8 +136,59 @@ function GeneratingLoader() {
           letterSpacing: "-0.01em",
           textShadow: "0 1px 8px rgba(255,255,255,0.5)",
           animation: "appai-text-pulse 2.6s ease-in-out infinite",
+          transition: "opacity 0.4s ease",
         }}>
-          Generating<br />Artwork
+          {msg.line1}<br />{msg.line2}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   PatternLoader — shown while Apply Pattern is generating the final high-res output
+   ───────────────────────────────────────────────────────────────────────────── */
+function PatternLoader() {
+  ensureStyles();
+  const messages = [
+    { line1: "Rendering", line2: "Pattern..." },
+    { line1: "Tiling your", line2: "design..." },
+    { line1: "Almost", line2: "there..." },
+  ];
+  const [msgIdx, setMsgIdx] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setMsgIdx(i => (i + 1) % messages.length), 4000);
+    return () => clearInterval(t);
+  }, [messages.length]);
+  const msg = messages[msgIdx];
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#d8e4f0" }}>
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "conic-gradient(from 0deg at 40% 45%, #c8d8e8 0deg, #dce8f4 60deg, #eaf2fa 100deg, #d4e4f0 160deg, #c4d4e4 200deg, #d8e8f4 260deg, #ccdce8 300deg, #c8d8e8 360deg)",
+        animation: "appai-bg-spin 10s linear infinite",
+        transformOrigin: "center",
+      }} />
+      <div style={{
+        position: "absolute", inset: 0,
+        background: "linear-gradient(108deg, transparent 28%, rgba(255,255,255,0.08) 46%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0.08) 54%, transparent 72%)",
+        backgroundSize: "200% 100%",
+        animation: "appai-shimmer-sweep 3.4s ease-in-out infinite",
+      }} />
+      <div style={{
+        position: "absolute", inset: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        pointerEvents: "none",
+      }}>
+        <span style={{
+          fontSize: "22px", fontWeight: 700,
+          color: "rgba(0,0,0,0.7)",
+          textAlign: "center", lineHeight: 1.25,
+          letterSpacing: "-0.01em",
+          textShadow: "0 1px 8px rgba(255,255,255,0.6)",
+          animation: "appai-text-pulse 2.6s ease-in-out infinite",
+        }}>
+          {msg.line1}<br />{msg.line2}
         </span>
       </div>
     </div>
@@ -213,6 +288,7 @@ export function ProductMockup({
   showSafeZone = false,
   blankImageUrl,
   aspectRatio,
+  isAop = false,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -290,9 +366,13 @@ export function ProductMockup({
     if (isLoading) {
       // Stage 1: artwork generation in progress
       if (loadingStage === "generating") {
-        return <GeneratingLoader />;
+        return <GeneratingLoader isAop={isAop} />;
       }
-      // Stage 2: mockup generation — artwork visible with overlay
+      // Stage 2: AOP pattern tiling in progress
+      if (loadingStage === "pattern") {
+        return <PatternLoader />;
+      }
+      // Stage 3: mockup generation — artwork visible with overlay
       if (loadingStage === "mockups" && imageUrl) {
         return <MockupsLoader imageUrl={imageUrl} transform={transform} printShape={printShape} />;
       }

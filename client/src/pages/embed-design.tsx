@@ -4768,8 +4768,12 @@ export default function EmbedDesign() {
                     !generatedDesign?.imageUrl &&
                     !loadDesignAppliedRef.current
                   );
-                  const loadingStage: "generating" | "mockups" | null =
-                    isGeneratingArtwork ? "generating" : isGeneratingMockups ? "mockups" : null;
+                  const isAopProduct = !!(productTypeConfig?.isAllOverPrint);
+                  const loadingStage: "generating" | "mockups" | "pattern" | null =
+                    isGeneratingArtwork ? "generating"
+                    : isGeneratingMockups && isAopProduct ? "pattern"
+                    : isGeneratingMockups ? "mockups"
+                    : null;
 
                   // Resolve which mockup URL to show based on gallery selection.
                   // selectedMockupIndex 0 = raw artwork; 1+ = mockup at that index.
@@ -4790,6 +4794,7 @@ export default function EmbedDesign() {
                       mockupUrl={selectedMockupUrl}
                       isLoading={isGeneratingArtwork || isGeneratingMockups || isLoadingSaved}
                       loadingStage={loadingStage}
+                      isAop={isAopProduct}
                       selectedSize={selectedSizeConfig}
                       selectedFrameColor={selectedFrameColorConfig}
                       transform={transform}

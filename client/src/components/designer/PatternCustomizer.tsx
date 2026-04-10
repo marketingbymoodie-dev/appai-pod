@@ -17,6 +17,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { API_BASE } from "@/lib/urlBase";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -242,7 +243,7 @@ export function PatternCustomizer({
           reader.readAsDataURL(blob);
         });
       }
-      const res = await fetch("/api/pattern/remove-bg", {
+      const res = await fetch(`${API_BASE}/api/pattern/remove-bg`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl: imageDataUrl }),
@@ -291,7 +292,7 @@ export function PatternCustomizer({
           ? { pattern, scale }
           : { singleScale, singleRotation, singlePosX, singlePosY }),
       };
-      const res = await fetch("/api/pattern/preview", {
+      const res = await fetch(`${API_BASE}/api/pattern/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
