@@ -183,7 +183,6 @@ export function PatternCustomizer({
 
   const patternCanvasRef = useRef<HTMLCanvasElement>(null);
   const singleCanvasRef  = useRef<HTMLCanvasElement>(null);
-  const rulerCanvasRef   = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const motifImgRef = useRef<HTMLImageElement | null>(null);
   const [motifLoaded, setMotifLoaded] = useState(false);
@@ -233,87 +232,6 @@ export function PatternCustomizer({
     if (!canvas) return;
     drawTiledPattern(canvas, motifImgRef.current, { pattern, tileW: previewTileW, bgColor });
   }, [mode, motifLoaded, pattern, tilesAcross, bgColor, previewTileW]);
-
-  // ── Ruler overlay ──────────────────────────────────────────────────────────
-  // The preview canvas represents exactly 6×6 inches.
-  // Bottom ruler: inch ticks every 1", labels at 0, 2, 4, 6"
-  // Right ruler:  inch ticks every 1", labels at 0, 2, 4, 6"
-  // No cm ruler.
-  useEffect(() => {
-    if (mode !== "pattern") return;
-    const ruler = rulerCanvasRef.current;
-    if (!ruler) return;
-    const ctx = ruler.getContext("2d");
-    if (!ctx) return;
-    const W = ruler.width;   // PREVIEW_PX = 200
-    const H = ruler.height;  // PREVIEW_PX = 200
-    const RULER = 16;        // ruler strip width in px
-
-    ctx.clearRect(0, 0, W, H);
-
-    // px per inch in preview (200px = 6 inches → 33.33 px/in)
-    const pxPerIn = PREVIEW_PX / PREVIEW_INCHES;
-
-    // ── Bottom ruler (inches, horizontal) ────────────────────────────────────
-    ctx.fillStyle = "rgba(245,245,245,0.96)";
-    ctx.fillRect(0, H - RULER, W, RULER);
-
-    for (let inch = 0; inch <= PREVIEW_INCHES + 0.001; inch += 1) {
-      const x = inch * pxPerIn;
-      if (x > W + 1) break;
-      const isMajor = inch % 2 === 0;
-      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
-      ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
-      ctx.lineWidth   = isMajor ? 1 : 0.75;
-      ctx.beginPath();
-      ctx.moveTo(x, H - RULER);
-      ctx.lineTo(x, H - RULER + tickLen);
-      ctx.stroke();
-      if (isMajor) {
-        ctx.fillStyle    = "#111827";
-        ctx.font         = "bold 9px sans-serif";
-        ctx.textAlign    = "center";
-        ctx.textBaseline = "top";
-        const labelX = Math.min(Math.max(x, 5), W - RULER - 5);
-        ctx.fillText(`${Math.round(inch)}"`, labelX, H - RULER + tickLen + 1);
-      }
-    }
-    // "in" unit label bottom-right
-    ctx.fillStyle    = "#6b7280";
-    ctx.font         = "bold 7px sans-serif";
-    ctx.textAlign    = "right";
-    ctx.textBaseline = "bottom";
-    ctx.fillText("in", W - RULER - 2, H - 1);
-
-    // ── Right ruler (inches, vertical) ───────────────────────────────────────
-    ctx.fillStyle = "rgba(245,245,245,0.96)";
-    ctx.fillRect(W - RULER, 0, RULER, H);
-
-    for (let inch = 0; inch <= PREVIEW_INCHES + 0.001; inch += 1) {
-      const y = inch * pxPerIn;
-      if (y > H + 1) break;
-      const isMajor = inch % 2 === 0;
-      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
-      ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
-      ctx.lineWidth   = isMajor ? 1 : 0.75;
-      ctx.beginPath();
-      ctx.moveTo(W - RULER, y);
-      ctx.lineTo(W - RULER + tickLen, y);
-      ctx.stroke();
-      if (isMajor) {
-        ctx.fillStyle    = "#111827";
-        ctx.font         = "bold 9px sans-serif";
-        ctx.textAlign    = "left";
-        ctx.textBaseline = "middle";
-        const labelY = Math.min(Math.max(y, 5), H - RULER - 5);
-        ctx.fillText(`${Math.round(inch)}"`, W - RULER + tickLen + 1, labelY);
-      }
-    }
-
-    // ── Corner square (covers bottom-right intersection) ─────────────────────
-    ctx.fillStyle = "rgba(245,245,245,0.96)";
-    ctx.fillRect(W - RULER, H - RULER, RULER, RULER);
-  }, [mode, tilesAcross]);
 
   // Live single-image canvas
   useEffect(() => {
@@ -501,13 +419,6 @@ export function PatternCustomizer({
                       className="w-full h-full"
                       style={{ display: "block" }}
                     />
-                    {/* Ruler overlay — inches on bottom and right; pointer-events:none */}
-                    <canvas
-                      ref={rulerCanvasRef}
-                      width={PREVIEW_PX} height={PREVIEW_PX}
-                      className="absolute inset-0 w-full h-full"
-                      style={{ display: "block", pointerEvents: "none" }}
-                    />
                   </>
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-muted/30">
@@ -589,10 +500,7 @@ export function PatternCustomizer({
                 <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>Fewer, larger</span><span>More, smaller</span>
                 </div>
-                {/* Real-world tile size readout */}
-                <p className="text-[10px] text-blue-600 dark:text-blue-400 tabular-nums leading-tight">
-                  Each tile ≈ {tileRealCm.toFixed(1)} cm ({tileRealIn.toFixed(1)}" × {tileRealIn.toFixed(1)}")
-                </p>
+
               </div>
             </>
           )}
@@ -692,7 +600,7 @@ export function PatternCustomizer({
             )}
           </Button>
           <p className="text-[10px] text-muted-foreground text-center shrink-0 leading-tight">
-            Preview is instant. Apply generates the final high-res version.
+            Mockup previews are low-res. Your final print file is full high-res.
           </p>
         </div>
       </div>
