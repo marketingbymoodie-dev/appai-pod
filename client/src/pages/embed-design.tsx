@@ -1638,7 +1638,8 @@ export default function EmbedDesign() {
     x: number = 50,
     y: number = 50,
     patternUrl?: string,
-    mirrorLegs?: boolean
+    mirrorLegs?: boolean,
+    panelUrls?: { position: string; dataUrl: string }[]
   ) => {
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
@@ -1674,6 +1675,7 @@ export default function EmbedDesign() {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
+        panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
         sizeId,
         colorId,
@@ -1685,6 +1687,7 @@ export default function EmbedDesign() {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
+        panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
         sizeId,
         colorId,
@@ -1697,6 +1700,7 @@ export default function EmbedDesign() {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
+        panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
         sizeId,
         colorId,
@@ -4891,6 +4895,7 @@ export default function EmbedDesign() {
                       const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
+                    panelPositions={productTypeConfig?.placeholderPositions || []}
                     fetchFn={(url, options) => safeFetch(url, options, 60000)}
                     initialTilesAcross={aopPatternSettings.tilesAcross}
                     initialPattern={aopPatternSettings.pattern}
@@ -4909,7 +4914,8 @@ export default function EmbedDesign() {
                           50,
                           50,
                           appliedPatternUrl,
-                          options.mirrorLegs
+                          options.mirrorLegs,
+                          options.panelUrls
                         );
                       }
                     }}

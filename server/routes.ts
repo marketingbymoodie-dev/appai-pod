@@ -6274,7 +6274,7 @@ ${textEdgeRestrictions}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -6446,6 +6446,7 @@ ${textEdgeRestrictions}
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
         mirrorLegs: !!mirrorLegs,
+        panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -12105,7 +12106,7 @@ ${textEdgeRestrictions}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -12193,6 +12194,7 @@ ${textEdgeRestrictions}
         wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions,
         mirrorLegs: !!mirrorLegs,
+        panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       });
 
       console.log("[Mockup Generate] Result:", result.success, "mockups:", result.mockupImages?.length);
@@ -12207,7 +12209,7 @@ ${textEdgeRestrictions}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -12324,6 +12326,7 @@ ${textEdgeRestrictions}
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
         mirrorLegs: !!mirrorLegs,
+        panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       });
 
       console.log("[Shopify Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });

@@ -78,6 +78,8 @@ export interface PatternApplyOptions {
   mirrorLegs: boolean;
   mode: EditorMode;
   singleTransform?: { scale: number; rotation: number; posX: number; posY: number };
+  /** Per-panel tiled canvases — one per Printify placeholder position */
+  panelUrls?: { position: string; dataUrl: string }[];
 }
 
 interface PatternCustomizerProps {
@@ -85,6 +87,8 @@ interface PatternCustomizerProps {
   productWidth?: number;
   productHeight?: number;
   hasPairedPanels?: boolean;
+  /** Full list of panel positions with their exact Printify pixel dimensions */
+  panelPositions?: { position: string; width: number; height: number }[];
   onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
   isLoading?: boolean;
   /** Optional fetch override — pass safeFetch from embed-design to bypass Shopify service worker */
@@ -113,6 +117,13 @@ function drawTiledPattern(
     tileW: number;
     bgColor: string;
     forExport?: boolean;
+    /**
+     * Horizontal pixel offset for the tile grid origin.
+     * Used for inseam alignment: left panels use offsetX = panelWidth % tileW
+     * so the last full tile ends at the right (inseam) edge.
+     * Right panels use offsetX = 0 so the first tile starts at the left (inseam) edge.
+     */
+    offsetX?: number;
   }
 ) {
   const ctx = canvas.getContext("2d");
@@ -135,12 +146,14 @@ function drawTiledPattern(
 
   const tileW = Math.max(1, Math.round(opts.tileW));
   const tileH = Math.max(1, Math.round(tileW * (img.height / img.width)));
-  const cols = Math.ceil(W / tileW) + 2;
+  // offsetX shifts the grid so tiles align from the inseam edge
+  const startX = -(opts.offsetX ?? 0);
+  const cols = Math.ceil((W + (opts.offsetX ?? 0)) / tileW) + 2;
   const rows = Math.ceil(H / tileH) + 2;
 
   for (let row = -1; row < rows; row++) {
     for (let col = -1; col < cols; col++) {
-      let x = col * tileW;
+      let x = startX + col * tileW;
       let y = row * tileH;
       if (opts.pattern === "brick" && row % 2 !== 0) x += tileW / 2;
       if (opts.pattern === "half"  && col % 2 !== 0) y += tileH / 2;
@@ -156,6 +169,7 @@ export function PatternCustomizer({
   productWidth = 2000,
   productHeight = 2000,
   hasPairedPanels = false,
+  panelPositions = [],
   onApply,
   isLoading = false,
   fetchFn,
@@ -327,7 +341,8 @@ export function PatternCustomizer({
   };
 
   // Apply — fully client-side Canvas tiling.
-  // Uses exportTileW so the density matches exactly what the user sees in the preview.
+  // Generates one canvas per panel at the panel's exact Printify pixel dimensions.
+  // Tiles are aligned from the inseam edge so the pattern matches across seams.
   const handleApply = async () => {
     setIsApplying(true); setError(null);
     try {
@@ -336,18 +351,14 @@ export function PatternCustomizer({
       }
       const img = motifImgRef.current;
 
-      const W = Math.min(productWidth,  APPLY_CAP);
-      const H = Math.min(productHeight, APPLY_CAP);
-
-      const canvas = document.createElement("canvas");
-      canvas.width  = W;
-      canvas.height = H;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) throw new Error("Canvas 2D context unavailable");
-
-      if (mode === "pattern") {
-        drawTiledPattern(canvas, img, { pattern, tileW: exportTileW, bgColor, forExport: true });
-      } else {
+      // ── Single Image mode: one canvas, no per-panel logic ──────────────────
+      if (mode === "single") {
+        const W = Math.min(productWidth,  APPLY_CAP);
+        const H = Math.min(productHeight, APPLY_CAP);
+        const canvas = document.createElement("canvas");
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas 2D context unavailable");
         ctx.clearRect(0, 0, W, H);
         if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
         const imgAR = img.width / img.height;
@@ -361,13 +372,72 @@ export function PatternCustomizer({
         const cy = H / 2 + (singlePosY / 100) * H;
         ctx.save(); ctx.translate(cx, cy); ctx.rotate((singleRotation * Math.PI) / 180);
         ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih); ctx.restore();
+        const patternDataUrl = canvas.toDataURL("image/png");
+        await onApply(patternDataUrl, {
+          mirrorLegs, mode,
+          singleTransform: { scale: singleScale, rotation: singleRotation, posX: singlePosX, posY: singlePosY },
+        });
+        return;
       }
 
-      const patternDataUrl = canvas.toDataURL("image/png");
+      // ── Pattern mode: per-panel canvases with inseam alignment ─────────────
+      //
+      // For each panel we compute:
+      //   tileW_panel = (tilesAcross / PREVIEW_INCHES) × (panelWidth / 150)
+      //     i.e. the same physical tile density as the preview, scaled to this panel's pixel width.
+      //
+      // Inseam alignment:
+      //   Left panels  → offsetX = panelWidth % tileW  (last full tile ends at right/inseam edge)
+      //   Right panels → offsetX = 0                   (first tile starts at left/inseam edge)
+      //   Other panels → offsetX = 0
+      //
+      // If no panelPositions are provided, fall back to a single APPLY_CAP×APPLY_CAP canvas.
 
-      await onApply(patternDataUrl, {
+      const tilesPerInch = tilesAcross / PREVIEW_INCHES;
+
+      // Determine which panels to generate
+      const panels: { position: string; width: number; height: number }[] =
+        panelPositions.length > 0
+          ? panelPositions
+          : [{ position: "default", width: Math.min(productWidth, APPLY_CAP), height: Math.min(productHeight, APPLY_CAP) }];
+
+      const panelUrls: { position: string; dataUrl: string }[] = [];
+
+      // Also keep a "primary" data URL for backward compat (first panel, or the largest)
+      let primaryDataUrl = "";
+
+      for (const panel of panels) {
+        // Cap canvas size to APPLY_CAP to avoid memory issues on large panels
+        const W = Math.min(panel.width,  APPLY_CAP);
+        const H = Math.min(panel.height, APPLY_CAP);
+
+        // Tile width in pixels for this panel's canvas
+        // panelWidth / 150 = panel width in inches; × tilesPerInch = tiles across panel
+        const panelWidthIn = panel.width / 150;
+        const totalTilesAcrossPanel = tilesPerInch * panelWidthIn;
+        const panelTileW = W / totalTilesAcrossPanel;
+
+        // Inseam alignment offset
+        const isLeftPanel  = panel.position.startsWith("left");
+        const isRightPanel = panel.position.startsWith("right");
+        const tileWRounded = Math.max(1, Math.round(panelTileW));
+        // Left panel: shift grid so the last full tile ends at the right (inseam) edge
+        const offsetX = isLeftPanel ? (W % tileWRounded) : 0;
+        // Right panel uses offsetX=0 so first tile starts at left (inseam) edge — matches left
+        void isRightPanel; // acknowledged, offsetX=0 is already correct
+
+        const canvas = document.createElement("canvas");
+        canvas.width = W; canvas.height = H;
+        drawTiledPattern(canvas, img, { pattern, tileW: panelTileW, bgColor, forExport: true, offsetX });
+
+        const dataUrl = canvas.toDataURL("image/png");
+        panelUrls.push({ position: panel.position, dataUrl });
+        if (!primaryDataUrl) primaryDataUrl = dataUrl;
+      }
+
+      await onApply(primaryDataUrl, {
         mirrorLegs, mode,
-        ...(mode === "single" && { singleTransform: { scale: singleScale, rotation: singleRotation, posX: singlePosX, posY: singlePosY } }),
+        panelUrls,
       });
     } catch (err: any) {
       setError(err.message || "Pattern generation failed");

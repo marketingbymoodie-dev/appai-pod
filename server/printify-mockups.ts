@@ -28,6 +28,10 @@ interface MockupRequest {
   aopPositions?: { position: string; width: number; height: number }[];
   /** AOP: when true, right_* panels will receive a horizontally flipped copy of the pattern */
   mirrorLegs?: boolean;
+  /** AOP per-panel images — one data URL per Printify placeholder position.
+   *  When provided, each panel gets its own correctly-sized and inseam-aligned image
+   *  instead of the same square canvas scaled to fit every panel. */
+  panelUrls?: { position: string; dataUrl: string }[];
 }
 
 interface MockupImage {
@@ -331,7 +335,9 @@ async function createTemporaryProduct(
   y: number = 0,
   doubleSided: boolean = false,
   aopPositions?: { position: string; width: number; height: number }[],
-  mirroredImageId?: string
+  mirroredImageId?: string,
+  /** Per-panel image IDs — when provided, each panel uses its own uploaded image */
+  panelImageIds?: Map<string, string>
 ): Promise<{ productId: string } | { error: string }> {
   const printifyX = 0.5 + (x * 0.5);
   const printifyY = 0.5 + (y * 0.5);
@@ -340,10 +346,19 @@ async function createTemporaryProduct(
   const placeholders: Array<{ position: string; images: typeof imageEntry[] }> = [];
 
   if (aopPositions && aopPositions.length > 0) {
-    // AOP: apply same image to every panel, mirrored image to right_* panels if provided
+    // AOP: use per-panel image IDs if available, otherwise fall back to same image for all panels
     for (const pos of aopPositions) {
       const isRightPanel = pos.position.startsWith("right");
-      const useImageId = isRightPanel && mirroredImageId ? mirroredImageId : imageId;
+      let useImageId: string;
+      if (panelImageIds && panelImageIds.has(pos.position)) {
+        // Per-panel image: already correctly sized and inseam-aligned
+        useImageId = panelImageIds.get(pos.position)!;
+      } else if (isRightPanel && mirroredImageId) {
+        // Legacy fallback: mirrored copy for right panels
+        useImageId = mirroredImageId;
+      } else {
+        useImageId = imageId;
+      }
       const entry = { ...imageEntry, id: useImageId };
       placeholders.push({ position: pos.position, images: [entry] });
     }
@@ -615,9 +630,38 @@ export async function generatePrintifyMockup(
     }
     let mirroredUploadBuffer: Buffer | null = null;
 
-    if (isAop) {
+    // ── AOP per-panel upload path ───────────────────────────────────────────────────
+    // When panelUrls are provided (per-panel inseam-aligned canvases), upload each one
+    // separately and build a Map<position, imageId> for createTemporaryProduct.
+    let panelImageIds: Map<string, string> | undefined;
+
+    if (isAop && request.panelUrls && request.panelUrls.length > 0) {
+      panelImageIds = new Map();
+      console.log(`[Printify AOP] Uploading ${request.panelUrls.length} per-panel images`);
+
+      await Promise.all(request.panelUrls.map(async ({ position, dataUrl }) => {
+        try {
+          const b64 = extractBase64FromDataUrl(dataUrl);
+          let buf = Buffer.from(b64, "base64");
+          // Resize to max 1024px for mockup speed
+          buf = await sharp(buf)
+            .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
+            .png()
+            .toBuffer();
+          const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
+          if (uploaded) {
+            panelImageIds!.set(position, uploaded.id);
+            console.log(`[Printify AOP] Panel "${position}" uploaded: ${uploaded.id}`);
+          } else {
+            console.warn(`[Printify AOP] Panel "${position}" upload failed — will fall back to primary image`);
+          }
+        } catch (panelErr: any) {
+          console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message} — falling back`);
+        }
+      }));
+    } else if (isAop) {
+      // Legacy path: single image for all panels (with optional mirror for right panels)
       try {
-        // Fetch the pattern file (may be an absolute http URL or a data URL)
         let originalBuffer: Buffer;
         if (isDataUrl(imageUrl)) {
           const b64 = extractBase64FromDataUrl(imageUrl);
@@ -633,14 +677,12 @@ export async function generatePrintifyMockup(
         }
 
         if (originalBuffer.length > 0) {
-          // Resize to max 1024px for mockup generation speed
           uploadUrl = await sharp(originalBuffer)
             .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
             .png()
             .toBuffer();
           console.log(`[Printify AOP] Resized pattern to ≤1024px for mockup upload (${(uploadUrl as Buffer).length} bytes)`);
 
-          // Create mirrored buffer for right panels only when mirrorLegs is requested
           if (request.mirrorLegs) {
             mirroredUploadBuffer = await sharp(uploadUrl as Buffer)
               .flop()
@@ -668,7 +710,7 @@ export async function generatePrintifyMockup(
       };
     }
 
-    // Upload mirrored copy for AOP right panels if we generated one
+    // Upload mirrored copy for AOP right panels if we generated one (legacy path)
     let resolvedMirroredImageId: string | undefined;
     if (isAop && mirroredUploadBuffer) {
       const mirroredImage = await uploadImageToPrintify(mirroredUploadBuffer, printifyApiToken);
@@ -696,7 +738,8 @@ export async function generatePrintifyMockup(
       y,
       effectiveDoubleSided,
       request.aopPositions,
-      resolvedMirroredImageId
+      resolvedMirroredImageId,
+      panelImageIds
     );
 
     if ("error" in createResult) {
