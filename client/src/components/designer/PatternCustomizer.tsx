@@ -200,6 +200,9 @@ export function PatternCustomizer({
   const [singlePosX,     setSinglePosX]     = useState(0);
   const [singlePosY,     setSinglePosY]     = useState(0);
 
+  const [splitOffsetX, setSplitOffsetX] = useState(0); // -100..100 % of combined width
+  const [splitOffsetY, setSplitOffsetY] = useState(0); // -100..100 % of panel height
+
   const [mirrorLegs, setMirrorLegs] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
   const [error,      setError]      = useState<string | null>(null);
@@ -268,17 +271,25 @@ export function PatternCustomizer({
 
     const img = motifImgRef.current;
 
+    // Compute pixel offsets from the -100..100% sliders
+    const oxPx = Math.round((splitOffsetX / 100) * W);  // horizontal shift in preview pixels
+    const oyPx = Math.round((splitOffsetY / 100) * H);  // vertical shift in preview pixels
+
     if (splitContent === "pattern") {
-      // Tile the pattern across the full 2:1 wide canvas
-      // Use previewTileW as tile size (same density as pattern mode preview)
-      drawTiledPattern(canvas, img, { pattern, tileW: previewTileW, bgColor, forExport: false });
+      // Tile the pattern across the full 2:1 wide canvas with offset
+      drawTiledPattern(canvas, img, { pattern, tileW: previewTileW, bgColor, forExport: false, offsetX: -oxPx });
     } else {
-      // Single image: scale to fill full width, tile vertically (matches export behaviour)
+      // Single image: scale to fill full width, tile vertically with Y offset
       const imgScaleW = W / img.width;
       const iw = img.width * imgScaleW;  // = W
       const ih = img.height * imgScaleW;
-      for (let y = 0; y < H; y += ih) {
-        ctx.drawImage(img, 0, y, iw, ih);
+      // Apply X offset by shifting the draw origin horizontally (wraps via modulo)
+      const startX = ((oxPx % iw) + iw) % iw - iw; // always ≤ 0 so image starts left of canvas
+      const startY = ((oyPx % ih) + ih) % ih - ih;  // always ≤ 0 so image starts above canvas
+      for (let x = startX; x < W; x += iw) {
+        for (let y = startY; y < H; y += ih) {
+          ctx.drawImage(img, x, y, iw, ih);
+        }
       }
     }
 
@@ -295,7 +306,7 @@ export function PatternCustomizer({
     ctx.fillStyle = "rgba(253,230,138,0.45)";
     ctx.fillRect(W / 2 - bleedPx, 0, bleedPx * 2, H);
     ctx.restore();
-  }, [mode, motifLoaded, bgColor, splitContent, pattern, tilesAcross, previewTileW]);
+  }, [mode, motifLoaded, bgColor, splitContent, pattern, tilesAcross, previewTileW, splitOffsetX, splitOffsetY]);
 
   // Notify parent of settings changes so they can be persisted across close/reopen
   useEffect(() => {
@@ -434,18 +445,25 @@ export function PatternCustomizer({
           canvas.width = W; canvas.height = H;
           const ctx = canvas.getContext("2d")!;
           if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+          // Compute pixel offsets from the -100..100% sliders
+          const oxPx = Math.round((splitOffsetX / 100) * W);
+          const oyPx = Math.round((splitOffsetY / 100) * H);
           if (splitContent === "pattern") {
             const panelWIn = W / PRINT_DPI;
             const totalTiles = tilesPerInch * panelWIn;
             const tileW = W / totalTiles;
-            drawTiledPattern(canvas, img, { pattern, tileW, bgColor, forExport: true });
+            drawTiledPattern(canvas, img, { pattern, tileW, bgColor, forExport: true, offsetX: -oxPx });
           } else {
-            // Scale to fill full width, tile vertically
+            // Scale to fill full width, tile vertically with offset
             const imgScaleW = W / img.width;
             const iw = img.width * imgScaleW;
             const ih = img.height * imgScaleW;
-            for (let y = 0; y < H; y += ih) {
-              ctx.drawImage(img, 0, y, iw, ih);
+            const startX = ((oxPx % iw) + iw) % iw - iw;
+            const startY = ((oyPx % ih) + ih) % ih - ih;
+            for (let x = startX; x < W; x += iw) {
+              for (let y = startY; y < H; y += ih) {
+                ctx.drawImage(img, x, y, iw, ih);
+              }
             }
           }
           const dataUrl = canvas.toDataURL("image/png");
@@ -481,23 +499,28 @@ export function PatternCustomizer({
           const wCtx = wideCanvas.getContext("2d")!;
           if (bgColor) { wCtx.fillStyle = bgColor; wCtx.fillRect(0, 0, totalW, H); }
 
+          // Compute pixel offsets from the -100..100% sliders (applied to wide canvas)
+          const oxPx = Math.round((splitOffsetX / 100) * totalW);
+          const oyPx = Math.round((splitOffsetY / 100) * H);
+
           if (splitContent === "pattern") {
-            // Tile the pattern across the full combined width
-            // Tile width: same physical density as the preview slider
+            // Tile the pattern across the full combined width with X offset
             const combinedWIn = totalW / PRINT_DPI;
             const totalTiles = tilesPerInch * combinedWIn;
             const tileW = totalW / totalTiles;
-            drawTiledPattern(wideCanvas, img, { pattern, tileW, bgColor, forExport: true });
+            drawTiledPattern(wideCanvas, img, { pattern, tileW, bgColor, forExport: true, offsetX: -oxPx });
           } else {
             // Single image: scale to fill the FULL WIDTH of the combined canvas,
-            // then tile vertically to fill the full panel height.
-            // This ensures the design covers the entire leg from top to bottom.
+            // then tile in both directions with the offset applied.
             const imgScaleW = totalW / img.width;  // scale so image fills full combined width
             const iw = img.width * imgScaleW;       // = totalW
             const ih = img.height * imgScaleW;      // height at this scale
-            // Tile vertically: repeat the image from top to bottom
-            for (let y = 0; y < H; y += ih) {
-              wCtx.drawImage(img, 0, y, iw, ih);
+            const startX = ((oxPx % iw) + iw) % iw - iw; // always ≤ 0
+            const startY = ((oyPx % ih) + ih) % ih - ih;  // always ≤ 0
+            for (let x = startX; x < totalW; x += iw) {
+              for (let y = startY; y < H; y += ih) {
+                wCtx.drawImage(img, x, y, iw, ih);
+              }
             }
           }
 
@@ -823,6 +846,34 @@ export function PatternCustomizer({
                     ? "Stretches your motif across both legs as one continuous image."
                     : "Tiles your motif as a pattern across both legs — the repeat flows seamlessly across the seam."}
                 </p>
+              </div>
+
+              {/* Position offset sliders */}
+              <div className="shrink-0 rounded border px-2 py-2 space-y-2 bg-muted/20">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Position offset</Label>
+                {([
+                  { label: "Left / Right", value: splitOffsetX, set: setSplitOffsetX, fmt: (v: number) => v === 0 ? "Centre" : v > 0 ? `+${v}%` : `${v}%` },
+                  { label: "Up / Down",    value: splitOffsetY, set: setSplitOffsetY, fmt: (v: number) => v === 0 ? "Centre" : v > 0 ? `+${v}%` : `${v}%` },
+                ] as const).map(({ label, value, set, fmt }) => (
+                  <div key={label} className="space-y-0.5">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-muted-foreground">{label}</span>
+                      <span className="text-[10px] text-muted-foreground tabular-nums">{fmt(value)}</span>
+                    </div>
+                    <Slider
+                      min={-50} max={50} step={1}
+                      value={[value]}
+                      onValueChange={([v]) => set(v)}
+                      className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
+                    />
+                  </div>
+                ))}
+                {(splitOffsetX !== 0 || splitOffsetY !== 0) && (
+                  <button type="button" onClick={() => { setSplitOffsetX(0); setSplitOffsetY(0); }}
+                    className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground">
+                    <RotateCcw className="h-2.5 w-2.5" />Reset position
+                  </button>
+                )}
               </div>
 
               {/* Pattern controls (only when tiled pattern selected) */}
