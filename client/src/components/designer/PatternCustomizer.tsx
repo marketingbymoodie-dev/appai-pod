@@ -75,7 +75,7 @@ interface PatternCustomizerProps {
 function drawTiledPattern(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
-  opts: { pattern: PatternType; scale: number; bgColor: string }
+  opts: { pattern: PatternType; scale: number; bgColor: string; forExport?: boolean }
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -83,13 +83,15 @@ function drawTiledPattern(
   const H = canvas.height;
   ctx.clearRect(0, 0, W, H);
 
-  // Checkerboard (shows transparency)
-  const sz = 10;
-  for (let y = 0; y < H; y += sz)
-    for (let x = 0; x < W; x += sz) {
-      ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
-      ctx.fillRect(x, y, sz, sz);
-    }
+  if (!opts.forExport) {
+    // Checkerboard (shows transparency in preview only)
+    const sz = 10;
+    for (let y = 0; y < H; y += sz)
+      for (let x = 0; x < W; x += sz) {
+        ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
+        ctx.fillRect(x, y, sz, sz);
+      }
+  }
 
   if (opts.bgColor) { ctx.fillStyle = opts.bgColor; ctx.fillRect(0, 0, W, H); }
 
@@ -262,53 +264,55 @@ export function PatternCustomizer({
     }
   };
 
-  // Apply (server call for high-res)
+  // Apply — fully client-side Canvas tiling (no server call needed for mockup generation).
+  // Generates the tiled pattern at APPLY_CAP resolution using the same drawTiledPattern
+  // function used for the live preview, then exports as a data URL.
   const handleApply = async () => {
     setIsApplying(true); setError(null);
     try {
-      // Always convert the motif to a data URL before sending to the server.
-      // This avoids proxy-prefixed relative URLs (/apps/appai/objects/...) that
-      // the server cannot fetch from Node.js.
-      let imageDataUrl: string;
-      if (activeMotifUrl.startsWith("data:")) {
-        imageDataUrl = activeMotifUrl;
+      // Ensure motif image is loaded
+      if (!motifImgRef.current || !motifLoaded) {
+        throw new Error("Motif image not loaded yet — please wait a moment and try again");
+      }
+      const img = motifImgRef.current;
+
+      const W = Math.min(productWidth,  APPLY_CAP);
+      const H = Math.min(productHeight, APPLY_CAP);
+
+      // Create an offscreen canvas at the apply resolution
+      const canvas = document.createElement("canvas");
+      canvas.width  = W;
+      canvas.height = H;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+      if (mode === "pattern") {
+        // Tile the motif across the full canvas
+        drawTiledPattern(canvas, img, { pattern, scale, bgColor, forExport: true });
       } else {
-        // Fetch via the browser (which handles proxy routing) and convert to data URL
-        const imgRes = await fetch(activeMotifUrl, { signal: AbortSignal.timeout(15000) });
-        if (!imgRes.ok) throw new Error(`Failed to load motif image (${imgRes.status})`);
-        const blob = await imgRes.blob();
-        imageDataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error("Failed to read image"));
-          reader.readAsDataURL(blob);
-        });
+        // Single-image placement
+        ctx.clearRect(0, 0, W, H);
+        if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+        const imgAR = img.width / img.height;
+        const canvasAR = W / H;
+        let baseW: number, baseH: number;
+        if (imgAR > canvasAR) { baseW = W; baseH = W / imgAR; }
+        else { baseH = H; baseW = H * imgAR; }
+        const iw = baseW * singleScale;
+        const ih = baseH * singleScale;
+        const cx = W / 2 + (singlePosX / 100) * W;
+        const cy = H / 2 + (singlePosY / 100) * H;
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate((singleRotation * Math.PI) / 180);
+        ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih); ctx.restore();
       }
 
-      const body: Record<string, unknown> = {
-        imageUrl: imageDataUrl,
-        mode,
-        width:  Math.min(productWidth,  APPLY_CAP),
-        height: Math.min(productHeight, APPLY_CAP),
-        ...(bgColor ? { bgColor } : {}),
-        ...(mode === "pattern"
-          ? { pattern, scale }
-          : { singleScale, singleRotation, singlePosX, singlePosY }),
-      };
-      const apiFetch = fetchFn ?? fetch;
-      const res = await apiFetch(`${API_BASE}/api/pattern/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      // Export as PNG data URL
+      const patternDataUrl = canvas.toDataURL("image/png");
+
+      await onApply(patternDataUrl, {
+        mirrorLegs, mode,
+        ...(mode === "single" && { singleTransform: { scale: singleScale, rotation: singleRotation, posX: singlePosX, posY: singlePosY } }),
       });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Failed"); }
-      const data = await res.json();
-      if (data.patternUrl) {
-        await onApply(data.patternUrl, {
-          mirrorLegs, mode,
-          ...(mode === "single" && { singleTransform: { scale: singleScale, rotation: singleRotation, posX: singlePosX, posY: singlePosY } }),
-        });
-      }
     } catch (err: any) {
       setError(err.message || "Pattern generation failed");
     } finally {
