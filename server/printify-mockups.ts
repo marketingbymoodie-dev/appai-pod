@@ -698,16 +698,26 @@ export async function generatePrintifyMockup(
       }
     }
 
-    const uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
-    if (!uploadedImage) {
-      return {
-        success: false,
-        mockupUrls: [],
-        mockupImages: [],
-        source: "fallback",
-        step: "printify_upload",
-        error: "Failed to upload image to Printify after retries",
-      };
+    // When per-panel images were uploaded, reuse the first panel's image ID as the
+    // primary image (required by createTemporaryProduct). This avoids uploading the
+    // designImageUrl (which may be a mockup URL, not the original artwork) to Printify.
+    let uploadedImage: { id: string } | null = null;
+    if (panelImageIds && panelImageIds.size > 0) {
+      const firstPanelId = panelImageIds.values().next().value as string;
+      uploadedImage = { id: firstPanelId };
+      console.log(`[Printify AOP] Using first panel image as primary: ${firstPanelId}`);
+    } else {
+      uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
+      if (!uploadedImage) {
+        return {
+          success: false,
+          mockupUrls: [],
+          mockupImages: [],
+          source: "fallback",
+          step: "printify_upload",
+          error: "Failed to upload image to Printify after retries",
+        };
+      }
     }
 
     // Upload mirrored copy for AOP right panels if we generated one (legacy path)
