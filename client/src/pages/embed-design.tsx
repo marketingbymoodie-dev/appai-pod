@@ -4350,8 +4350,8 @@ export default function EmbedDesign() {
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading}
-                        className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+                        className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
                         {isAddingToCart ? (
@@ -4368,6 +4368,10 @@ export default function EmbedDesign() {
                           <>
                             <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
+                          </>
+                        ) : productTypeConfig?.isAllOverPrint && !aopPatternUrl ? (
+                          <>
+                            <span className="shimmer-text-white">Apply Pattern to Continue</span>
                           </>
                         ) : (
                           <>
@@ -4925,7 +4929,7 @@ export default function EmbedDesign() {
               );
             })()}
 
-            {generatedDesign?.imageUrl && (
+            {generatedDesign?.imageUrl && !productTypeConfig?.isAllOverPrint && (
               <ZoomControls
                 transform={transform}
                 onTransformChange={setTransform}
@@ -4988,6 +4992,37 @@ export default function EmbedDesign() {
                   </div>
                 }
               />
+            )}
+
+            {/* AOP-only bottom bar: Edit Pattern + Share (no zoom/refresh) */}
+            {generatedDesign?.imageUrl && productTypeConfig?.isAllOverPrint && (
+              <div className="flex items-center justify-between pt-2 border-t gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowPatternStep(true)}
+                  className="shrink-0"
+                  data-testid="button-edit-pattern"
+                >
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  <span className="text-xs">Edit Pattern</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleShare}
+                  disabled={isSharing || !generatedDesign?.imageUrl}
+                  data-testid="button-share-aop"
+                  className="shrink-0"
+                >
+                  {isSharing ? (
+                    <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                  ) : (
+                    <Share2 className="w-4 h-4 mr-1" />
+                  )}
+                  <span className="text-xs">Share</span>
+                </Button>
+              </div>
             )}
 
             {/* Mockup error status */}

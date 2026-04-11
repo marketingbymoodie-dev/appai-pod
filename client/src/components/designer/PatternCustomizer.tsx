@@ -146,6 +146,7 @@ export function PatternCustomizer({
 
   const patternCanvasRef = useRef<HTMLCanvasElement>(null);
   const singleCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const rulerCanvasRef   = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const motifImgRef = useRef<HTMLImageElement | null>(null);
   const [motifLoaded, setMotifLoaded] = useState(false);
@@ -171,6 +172,115 @@ export function PatternCustomizer({
     if (!canvas) return;
     drawTiledPattern(canvas, motifImgRef.current, { pattern, scale, bgColor });
   }, [mode, motifLoaded, pattern, scale, bgColor]);
+
+  // Ruler overlay — redraws whenever scale or product dimensions change.
+  // Real-world dimensions derived from productWidth/productHeight at 150 DPI:
+  //   realWidthCm  = (productWidth  / 150) * 2.54
+  //   realHeightCm = (productHeight / 150) * 2.54
+  // Preview canvas = 200×200px (logical), representing the full print area.
+  useEffect(() => {
+    if (mode !== "pattern") return;
+    const ruler = rulerCanvasRef.current;
+    if (!ruler) return;
+    const ctx = ruler.getContext("2d");
+    if (!ctx) return;
+    const W = ruler.width;   // 200
+    const H = ruler.height;  // 200
+    const RULER = 14;        // ruler strip width in px
+
+    // Derive real-world print dimensions from product props (150 DPI standard)
+    const printW = Math.min(productWidth,  APPLY_CAP); // px used for export
+    const printH = Math.min(productHeight, APPLY_CAP);
+    const realWidthCm  = (printW / 150) * 2.54;
+    const realHeightCm = (printH / 150) * 2.54;
+    const realWidthIn  = printW / 150;
+    const realHeightIn = printH / 150;
+
+    // Preview px → real-world unit conversion
+    const cmPerPx   = realWidthCm  / W;
+    const inchPerPx = realWidthIn  / W;
+    const cmPerPxH  = realHeightCm / H;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // ── Left ruler (cm, vertical) ────────────────────────────────────────────
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillRect(0, 0, RULER, H);
+
+    ctx.strokeStyle = "#6b7280";
+    ctx.fillStyle   = "#374151";
+    ctx.font        = "5px sans-serif";
+    ctx.textAlign   = "right";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth   = 0.75;
+
+    // Adaptive tick interval: keep ticks readable regardless of product height
+    const cmStepH = realHeightCm <= 40 ? (scale >= 3 ? 5 : scale >= 1.8 ? 2 : 1)
+                                        : (scale >= 3 ? 10 : scale >= 1.8 ? 5 : 2);
+    for (let cm = 0; cm <= realHeightCm; cm += cmStepH) {
+      const y = cm / cmPerPxH;
+      if (y > H) break;
+      const isMajor = cm % (cmStepH * 5) === 0;
+      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.55);
+      ctx.beginPath();
+      ctx.moveTo(RULER, y);
+      ctx.lineTo(RULER - tickLen, y);
+      ctx.stroke();
+      if (isMajor && y > 4 && y < H - 4) {
+        ctx.save();
+        ctx.translate(RULER - tickLen - 1, y);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(`${cm}`, 0, 0);
+        ctx.restore();
+      }
+    }
+    // "cm" label rotated along left edge
+    ctx.save();
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "5px sans-serif";
+    ctx.textAlign = "center";
+    ctx.translate(RULER / 2, H / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText("cm", 0, 0);
+    ctx.restore();
+
+    // ── Bottom ruler (inches, horizontal) ────────────────────────────────────
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillRect(0, H - RULER, W, RULER);
+
+    ctx.strokeStyle = "#6b7280";
+    ctx.fillStyle   = "#374151";
+    ctx.font        = "5px sans-serif";
+    ctx.textAlign   = "center";
+    ctx.textBaseline = "top";
+    ctx.lineWidth   = 0.75;
+
+    // Adaptive tick interval based on product width
+    const inStep = realWidthIn <= 20 ? (scale >= 3 ? 2 : 1)
+                                      : (scale >= 3 ? 5 : scale >= 1.8 ? 2 : 1);
+    for (let inch = 0; inch <= realWidthIn; inch += inStep) {
+      const x = inch / inchPerPx;
+      if (x > W) break;
+      const isMajor = inch % (inStep * 5) === 0;
+      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.55);
+      ctx.beginPath();
+      ctx.moveTo(x, H - RULER);
+      ctx.lineTo(x, H - RULER + tickLen);
+      ctx.stroke();
+      if (isMajor && x > 4 && x < W - 4) {
+        ctx.fillText(`${inch}"`, x, H - RULER + tickLen + 1);
+      }
+    }
+    // "in" label along bottom edge
+    ctx.fillStyle = "#6b7280";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText('in', W / 2, H - 1);
+
+    // ── Corner square (covers left/bottom intersection) ───────────────────────
+    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillRect(0, H - RULER, RULER, RULER);
+  }, [mode, scale, productWidth, productHeight]);
 
   // Live single-image canvas
   useEffect(() => {
@@ -375,7 +485,16 @@ export function PatternCustomizer({
             <div className="w-full h-full rounded border overflow-hidden relative" style={{ minHeight: 80 }}>
               {mode === "pattern" && (
                 motifLoaded ? (
-                  <canvas ref={patternCanvasRef} width={200} height={200} className="w-full h-full" style={{ display: "block" }} />
+                  <>
+                    <canvas ref={patternCanvasRef} width={200} height={200} className="w-full h-full" style={{ display: "block" }} />
+                    {/* Ruler overlay — cm left, inches bottom; pointer-events:none so it doesn't block interaction */}
+                    <canvas
+                      ref={rulerCanvasRef}
+                      width={200} height={200}
+                      className="absolute inset-0 w-full h-full"
+                      style={{ display: "block", pointerEvents: "none" }}
+                    />
+                  </>
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-muted/30">
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -450,6 +569,21 @@ export function PatternCustomizer({
                 <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>Smaller</span><span>Larger</span>
                 </div>
+                {/* Real-world tile size readout — derived from productWidth at 150 DPI */}
+                {(() => {
+                  const printW    = Math.min(productWidth, APPLY_CAP);
+                  const realWCm   = (printW / 150) * 2.54;   // full print width in cm
+                  const realWIn   = printW / 150;             // full print width in inches
+                  // scale=1 → tileW = printW/(1*2), scale=s → tileW = printW/(s*2)
+                  const tileCm    = realWCm / (scale * 2);
+                  const tileIn    = realWIn / (scale * 2);
+                  return (
+                    <p className="text-[10px] text-blue-600 dark:text-blue-400 tabular-nums leading-tight">
+                      Each tile ≈ {tileCm.toFixed(1)} cm × {tileCm.toFixed(1)} cm
+                      &nbsp;({tileIn.toFixed(1)}" × {tileIn.toFixed(1)}")
+                    </p>
+                  );
+                })()}
               </div>
             </>
           )}
@@ -511,12 +645,19 @@ export function PatternCustomizer({
 
           {/* Mirror toggle */}
           {hasPairedPanels && (
-            <div className="flex items-center justify-between rounded border px-2 py-1.5 bg-muted/30 shrink-0">
-              <div>
-                <p className="text-[10px] font-medium leading-tight">Mirror left &amp; right panels</p>
-                <p className="text-[10px] text-muted-foreground leading-tight">Flips pattern on one leg for symmetry</p>
+            <div className="flex flex-col gap-1 shrink-0">
+              <div className="flex items-center justify-between rounded border px-2 py-1.5 bg-muted/30">
+                <div>
+                  <p className="text-[10px] font-medium leading-tight">Mirror left &amp; right panels</p>
+                  <p className="text-[10px] text-muted-foreground leading-tight">Flips pattern on one leg for symmetry</p>
+                </div>
+                <Switch id="mirror-legs" checked={mirrorLegs} onCheckedChange={setMirrorLegs} disabled={busy} />
               </div>
-              <Switch id="mirror-legs" checked={mirrorLegs} onCheckedChange={setMirrorLegs} disabled={busy} />
+              {mirrorLegs && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-tight px-1">
+                  ⚠ If your design contains text or logos, disable mirroring to avoid reversed text on one leg.
+                </p>
+              )}
             </div>
           )}
 
