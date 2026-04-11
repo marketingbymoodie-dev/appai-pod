@@ -66,6 +66,8 @@ interface PatternCustomizerProps {
   hasPairedPanels?: boolean;
   onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
   isLoading?: boolean;
+  /** Optional fetch override — pass safeFetch from embed-design to bypass Shopify service worker */
+  fetchFn?: (url: string, options?: RequestInit) => Promise<Response>;
 }
 
 // ── Client-side Canvas tiling ────────────────────────────────────────────────
@@ -117,6 +119,7 @@ export function PatternCustomizer({
   hasPairedPanels = false,
   onApply,
   isLoading = false,
+  fetchFn,
 }: PatternCustomizerProps) {
   const [mode, setMode]       = useState<EditorMode>("pattern");
   const [pattern, setPattern] = useState<PatternType>("grid");
@@ -243,11 +246,11 @@ export function PatternCustomizer({
           reader.readAsDataURL(blob);
         });
       }
-      const res = await fetch(`${API_BASE}/api/pattern/remove-bg`, {
+      const apiFetch = fetchFn ?? fetch;
+      const res = await apiFetch(`${API_BASE}/api/pattern/remove-bg`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl: imageDataUrl }),
-        signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Failed"); }
       const data = await res.json();
@@ -292,11 +295,11 @@ export function PatternCustomizer({
           ? { pattern, scale }
           : { singleScale, singleRotation, singlePosX, singlePosY }),
       };
-      const res = await fetch(`${API_BASE}/api/pattern/preview`, {
+      const apiFetch = fetchFn ?? fetch;
+      const res = await apiFetch(`${API_BASE}/api/pattern/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Failed"); }
       const data = await res.json();

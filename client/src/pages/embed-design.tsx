@@ -4865,6 +4865,7 @@ export default function EmbedDesign() {
                       const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
+                    fetchFn={(url, options) => safeFetch(url, options, 60000)}
                     onApply={async (appliedPatternUrl: string, options) => {
                       setAopPatternUrl(appliedPatternUrl);
                       setShowPatternStep(false);
