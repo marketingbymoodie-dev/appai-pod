@@ -727,7 +727,7 @@ export function PatternCustomizer({
         </div>
 
         {/* Right column: all controls */}
-        <div className="flex flex-col gap-2 flex-1 min-w-0 overflow-hidden">
+        <div className="flex flex-col gap-2 flex-1 min-w-0 overflow-y-auto">
 
           {/* Remove BG */}
           <div className="flex items-center gap-2 rounded border px-2 py-1.5 bg-muted/30 shrink-0">
@@ -965,9 +965,6 @@ export function PatternCustomizer({
               )}
             </div>
           )}
-
-          {/* Spacer */}
-          <div className="flex-1" />
 
           {/* Error */}
           {error && <p className="text-[10px] text-destructive shrink-0">{error}</p>}
