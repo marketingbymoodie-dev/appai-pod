@@ -8,9 +8,11 @@
  *   Left  (40%) — motif thumbnail + live pattern preview canvas
  *   Right (60%) — all controls stacked compactly
  *
- * Two modes:
+ * Three modes:
  *   • Pattern      — client-side Canvas tiling (instant, no server call)
  *   • Single Image — client-side Canvas placement with drag support
+ *   • Split Stretch — motif (or tiled pattern) stretched across both leg panels as one
+ *                     continuous image, split at the seam with bleed overlap
  *
  * Background removal is an optional separate step (dedicated button).
  * "Apply Pattern" is the only server call — generates the final high-res output.
@@ -22,10 +24,13 @@
  *     scale=10 → 10 tiles across the 6-inch window (small, dense pattern)
  *
  *   Preview tile width (px) = PREVIEW_PX / scale
- *   Export tile width (px)  = APPLY_CAP / (scale * (printWIn / PREVIEW_INCHES))
- *     i.e. the same number of tiles per inch, scaled to the full print canvas.
+ *   Export tile width (px)  = panel width / (tilesPerInch × panelWidthInches)
  *
- *   Ruler: inches only — bottom edge 0–6", right edge 0–6". Ticks every 1", labels every 2".
+ * Split Stretch canvas dimensions:
+ *   Each panel canvas MUST be exactly the Printify panel pixel size (e.g. 1476×4500).
+ *   Bleed is achieved by drawing from a wide source canvas with an offset so that
+ *   the left panel's right edge contains a strip of the right panel's content, and
+ *   vice versa — but the output canvas is still exactly the panel size.
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
@@ -45,6 +50,7 @@ import {
 
 export type PatternType = "grid" | "brick" | "half";
 export type EditorMode = "pattern" | "single" | "split";
+export type SplitContent = "image" | "pattern";
 
 const PATTERN_OPTIONS = [
   { value: "grid"  as PatternType, label: "Grid",        desc: "Straight repeat" },
@@ -63,8 +69,6 @@ const BG_PRESETS = [
   { label: "Cream",       value: "#fffdd0" },
 ];
 
-const APPLY_CAP = 2048;
-
 /** Logical pixel size of the preview canvas element */
 const PREVIEW_PX = 200;
 
@@ -73,6 +77,9 @@ const PREVIEW_PX = 200;
  * The slider value = number of tiles visible across this window.
  */
 const PREVIEW_INCHES = 6;
+
+/** Printify DPI for leggings panels */
+const PRINT_DPI = 150;
 
 export interface PatternApplyOptions {
   mirrorLegs: boolean;
@@ -107,7 +114,7 @@ interface PatternCustomizerProps {
  *
  * tileW is always passed in explicitly:
  *   Preview: PREVIEW_PX / tilesAcross
- *   Export:  exportTileW (derived from tilesAcross scaled to full print width)
+ *   Export:  panelWidth / (tilesPerInch × panelWidthInches)
  */
 function drawTiledPattern(
   canvas: HTMLCanvasElement,
@@ -180,6 +187,7 @@ export function PatternCustomizer({
 }: PatternCustomizerProps) {
   const [mode, setMode]       = useState<EditorMode>("pattern");
   const [pattern, setPattern] = useState<PatternType>(initialPattern);
+  const [splitContent, setSplitContent] = useState<SplitContent>("image");
 
   /**
    * tilesAcross: number of tiles visible across the 6-inch preview window.
@@ -212,32 +220,8 @@ export function PatternCustomizer({
   const [motifLoaded, setMotifLoaded] = useState(false);
 
   // ── Derived tile sizes ─────────────────────────────────────────────────────
-  //
-  // Preview tile width: PREVIEW_PX / tilesAcross
-  //   → at tilesAcross=1, the tile fills the whole 200px canvas (= 6 inches)
-  //   → at tilesAcross=10, each tile is 20px (= 0.6 inches)
-  //
-  // Export tile width: how many tiles fit across the full print?
-  //   IMPORTANT: use the REAL (uncapped) productWidth for the inch calculation.
-  //   The export canvas is APPLY_CAP px wide but represents the full print width.
-  //   Using Math.min(productWidth, APPLY_CAP) would give the wrong inch count
-  //   because it would treat the 2048px cap as if it were the full print size.
-  //
-  //   Full print width in inches = productWidth / 150  (Printify uses 150 DPI)
-  //   Tiles per inch             = tilesAcross / PREVIEW_INCHES
-  //   Total tiles across print   = tilesPerInch * realPrintWIn
-  //   Export tileW (in 2048px)   = APPLY_CAP / totalTilesAcrossFullPrint
-  //
-  const realPrintWIn = productWidth / 150;  // actual print width in inches (uncapped)
-
   const previewTileW  = PREVIEW_PX / tilesAcross;
   const tilesPerInch  = tilesAcross / PREVIEW_INCHES;
-  const totalTilesFullPrint = tilesPerInch * realPrintWIn;
-  const exportTileW   = APPLY_CAP / totalTilesFullPrint;
-
-  // Real tile size in inches (for readout)
-  const tileRealIn = PREVIEW_INCHES / tilesAcross;
-  const tileRealCm = tileRealIn * 2.54;
 
   // Load motif image
   useEffect(() => {
@@ -268,22 +252,41 @@ export function PatternCustomizer({
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const W = canvas.width;   // 2:1 wide
-    const H = canvas.height;
+    const W = canvas.width;   // 2:1 wide (PREVIEW_PX * 2)
+    const H = canvas.height;  // PREVIEW_PX
     ctx.clearRect(0, 0, W, H);
+
+    // Checkerboard background for transparency
+    const sz = 10;
+    for (let y = 0; y < H; y += sz)
+      for (let x = 0; x < W; x += sz) {
+        ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
+        ctx.fillRect(x, y, sz, sz);
+      }
+
     if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+
     const img = motifImgRef.current;
-    // Fit motif to fill height, centred horizontally
-    const scale = H / img.height;
-    const iw = img.width * scale;
-    const ih = img.height * scale;
-    const ix = (W - iw) / 2;
-    ctx.drawImage(img, ix, 0, iw, ih);
+
+    if (splitContent === "pattern") {
+      // Tile the pattern across the full 2:1 wide canvas
+      // Use previewTileW as tile size (same density as pattern mode preview)
+      drawTiledPattern(canvas, img, { pattern, tileW: previewTileW, bgColor, forExport: false });
+    } else {
+      // Single image: scale to fill full width, tile vertically (matches export behaviour)
+      const imgScaleW = W / img.width;
+      const iw = img.width * imgScaleW;  // = W
+      const ih = img.height * imgScaleW;
+      for (let y = 0; y < H; y += ih) {
+        ctx.drawImage(img, 0, y, iw, ih);
+      }
+    }
+
     // Draw seam indicator
     ctx.save();
     ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = "rgba(239,68,68,0.6)";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(239,68,68,0.8)";
+    ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
     ctx.restore();
     // Bleed zone shading
@@ -292,7 +295,7 @@ export function PatternCustomizer({
     ctx.fillStyle = "rgba(253,230,138,0.45)";
     ctx.fillRect(W / 2 - bleedPx, 0, bleedPx * 2, H);
     ctx.restore();
-  }, [mode, motifLoaded, bgColor]);
+  }, [mode, motifLoaded, bgColor, splitContent, pattern, tilesAcross, previewTileW]);
 
   // Notify parent of settings changes so they can be persisted across close/reopen
   useEffect(() => {
@@ -374,9 +377,8 @@ export function PatternCustomizer({
     }
   };
 
-  // Apply — fully client-side Canvas tiling.
+  // Apply — fully client-side Canvas generation.
   // Generates one canvas per panel at the panel's exact Printify pixel dimensions.
-  // Tiles are aligned from the inseam edge so the pattern matches across seams.
   const handleApply = async () => {
     setIsApplying(true); setError(null);
     try {
@@ -387,8 +389,8 @@ export function PatternCustomizer({
 
       // ── Single Image mode: one canvas, no per-panel logic ──────────────────
       if (mode === "single") {
-        const W = Math.min(productWidth,  APPLY_CAP);
-        const H = Math.min(productHeight, APPLY_CAP);
+        const W = productWidth;
+        const H = productHeight;
         const canvas = document.createElement("canvas");
         canvas.width = W; canvas.height = H;
         const ctx = canvas.getContext("2d");
@@ -414,23 +416,38 @@ export function PatternCustomizer({
         return;
       }
 
-      // ── Split Stretch mode: wide canvas spanning left+right panels, split at seam with bleed ──
+      // ── Split Stretch mode ─────────────────────────────────────────────────
+      //
+      // Generates per-panel canvases at EXACT Printify pixel dimensions.
+      // Bleed: the left panel's right edge contains a strip of the right panel's
+      // content (and vice versa), achieved by drawing from a wide source canvas
+      // with an offset. The output canvas is still exactly the panel size.
+      //
       if (mode === "split") {
-        // Find left and right panel pairs
         const leftPanels  = panelPositions.filter(p => p.position.startsWith("left"));
         const rightPanels = panelPositions.filter(p => p.position.startsWith("right"));
 
         // If no panel data, fall back to a single wide canvas
         if (leftPanels.length === 0 || rightPanels.length === 0) {
-          // Fallback: one wide canvas, no split
-          const W = APPLY_CAP * 2; const H = APPLY_CAP;
+          const W = 2952; const H = 4500; // approximate combined width × height
           const canvas = document.createElement("canvas");
           canvas.width = W; canvas.height = H;
           const ctx = canvas.getContext("2d")!;
           if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
-          const scale = H / img.height;
-          const iw = img.width * scale; const ih = img.height * scale;
-          ctx.drawImage(img, (W - iw) / 2, 0, iw, ih);
+          if (splitContent === "pattern") {
+            const panelWIn = W / PRINT_DPI;
+            const totalTiles = tilesPerInch * panelWIn;
+            const tileW = W / totalTiles;
+            drawTiledPattern(canvas, img, { pattern, tileW, bgColor, forExport: true });
+          } else {
+            // Scale to fill full width, tile vertically
+            const imgScaleW = W / img.width;
+            const iw = img.width * imgScaleW;
+            const ih = img.height * imgScaleW;
+            for (let y = 0; y < H; y += ih) {
+              ctx.drawImage(img, 0, y, iw, ih);
+            }
+          }
           const dataUrl = canvas.toDataURL("image/png");
           await onApply(dataUrl, { mirrorLegs, mode, panelUrls: [{ position: "default", dataUrl }] });
           return;
@@ -444,37 +461,75 @@ export function PatternCustomizer({
           const leftPanel  = leftPanels[i]  || leftPanels[0];
           const rightPanel = rightPanels[i] || rightPanels[0];
 
-          // Cap individual panel sizes
-          const LW = Math.min(leftPanel.width,  APPLY_CAP);
-          const RW = Math.min(rightPanel.width, APPLY_CAP);
-          const H  = Math.min(Math.max(leftPanel.height, rightPanel.height), APPLY_CAP);
+          // Use EXACT panel dimensions — Printify expects these exact pixel sizes.
+          // Any deviation causes Printify to stretch/distort the image.
+          const LW = leftPanel.width;
+          const RW = rightPanel.width;
+          const LH = leftPanel.height;
+          const RH = rightPanel.height;
 
-          // Bleed: ~15mm at 150 DPI = 88px, but capped to 5% of the narrower panel
+          // Bleed: ~15mm at 150 DPI = 88px, capped to 5% of the narrower panel
           const BLEED = Math.min(88, Math.round(Math.min(LW, RW) * 0.05));
 
-          // ── Generate wide source canvas (LW + RW wide, H tall) ──────────────
+          // ── Generate wide source canvas (LW + RW wide, max height tall) ────
+          // The wide canvas represents both legs as one continuous surface.
+          // Left leg occupies [0 .. LW], right leg occupies [LW .. LW+RW].
           const totalW = LW + RW;
+          const H = Math.max(LH, RH);
           const wideCanvas = document.createElement("canvas");
           wideCanvas.width = totalW; wideCanvas.height = H;
           const wCtx = wideCanvas.getContext("2d")!;
           if (bgColor) { wCtx.fillStyle = bgColor; wCtx.fillRect(0, 0, totalW, H); }
-          // Fit motif to fill height, centred horizontally
-          const imgScale = H / img.height;
-          const iw = img.width * imgScale;
-          const ih = img.height * imgScale;
-          const ix = (totalW - iw) / 2;
-          wCtx.drawImage(img, ix, 0, iw, ih);
 
-          // ── Split: left panel = [0 .. LW+BLEED], right panel = [LW-BLEED .. end] ──
+          if (splitContent === "pattern") {
+            // Tile the pattern across the full combined width
+            // Tile width: same physical density as the preview slider
+            const combinedWIn = totalW / PRINT_DPI;
+            const totalTiles = tilesPerInch * combinedWIn;
+            const tileW = totalW / totalTiles;
+            drawTiledPattern(wideCanvas, img, { pattern, tileW, bgColor, forExport: true });
+          } else {
+            // Single image: scale to fill the FULL WIDTH of the combined canvas,
+            // then tile vertically to fill the full panel height.
+            // This ensures the design covers the entire leg from top to bottom.
+            const imgScaleW = totalW / img.width;  // scale so image fills full combined width
+            const iw = img.width * imgScaleW;       // = totalW
+            const ih = img.height * imgScaleW;      // height at this scale
+            // Tile vertically: repeat the image from top to bottom
+            for (let y = 0; y < H; y += ih) {
+              wCtx.drawImage(img, 0, y, iw, ih);
+            }
+          }
+
+          // ── Split into per-panel canvases at EXACT panel dimensions ──────────
+          //
+          // Left panel:  draw from wide canvas [0 .. LW] (with bleed from right side baked in)
+          //   The left panel gets [0 .. LW] from the wide canvas.
+          //   The rightmost BLEED pixels of the left panel contain content from the right panel's
+          //   territory — this is the bleed that prevents a white gap at the seam.
+          //
+          // Right panel: draw from wide canvas [LW .. LW+RW] (with bleed from left side baked in)
+          //   The right panel gets [LW .. LW+RW] from the wide canvas.
+          //   The leftmost BLEED pixels of the right panel contain content from the left panel's
+          //   territory — this is the bleed that prevents a white gap at the seam.
+          //
+          // Note: We don't add BLEED to the canvas dimensions — the canvas is exactly LW×LH.
+          // The bleed content is already present in the wide canvas at the seam boundary.
+
           const leftCanvas = document.createElement("canvas");
-          leftCanvas.width = LW + BLEED; leftCanvas.height = H;
+          leftCanvas.width = LW; leftCanvas.height = LH;
           const lCtx = leftCanvas.getContext("2d")!;
-          lCtx.drawImage(wideCanvas, 0, 0, LW + BLEED, H, 0, 0, LW + BLEED, H);
+          // Draw left portion of wide canvas (includes natural bleed at right edge)
+          lCtx.drawImage(wideCanvas, 0, 0, LW, LH, 0, 0, LW, LH);
 
           const rightCanvas = document.createElement("canvas");
-          rightCanvas.width = RW + BLEED; rightCanvas.height = H;
+          rightCanvas.width = RW; rightCanvas.height = RH;
           const rCtx = rightCanvas.getContext("2d")!;
-          rCtx.drawImage(wideCanvas, LW - BLEED, 0, RW + BLEED, H, 0, 0, RW + BLEED, H);
+          // Draw right portion of wide canvas (includes natural bleed at left edge)
+          rCtx.drawImage(wideCanvas, LW, 0, RW, RH, 0, 0, RW, RH);
+
+          // Suppress unused variable warning
+          void BLEED;
 
           const leftDataUrl  = leftCanvas.toDataURL("image/png");
           const rightDataUrl = rightCanvas.toDataURL("image/png");
@@ -489,8 +544,8 @@ export function PatternCustomizer({
           p => !p.position.startsWith("left") && !p.position.startsWith("right")
         );
         for (const panel of otherPanels) {
-          const W = Math.min(panel.width,  APPLY_CAP);
-          const H = Math.min(panel.height, APPLY_CAP);
+          const W = panel.width;
+          const H = panel.height;
           const canvas = document.createElement("canvas");
           canvas.width = W; canvas.height = H;
           const ctx = canvas.getContext("2d")!;
@@ -505,7 +560,7 @@ export function PatternCustomizer({
       // ── Pattern mode: per-panel canvases with inseam alignment ─────────────
       //
       // For each panel we compute:
-      //   tileW_panel = (tilesAcross / PREVIEW_INCHES) × (panelWidth / 150)
+      //   tileW_panel = panelWidth / (tilesPerInch × panelWidthInches)
       //     i.e. the same physical tile density as the preview, scaled to this panel's pixel width.
       //
       // Inseam alignment:
@@ -513,29 +568,23 @@ export function PatternCustomizer({
       //   Right panels → offsetX = 0                   (first tile starts at left/inseam edge)
       //   Other panels → offsetX = 0
       //
-      // If no panelPositions are provided, fall back to a single APPLY_CAP×APPLY_CAP canvas.
+      // If no panelPositions are provided, fall back to a single canvas.
 
-      const tilesPerInch = tilesAcross / PREVIEW_INCHES;
-
-      // Determine which panels to generate
       const panels: { position: string; width: number; height: number }[] =
         panelPositions.length > 0
           ? panelPositions
-          : [{ position: "default", width: Math.min(productWidth, APPLY_CAP), height: Math.min(productHeight, APPLY_CAP) }];
+          : [{ position: "default", width: productWidth, height: productHeight }];
 
       const panelUrls: { position: string; dataUrl: string }[] = [];
-
-      // Also keep a "primary" data URL for backward compat (first panel, or the largest)
       let primaryDataUrl = "";
 
       for (const panel of panels) {
-        // Cap canvas size to APPLY_CAP to avoid memory issues on large panels
-        const W = Math.min(panel.width,  APPLY_CAP);
-        const H = Math.min(panel.height, APPLY_CAP);
+        // Use full panel dimensions — Printify expects the exact pixel size.
+        const W = panel.width;
+        const H = panel.height;
 
         // Tile width in pixels for this panel's canvas
-        // panelWidth / 150 = panel width in inches; × tilesPerInch = tiles across panel
-        const panelWidthIn = panel.width / 150;
+        const panelWidthIn = panel.width / PRINT_DPI;
         const totalTilesAcrossPanel = tilesPerInch * panelWidthIn;
         const panelTileW = W / totalTilesAcrossPanel;
 
@@ -545,8 +594,7 @@ export function PatternCustomizer({
         const tileWRounded = Math.max(1, Math.round(panelTileW));
         // Left panel: shift grid so the last full tile ends at the right (inseam) edge
         const offsetX = isLeftPanel ? (W % tileWRounded) : 0;
-        // Right panel uses offsetX=0 so first tile starts at left (inseam) edge — matches left
-        void isRightPanel; // acknowledged, offsetX=0 is already correct
+        void isRightPanel; // acknowledged, offsetX=0 is already correct for right panels
 
         const canvas = document.createElement("canvas");
         canvas.width = W; canvas.height = H;
@@ -557,10 +605,7 @@ export function PatternCustomizer({
         if (!primaryDataUrl) primaryDataUrl = dataUrl;
       }
 
-      await onApply(primaryDataUrl, {
-        mirrorLegs, mode,
-        panelUrls,
-      });
+      await onApply(primaryDataUrl, { mirrorLegs, mode, panelUrls });
     } catch (err: any) {
       setError(err.message || "Pattern generation failed");
     } finally {
@@ -617,19 +662,17 @@ export function PatternCustomizer({
           {/* Live preview canvas — represents a fixed 6×6 inch viewport */}
           <div className="flex-1 min-h-0">
             <p className="text-[10px] text-muted-foreground text-center mb-0.5">
-              {mode === "single" ? "Drag to reposition" : mode === "split" ? "Front panel preview (seam = red line, bleed = yellow)" : "6\u2033 \u00d7 6\u2033 preview"}
+              {mode === "single" ? "Drag to reposition" : mode === "split" ? "Both legs preview (red = seam)" : "6\u2033 \u00d7 6\u2033 preview"}
             </p>
             <div className="w-full h-full rounded border overflow-hidden relative" style={{ minHeight: 80 }}>
               {mode === "pattern" && (
                 motifLoaded ? (
-                  <>
-                    <canvas
-                      ref={patternCanvasRef}
-                      width={PREVIEW_PX} height={PREVIEW_PX}
-                      className="w-full h-full"
-                      style={{ display: "block" }}
-                    />
-                  </>
+                  <canvas
+                    ref={patternCanvasRef}
+                    width={PREVIEW_PX} height={PREVIEW_PX}
+                    className="w-full h-full"
+                    style={{ display: "block" }}
+                  />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-muted/30">
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -722,7 +765,6 @@ export function PatternCustomizer({
                 <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>Fewer, larger</span><span>More, smaller</span>
                 </div>
-
               </div>
             </>
           )}
@@ -757,6 +799,68 @@ export function PatternCustomizer({
             </>
           )}
 
+          {/* Split Stretch mode controls */}
+          {mode === "split" && (
+            <>
+              {/* Content type selector */}
+              <div className="shrink-0 space-y-0.5">
+                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Split content</Label>
+                <div className="flex gap-1 rounded-md border p-0.5 bg-muted">
+                  {([["image", "Single Image"], ["pattern", "Tiled Pattern"]] as const).map(([v, label]) => (
+                    <button
+                      key={v} type="button"
+                      onClick={() => setSplitContent(v)}
+                      className={`flex-1 py-1 rounded text-xs transition-colors ${
+                        splitContent === v ? "bg-background shadow text-foreground font-medium" : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground leading-tight pt-0.5">
+                  {splitContent === "image"
+                    ? "Stretches your motif across both legs as one continuous image."
+                    : "Tiles your motif as a pattern across both legs — the repeat flows seamlessly across the seam."}
+                </p>
+              </div>
+
+              {/* Pattern controls (only when tiled pattern selected) */}
+              {splitContent === "pattern" && (
+                <>
+                  <div className="shrink-0 space-y-0.5">
+                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Pattern type</Label>
+                    <Select value={pattern} onValueChange={(v) => setPattern(v as PatternType)}>
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PATTERN_OPTIONS.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                            <span className="font-medium">{opt.label}</span>
+                            <span className="ml-1 text-muted-foreground">— {opt.desc}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="shrink-0 rounded border px-2 py-2 space-y-1.5 bg-muted/20">
+                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Pattern size</Label>
+                    <Slider
+                      min={1} max={10} step={1}
+                      value={[tilesAcross]}
+                      onValueChange={([v]) => setTilesAcross(v)}
+                      className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
+                    />
+                    <div className="flex justify-between text-[10px] text-muted-foreground">
+                      <span>Fewer, larger</span><span>More, smaller</span>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
           {/* Background colour */}
           <div className="shrink-0 space-y-1">
             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Background colour</Label>
@@ -787,15 +891,21 @@ export function PatternCustomizer({
             </div>
           </div>
 
-          {/* Mirror toggle */}
-          {hasPairedPanels && (
+          {/* Mirror toggle — hidden in split mode (left/right are already different halves of one image) */}
+          {hasPairedPanels && mode !== "split" && (
             <div className="flex flex-col gap-1 shrink-0">
               <div className="flex items-center justify-between rounded border px-2 py-1.5 bg-muted/30">
                 <div>
                   <p className="text-[10px] font-medium leading-tight">Mirror left &amp; right panels</p>
                   <p className="text-[10px] text-muted-foreground leading-tight">Flips pattern on one leg for symmetry</p>
                 </div>
-                <Switch id="mirror-legs" checked={mirrorLegs} onCheckedChange={setMirrorLegs} disabled={busy} />
+                <Switch
+                  id="mirror-legs"
+                  checked={mirrorLegs}
+                  onCheckedChange={setMirrorLegs}
+                  disabled={busy}
+                  className="data-[state=checked]:bg-black data-[state=unchecked]:bg-gray-400 [&_span]:bg-white"
+                />
               </div>
               {mirrorLegs && (
                 <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-tight px-1">

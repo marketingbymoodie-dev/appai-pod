@@ -643,11 +643,11 @@ export async function generatePrintifyMockup(
         try {
           const b64 = extractBase64FromDataUrl(dataUrl);
           let buf = Buffer.from(b64, "base64");
-          // Resize to max 1024px for mockup speed
-          buf = await sharp(buf)
-            .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
-            .png()
-            .toBuffer();
+          // Do NOT resize per-panel images — Printify needs the exact panel dimensions
+          // (e.g. 1476×4500px for leggings legs). Resizing causes Printify to stretch
+          // the image to fill the panel, distorting the design.
+          // Convert to PNG to ensure consistent format and strip any metadata.
+          buf = await sharp(buf).png().toBuffer();
           const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
           if (uploaded) {
             panelImageIds!.set(position, uploaded.id);
