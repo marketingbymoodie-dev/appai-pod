@@ -203,18 +203,22 @@ export function PatternCustomizer({
   //   → at tilesAcross=10, each tile is 20px (= 0.6 inches)
   //
   // Export tile width: how many tiles fit across the full print?
-  //   Full print = printWIn inches. Preview window = PREVIEW_INCHES inches.
-  //   Tiles per inch = tilesAcross / PREVIEW_INCHES
-  //   Total tiles across full print = (tilesAcross / PREVIEW_INCHES) * printWIn
-  //   Export tileW = APPLY_CAP / totalTilesAcrossFullPrint
+  //   IMPORTANT: use the REAL (uncapped) productWidth for the inch calculation.
+  //   The export canvas is APPLY_CAP px wide but represents the full print width.
+  //   Using Math.min(productWidth, APPLY_CAP) would give the wrong inch count
+  //   because it would treat the 2048px cap as if it were the full print size.
   //
-  const printW    = Math.min(productWidth,  APPLY_CAP);
-  const printWIn  = printW / 150;  // full print width in inches (150 DPI)
+  //   Full print width in inches = productWidth / 150  (Printify uses 150 DPI)
+  //   Tiles per inch             = tilesAcross / PREVIEW_INCHES
+  //   Total tiles across print   = tilesPerInch * realPrintWIn
+  //   Export tileW (in 2048px)   = APPLY_CAP / totalTilesAcrossFullPrint
+  //
+  const realPrintWIn = productWidth / 150;  // actual print width in inches (uncapped)
 
   const previewTileW  = PREVIEW_PX / tilesAcross;
   const tilesPerInch  = tilesAcross / PREVIEW_INCHES;
-  const totalTilesFullPrint = tilesPerInch * printWIn;
-  const exportTileW   = printW / totalTilesFullPrint;
+  const totalTilesFullPrint = tilesPerInch * realPrintWIn;
+  const exportTileW   = APPLY_CAP / totalTilesFullPrint;
 
   // Real tile size in inches (for readout)
   const tileRealIn = PREVIEW_INCHES / tilesAcross;
