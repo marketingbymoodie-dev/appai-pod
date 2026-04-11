@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Palette, Plus, Trash2, Edit2, Frame, Shirt, RefreshCw, ImagePlus, X } from "lucide-react";
+import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, RefreshCw, ImagePlus, X } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -170,6 +170,34 @@ export default function AdminStyles() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
       toast({ title: "Style deleted" });
+    },
+  });
+
+  const copyStyleMutation = useMutation({
+    mutationFn: async (style: StylePresetDB) => {
+      const payload = {
+        name: `Copy of ${style.name}`,
+        promptPrefix: (style as any).promptPrefix || "",
+        category: style.category || "all",
+        baseImageUrl: (style as any).baseImageUrl || null,
+        baseImageUrls: (style as any).baseImageUrls || null,
+        promptPlaceholder: (style as any).promptPlaceholder || null,
+        descriptionOptional: !!(style as any).descriptionOptional,
+        options: (style as any).options || null,
+        isActive: false, // start inactive so merchant can rename before enabling
+      };
+      const response = await apiRequest("POST", "/api/admin/styles", payload);
+      return response.json();
+    },
+    onSuccess: (newStyle) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      toast({
+        title: "Style copied",
+        description: `"Copy of ${newStyle.name?.replace(/^Copy of /, "")}" created — rename it before enabling.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to copy style", description: error.message, variant: "destructive" });
     },
   });
 
@@ -493,6 +521,7 @@ export default function AdminStyles() {
                         variant="ghost"
                         size="icon"
                         onClick={() => handleEditStyle(style)}
+                        title="Edit style"
                         data-testid={`button-edit-style-${style.id}`}
                       >
                         <Edit2 className="h-4 w-4" />
@@ -500,9 +529,20 @@ export default function AdminStyles() {
                       <Button
                         variant="ghost"
                         size="icon"
+                        onClick={() => copyStyleMutation.mutate(style)}
+                        disabled={copyStyleMutation.isPending}
+                        title="Duplicate style"
+                        data-testid={`button-copy-style-${style.id}`}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
                         onClick={() => {
                           if (confirm(`Delete "${style.name}"?`)) deleteStyleMutation.mutate(style.id);
                         }}
+                        title="Delete style"
                         data-testid={`button-delete-style-${style.id}`}
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />

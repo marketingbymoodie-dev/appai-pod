@@ -8888,6 +8888,7 @@ ${textEdgeRestrictions}
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
       } as any);
+      configCache.delete("global"); // invalidate so storefront picks up new style
       res.json(preset);
     } catch (error) {
       console.error("Error creating style preset:", error);
@@ -8951,6 +8952,7 @@ ${textEdgeRestrictions}
       }
 
       await storage.deleteStylePreset(presetId);
+      configCache.delete("global"); // invalidate so storefront no longer shows deleted style
       res.json({ success: true });
     } catch (error) {
       console.error("Error deleting style preset:", error);

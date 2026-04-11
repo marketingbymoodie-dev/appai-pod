@@ -4659,15 +4659,25 @@ export default function EmbedDesign() {
               })()}
 
               {/* Prompt Description */}
+              {(() => {
+                const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
+                const _descOptional = !!_activePresetForLabel?.descriptionOptional;
+                return (
               <div className="space-y-2" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
                 <Label htmlFor="prompt" data-testid="label-prompt">
                   Describe your artwork
+                  {_descOptional && (
+                    <span className="ml-1.5 text-xs font-normal text-muted-foreground">(optional)</span>
+                  )}
                 </Label>
                 <Textarea
                   id="prompt"
                   data-testid="input-prompt"
                   placeholder={(() => {
                     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+                    if (activePreset?.descriptionOptional) {
+                      return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+                    }
                     return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
                   })()}
                   value={prompt}
@@ -4702,6 +4712,8 @@ export default function EmbedDesign() {
                   className="min-h-[80px]"
                 />
               </div>
+                );
+              })()}
 
               {/* Product Details — desktop only, shown below prompt textarea in right panel */}
               {(isStorefront || isShopify) && productTypeConfig?.description && (
