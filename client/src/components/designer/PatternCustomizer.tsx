@@ -228,13 +228,13 @@ export function PatternCustomizer({
   // Artwork placement on the composite canvas (in composite-canvas pixel coords)
   const [placeX,       setPlaceX]       = useState(0);   // centre X of artwork on composite
   const [placeY,       setPlaceY]       = useState(0);   // centre Y of artwork on composite
-  const [placeScale,   setPlaceScale]   = useState(1.0); // scale relative to composite width
+  const [placeScale,   setPlaceScale]   = useState(0.4); // fraction of composite width (0.4 = 40%)
   // Accent panel colour (sleeves, hood, cuffs, pockets, waistband)
   const [accentColor,  setAccentColor]  = useState("#ffffff");
   // Whether back panel uses same placement as front or its own
   const [backPlaceX,   setBackPlaceX]   = useState(0);
   const [backPlaceY,   setBackPlaceY]   = useState(0);
-  const [backPlaceScale, setBackPlaceScale] = useState(1.0);
+  const [backPlaceScale, setBackPlaceScale] = useState(0.4);
   const [backSameAsFront, setBackSameAsFront] = useState(false);
 
   const [mirrorLegs, setMirrorLegs] = useState(true);
@@ -336,13 +336,13 @@ export function PatternCustomizer({
   useEffect(() => {
     if (frontLayout.compositeW > 1) {
       setPlaceX(frontLayout.compositeW / 2);
-      setPlaceY(frontLayout.compositeH / 2);
+      setPlaceY(frontLayout.compositeH * 0.35); // upper-chest area
     }
   }, [frontLayout.compositeW, frontLayout.compositeH]);
   useEffect(() => {
     if (backLayout.compositeW > 1) {
       setBackPlaceX(backLayout.compositeW / 2);
-      setBackPlaceY(backLayout.compositeH / 2);
+      setBackPlaceY(backLayout.compositeH * 0.35);
     }
   }, [backLayout.compositeW, backLayout.compositeH]);
 
@@ -405,9 +405,10 @@ export function PatternCustomizer({
     });
 
     // Draw artwork
+    // placeScale is a fraction of composite width (e.g. 0.4 = 40% of composite width)
     const img = motifImgRef.current;
-    const artW = img.width * currentPlaceScale * scaleToPreview;
-    const artH = img.height * currentPlaceScale * scaleToPreview;
+    const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
+    const artH = artW * (img.height / img.width);
     const artX = currentPlaceX * scaleToPreview - artW / 2;
     const artY = currentPlaceY * scaleToPreview - artH / 2;
     ctx.globalAlpha = 0.9;
@@ -458,9 +459,10 @@ export function PatternCustomizer({
     if (!placeDragRef.current || !placeCanvasRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const layout = currentLayout;
-    const scaleToPreview = PREVIEW_PX / layout.compositeW;
-    const dx = (e.clientX - rect.left - placeDragRef.current.startX) / scaleToPreview;
-    const dy = (e.clientY - rect.top  - placeDragRef.current.startY) / scaleToPreview;
+    // Use actual rendered canvas width for correct drag-to-composite mapping
+    const cssToComposite = layout.compositeW / rect.width;
+    const dx = (e.clientX - rect.left - placeDragRef.current.startX) * cssToComposite;
+    const dy = (e.clientY - rect.top  - placeDragRef.current.startY) * cssToComposite;
     setCurrentPlace(
       placeDragRef.current.origX + dx,
       placeDragRef.current.origY + dy,
@@ -552,9 +554,12 @@ export function PatternCustomizer({
           const ctx = canvas.getContext("2d")!;
 
           if (group === "accent") {
-            // Solid accent colour
+            // Accent panels: use a tiny 4×4px solid colour canvas to minimise payload.
+            // Printify will stretch this solid colour to fill the panel — that's correct
+            // since accent panels are meant to be a single flat colour.
+            canvas.width = 4; canvas.height = 4;
             ctx.fillStyle = accentColor || "#ffffff";
-            ctx.fillRect(0, 0, W, H);
+            ctx.fillRect(0, 0, 4, 4);
           } else {
             // Determine which layout this panel belongs to
             const layout = group === "front" ? frontLayout : backLayout;
@@ -573,8 +578,9 @@ export function PatternCustomizer({
 
               // The artwork is placed at (useX, useY) in composite coords with scale useScale.
               // The artwork's pixel size in composite coords:
-              const artW = img.width * useScale;
-              const artH = img.height * useScale;
+              // useScale is a fraction of composite width (e.g. 0.4 = 40% of compositeW)
+              const artW = layout.compositeW * useScale;
+              const artH = artW * (img.height / img.width);
               // Top-left of artwork in composite coords:
               const artLeft = useX - artW / 2;
               const artTop  = useY - artH / 2;
@@ -862,10 +868,10 @@ export function PatternCustomizer({
               <div className="shrink-0 space-y-0.5">
                 <div className="flex justify-between items-center">
                   <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Artwork size</Label>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">{currentPlaceScale.toFixed(2)}×</span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}%</span>
                 </div>
                 <Slider
-                  min={0.05} max={3} step={0.01}
+                  min={0.05} max={1.5} step={0.01}
                   value={[currentPlaceScale]}
                   onValueChange={([v]) => {
                     if (placeView === "front") setPlaceScale(v);
@@ -916,12 +922,12 @@ export function PatternCustomizer({
                 onClick={() => {
                   if (placeView === "front") {
                     setPlaceX(frontLayout.compositeW / 2);
-                    setPlaceY(frontLayout.compositeH / 2);
-                    setPlaceScale(1);
+                    setPlaceY(frontLayout.compositeH * 0.35);
+                    setPlaceScale(0.4);
                   } else {
                     setBackPlaceX(backLayout.compositeW / 2);
-                    setBackPlaceY(backLayout.compositeH / 2);
-                    setBackPlaceScale(1);
+                    setBackPlaceY(backLayout.compositeH * 0.35);
+                    setBackPlaceScale(0.4);
                   }
                 }}
                 disabled={busy}
