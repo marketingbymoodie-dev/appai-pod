@@ -226,15 +226,30 @@ export function PatternCustomizer({
   // Place on Item state
   const [placeView,    setPlaceView]    = useState<"front" | "back">("front");
   // Artwork placement on the composite canvas (in composite-canvas pixel coords)
-  const [placeX,       setPlaceX]       = useState(0);   // centre X of artwork on composite
-  const [placeY,       setPlaceY]       = useState(0);   // centre Y of artwork on composite
+  // Initialised synchronously from panelPositions so Apply works immediately on first render.
+  const [placeX,       setPlaceX]       = useState(() => {
+    const fl = buildCompositeLayout(panelPositions, "front");
+    return fl.compositeW > 1 ? fl.compositeW / 2 : 0;
+  });
+  const [placeY,       setPlaceY]       = useState(() => {
+    const fl = buildCompositeLayout(panelPositions, "front");
+    return fl.compositeH > 1 ? fl.compositeH * 0.35 : 0;
+  });
   const [placeScale,   setPlaceScale]   = useState(0.4); // fraction of composite width (0.4 = 40%)
   // Accent panel colour (sleeves, hood, cuffs, pockets, waistband)
   const [accentColor,  setAccentColor]  = useState("#ffffff");
   // Whether back panel uses same placement as front or its own
-  const [backPlaceX,   setBackPlaceX]   = useState(0);
-  const [backPlaceY,   setBackPlaceY]   = useState(0);
+  const [backPlaceX,   setBackPlaceX]   = useState(() => {
+    const bl = buildCompositeLayout(panelPositions, "back");
+    return bl.compositeW > 1 ? bl.compositeW / 2 : 0;
+  });
+  const [backPlaceY,   setBackPlaceY]   = useState(() => {
+    const bl = buildCompositeLayout(panelPositions, "back");
+    return bl.compositeH > 1 ? bl.compositeH * 0.35 : 0;
+  });
   const [backPlaceScale, setBackPlaceScale] = useState(0.4);
+  // Back panel artwork: defaults to false (no artwork on back — just solid bgColor)
+  const [backHasArtwork, setBackHasArtwork] = useState(false);
   const [backSameAsFront, setBackSameAsFront] = useState(false);
 
   const [mirrorLegs, setMirrorLegs] = useState(true);
@@ -404,25 +419,34 @@ export function PatternCustomizer({
       ctx.restore();
     });
 
-    // Draw artwork
-    // placeScale is a fraction of composite width (e.g. 0.4 = 40% of composite width)
-    const img = motifImgRef.current;
-    const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
-    const artH = artW * (img.height / img.width);
-    const artX = currentPlaceX * scaleToPreview - artW / 2;
-    const artY = currentPlaceY * scaleToPreview - artH / 2;
-    ctx.globalAlpha = 0.9;
-    ctx.drawImage(img, artX, artY, artW, artH);
-    ctx.globalAlpha = 1;
+    // Draw artwork — skip if viewing back panel with no artwork enabled
+    const showArtwork = placeView === "front" || backHasArtwork;
+    if (showArtwork) {
+      // placeScale is a fraction of composite width (e.g. 0.4 = 40% of composite width)
+      const img = motifImgRef.current;
+      const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
+      const artH = artW * (img.height / img.width);
+      const artX = currentPlaceX * scaleToPreview - artW / 2;
+      const artY = currentPlaceY * scaleToPreview - artH / 2;
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(img, artX, artY, artW, artH);
+      ctx.globalAlpha = 1;
 
-    // Artwork bounding box
-    ctx.strokeStyle = "#3b82f6";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([2, 2]);
-    ctx.strokeRect(artX, artY, artW, artH);
-    ctx.setLineDash([]);
+      // Artwork bounding box
+      ctx.strokeStyle = "#3b82f6";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 2]);
+      ctx.strokeRect(artX, artY, artW, artH);
+      ctx.setLineDash([]);
+    } else {
+      // Back panel with no artwork: show a "no artwork" label
+      ctx.fillStyle = "rgba(100,116,139,0.5)";
+      ctx.font = "9px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No artwork (solid colour)", canvas.width / 2, canvas.height / 2);
+    }
 
-  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor]);
+  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor, backHasArtwork]);
 
   // Drag handlers for single-image mode
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -560,6 +584,10 @@ export function PatternCustomizer({
             canvas.width = 4; canvas.height = 4;
             ctx.fillStyle = accentColor || "#ffffff";
             ctx.fillRect(0, 0, 4, 4);
+          } else if (group === "back" && !backHasArtwork) {
+            // Back panel with no artwork: solid background colour only
+            ctx.fillStyle = bgColor || "#ffffff";
+            ctx.fillRect(0, 0, W, H);
           } else {
             // Determine which layout this panel belongs to
             const layout = group === "front" ? frontLayout : backLayout;
@@ -852,8 +880,19 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {/* Back same as front toggle */}
+              {/* Back panel artwork toggle */}
               {placeView === "back" && backLayout.slots.length > 0 && (
+                <div className="flex items-center justify-between rounded border px-2 py-1.5 bg-muted/30 shrink-0">
+                  <p className="text-[10px] font-medium leading-tight">Add artwork to back</p>
+                  <Switch
+                    checked={backHasArtwork}
+                    onCheckedChange={setBackHasArtwork}
+                    className="data-[state=checked]:bg-black data-[state=unchecked]:bg-gray-400 [&_span]:bg-white"
+                  />
+                </div>
+              )}
+              {/* Back same as front toggle — only shown when back has artwork */}
+              {placeView === "back" && backLayout.slots.length > 0 && backHasArtwork && (
                 <div className="flex items-center justify-between rounded border px-2 py-1.5 bg-muted/30 shrink-0">
                   <p className="text-[10px] font-medium leading-tight">Same placement as front</p>
                   <Switch
@@ -864,29 +903,33 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {/* Artwork scale slider */}
-              <div className="shrink-0 space-y-0.5">
-                <div className="flex justify-between items-center">
-                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Artwork size</Label>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}%</span>
+              {/* Artwork scale slider — hidden when back panel has no artwork */}
+              {(placeView === "front" || backHasArtwork) && (
+                <div className="shrink-0 space-y-0.5">
+                  <div className="flex justify-between items-center">
+                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Artwork size</Label>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}%</span>
+                  </div>
+                  <Slider
+                    min={0.05} max={1.5} step={0.01}
+                    value={[currentPlaceScale]}
+                    onValueChange={([v]) => {
+                      if (placeView === "front") setPlaceScale(v);
+                      else if (!backSameAsFront) setBackPlaceScale(v);
+                    }}
+                    className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
+                  />
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
+                    <span>Smaller</span><span>Larger</span>
+                  </div>
                 </div>
-                <Slider
-                  min={0.05} max={1.5} step={0.01}
-                  value={[currentPlaceScale]}
-                  onValueChange={([v]) => {
-                    if (placeView === "front") setPlaceScale(v);
-                    else if (!backSameAsFront) setBackPlaceScale(v);
-                  }}
-                  className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
-                />
-                <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>Smaller</span><span>Larger</span>
-                </div>
-              </div>
+              )}
 
-              <p className="text-[10px] text-muted-foreground leading-tight shrink-0">
-                Drag the artwork in the preview to reposition it across the panels. Red dashed lines show seams.
-              </p>
+              {(placeView === "front" || backHasArtwork) && (
+                <p className="text-[10px] text-muted-foreground leading-tight shrink-0">
+                  Drag the artwork in the preview to reposition it across the panels. Red dashed lines show seams.
+                </p>
+              )}
 
               {/* Accent panel colour */}
               {panelPositions.some(p => getPanelGroup(p.position) === "accent") && (
