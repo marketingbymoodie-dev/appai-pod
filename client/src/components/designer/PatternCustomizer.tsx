@@ -16,11 +16,16 @@
  * "Apply Pattern" is the only server call — generates the final high-res output.
  *
  * Preview model (Pattern mode):
- *   The preview canvas is a fixed 2×2 inch viewport into the final print.
- *   Tile size in preview = (tileRealInches / 2) * PREVIEW_PX
- *   This means moving the scale slider changes how much of the pattern fits
- *   in that 2×2 inch window — exactly matching what will print.
- *   The export canvas is unchanged: tileW = APPLY_CAP / (scale * 2).
+ *   The preview canvas is a fixed 6×6 inch viewport into the final print.
+ *   The SCALE slider (1–10) controls how many tiles appear across that 6-inch window.
+ *     scale=1  → 1 tile fills the 6-inch window (large motif)
+ *     scale=10 → 10 tiles across the 6-inch window (small, dense pattern)
+ *
+ *   Preview tile width (px) = PREVIEW_PX / scale
+ *   Export tile width (px)  = APPLY_CAP / (scale * (printWIn / PREVIEW_INCHES))
+ *     i.e. the same number of tiles per inch, scaled to the full print canvas.
+ *
+ *   Ruler: inches only — bottom edge 0–6", right edge 0–6". Ticks every 1", labels every 2".
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
@@ -60,10 +65,14 @@ const BG_PRESETS = [
 
 const APPLY_CAP = 2048;
 
-// Preview canvas logical size (px). Represents exactly 2×2 inches of the final print.
+/** Logical pixel size of the preview canvas element */
 const PREVIEW_PX = 200;
-// Fixed viewport size in inches shown in preview
-const PREVIEW_INCHES = 2;
+
+/**
+ * Fixed viewport size in inches shown in the preview.
+ * The slider value = number of tiles visible across this window.
+ */
+const PREVIEW_INCHES = 6;
 
 export interface PatternApplyOptions {
   mirrorLegs: boolean;
@@ -87,20 +96,18 @@ interface PatternCustomizerProps {
 /**
  * Draw tiled pattern onto canvas.
  *
- * For EXPORT (forExport=true): tileW = W / (scale * 2) — same as before.
- * For PREVIEW (forExport=false): tileW is passed in directly as previewTileW,
- *   computed from real-world inches so the preview represents a 2×2 inch viewport.
+ * tileW is always passed in explicitly:
+ *   Preview: PREVIEW_PX / tilesAcross
+ *   Export:  exportTileW (derived from tilesAcross scaled to full print width)
  */
 function drawTiledPattern(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
   opts: {
     pattern: PatternType;
-    scale: number;
+    tileW: number;
     bgColor: string;
     forExport?: boolean;
-    /** Preview tile width in px — only used when forExport=false */
-    previewTileW?: number;
   }
 ) {
   const ctx = canvas.getContext("2d");
@@ -121,13 +128,8 @@ function drawTiledPattern(
 
   if (opts.bgColor) { ctx.fillStyle = opts.bgColor; ctx.fillRect(0, 0, W, H); }
 
-  // Tile width in canvas pixels:
-  //   Export: W / (scale * 2)  — fills the full print canvas
-  //   Preview: previewTileW    — sized so the canvas represents exactly 2×2 inches
-  const tileW = opts.forExport
-    ? Math.round(W / (opts.scale * 2))
-    : Math.round(opts.previewTileW ?? W / (opts.scale * 2));
-  const tileH = Math.round(tileW * (img.height / img.width));
+  const tileW = Math.max(1, Math.round(opts.tileW));
+  const tileH = Math.max(1, Math.round(tileW * (img.height / img.width)));
   const cols = Math.ceil(W / tileW) + 2;
   const rows = Math.ceil(H / tileH) + 2;
 
@@ -155,7 +157,12 @@ export function PatternCustomizer({
 }: PatternCustomizerProps) {
   const [mode, setMode]       = useState<EditorMode>("pattern");
   const [pattern, setPattern] = useState<PatternType>("grid");
-  const [scale, setScale]     = useState<number>(1.5);
+
+  /**
+   * tilesAcross: number of tiles visible across the 6-inch preview window.
+   * Range 1–10. Default 2 (a couple of tiles visible — good starting point).
+   */
+  const [tilesAcross, setTilesAcross] = useState<number>(2);
 
   const [singleScale,    setSingleScale]    = useState(1.0);
   const [singleRotation, setSingleRotation] = useState(0);
@@ -181,21 +188,29 @@ export function PatternCustomizer({
   const motifImgRef = useRef<HTMLImageElement | null>(null);
   const [motifLoaded, setMotifLoaded] = useState(false);
 
-  // ── Derived real-world dimensions ──────────────────────────────────────────
-  // Use APPLY_CAP as the effective print pixel width (export canvas size).
-  // At 150 DPI: realWidthIn = APPLY_CAP / 150
-  const printW   = Math.min(productWidth,  APPLY_CAP);
-  const printH   = Math.min(productHeight, APPLY_CAP);
-  const printWIn = printW / 150;   // full print width in inches
-  const printHIn = printH / 150;   // full print height in inches
+  // ── Derived tile sizes ─────────────────────────────────────────────────────
+  //
+  // Preview tile width: PREVIEW_PX / tilesAcross
+  //   → at tilesAcross=1, the tile fills the whole 200px canvas (= 6 inches)
+  //   → at tilesAcross=10, each tile is 20px (= 0.6 inches)
+  //
+  // Export tile width: how many tiles fit across the full print?
+  //   Full print = printWIn inches. Preview window = PREVIEW_INCHES inches.
+  //   Tiles per inch = tilesAcross / PREVIEW_INCHES
+  //   Total tiles across full print = (tilesAcross / PREVIEW_INCHES) * printWIn
+  //   Export tileW = APPLY_CAP / totalTilesAcrossFullPrint
+  //
+  const printW    = Math.min(productWidth,  APPLY_CAP);
+  const printWIn  = printW / 150;  // full print width in inches (150 DPI)
 
-  // Real tile size at current scale (same formula as export: tileW = printW / (scale * 2))
-  const tileRealIn = printWIn / (scale * 2);   // tile width in inches
-  const tileRealCm = tileRealIn * 2.54;         // tile width in cm
+  const previewTileW  = PREVIEW_PX / tilesAcross;
+  const tilesPerInch  = tilesAcross / PREVIEW_INCHES;
+  const totalTilesFullPrint = tilesPerInch * printWIn;
+  const exportTileW   = printW / totalTilesFullPrint;
 
-  // Preview tile size: how many PREVIEW_PX pixels represent tileRealIn inches,
-  // given that PREVIEW_PX pixels = PREVIEW_INCHES inches.
-  const previewTileW = (tileRealIn / PREVIEW_INCHES) * PREVIEW_PX;
+  // Real tile size in inches (for readout)
+  const tileRealIn = PREVIEW_INCHES / tilesAcross;
+  const tileRealCm = tileRealIn * 2.54;
 
   // Load motif image
   useEffect(() => {
@@ -211,19 +226,19 @@ export function PatternCustomizer({
     img.src = activeMotifUrl;
   }, [activeMotifUrl]);
 
-  // Live pattern canvas — uses previewTileW so canvas = 2×2 inch viewport
+  // Live pattern canvas — uses previewTileW so canvas = 6×6 inch viewport
   useEffect(() => {
     if (mode !== "pattern" || !motifLoaded || !motifImgRef.current) return;
     const canvas = patternCanvasRef.current;
     if (!canvas) return;
-    drawTiledPattern(canvas, motifImgRef.current, { pattern, scale, bgColor, previewTileW });
-  }, [mode, motifLoaded, pattern, scale, bgColor, previewTileW]);
+    drawTiledPattern(canvas, motifImgRef.current, { pattern, tileW: previewTileW, bgColor });
+  }, [mode, motifLoaded, pattern, tilesAcross, bgColor, previewTileW]);
 
   // ── Ruler overlay ──────────────────────────────────────────────────────────
-  // The preview canvas represents exactly PREVIEW_INCHES × PREVIEW_INCHES inches.
-  // Left ruler: cm ticks — 5 cm intervals, 2 major ticks visible (0 and 5 cm)
-  // Bottom ruler: inch ticks — 2 inch interval, 2 major ticks visible (0 and 2 in)
-  // Text is large enough to read (9px on a 200px canvas).
+  // The preview canvas represents exactly 6×6 inches.
+  // Bottom ruler: inch ticks every 1", labels at 0, 2, 4, 6"
+  // Right ruler:  inch ticks every 1", labels at 0, 2, 4, 6"
+  // No cm ruler.
   useEffect(() => {
     if (mode !== "pattern") return;
     const ruler = rulerCanvasRef.current;
@@ -232,93 +247,73 @@ export function PatternCustomizer({
     if (!ctx) return;
     const W = ruler.width;   // PREVIEW_PX = 200
     const H = ruler.height;  // PREVIEW_PX = 200
-    const RULER = 18;        // ruler strip width in px (wider for legibility)
+    const RULER = 16;        // ruler strip width in px
 
     ctx.clearRect(0, 0, W, H);
 
-    // ── Left ruler (cm, vertical) ────────────────────────────────────────────
-    // Preview height = PREVIEW_INCHES inches = PREVIEW_INCHES * 2.54 cm
-    const previewHeightCm = PREVIEW_INCHES * 2.54; // ~5.08 cm
-    const pxPerCm = H / previewHeightCm;            // px per cm in preview
-
-    ctx.fillStyle = "rgba(245,245,245,0.95)";
-    ctx.fillRect(0, 0, RULER, H);
-
-    // Tick every 1 cm; label every 5 cm (but since window is ~5cm, label at 0 and 5)
-    const cmStep = 1;
-    for (let cm = 0; cm <= previewHeightCm + 0.01; cm += cmStep) {
-      const y = cm * pxPerCm;
-      if (y > H + 1) break;
-      const isMajor = cm % 5 === 0;
-      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
-      ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
-      ctx.lineWidth = isMajor ? 1 : 0.75;
-      ctx.beginPath();
-      ctx.moveTo(RULER, y);
-      ctx.lineTo(RULER - tickLen, y);
-      ctx.stroke();
-      if (isMajor) {
-        ctx.fillStyle = "#111827";
-        ctx.font = "bold 9px sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.save();
-        ctx.translate(RULER / 2 - 1, Math.max(y, 6));
-        ctx.rotate(-Math.PI / 2);
-        ctx.fillText(`${Math.round(cm)}`, 0, 0);
-        ctx.restore();
-      }
-    }
-    // "cm" unit label at bottom of left ruler
-    ctx.fillStyle = "#6b7280";
-    ctx.font = "bold 7px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "bottom";
-    ctx.save();
-    ctx.translate(RULER / 2, H - RULER - 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText("cm", 0, 0);
-    ctx.restore();
+    // px per inch in preview (200px = 6 inches → 33.33 px/in)
+    const pxPerIn = PREVIEW_PX / PREVIEW_INCHES;
 
     // ── Bottom ruler (inches, horizontal) ────────────────────────────────────
-    // Preview width = PREVIEW_INCHES inches exactly
-    const pxPerIn = W / PREVIEW_INCHES; // px per inch in preview = 100
-
-    ctx.fillStyle = "rgba(245,245,245,0.95)";
+    ctx.fillStyle = "rgba(245,245,245,0.96)";
     ctx.fillRect(0, H - RULER, W, RULER);
 
-    // Tick every 0.5 in; label at 0, 1, 2 in
-    const inStep = 0.5;
-    for (let inch = 0; inch <= PREVIEW_INCHES + 0.001; inch += inStep) {
+    for (let inch = 0; inch <= PREVIEW_INCHES + 0.001; inch += 1) {
       const x = inch * pxPerIn;
       if (x > W + 1) break;
-      const isMajor = Math.abs(inch - Math.round(inch)) < 0.001; // whole inches
+      const isMajor = inch % 2 === 0;
       const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
       ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
-      ctx.lineWidth = isMajor ? 1 : 0.75;
+      ctx.lineWidth   = isMajor ? 1 : 0.75;
       ctx.beginPath();
       ctx.moveTo(x, H - RULER);
       ctx.lineTo(x, H - RULER + tickLen);
       ctx.stroke();
       if (isMajor) {
-        ctx.fillStyle = "#111827";
-        ctx.font = "bold 9px sans-serif";
-        ctx.textAlign = "center";
+        ctx.fillStyle    = "#111827";
+        ctx.font         = "bold 9px sans-serif";
+        ctx.textAlign    = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(`${Math.round(inch)}"`, Math.min(Math.max(x, 6), W - 6), H - RULER + tickLen + 1);
+        const labelX = Math.min(Math.max(x, 5), W - RULER - 5);
+        ctx.fillText(`${Math.round(inch)}"`, labelX, H - RULER + tickLen + 1);
       }
     }
-    // "in" unit label
-    ctx.fillStyle = "#6b7280";
-    ctx.font = "bold 7px sans-serif";
-    ctx.textAlign = "right";
+    // "in" unit label bottom-right
+    ctx.fillStyle    = "#6b7280";
+    ctx.font         = "bold 7px sans-serif";
+    ctx.textAlign    = "right";
     ctx.textBaseline = "bottom";
-    ctx.fillText("in", W - 2, H - 1);
+    ctx.fillText("in", W - RULER - 2, H - 1);
 
-    // ── Corner square (covers left/bottom intersection) ───────────────────────
-    ctx.fillStyle = "rgba(245,245,245,0.95)";
-    ctx.fillRect(0, H - RULER, RULER, RULER);
-  }, [mode, scale, productWidth, productHeight]);
+    // ── Right ruler (inches, vertical) ───────────────────────────────────────
+    ctx.fillStyle = "rgba(245,245,245,0.96)";
+    ctx.fillRect(W - RULER, 0, RULER, H);
+
+    for (let inch = 0; inch <= PREVIEW_INCHES + 0.001; inch += 1) {
+      const y = inch * pxPerIn;
+      if (y > H + 1) break;
+      const isMajor = inch % 2 === 0;
+      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
+      ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
+      ctx.lineWidth   = isMajor ? 1 : 0.75;
+      ctx.beginPath();
+      ctx.moveTo(W - RULER, y);
+      ctx.lineTo(W - RULER + tickLen, y);
+      ctx.stroke();
+      if (isMajor) {
+        ctx.fillStyle    = "#111827";
+        ctx.font         = "bold 9px sans-serif";
+        ctx.textAlign    = "left";
+        ctx.textBaseline = "middle";
+        const labelY = Math.min(Math.max(y, 5), H - RULER - 5);
+        ctx.fillText(`${Math.round(inch)}"`, W - RULER + tickLen + 1, labelY);
+      }
+    }
+
+    // ── Corner square (covers bottom-right intersection) ─────────────────────
+    ctx.fillStyle = "rgba(245,245,245,0.96)";
+    ctx.fillRect(W - RULER, H - RULER, RULER, RULER);
+  }, [mode, tilesAcross]);
 
   // Live single-image canvas
   useEffect(() => {
@@ -395,13 +390,11 @@ export function PatternCustomizer({
     }
   };
 
-  // Apply — fully client-side Canvas tiling (no server call needed for mockup generation).
-  // Generates the tiled pattern at APPLY_CAP resolution using the same drawTiledPattern
-  // function used for the live preview, then exports as a data URL.
+  // Apply — fully client-side Canvas tiling.
+  // Uses exportTileW so the density matches exactly what the user sees in the preview.
   const handleApply = async () => {
     setIsApplying(true); setError(null);
     try {
-      // Ensure motif image is loaded
       if (!motifImgRef.current || !motifLoaded) {
         throw new Error("Motif image not loaded yet — please wait a moment and try again");
       }
@@ -410,7 +403,6 @@ export function PatternCustomizer({
       const W = Math.min(productWidth,  APPLY_CAP);
       const H = Math.min(productHeight, APPLY_CAP);
 
-      // Create an offscreen canvas at the apply resolution
       const canvas = document.createElement("canvas");
       canvas.width  = W;
       canvas.height = H;
@@ -418,10 +410,8 @@ export function PatternCustomizer({
       if (!ctx) throw new Error("Canvas 2D context unavailable");
 
       if (mode === "pattern") {
-        // Tile the motif across the full canvas (forExport=true uses W/(scale*2) formula)
-        drawTiledPattern(canvas, img, { pattern, scale, bgColor, forExport: true });
+        drawTiledPattern(canvas, img, { pattern, tileW: exportTileW, bgColor, forExport: true });
       } else {
-        // Single-image placement
         ctx.clearRect(0, 0, W, H);
         if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
         const imgAR = img.width / img.height;
@@ -437,7 +427,6 @@ export function PatternCustomizer({
         ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih); ctx.restore();
       }
 
-      // Export as PNG data URL
       const patternDataUrl = canvas.toDataURL("image/png");
 
       await onApply(patternDataUrl, {
@@ -454,8 +443,6 @@ export function PatternCustomizer({
   const busy = isApplying || isLoading;
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  // Compact layout: fills the canvas overlay (absolute inset-0, ~520px tall)
-  // Two-column: left = previews, right = controls
   return (
     <div className="w-full h-full flex flex-col p-3 gap-2 bg-background select-none">
 
@@ -499,17 +486,22 @@ export function PatternCustomizer({
             </div>
           </div>
 
-          {/* Live preview canvas — represents a fixed 2×2 inch viewport */}
+          {/* Live preview canvas — represents a fixed 6×6 inch viewport */}
           <div className="flex-1 min-h-0">
             <p className="text-[10px] text-muted-foreground text-center mb-0.5">
-              {mode === "single" ? "Drag to reposition" : "Live preview (2\u2033\u00d72\u2033)"}
+              {mode === "single" ? "Drag to reposition" : "6\u2033 \u00d7 6\u2033 preview"}
             </p>
             <div className="w-full h-full rounded border overflow-hidden relative" style={{ minHeight: 80 }}>
               {mode === "pattern" && (
                 motifLoaded ? (
                   <>
-                    <canvas ref={patternCanvasRef} width={PREVIEW_PX} height={PREVIEW_PX} className="w-full h-full" style={{ display: "block" }} />
-                    {/* Ruler overlay — cm left, inches bottom; pointer-events:none so it doesn't block interaction */}
+                    <canvas
+                      ref={patternCanvasRef}
+                      width={PREVIEW_PX} height={PREVIEW_PX}
+                      className="w-full h-full"
+                      style={{ display: "block" }}
+                    />
+                    {/* Ruler overlay — inches on bottom and right; pointer-events:none */}
                     <canvas
                       ref={rulerCanvasRef}
                       width={PREVIEW_PX} height={PREVIEW_PX}
@@ -582,25 +574,24 @@ export function PatternCustomizer({
                 </Select>
               </div>
 
-              <div className="shrink-0 space-y-1">
+              {/* Scale slider — bordered box, no changing number, 1–10 tiles */}
+              <div className="shrink-0 rounded border px-2 py-2 space-y-1.5 bg-muted/20">
                 <div className="flex justify-between items-center">
-                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Scale</Label>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">{scale.toFixed(1)}×</span>
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Pattern size</Label>
+                  <span className="text-[10px] text-muted-foreground">6″ × 6″ view</span>
                 </div>
-                {/* Black slider — override Radix thumb/track to be visible on white background */}
                 <Slider
-                  min={1.0} max={5} step={0.1}
-                  value={[scale]}
-                  onValueChange={([v]) => setScale(v)}
-                  className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[data-orientation=horizontal]>[data-disabled]]:bg-black/40"
+                  min={1} max={10} step={1}
+                  value={[tilesAcross]}
+                  onValueChange={([v]) => setTilesAcross(v)}
+                  className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
                 />
                 <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>Smaller</span><span>Larger</span>
+                  <span>Fewer, larger</span><span>More, smaller</span>
                 </div>
                 {/* Real-world tile size readout */}
                 <p className="text-[10px] text-blue-600 dark:text-blue-400 tabular-nums leading-tight">
-                  Each tile ≈ {tileRealCm.toFixed(1)} cm × {tileRealCm.toFixed(1)} cm
-                  &nbsp;({tileRealIn.toFixed(1)}" × {tileRealIn.toFixed(1)}")
+                  Each tile ≈ {tileRealCm.toFixed(1)} cm ({tileRealIn.toFixed(1)}" × {tileRealIn.toFixed(1)}")
                 </p>
               </div>
             </>
