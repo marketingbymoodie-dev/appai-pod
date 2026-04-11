@@ -89,6 +89,11 @@ interface PatternCustomizerProps {
   isLoading?: boolean;
   /** Optional fetch override — pass safeFetch from embed-design to bypass Shopify service worker */
   fetchFn?: (url: string, options?: RequestInit) => Promise<Response>;
+  /** Persisted settings — passed back in when reopening so state survives close/reopen */
+  initialTilesAcross?: number;
+  initialPattern?: PatternType;
+  initialBgColor?: string;
+  onSettingsChange?: (settings: { tilesAcross: number; pattern: PatternType; bgColor: string }) => void;
 }
 
 // ── Client-side Canvas tiling ────────────────────────────────────────────────
@@ -154,15 +159,19 @@ export function PatternCustomizer({
   onApply,
   isLoading = false,
   fetchFn,
+  initialTilesAcross = 4,
+  initialPattern = "grid",
+  initialBgColor = "#ffffff",
+  onSettingsChange,
 }: PatternCustomizerProps) {
   const [mode, setMode]       = useState<EditorMode>("pattern");
-  const [pattern, setPattern] = useState<PatternType>("grid");
+  const [pattern, setPattern] = useState<PatternType>(initialPattern);
 
   /**
    * tilesAcross: number of tiles visible across the 6-inch preview window.
-   * Range 1–10. Default 2 (a couple of tiles visible — good starting point).
+   * Range 1–10. Default 4 (a reasonable starting density).
    */
-  const [tilesAcross, setTilesAcross] = useState<number>(2);
+  const [tilesAcross, setTilesAcross] = useState<number>(initialTilesAcross);
 
   const [singleScale,    setSingleScale]    = useState(1.0);
   const [singleRotation, setSingleRotation] = useState(0);
@@ -172,8 +181,8 @@ export function PatternCustomizer({
   const [mirrorLegs, setMirrorLegs] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
   const [error,      setError]      = useState<string | null>(null);
-  const [bgColor,    setBgColor]    = useState("#ffffff");
-  const [customBg,   setCustomBg]   = useState("#ffffff");
+  const [bgColor,    setBgColor]    = useState(initialBgColor);
+  const [customBg,   setCustomBg]   = useState(initialBgColor);
 
   const [isRemovingBg,  setIsRemovingBg]  = useState(false);
   const [bgRemovedUrl,  setBgRemovedUrl]  = useState<string | null>(null);
@@ -232,6 +241,11 @@ export function PatternCustomizer({
     if (!canvas) return;
     drawTiledPattern(canvas, motifImgRef.current, { pattern, tileW: previewTileW, bgColor });
   }, [mode, motifLoaded, pattern, tilesAcross, bgColor, previewTileW]);
+
+  // Notify parent of settings changes so they can be persisted across close/reopen
+  useEffect(() => {
+    onSettingsChange?.({ tilesAcross, pattern, bgColor });
+  }, [tilesAcross, pattern, bgColor]);
 
   // Live single-image canvas
   useEffect(() => {

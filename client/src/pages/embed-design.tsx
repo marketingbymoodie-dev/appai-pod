@@ -715,6 +715,12 @@ export default function EmbedDesign() {
   const [showPatternStep, setShowPatternStep] = useState(false);
   const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
   const [aopPatternUrl, setAopPatternUrl] = useState<string | null>(null);
+  // Persisted PatternCustomizer settings — survive close/reopen of the overlay
+  const [aopPatternSettings, setAopPatternSettings] = useState<{
+    tilesAcross: number;
+    pattern: "grid" | "brick" | "half";
+    bgColor: string;
+  }>({ tilesAcross: 4, pattern: "grid", bgColor: "#ffffff" });
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -4882,6 +4888,10 @@ export default function EmbedDesign() {
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
                     fetchFn={(url, options) => safeFetch(url, options, 60000)}
+                    initialTilesAcross={aopPatternSettings.tilesAcross}
+                    initialPattern={aopPatternSettings.pattern}
+                    initialBgColor={aopPatternSettings.bgColor}
+                    onSettingsChange={(s) => setAopPatternSettings(s)}
                     onApply={async (appliedPatternUrl: string, options) => {
                       setAopPatternUrl(appliedPatternUrl);
                       setShowPatternStep(false);
