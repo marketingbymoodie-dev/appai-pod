@@ -33,7 +33,7 @@ import { API_BASE } from "@/lib/urlBase";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Loader2, LayoutGrid, ImageIcon, RotateCcw, Scissors } from "lucide-react";
+import { Loader2, LayoutGrid, ImageIcon, RotateCcw, Scissors, Columns2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -44,7 +44,7 @@ import {
 } from "@/components/ui/select";
 
 export type PatternType = "grid" | "brick" | "half";
-export type EditorMode = "pattern" | "single";
+export type EditorMode = "pattern" | "single" | "split";
 
 const PATTERN_OPTIONS = [
   { value: "grid"  as PatternType, label: "Grid",        desc: "Straight repeat" },
@@ -206,6 +206,7 @@ export function PatternCustomizer({
 
   const patternCanvasRef = useRef<HTMLCanvasElement>(null);
   const singleCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const splitCanvasRef   = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const motifImgRef = useRef<HTMLImageElement | null>(null);
   const [motifLoaded, setMotifLoaded] = useState(false);
@@ -259,6 +260,39 @@ export function PatternCustomizer({
     if (!canvas) return;
     drawTiledPattern(canvas, motifImgRef.current, { pattern, tileW: previewTileW, bgColor });
   }, [mode, motifLoaded, pattern, tilesAcross, bgColor, previewTileW]);
+
+  // Live split-stretch canvas — 2:1 wide preview showing motif centred in combined panel width
+  useEffect(() => {
+    if (mode !== "split" || !motifLoaded || !motifImgRef.current) return;
+    const canvas = splitCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const W = canvas.width;   // 2:1 wide
+    const H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+    const img = motifImgRef.current;
+    // Fit motif to fill height, centred horizontally
+    const scale = H / img.height;
+    const iw = img.width * scale;
+    const ih = img.height * scale;
+    const ix = (W - iw) / 2;
+    ctx.drawImage(img, ix, 0, iw, ih);
+    // Draw seam indicator
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(239,68,68,0.6)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
+    ctx.restore();
+    // Bleed zone shading
+    const bleedPx = Math.round(W * 0.04); // ~4% of preview width ≈ bleed strip
+    ctx.save();
+    ctx.fillStyle = "rgba(253,230,138,0.45)";
+    ctx.fillRect(W / 2 - bleedPx, 0, bleedPx * 2, H);
+    ctx.restore();
+  }, [mode, motifLoaded, bgColor]);
 
   // Notify parent of settings changes so they can be persisted across close/reopen
   useEffect(() => {
@@ -380,6 +414,94 @@ export function PatternCustomizer({
         return;
       }
 
+      // ── Split Stretch mode: wide canvas spanning left+right panels, split at seam with bleed ──
+      if (mode === "split") {
+        // Find left and right panel pairs
+        const leftPanels  = panelPositions.filter(p => p.position.startsWith("left"));
+        const rightPanels = panelPositions.filter(p => p.position.startsWith("right"));
+
+        // If no panel data, fall back to a single wide canvas
+        if (leftPanels.length === 0 || rightPanels.length === 0) {
+          // Fallback: one wide canvas, no split
+          const W = APPLY_CAP * 2; const H = APPLY_CAP;
+          const canvas = document.createElement("canvas");
+          canvas.width = W; canvas.height = H;
+          const ctx = canvas.getContext("2d")!;
+          if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+          const scale = H / img.height;
+          const iw = img.width * scale; const ih = img.height * scale;
+          ctx.drawImage(img, (W - iw) / 2, 0, iw, ih);
+          const dataUrl = canvas.toDataURL("image/png");
+          await onApply(dataUrl, { mirrorLegs, mode, panelUrls: [{ position: "default", dataUrl }] });
+          return;
+        }
+
+        const panelUrls: { position: string; dataUrl: string }[] = [];
+        let primaryDataUrl = "";
+
+        // Process each left+right pair (typically just one pair for leggings)
+        for (let i = 0; i < Math.max(leftPanels.length, rightPanels.length); i++) {
+          const leftPanel  = leftPanels[i]  || leftPanels[0];
+          const rightPanel = rightPanels[i] || rightPanels[0];
+
+          // Cap individual panel sizes
+          const LW = Math.min(leftPanel.width,  APPLY_CAP);
+          const RW = Math.min(rightPanel.width, APPLY_CAP);
+          const H  = Math.min(Math.max(leftPanel.height, rightPanel.height), APPLY_CAP);
+
+          // Bleed: ~15mm at 150 DPI = 88px, but capped to 5% of the narrower panel
+          const BLEED = Math.min(88, Math.round(Math.min(LW, RW) * 0.05));
+
+          // ── Generate wide source canvas (LW + RW wide, H tall) ──────────────
+          const totalW = LW + RW;
+          const wideCanvas = document.createElement("canvas");
+          wideCanvas.width = totalW; wideCanvas.height = H;
+          const wCtx = wideCanvas.getContext("2d")!;
+          if (bgColor) { wCtx.fillStyle = bgColor; wCtx.fillRect(0, 0, totalW, H); }
+          // Fit motif to fill height, centred horizontally
+          const imgScale = H / img.height;
+          const iw = img.width * imgScale;
+          const ih = img.height * imgScale;
+          const ix = (totalW - iw) / 2;
+          wCtx.drawImage(img, ix, 0, iw, ih);
+
+          // ── Split: left panel = [0 .. LW+BLEED], right panel = [LW-BLEED .. end] ──
+          const leftCanvas = document.createElement("canvas");
+          leftCanvas.width = LW + BLEED; leftCanvas.height = H;
+          const lCtx = leftCanvas.getContext("2d")!;
+          lCtx.drawImage(wideCanvas, 0, 0, LW + BLEED, H, 0, 0, LW + BLEED, H);
+
+          const rightCanvas = document.createElement("canvas");
+          rightCanvas.width = RW + BLEED; rightCanvas.height = H;
+          const rCtx = rightCanvas.getContext("2d")!;
+          rCtx.drawImage(wideCanvas, LW - BLEED, 0, RW + BLEED, H, 0, 0, RW + BLEED, H);
+
+          const leftDataUrl  = leftCanvas.toDataURL("image/png");
+          const rightDataUrl = rightCanvas.toDataURL("image/png");
+
+          panelUrls.push({ position: leftPanel.position,  dataUrl: leftDataUrl  });
+          panelUrls.push({ position: rightPanel.position, dataUrl: rightDataUrl });
+          if (!primaryDataUrl) primaryDataUrl = leftDataUrl;
+        }
+
+        // Also generate non-leg panels (gusset, waistband) with a plain bg fill
+        const otherPanels = panelPositions.filter(
+          p => !p.position.startsWith("left") && !p.position.startsWith("right")
+        );
+        for (const panel of otherPanels) {
+          const W = Math.min(panel.width,  APPLY_CAP);
+          const H = Math.min(panel.height, APPLY_CAP);
+          const canvas = document.createElement("canvas");
+          canvas.width = W; canvas.height = H;
+          const ctx = canvas.getContext("2d")!;
+          if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+          panelUrls.push({ position: panel.position, dataUrl: canvas.toDataURL("image/png") });
+        }
+
+        await onApply(primaryDataUrl, { mirrorLegs, mode, panelUrls });
+        return;
+      }
+
       // ── Pattern mode: per-panel canvases with inseam alignment ─────────────
       //
       // For each panel we compute:
@@ -456,7 +578,7 @@ export function PatternCustomizer({
       <div className="flex items-center gap-2 shrink-0">
         <span className="text-sm font-semibold">AOP Settings</span>
         <div className="ml-auto flex gap-0.5 rounded-md border p-0.5 bg-muted">
-          {([["pattern", LayoutGrid, "Pattern"], ["single", ImageIcon, "Single Image"]] as const).map(([m, Icon, label]) => (
+          {([["pattern", LayoutGrid, "Pattern"], ["single", ImageIcon, "Single Image"], ["split", Columns2, "Split Stretch"]] as const).map(([m, Icon, label]) => (
             <button
               key={m} type="button"
               onClick={() => setMode(m)}
@@ -495,7 +617,7 @@ export function PatternCustomizer({
           {/* Live preview canvas — represents a fixed 6×6 inch viewport */}
           <div className="flex-1 min-h-0">
             <p className="text-[10px] text-muted-foreground text-center mb-0.5">
-              {mode === "single" ? "Drag to reposition" : "6\u2033 \u00d7 6\u2033 preview"}
+              {mode === "single" ? "Drag to reposition" : mode === "split" ? "Front panel preview (seam = red line, bleed = yellow)" : "6\u2033 \u00d7 6\u2033 preview"}
             </p>
             <div className="w-full h-full rounded border overflow-hidden relative" style={{ minHeight: 80 }}>
               {mode === "pattern" && (
@@ -521,6 +643,18 @@ export function PatternCustomizer({
                   onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                 />
+              )}
+              {mode === "split" && (
+                motifLoaded ? (
+                  <canvas
+                    ref={splitCanvasRef} width={PREVIEW_PX * 2} height={PREVIEW_PX}
+                    className="w-full h-full" style={{ display: "block" }}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-muted/30">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                )
               )}
             </div>
           </div>
@@ -684,7 +818,7 @@ export function PatternCustomizer({
             ) : isLoading ? (
               <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />Applying…</>
             ) : (
-              mode === "single" ? "Apply to Product" : "Apply Pattern"
+              mode === "single" ? "Apply to Product" : mode === "split" ? "Apply Split Stretch" : "Apply Pattern"
             )}
           </Button>
           <p className="text-[10px] text-muted-foreground text-center shrink-0 leading-tight">
