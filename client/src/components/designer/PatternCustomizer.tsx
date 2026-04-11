@@ -14,6 +14,13 @@
  *
  * Background removal is an optional separate step (dedicated button).
  * "Apply Pattern" is the only server call — generates the final high-res output.
+ *
+ * Preview model (Pattern mode):
+ *   The preview canvas is a fixed 2×2 inch viewport into the final print.
+ *   Tile size in preview = (tileRealInches / 2) * PREVIEW_PX
+ *   This means moving the scale slider changes how much of the pattern fits
+ *   in that 2×2 inch window — exactly matching what will print.
+ *   The export canvas is unchanged: tileW = APPLY_CAP / (scale * 2).
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
@@ -53,6 +60,11 @@ const BG_PRESETS = [
 
 const APPLY_CAP = 2048;
 
+// Preview canvas logical size (px). Represents exactly 2×2 inches of the final print.
+const PREVIEW_PX = 200;
+// Fixed viewport size in inches shown in preview
+const PREVIEW_INCHES = 2;
+
 export interface PatternApplyOptions {
   mirrorLegs: boolean;
   mode: EditorMode;
@@ -72,10 +84,24 @@ interface PatternCustomizerProps {
 
 // ── Client-side Canvas tiling ────────────────────────────────────────────────
 
+/**
+ * Draw tiled pattern onto canvas.
+ *
+ * For EXPORT (forExport=true): tileW = W / (scale * 2) — same as before.
+ * For PREVIEW (forExport=false): tileW is passed in directly as previewTileW,
+ *   computed from real-world inches so the preview represents a 2×2 inch viewport.
+ */
 function drawTiledPattern(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
-  opts: { pattern: PatternType; scale: number; bgColor: string; forExport?: boolean }
+  opts: {
+    pattern: PatternType;
+    scale: number;
+    bgColor: string;
+    forExport?: boolean;
+    /** Preview tile width in px — only used when forExport=false */
+    previewTileW?: number;
+  }
 ) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -95,8 +121,12 @@ function drawTiledPattern(
 
   if (opts.bgColor) { ctx.fillStyle = opts.bgColor; ctx.fillRect(0, 0, W, H); }
 
-  // scale=1 → ~6 tiles across; scale=3 → ~2 tiles across
-  const tileW = Math.round(W / (opts.scale * 2));
+  // Tile width in canvas pixels:
+  //   Export: W / (scale * 2)  — fills the full print canvas
+  //   Preview: previewTileW    — sized so the canvas represents exactly 2×2 inches
+  const tileW = opts.forExport
+    ? Math.round(W / (opts.scale * 2))
+    : Math.round(opts.previewTileW ?? W / (opts.scale * 2));
   const tileH = Math.round(tileW * (img.height / img.width));
   const cols = Math.ceil(W / tileW) + 2;
   const rows = Math.ceil(H / tileH) + 2;
@@ -151,6 +181,22 @@ export function PatternCustomizer({
   const motifImgRef = useRef<HTMLImageElement | null>(null);
   const [motifLoaded, setMotifLoaded] = useState(false);
 
+  // ── Derived real-world dimensions ──────────────────────────────────────────
+  // Use APPLY_CAP as the effective print pixel width (export canvas size).
+  // At 150 DPI: realWidthIn = APPLY_CAP / 150
+  const printW   = Math.min(productWidth,  APPLY_CAP);
+  const printH   = Math.min(productHeight, APPLY_CAP);
+  const printWIn = printW / 150;   // full print width in inches
+  const printHIn = printH / 150;   // full print height in inches
+
+  // Real tile size at current scale (same formula as export: tileW = printW / (scale * 2))
+  const tileRealIn = printWIn / (scale * 2);   // tile width in inches
+  const tileRealCm = tileRealIn * 2.54;         // tile width in cm
+
+  // Preview tile size: how many PREVIEW_PX pixels represent tileRealIn inches,
+  // given that PREVIEW_PX pixels = PREVIEW_INCHES inches.
+  const previewTileW = (tileRealIn / PREVIEW_INCHES) * PREVIEW_PX;
+
   // Load motif image
   useEffect(() => {
     setMotifLoaded(false);
@@ -165,120 +211,112 @@ export function PatternCustomizer({
     img.src = activeMotifUrl;
   }, [activeMotifUrl]);
 
-  // Live pattern canvas
+  // Live pattern canvas — uses previewTileW so canvas = 2×2 inch viewport
   useEffect(() => {
     if (mode !== "pattern" || !motifLoaded || !motifImgRef.current) return;
     const canvas = patternCanvasRef.current;
     if (!canvas) return;
-    drawTiledPattern(canvas, motifImgRef.current, { pattern, scale, bgColor });
-  }, [mode, motifLoaded, pattern, scale, bgColor]);
+    drawTiledPattern(canvas, motifImgRef.current, { pattern, scale, bgColor, previewTileW });
+  }, [mode, motifLoaded, pattern, scale, bgColor, previewTileW]);
 
-  // Ruler overlay — redraws whenever scale or product dimensions change.
-  // Real-world dimensions derived from productWidth/productHeight at 150 DPI:
-  //   realWidthCm  = (productWidth  / 150) * 2.54
-  //   realHeightCm = (productHeight / 150) * 2.54
-  // Preview canvas = 200×200px (logical), representing the full print area.
+  // ── Ruler overlay ──────────────────────────────────────────────────────────
+  // The preview canvas represents exactly PREVIEW_INCHES × PREVIEW_INCHES inches.
+  // Left ruler: cm ticks — 5 cm intervals, 2 major ticks visible (0 and 5 cm)
+  // Bottom ruler: inch ticks — 2 inch interval, 2 major ticks visible (0 and 2 in)
+  // Text is large enough to read (9px on a 200px canvas).
   useEffect(() => {
     if (mode !== "pattern") return;
     const ruler = rulerCanvasRef.current;
     if (!ruler) return;
     const ctx = ruler.getContext("2d");
     if (!ctx) return;
-    const W = ruler.width;   // 200
-    const H = ruler.height;  // 200
-    const RULER = 14;        // ruler strip width in px
-
-    // Derive real-world print dimensions from product props (150 DPI standard)
-    const printW = Math.min(productWidth,  APPLY_CAP); // px used for export
-    const printH = Math.min(productHeight, APPLY_CAP);
-    const realWidthCm  = (printW / 150) * 2.54;
-    const realHeightCm = (printH / 150) * 2.54;
-    const realWidthIn  = printW / 150;
-    const realHeightIn = printH / 150;
-
-    // Preview px → real-world unit conversion
-    const cmPerPx   = realWidthCm  / W;
-    const inchPerPx = realWidthIn  / W;
-    const cmPerPxH  = realHeightCm / H;
+    const W = ruler.width;   // PREVIEW_PX = 200
+    const H = ruler.height;  // PREVIEW_PX = 200
+    const RULER = 18;        // ruler strip width in px (wider for legibility)
 
     ctx.clearRect(0, 0, W, H);
 
     // ── Left ruler (cm, vertical) ────────────────────────────────────────────
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    // Preview height = PREVIEW_INCHES inches = PREVIEW_INCHES * 2.54 cm
+    const previewHeightCm = PREVIEW_INCHES * 2.54; // ~5.08 cm
+    const pxPerCm = H / previewHeightCm;            // px per cm in preview
+
+    ctx.fillStyle = "rgba(245,245,245,0.95)";
     ctx.fillRect(0, 0, RULER, H);
 
-    ctx.strokeStyle = "#6b7280";
-    ctx.fillStyle   = "#374151";
-    ctx.font        = "5px sans-serif";
-    ctx.textAlign   = "right";
-    ctx.textBaseline = "middle";
-    ctx.lineWidth   = 0.75;
-
-    // Adaptive tick interval: keep ticks readable regardless of product height
-    const cmStepH = realHeightCm <= 40 ? (scale >= 3 ? 5 : scale >= 1.8 ? 2 : 1)
-                                        : (scale >= 3 ? 10 : scale >= 1.8 ? 5 : 2);
-    for (let cm = 0; cm <= realHeightCm; cm += cmStepH) {
-      const y = cm / cmPerPxH;
-      if (y > H) break;
-      const isMajor = cm % (cmStepH * 5) === 0;
-      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.55);
+    // Tick every 1 cm; label every 5 cm (but since window is ~5cm, label at 0 and 5)
+    const cmStep = 1;
+    for (let cm = 0; cm <= previewHeightCm + 0.01; cm += cmStep) {
+      const y = cm * pxPerCm;
+      if (y > H + 1) break;
+      const isMajor = cm % 5 === 0;
+      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
+      ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
+      ctx.lineWidth = isMajor ? 1 : 0.75;
       ctx.beginPath();
       ctx.moveTo(RULER, y);
       ctx.lineTo(RULER - tickLen, y);
       ctx.stroke();
-      if (isMajor && y > 4 && y < H - 4) {
+      if (isMajor) {
+        ctx.fillStyle = "#111827";
+        ctx.font = "bold 9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
         ctx.save();
-        ctx.translate(RULER - tickLen - 1, y);
+        ctx.translate(RULER / 2 - 1, Math.max(y, 6));
         ctx.rotate(-Math.PI / 2);
-        ctx.fillText(`${cm}`, 0, 0);
+        ctx.fillText(`${Math.round(cm)}`, 0, 0);
         ctx.restore();
       }
     }
-    // "cm" label rotated along left edge
-    ctx.save();
+    // "cm" unit label at bottom of left ruler
     ctx.fillStyle = "#6b7280";
-    ctx.font = "5px sans-serif";
+    ctx.font = "bold 7px sans-serif";
     ctx.textAlign = "center";
-    ctx.translate(RULER / 2, H / 2);
+    ctx.textBaseline = "bottom";
+    ctx.save();
+    ctx.translate(RULER / 2, H - RULER - 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillText("cm", 0, 0);
     ctx.restore();
 
     // ── Bottom ruler (inches, horizontal) ────────────────────────────────────
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    // Preview width = PREVIEW_INCHES inches exactly
+    const pxPerIn = W / PREVIEW_INCHES; // px per inch in preview = 100
+
+    ctx.fillStyle = "rgba(245,245,245,0.95)";
     ctx.fillRect(0, H - RULER, W, RULER);
 
-    ctx.strokeStyle = "#6b7280";
-    ctx.fillStyle   = "#374151";
-    ctx.font        = "5px sans-serif";
-    ctx.textAlign   = "center";
-    ctx.textBaseline = "top";
-    ctx.lineWidth   = 0.75;
-
-    // Adaptive tick interval based on product width
-    const inStep = realWidthIn <= 20 ? (scale >= 3 ? 2 : 1)
-                                      : (scale >= 3 ? 5 : scale >= 1.8 ? 2 : 1);
-    for (let inch = 0; inch <= realWidthIn; inch += inStep) {
-      const x = inch / inchPerPx;
-      if (x > W) break;
-      const isMajor = inch % (inStep * 5) === 0;
-      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.55);
+    // Tick every 0.5 in; label at 0, 1, 2 in
+    const inStep = 0.5;
+    for (let inch = 0; inch <= PREVIEW_INCHES + 0.001; inch += inStep) {
+      const x = inch * pxPerIn;
+      if (x > W + 1) break;
+      const isMajor = Math.abs(inch - Math.round(inch)) < 0.001; // whole inches
+      const tickLen = isMajor ? RULER - 2 : Math.round(RULER * 0.45);
+      ctx.strokeStyle = isMajor ? "#374151" : "#9ca3af";
+      ctx.lineWidth = isMajor ? 1 : 0.75;
       ctx.beginPath();
       ctx.moveTo(x, H - RULER);
       ctx.lineTo(x, H - RULER + tickLen);
       ctx.stroke();
-      if (isMajor && x > 4 && x < W - 4) {
-        ctx.fillText(`${inch}"`, x, H - RULER + tickLen + 1);
+      if (isMajor) {
+        ctx.fillStyle = "#111827";
+        ctx.font = "bold 9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText(`${Math.round(inch)}"`, Math.min(Math.max(x, 6), W - 6), H - RULER + tickLen + 1);
       }
     }
-    // "in" label along bottom edge
+    // "in" unit label
     ctx.fillStyle = "#6b7280";
-    ctx.textAlign = "center";
+    ctx.font = "bold 7px sans-serif";
+    ctx.textAlign = "right";
     ctx.textBaseline = "bottom";
-    ctx.fillText('in', W / 2, H - 1);
+    ctx.fillText("in", W - 2, H - 1);
 
     // ── Corner square (covers left/bottom intersection) ───────────────────────
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
+    ctx.fillStyle = "rgba(245,245,245,0.95)";
     ctx.fillRect(0, H - RULER, RULER, RULER);
   }, [mode, scale, productWidth, productHeight]);
 
@@ -289,9 +327,10 @@ export function PatternCustomizer({
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const img = motifImgRef.current;
-    const W = canvas.width; const H = canvas.height;
+    const W = canvas.width;
+    const H = canvas.height;
     ctx.clearRect(0, 0, W, H);
+    // Checkerboard
     const sz = 10;
     for (let y = 0; y < H; y += sz)
       for (let x = 0; x < W; x += sz) {
@@ -299,6 +338,7 @@ export function PatternCustomizer({
         ctx.fillRect(x, y, sz, sz);
       }
     if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+    const img = motifImgRef.current;
     const imgAR = img.width / img.height;
     const canvasAR = W / H;
     let baseW: number, baseH: number;
@@ -310,63 +350,44 @@ export function PatternCustomizer({
     const cy = H / 2 + (singlePosY / 100) * H;
     ctx.save(); ctx.translate(cx, cy); ctx.rotate((singleRotation * Math.PI) / 180);
     ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih); ctx.restore();
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate((singleRotation * Math.PI) / 180);
-    ctx.strokeStyle = "rgba(99,102,241,0.8)"; ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]);
-    ctx.strokeRect(-iw / 2, -ih / 2, iw, ih); ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(99,102,241,1)";
-    [[-iw/2,-ih/2],[iw/2,-ih/2],[iw/2,ih/2],[-iw/2,ih/2]].forEach(([hx,hy]) => {
-      ctx.beginPath(); ctx.arc(hx, hy, 4, 0, Math.PI*2); ctx.fill();
-    });
-    ctx.restore();
   }, [mode, motifLoaded, singleScale, singleRotation, singlePosX, singlePosY, bgColor]);
 
-  // Drag handlers
+  // Drag handlers for single-image mode
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (mode !== "single") return;
-    const rect = (e.target as HTMLCanvasElement).getBoundingClientRect();
-    dragRef.current = { startX: e.clientX - rect.left, startY: e.clientY - rect.top, origX: singlePosX, origY: singlePosY };
-  }, [mode, singlePosX, singlePosY]);
+    const rect = e.currentTarget.getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX - rect.left,
+      startY: e.clientY - rect.top,
+      origX: singlePosX,
+      origY: singlePosY,
+    };
+  }, [singlePosX, singlePosY]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!dragRef.current || mode !== "single") return;
-    const canvas = singleCanvasRef.current; if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const dx = e.clientX - rect.left - dragRef.current.startX;
-    const dy = e.clientY - rect.top  - dragRef.current.startY;
-    setSinglePosX(Math.max(-100, Math.min(100, Math.round(dragRef.current.origX + (dx / canvas.width)  * 100))));
-    setSinglePosY(Math.max(-100, Math.min(100, Math.round(dragRef.current.origY + (dy / canvas.height) * 100))));
-  }, [mode]);
+    if (!dragRef.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dx = (e.clientX - rect.left - dragRef.current.startX) / rect.width * 100;
+    const dy = (e.clientY - rect.top  - dragRef.current.startY) / rect.height * 100;
+    setSinglePosX(Math.max(-100, Math.min(100, dragRef.current.origX + dx)));
+    setSinglePosY(Math.max(-100, Math.min(100, dragRef.current.origY + dy)));
+  }, []);
 
   const handleMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
-  // Background removal
+  // Remove background
   const handleRemoveBg = async () => {
     setIsRemovingBg(true); setBgRemoveError(null);
     try {
-      // Convert to data URL first so the server doesn't need to fetch a proxy-prefixed URL
-      let imageDataUrl: string;
-      if (motifUrl.startsWith("data:")) {
-        imageDataUrl = motifUrl;
-      } else {
-        const imgRes = await fetch(motifUrl, { signal: AbortSignal.timeout(15000) });
-        if (!imgRes.ok) throw new Error(`Failed to load motif image (${imgRes.status})`);
-        const blob = await imgRes.blob();
-        imageDataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error("Failed to read image"));
-          reader.readAsDataURL(blob);
-        });
-      }
-      const apiFetch = fetchFn ?? fetch;
-      const res = await apiFetch(`${API_BASE}/api/pattern/remove-bg`, {
+      const doFetch = fetchFn ?? fetch;
+      const res = await doFetch(`${API_BASE}/api/remove-background`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageUrl: imageDataUrl }),
+        body: JSON.stringify({ imageUrl: motifUrl }),
       });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Failed"); }
+      if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      if (data.url) setBgRemovedUrl(data.url);
+      if (!data.url) throw new Error("No URL returned");
+      setBgRemovedUrl(data.url);
     } catch (err: any) {
       setBgRemoveError(err.message || "Background removal failed");
     } finally {
@@ -397,7 +418,7 @@ export function PatternCustomizer({
       if (!ctx) throw new Error("Canvas 2D context unavailable");
 
       if (mode === "pattern") {
-        // Tile the motif across the full canvas
+        // Tile the motif across the full canvas (forExport=true uses W/(scale*2) formula)
         drawTiledPattern(canvas, img, { pattern, scale, bgColor, forExport: true });
       } else {
         // Single-image placement
@@ -444,9 +465,10 @@ export function PatternCustomizer({
         <div className="ml-auto flex gap-0.5 rounded-md border p-0.5 bg-muted">
           {([["pattern", LayoutGrid, "Pattern"], ["single", ImageIcon, "Single Image"]] as const).map(([m, Icon, label]) => (
             <button
-              key={m} type="button" onClick={() => setMode(m)} disabled={busy}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold transition-colors ${
-                mode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"
+              key={m} type="button"
+              onClick={() => setMode(m)}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${
+                mode === m ? "bg-background shadow text-foreground" : "text-muted-foreground hover:text-foreground"
               }`}
             >
               <Icon className="h-3 w-3" />{label}
@@ -455,8 +477,8 @@ export function PatternCustomizer({
         </div>
       </div>
 
-      {/* ── Main body: 2-column ── */}
-      <div className="flex gap-3 flex-1 min-h-0">
+      {/* ── Two-column body ── */}
+      <div className="flex gap-3 flex-1 min-h-0 overflow-hidden">
 
         {/* Left column: motif + live preview */}
         <div className="flex flex-col gap-2 w-[42%] shrink-0">
@@ -477,20 +499,20 @@ export function PatternCustomizer({
             </div>
           </div>
 
-          {/* Live preview canvas */}
+          {/* Live preview canvas — represents a fixed 2×2 inch viewport */}
           <div className="flex-1 min-h-0">
             <p className="text-[10px] text-muted-foreground text-center mb-0.5">
-              {mode === "single" ? "Drag to reposition" : "Live preview"}
+              {mode === "single" ? "Drag to reposition" : "Live preview (2\u2033\u00d72\u2033)"}
             </p>
             <div className="w-full h-full rounded border overflow-hidden relative" style={{ minHeight: 80 }}>
               {mode === "pattern" && (
                 motifLoaded ? (
                   <>
-                    <canvas ref={patternCanvasRef} width={200} height={200} className="w-full h-full" style={{ display: "block" }} />
+                    <canvas ref={patternCanvasRef} width={PREVIEW_PX} height={PREVIEW_PX} className="w-full h-full" style={{ display: "block" }} />
                     {/* Ruler overlay — cm left, inches bottom; pointer-events:none so it doesn't block interaction */}
                     <canvas
                       ref={rulerCanvasRef}
-                      width={200} height={200}
+                      width={PREVIEW_PX} height={PREVIEW_PX}
                       className="absolute inset-0 w-full h-full"
                       style={{ display: "block", pointerEvents: "none" }}
                     />
@@ -503,7 +525,7 @@ export function PatternCustomizer({
               )}
               {mode === "single" && (
                 <canvas
-                  ref={singleCanvasRef} width={200} height={200}
+                  ref={singleCanvasRef} width={PREVIEW_PX} height={PREVIEW_PX}
                   className="w-full h-full" style={{ cursor: "grab", display: "block" }}
                   onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
@@ -565,25 +587,21 @@ export function PatternCustomizer({
                   <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Scale</Label>
                   <span className="text-[10px] text-muted-foreground tabular-nums">{scale.toFixed(1)}×</span>
                 </div>
-                <Slider min={1.0} max={5} step={0.1} value={[scale]} onValueChange={([v]) => setScale(v)} className="py-0" />
+                {/* Black slider — override Radix thumb/track to be visible on white background */}
+                <Slider
+                  min={1.0} max={5} step={0.1}
+                  value={[scale]}
+                  onValueChange={([v]) => setScale(v)}
+                  className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[data-orientation=horizontal]>[data-disabled]]:bg-black/40"
+                />
                 <div className="flex justify-between text-[10px] text-muted-foreground">
                   <span>Smaller</span><span>Larger</span>
                 </div>
-                {/* Real-world tile size readout — derived from productWidth at 150 DPI */}
-                {(() => {
-                  const printW    = Math.min(productWidth, APPLY_CAP);
-                  const realWCm   = (printW / 150) * 2.54;   // full print width in cm
-                  const realWIn   = printW / 150;             // full print width in inches
-                  // scale=1 → tileW = printW/(1*2), scale=s → tileW = printW/(s*2)
-                  const tileCm    = realWCm / (scale * 2);
-                  const tileIn    = realWIn / (scale * 2);
-                  return (
-                    <p className="text-[10px] text-blue-600 dark:text-blue-400 tabular-nums leading-tight">
-                      Each tile ≈ {tileCm.toFixed(1)} cm × {tileCm.toFixed(1)} cm
-                      &nbsp;({tileIn.toFixed(1)}" × {tileIn.toFixed(1)}")
-                    </p>
-                  );
-                })()}
+                {/* Real-world tile size readout */}
+                <p className="text-[10px] text-blue-600 dark:text-blue-400 tabular-nums leading-tight">
+                  Each tile ≈ {tileRealCm.toFixed(1)} cm × {tileRealCm.toFixed(1)} cm
+                  &nbsp;({tileRealIn.toFixed(1)}" × {tileRealIn.toFixed(1)}")
+                </p>
               </div>
             </>
           )}
@@ -602,7 +620,12 @@ export function PatternCustomizer({
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</Label>
                     <span className="text-[10px] text-muted-foreground tabular-nums">{fmt(value)}</span>
                   </div>
-                  <Slider min={min} max={max} step={step} value={[value]} onValueChange={([v]) => set(v)} className="py-0" />
+                  <Slider
+                    min={min} max={max} step={step}
+                    value={[value]}
+                    onValueChange={([v]) => set(v)}
+                    className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black"
+                  />
                 </div>
               ))}
               <button type="button" onClick={() => { setSingleScale(1); setSingleRotation(0); setSinglePosX(0); setSinglePosY(0); }}
