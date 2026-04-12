@@ -144,8 +144,8 @@ function buildMockupCacheKey(
 
 /**
  * Check if a cached mockup exists on Supabase (via local disk marker).
- * Only returns a URL when Supabase is configured — never a Railway /objects/ path.
- * Returns null on cache miss so the caller re-fetches from Printify.
+ * Returns Supabase CDN URL if available, otherwise falls back to /objects/designs/{filename}
+ * which is served via the App Proxy route. Returns null on cache miss.
  */
 function getCachedMockup(cacheKey: string): string | null {
   const filename = `${cacheKey}.jpg`;
@@ -161,7 +161,8 @@ function getCachedMockup(cacheKey: string): string | null {
   // Include variant (v{id}), transform (s/x/y) and label in the view name so each
   // color+zoom+position combination gets a unique Supabase path and never overwrites another color.
   const viewName = parts.slice(3).join("_") || "front";
-  return getSupabasePublicUrl(designId, viewName);
+  // Prefer Supabase CDN URL; fall back to local designs/ path (served via App Proxy route)
+  return getSupabasePublicUrl(designId, viewName) ?? `/objects/designs/${filename}`;
 }
 
 /**
@@ -208,10 +209,16 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
     const buffer = Buffer.from(arrayBuffer);
     const filename = `${cacheKey}.jpg`;
 
-    // Always write to local disk (keeps getCachedMockup cache-first working)
+    // Write to local disk in two places:
+    // 1. mockups/ subdirectory for getCachedMockup cache-first lookup
+    // 2. designs/ subdirectory as fallback serve path (has a working App Proxy route)
     const mockupsDir = path.join(getStorageDir(), "mockups");
+    const designsDir = path.join(getStorageDir(), "designs");
     await fs.promises.mkdir(mockupsDir, { recursive: true });
+    await fs.promises.mkdir(designsDir, { recursive: true });
     await fs.promises.writeFile(path.join(mockupsDir, filename), buffer);
+    // Also write to designs/ so the /api/proxy/objects/designs/:filename proxy route can serve it
+    await fs.promises.writeFile(path.join(designsDir, filename), buffer);
 
     // Upload to Supabase for public CDN URL
     try {
@@ -221,10 +228,14 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
       console.warn(`[Mockup Cache] Supabase upload failed (${designId}/${viewName}): ${err.message || err}`);
     }
 
-    // Supabase unavailable/failed — return null so caller falls back to Printify CDN URL
-    return null;
+    // Supabase unavailable/failed — serve from designs/ via the App Proxy route.
+    // This is critical: the Printify CDN URL becomes invalid after the temp product is deleted.
+    // The designs/ path has a working proxy route: /api/proxy/objects/designs/:filename
+    // which Shopify rewrites from /apps/appai/objects/designs/:filename.
+    console.warn(`[Mockup Cache] Supabase failed — serving from local designs/: /objects/designs/${filename}`);
+    return `/objects/designs/${filename}`;
   } catch (error) {
-    console.warn("[Mockup Cache] Download failed, falling back to Printify CDN URL");
+    console.warn("[Mockup Cache] Download failed, cannot cache mockup");
     return null;
   }
 }
