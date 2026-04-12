@@ -837,19 +837,41 @@ export function PatternCustomizer({
         ctx.rect(sx, sy, sw, sh);
         ctx.clip();
 
-        // 1. Fill background colour first (shows through transparent SVG areas)
-        ctx.fillStyle = bgColor || "#ffffff";
-        ctx.fillRect(sx, sy, sw, sh);
+        // Use an offscreen canvas so we can composite bgColor onto the garment shape
+        // only (not the transparent negative space around it).
+        const offW = Math.ceil(sw);
+        const offH = Math.ceil(sh);
+        const off = document.createElement("canvas");
+        off.width = offW; off.height = offH;
+        const offCtx = off.getContext("2d")!;
 
-        // 2. Draw the full SVG scaled so content rect fills the slot
-        ctx.drawImage(flatLayImg, drawX, drawY, svgDrawSize, svgDrawSize);
+        // 1. Draw SVG into offscreen canvas (garment shape + sewing lines)
+        offCtx.drawImage(flatLayImg, drawX - sx, drawY - sy, svgDrawSize, svgDrawSize);
 
-        // 3. Draw artwork on top
+        // 2. Replace garment fill with bgColor using source-in composite:
+        //    source-in keeps only pixels where destination (SVG) is opaque.
+        offCtx.globalCompositeOperation = "source-in";
+        offCtx.fillStyle = bgColor || "#ffffff";
+        offCtx.fillRect(0, 0, offW, offH);
+        offCtx.globalCompositeOperation = "source-over";
+
+        // 3. Draw artwork into offscreen canvas (clipped to garment shape via source-atop)
         if (currentViewHasArtwork) {
-          ctx.globalAlpha = 0.9;
-          ctx.drawImage(img, artX, artY, artW, artH);
-          ctx.globalAlpha = 1;
+          offCtx.globalCompositeOperation = "source-atop";
+          offCtx.globalAlpha = 0.9;
+          offCtx.drawImage(img, artX - sx, artY - sy, artW, artH);
+          offCtx.globalAlpha = 1;
+          offCtx.globalCompositeOperation = "source-over";
         }
+
+        // 4. Draw sewing lines overlay on top (SVG again with multiply so lines show)
+        offCtx.globalCompositeOperation = "multiply";
+        offCtx.drawImage(flatLayImg, drawX - sx, drawY - sy, svgDrawSize, svgDrawSize);
+        offCtx.globalCompositeOperation = "source-over";
+
+        // 5. Composite offscreen result onto main canvas
+        ctx.drawImage(off, sx, sy);
+
         ctx.restore();
       } else {
         // ── No flat-lay image: use garment shape clip + solid fill ────────────
@@ -1157,19 +1179,26 @@ export function PatternCustomizer({
 
               // Seam bleed: panels that sit at a seam edge get SEAM_BLEED_PX extra pixels
               // of artwork past the seam so the image remains continuous across the sewn join.
-              // - Panels whose seam is on the RIGHT edge (slot.x === 0, i.e. first panel):
-              //     shift artwork LEFT by bleed → artwork extends past the right edge
-              // - Panels whose seam is on the LEFT edge (slot.x > 0, i.e. not the first panel):
-              //     shift artwork RIGHT by bleed → artwork extends past the left edge
+              //
+              // In the composite, the seam is at the boundary between the two panels.
+              // front_right: slot.x=0, seam on its RIGHT edge.
+              //   We want the artwork to extend past the RIGHT edge of this panel.
+              //   relX = artLeft - slot.x + bleedShift
+              //   To push artwork further RIGHT (past the seam), bleedShift = +SEAM_BLEED_PX.
+              // front_left: slot.x=1808, seam on its LEFT edge.
+              //   We want the artwork to extend past the LEFT edge of this panel.
+              //   relX = artLeft - slot.x + bleedShift
+              //   artLeft - slot.x is already negative (artwork starts left of panel).
+              //   To push artwork further LEFT (past the seam), bleedShift = -SEAM_BLEED_PX.
               // - Single-panel views (back): no seam, no bleed.
               let bleedShift = 0;
               if (layout.slots.length > 1) {
                 if (slot.x === 0) {
-                  // Seam on RIGHT edge — shift artwork left so it bleeds past right edge
-                  bleedShift = -SEAM_BLEED_PX;
-                } else {
-                  // Seam on LEFT edge — shift artwork right so it bleeds past left edge
+                  // Seam on RIGHT edge — shift artwork RIGHT so it bleeds past right edge
                   bleedShift = SEAM_BLEED_PX;
+                } else {
+                  // Seam on LEFT edge — shift artwork LEFT so it bleeds past left edge
+                  bleedShift = -SEAM_BLEED_PX;
                 }
               }
 

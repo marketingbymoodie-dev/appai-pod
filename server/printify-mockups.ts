@@ -351,8 +351,14 @@ async function createTemporaryProduct(
       const isRightPanel = pos.position.startsWith("right");
       let useImageId: string;
       if (panelImageIds && panelImageIds.has(pos.position)) {
-        // Per-panel image: already correctly sized and inseam-aligned
+        // Per-panel image: already correctly sized and inseam-aligned by the client canvas.
+        // Use scale=100, x=0.5, y=0.5 so Printify fills the panel exactly without any
+        // additional scaling or offset. Using the user's placeScale/x/y here would cause
+        // double-scaling (artwork scaled once in the canvas, then again by Printify).
         useImageId = panelImageIds.get(pos.position)!;
+        const panelEntry = { id: useImageId, x: 0.5, y: 0.5, scale: 100, angle: 0 };
+        placeholders.push({ position: pos.position, images: [panelEntry] });
+        continue;
       } else if (isRightPanel && mirroredImageId) {
         // Legacy fallback: mirrored copy for right panels
         useImageId = mirroredImageId;
