@@ -25,6 +25,7 @@ import {
   type DesignerType,
   type PrintShape,
   type CanvasConfig,
+  type AopPlacementSettings,
 } from "@/components/designer";
 
 interface CustomerInfo {
@@ -722,6 +723,8 @@ export default function EmbedDesign() {
     pattern: "grid" | "brick" | "half";
     bgColor: string;
   }>({ tilesAcross: 4, pattern: "grid", bgColor: "#ffffff" });
+  // Persisted Place on Item placement — survive close/reopen
+  const [aopPlacementSettings, setAopPlacementSettings] = useState<AopPlacementSettings | undefined>(undefined);
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -1714,11 +1717,13 @@ export default function EmbedDesign() {
 
       setMockupError(null);
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
+      // Use a 120s timeout — AOP per-panel mockups require Printify CDN to render
+      // all panel images before they can be downloaded, which can take 60-90s.
       const response = await safeFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
+      }, 120000);
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -4905,6 +4910,8 @@ export default function EmbedDesign() {
                     initialPattern={aopPatternSettings.pattern}
                     initialBgColor={aopPatternSettings.bgColor}
                     onSettingsChange={(s) => setAopPatternSettings(s)}
+                    initialPlacement={aopPlacementSettings}
+                    onPlacementChange={(p) => setAopPlacementSettings(p)}
                     onApply={async (appliedPatternUrl: string, options) => {
                       setAopPatternUrl(appliedPatternUrl);
                       setShowPatternStep(false);

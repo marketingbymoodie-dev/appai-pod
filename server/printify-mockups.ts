@@ -822,9 +822,9 @@ export async function generatePrintifyMockup(
         return data;
       },
       {
-        retries: 8,
-        minTimeout: 3000,
-        maxTimeout: 8000,
+        retries: 6,
+        minTimeout: 4000,
+        maxTimeout: 10000,
         onFailedAttempt: (error) => {
           console.log(`[Mockup] Attempt ${error.attemptNumber} failed (${error.message}). ${error.retriesLeft} retries left.`);
         },
