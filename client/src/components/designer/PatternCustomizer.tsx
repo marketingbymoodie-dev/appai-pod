@@ -383,6 +383,25 @@ function drawTiledPattern(
   }
 }
 
+// ── SVG viewBox sizes ───────────────────────────────────────────────────────
+// All Printify sew-pattern SVGs have a square viewBox. These are the known side
+// lengths for each panel position, used to inject explicit pixel dimensions into
+// the SVG markup so the browser can rasterise it at the correct size.
+const SVG_VB_SIZES: Record<string, number> = {
+  // Blueprint 451 — Unisex Zip Hoodie
+  front_right: 3022.87, front_left: 3022.87,
+  back: 3211.80,
+  right_sleeve: 2645.01, left_sleeve: 2645.01,
+  right_hood: 1889.29, left_hood: 1889.29,
+  // Leggings (Blueprint 447 etc.)
+  left_leg: 3022.87, right_leg: 3022.87,
+  // Hawaiian shirt / other single-panel products
+  front: 3022.87,
+  // Basketball shorts
+  front_left_leg: 3022.87, front_right_leg: 3022.87,
+  back_left_leg: 3022.87, back_right_leg: 3022.87,
+};
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function PatternCustomizer({
@@ -489,62 +508,87 @@ export function PatternCustomizer({
   useEffect(() => { placeViewRef.current = placeView; }, [placeView]);
   useEffect(() => { backSameAsFrontRef.current = backSameAsFront; }, [backSameAsFront]);
 
-  // Flat-lay images loaded state — track which SVGs have been pre-rasterised onto offscreen canvases.
-  // We store HTMLCanvasElement (not HTMLImageElement) because the Printify SVGs have
-  // width="100%" height="100%" (no fixed pixel size). drawImage with 9 args requires the
-  // source to have known pixel dimensions — an offscreen canvas always does.
-  const flatLayImgRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
-  const [flatLayLoaded, setFlatLayLoaded] = useState(0); // increment to trigger re-render
+  // Flat-lay images loaded state.
+  // We store HTMLImageElement objects loaded from Blob URLs that have explicit pixel
+  // dimensions injected into the SVG markup. This is required because Printify SVGs
+  // have width="100%" height="100%" — without fixed dimensions the browser cannot
+  // determine the SVG's intrinsic size, making drawImage render nothing.
+  const flatLayImgRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const [flatLayLoaded, setFlatLayLoaded] = useState(0);
 
-  // Load and rasterise flat-lay SVGs when panelFlatLayImages changes.
-  // Each SVG is drawn onto an offscreen canvas at its viewBox size so that
-  // 9-arg drawImage(canvas, srcX, srcY, srcW, srcH, ...) works correctly.
+  // Load flat-lay SVGs: fetch text, inject explicit pixel dimensions, create Blob URL,
+  // load as HTMLImageElement. The explicit dimensions ensure the browser rasterises the
+  // SVG at the correct size so 9-arg drawImage source coords work correctly.
   useEffect(() => {
     const entries = Object.entries(panelFlatLayImages);
     if (entries.length === 0) return;
+
+    // Clear cache when the set of URLs changes (different product loaded)
+    const currentUrls = new Set(Object.values(panelFlatLayImages));
+    let cacheValid = true;
+    for (const [pos] of flatLayImgRef.current) {
+      if (!panelFlatLayImages[pos]) { cacheValid = false; break; }
+    }
+    if (!cacheValid) flatLayImgRef.current.clear();
+
     let loaded = 0;
     const total = entries.length;
+    const blobUrls: string[] = []; // track for cleanup
+    void currentUrls; // suppress unused warning
+
+    const done = () => {
+      loaded++;
+      if (loaded === total) setFlatLayLoaded(n => n + 1);
+    };
 
     for (const [pos, url] of entries) {
-      if (flatLayImgRef.current.has(pos)) { loaded++; if (loaded === total) setFlatLayLoaded(n => n + 1); continue; }
+      if (flatLayImgRef.current.has(pos)) { done(); continue; }
 
-      const img = new window.Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        // Determine the SVG's intrinsic viewBox size.
-        // img.naturalWidth/Height may be 0 for SVGs with percentage dimensions,
-        // so fall back to the known viewBox sizes from SVG_CONTENT_RECTS.
-        const srcRect = SVG_CONTENT_RECTS[pos];
-        // The viewBox is always square: side = srcRect.x + srcRect.w + srcRect.x (approx)
-        // More precisely: use the known viewBox sizes per panel type.
-        const VB_SIZES: Record<string, number> = {
-          front_right: 3022.87, front_left: 3022.87,
-          back: 3211.80,
-          right_sleeve: 2645.01, left_sleeve: 2645.01,
-          right_hood: 1889.29, left_hood: 1889.29,
-          left_leg: 3022.87, right_leg: 3022.87,
-        };
-        const vbSize = VB_SIZES[pos] ?? (img.naturalWidth > 0 ? img.naturalWidth : 1000);
+      (async () => {
+        try {
+          // Fetch SVG text (use fetchFn if provided to bypass Shopify service worker)
+          const doFetch = fetchFn ?? fetch;
+          const res = await doFetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          let svgText = await res.text();
 
-        // Rasterise at a reasonable resolution (1x viewBox = full detail, but
-        // we cap at 1024 to keep memory reasonable for the preview canvas).
-        const scale = Math.min(1, 1024 / vbSize);
-        const canvasSize = Math.round(vbSize * scale);
+          // Determine the viewBox size for this panel.
+          // First try to parse it from the SVG text (most reliable).
+          // Fall back to the known lookup table, then to 1000 as a safe default.
+          const vbMatch = svgText.match(/viewBox="[^"]*0 0 ([\d.]+) ([\d.]+)"/);
+          const vbSize = vbMatch ? parseFloat(vbMatch[1]) : (SVG_VB_SIZES[pos] ?? 1000);
 
-        const offscreen = document.createElement("canvas");
-        offscreen.width  = canvasSize;
-        offscreen.height = canvasSize;
-        const octx = offscreen.getContext("2d");
-        if (octx) {
-          octx.drawImage(img, 0, 0, canvasSize, canvasSize);
+          // Inject explicit pixel dimensions into the SVG root element.
+          // Replace width="100%" height="100%" with fixed pixel values.
+          // This forces the browser to rasterise at the correct size.
+          svgText = svgText
+            .replace(/(<svg[^>]*?)\s+width="[^"]*"/, `$1 width="${vbSize}"`);
+          svgText = svgText
+            .replace(/(<svg[^>]*?)\s+height="[^"]*"/, `$1 height="${vbSize}"`);
+
+          // Create a Blob URL from the modified SVG
+          const blob = new Blob([svgText], { type: "image/svg+xml" });
+          const blobUrl = URL.createObjectURL(blob);
+          blobUrls.push(blobUrl);
+
+          // Load as HTMLImageElement
+          const img = new window.Image();
+          img.onload = () => {
+            flatLayImgRef.current.set(pos, img);
+            done();
+          };
+          img.onerror = () => { done(); };
+          img.src = blobUrl;
+        } catch {
+          done();
         }
-        flatLayImgRef.current.set(pos, offscreen);
-        loaded++;
-        if (loaded === total) setFlatLayLoaded(n => n + 1);
-      };
-      img.onerror = () => { loaded++; if (loaded === total) setFlatLayLoaded(n => n + 1); };
-      img.src = url;
+      })();
     }
+
+    // Cleanup Blob URLs when effect re-runs or component unmounts
+    return () => {
+      blobUrls.forEach(u => URL.revokeObjectURL(u));
+    };
   }, [panelFlatLayImages]);
 
   // ── Derived tile sizes ─────────────────────────────────────────────────────
@@ -722,9 +766,9 @@ export function PatternCustomizer({
 
       if (flatLayImg) {
         // ── Flat-lay SVG available ────────────────────────────────────────────
-        // flatLayImg is an offscreen HTMLCanvasElement pre-rasterised at
-        // min(viewBoxSize, 1024) pixels square. The source rect coordinates
-        // are in viewBox units, so we must scale them to canvas pixels.
+        // flatLayImg is an HTMLImageElement loaded from a Blob URL with explicit
+        // pixel dimensions injected (width=vbSize height=vbSize). This means
+        // naturalWidth === vbSize, so 9-arg drawImage source coords are in pixels.
         const srcRect = SVG_CONTENT_RECTS[slot.position];
 
         ctx.save();
@@ -736,36 +780,21 @@ export function PatternCustomizer({
         ctx.fillStyle = bgColor || "#ffffff";
         ctx.fillRect(sx, sy, sw, sh);
 
-        // 2. Draw the SVG panel content at full opacity
+        // 2. Draw the SVG panel content using exact source rect
         if (srcRect) {
-          // The offscreen canvas was drawn at scale = min(1, 1024/vbSize).
-          // Scale the source rect coords from viewBox units to canvas pixels.
-          const VB_SIZES: Record<string, number> = {
-            front_right: 3022.87, front_left: 3022.87,
-            back: 3211.80,
-            right_sleeve: 2645.01, left_sleeve: 2645.01,
-            right_hood: 1889.29, left_hood: 1889.29,
-            left_leg: 3022.87, right_leg: 3022.87,
-          };
-          const vbSize = VB_SIZES[slot.position] ?? flatLayImg.width;
-          const canvasScale = flatLayImg.width / vbSize; // pixels per viewBox unit
-          const csx = srcRect.x * canvasScale;
-          const csy = srcRect.y * canvasScale;
-          const csw = srcRect.w * canvasScale;
-          const csh = srcRect.h * canvasScale;
-
+          // naturalWidth === vbSize (we injected it), so source coords are direct
           if (srcRect.mirror) {
             // left_hood: horizontally mirror the content
             ctx.save();
             ctx.translate(sx + sw, sy);
             ctx.scale(-1, 1);
-            ctx.drawImage(flatLayImg, csx, csy, csw, csh, 0, 0, sw, sh);
+            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, 0, 0, sw, sh);
             ctx.restore();
           } else {
-            ctx.drawImage(flatLayImg, csx, csy, csw, csh, sx, sy, sw, sh);
+            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, sx, sy, sw, sh);
           }
         } else {
-          // Fallback: no source rect known — draw full canvas scaled to slot
+          // Fallback: no source rect known — draw full SVG scaled to slot
           ctx.drawImage(flatLayImg, sx, sy, sw, sh);
         }
 
