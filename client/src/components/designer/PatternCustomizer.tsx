@@ -489,25 +489,60 @@ export function PatternCustomizer({
   useEffect(() => { placeViewRef.current = placeView; }, [placeView]);
   useEffect(() => { backSameAsFrontRef.current = backSameAsFront; }, [backSameAsFront]);
 
-  // Flat-lay images loaded state — track which SVGs have been loaded as Image objects
-  const flatLayImgRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  // Flat-lay images loaded state — track which SVGs have been pre-rasterised onto offscreen canvases.
+  // We store HTMLCanvasElement (not HTMLImageElement) because the Printify SVGs have
+  // width="100%" height="100%" (no fixed pixel size). drawImage with 9 args requires the
+  // source to have known pixel dimensions — an offscreen canvas always does.
+  const flatLayImgRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const [flatLayLoaded, setFlatLayLoaded] = useState(0); // increment to trigger re-render
 
-  // Load flat-lay images when panelFlatLayImages changes
+  // Load and rasterise flat-lay SVGs when panelFlatLayImages changes.
+  // Each SVG is drawn onto an offscreen canvas at its viewBox size so that
+  // 9-arg drawImage(canvas, srcX, srcY, srcW, srcH, ...) works correctly.
   useEffect(() => {
-    const urls = Object.values(panelFlatLayImages);
-    if (urls.length === 0) return;
+    const entries = Object.entries(panelFlatLayImages);
+    if (entries.length === 0) return;
     let loaded = 0;
-    for (const [pos, url] of Object.entries(panelFlatLayImages)) {
-      if (flatLayImgRef.current.has(pos)) { loaded++; continue; }
+    const total = entries.length;
+
+    for (const [pos, url] of entries) {
+      if (flatLayImgRef.current.has(pos)) { loaded++; if (loaded === total) setFlatLayLoaded(n => n + 1); continue; }
+
       const img = new window.Image();
       img.crossOrigin = "anonymous";
       img.onload = () => {
-        flatLayImgRef.current.set(pos, img);
+        // Determine the SVG's intrinsic viewBox size.
+        // img.naturalWidth/Height may be 0 for SVGs with percentage dimensions,
+        // so fall back to the known viewBox sizes from SVG_CONTENT_RECTS.
+        const srcRect = SVG_CONTENT_RECTS[pos];
+        // The viewBox is always square: side = srcRect.x + srcRect.w + srcRect.x (approx)
+        // More precisely: use the known viewBox sizes per panel type.
+        const VB_SIZES: Record<string, number> = {
+          front_right: 3022.87, front_left: 3022.87,
+          back: 3211.80,
+          right_sleeve: 2645.01, left_sleeve: 2645.01,
+          right_hood: 1889.29, left_hood: 1889.29,
+          left_leg: 3022.87, right_leg: 3022.87,
+        };
+        const vbSize = VB_SIZES[pos] ?? (img.naturalWidth > 0 ? img.naturalWidth : 1000);
+
+        // Rasterise at a reasonable resolution (1x viewBox = full detail, but
+        // we cap at 1024 to keep memory reasonable for the preview canvas).
+        const scale = Math.min(1, 1024 / vbSize);
+        const canvasSize = Math.round(vbSize * scale);
+
+        const offscreen = document.createElement("canvas");
+        offscreen.width  = canvasSize;
+        offscreen.height = canvasSize;
+        const octx = offscreen.getContext("2d");
+        if (octx) {
+          octx.drawImage(img, 0, 0, canvasSize, canvasSize);
+        }
+        flatLayImgRef.current.set(pos, offscreen);
         loaded++;
-        if (loaded === urls.length) setFlatLayLoaded(n => n + 1);
+        if (loaded === total) setFlatLayLoaded(n => n + 1);
       };
-      img.onerror = () => { loaded++; if (loaded === urls.length) setFlatLayLoaded(n => n + 1); };
+      img.onerror = () => { loaded++; if (loaded === total) setFlatLayLoaded(n => n + 1); };
       img.src = url;
     }
   }, [panelFlatLayImages]);
@@ -687,9 +722,9 @@ export function PatternCustomizer({
 
       if (flatLayImg) {
         // ── Flat-lay SVG available ────────────────────────────────────────────
-        // Use the 9-argument drawImage to crop exactly the panel content area
-        // from the SVG (which has a square viewBox with content offset within it)
-        // and map it to fill the slot exactly — no distortion, no gaps.
+        // flatLayImg is an offscreen HTMLCanvasElement pre-rasterised at
+        // min(viewBoxSize, 1024) pixels square. The source rect coordinates
+        // are in viewBox units, so we must scale them to canvas pixels.
         const srcRect = SVG_CONTENT_RECTS[slot.position];
 
         ctx.save();
@@ -703,18 +738,34 @@ export function PatternCustomizer({
 
         // 2. Draw the SVG panel content at full opacity
         if (srcRect) {
+          // The offscreen canvas was drawn at scale = min(1, 1024/vbSize).
+          // Scale the source rect coords from viewBox units to canvas pixels.
+          const VB_SIZES: Record<string, number> = {
+            front_right: 3022.87, front_left: 3022.87,
+            back: 3211.80,
+            right_sleeve: 2645.01, left_sleeve: 2645.01,
+            right_hood: 1889.29, left_hood: 1889.29,
+            left_leg: 3022.87, right_leg: 3022.87,
+          };
+          const vbSize = VB_SIZES[slot.position] ?? flatLayImg.width;
+          const canvasScale = flatLayImg.width / vbSize; // pixels per viewBox unit
+          const csx = srcRect.x * canvasScale;
+          const csy = srcRect.y * canvasScale;
+          const csw = srcRect.w * canvasScale;
+          const csh = srcRect.h * canvasScale;
+
           if (srcRect.mirror) {
             // left_hood: horizontally mirror the content
             ctx.save();
             ctx.translate(sx + sw, sy);
             ctx.scale(-1, 1);
-            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, 0, 0, sw, sh);
+            ctx.drawImage(flatLayImg, csx, csy, csw, csh, 0, 0, sw, sh);
             ctx.restore();
           } else {
-            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, sx, sy, sw, sh);
+            ctx.drawImage(flatLayImg, csx, csy, csw, csh, sx, sy, sw, sh);
           }
         } else {
-          // Fallback: no source rect known — draw full SVG scaled to slot
+          // Fallback: no source rect known — draw full canvas scaled to slot
           ctx.drawImage(flatLayImg, sx, sy, sw, sh);
         }
 
