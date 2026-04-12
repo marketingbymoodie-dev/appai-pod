@@ -76,13 +76,136 @@ const PRINT_DPI = 150;
 
 /**
  * Classify a Printify position name into a display group.
- * Returns: "front" | "back" | "accent"
+ * Returns: "front" | "back" | "hood" | "accent"
  */
-function getPanelGroup(position: string): "front" | "back" | "accent" {
+function getPanelGroup(position: string): "front" | "back" | "hood" | "accent" {
   const p = position.toLowerCase();
   if (p.includes("front") || p === "left_leg" || p === "right_leg") return "front";
   if (p.includes("back") || p === "back_side" || p === "backside") return "back";
+  if (p.includes("hood")) return "hood";
   return "accent";
+}
+
+/**
+ * Draw a garment-shaped clip path for a panel in the preview canvas.
+ * Uses normalised bezier curves to approximate actual Printify panel shapes.
+ * After calling this, the ctx clip is set — draw artwork, then ctx.restore().
+ *
+ * @param position  Printify position name (e.g. "front_right", "back", "right_hood")
+ * @param x, y      Top-left of the panel in canvas pixels
+ * @param w, h      Panel dimensions in canvas pixels
+ */
+function drawPanelShape(
+  ctx: CanvasRenderingContext2D,
+  position: string,
+  x: number, y: number, w: number, h: number
+) {
+  const p = position.toLowerCase();
+  ctx.beginPath();
+
+  if (p === "front_right" || p === "left_leg") {
+    // Front-right panel (left side of composite — zip seam on RIGHT edge)
+    // Neckline: curve from top-right inward
+    // Shoulder: slopes down from top-left
+    // Armhole: cutout on left side
+    // Bottom: straight
+    const neckDepth = h * 0.18;  // how deep the neckline dips
+    const neckW     = w * 0.55;  // how wide the neckline is (from right edge)
+    const shoulderH = h * 0.08;  // shoulder slope height
+    const armW      = w * 0.18;  // armhole width
+    const armH      = h * 0.30;  // armhole height
+    const armTop    = h * 0.08;  // where armhole starts (from top)
+    ctx.moveTo(x, y + shoulderH);                                       // top-left (after shoulder slope)
+    ctx.lineTo(x + w - neckW, y);                                       // top, before neckline
+    ctx.bezierCurveTo(x + w - neckW * 0.3, y, x + w, y + neckDepth * 0.4, x + w, y + neckDepth); // neckline curve
+    ctx.lineTo(x + w, y + h);                                           // zip seam (right edge) down to bottom
+    ctx.lineTo(x, y + h);                                               // bottom edge
+    // Armhole cutout on left side (going back up)
+    ctx.lineTo(x, y + armTop + armH);                                   // left side, below armhole
+    ctx.bezierCurveTo(x, y + armTop + armH * 0.5, x + armW, y + armTop + armH * 0.3, x + armW, y + armTop + armH * 0.1);
+    ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH); // armhole top curve back to shoulder
+    ctx.closePath();
+
+  } else if (p === "front_left" || p === "right_leg") {
+    // Front-left panel (right side of composite — zip seam on LEFT edge)
+    // Mirror of front_right
+    const neckDepth = h * 0.18;
+    const neckW     = w * 0.55;
+    const shoulderH = h * 0.08;
+    const armW      = w * 0.18;
+    const armH      = h * 0.30;
+    const armTop    = h * 0.08;
+    ctx.moveTo(x + w, y + shoulderH);                                   // top-right
+    ctx.lineTo(x + neckW, y);                                           // top, before neckline
+    ctx.bezierCurveTo(x + neckW * 0.3, y, x, y + neckDepth * 0.4, x, y + neckDepth); // neckline
+    ctx.lineTo(x, y + h);                                               // zip seam (left edge) down
+    ctx.lineTo(x + w, y + h);                                           // bottom
+    ctx.lineTo(x + w, y + armTop + armH);                               // right side, below armhole
+    ctx.bezierCurveTo(x + w, y + armTop + armH * 0.5, x + w - armW, y + armTop + armH * 0.3, x + w - armW, y + armTop + armH * 0.1);
+    ctx.bezierCurveTo(x + w - armW, y + armTop, x + w, y + armTop, x + w, y + shoulderH);
+    ctx.closePath();
+
+  } else if (p === "back" || p === "back_side" || p === "backside") {
+    // Back panel: neckline at top-centre, shoulder slopes, armhole cutouts both sides
+    const neckDepth = h * 0.10;
+    const neckW     = w * 0.30;  // half-width of neckline
+    const shoulderH = h * 0.06;
+    const armW      = w * 0.12;
+    const armH      = h * 0.28;
+    const armTop    = h * 0.06;
+    ctx.moveTo(x, y + shoulderH);                                       // top-left
+    ctx.lineTo(x + w / 2 - neckW, y);                                   // top, left of neck
+    ctx.bezierCurveTo(x + w / 2 - neckW * 0.3, y, x + w / 2, y + neckDepth, x + w / 2, y + neckDepth); // left neck curve
+    ctx.bezierCurveTo(x + w / 2, y + neckDepth, x + w / 2 + neckW * 0.3, y, x + w / 2 + neckW, y); // right neck curve
+    ctx.lineTo(x + w, y + shoulderH);                                   // top-right
+    ctx.lineTo(x + w, y + armTop + armH);                               // right side, below armhole
+    ctx.bezierCurveTo(x + w, y + armTop + armH * 0.5, x + w - armW, y + armTop + armH * 0.3, x + w - armW, y + armTop + armH * 0.1);
+    ctx.bezierCurveTo(x + w - armW, y + armTop, x + w, y + armTop, x + w, y + shoulderH); // right armhole
+    // Continue down right side (already at top-right after armhole)
+    // Redo: draw full outline
+    ctx.closePath();
+    // Redraw properly
+    ctx.beginPath();
+    ctx.moveTo(x, y + shoulderH);
+    ctx.lineTo(x + w / 2 - neckW, y);
+    ctx.bezierCurveTo(x + w / 2 - neckW * 0.3, y, x + w / 2, y + neckDepth, x + w / 2, y + neckDepth);
+    ctx.bezierCurveTo(x + w / 2, y + neckDepth, x + w / 2 + neckW * 0.3, y, x + w / 2 + neckW, y);
+    ctx.lineTo(x + w, y + shoulderH);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    // Left armhole cutout (going back up left side)
+    ctx.lineTo(x, y + armTop + armH);
+    ctx.bezierCurveTo(x, y + armTop + armH * 0.5, x + armW, y + armTop + armH * 0.3, x + armW, y + armTop + armH * 0.1);
+    ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH);
+    ctx.closePath();
+
+  } else if (p === "right_hood") {
+    // Right hood panel: arch shape, flat bottom, curved top, straight right side (seam)
+    // The right hood is the LEFT panel in the composite (seam on right edge)
+    const archH = h * 0.65;  // how high the arch rises
+    ctx.moveTo(x, y + h);                                               // bottom-left
+    ctx.lineTo(x + w, y + h);                                           // bottom-right (seam)
+    ctx.lineTo(x + w, y + h * 0.15);                                    // right side up to arch start
+    ctx.bezierCurveTo(x + w, y, x + w * 0.7, y, x + w * 0.5, y);      // arch top-right
+    ctx.bezierCurveTo(x + w * 0.3, y, x, y, x, y + h * 0.15);         // arch top-left
+    ctx.lineTo(x, y + h);                                               // left side down
+    ctx.closePath();
+
+  } else if (p === "left_hood") {
+    // Left hood panel: mirror of right_hood (seam on left edge)
+    ctx.moveTo(x, y + h);                                               // bottom-left (seam)
+    ctx.lineTo(x + w, y + h);                                           // bottom-right
+    ctx.lineTo(x + w, y + h * 0.15);                                    // right side up
+    ctx.bezierCurveTo(x + w, y, x + w * 0.7, y, x + w * 0.5, y);      // arch top-right
+    ctx.bezierCurveTo(x + w * 0.3, y, x, y, x, y + h * 0.15);         // arch top-left
+    ctx.lineTo(x, y + h * 0.15);                                        // left side up to arch
+    ctx.lineTo(x, y + h);                                               // left side down
+    ctx.closePath();
+
+  } else {
+    // Generic rectangle for unknown panels
+    ctx.rect(x, y, w, h);
+  }
 }
 
 /**
@@ -92,10 +215,11 @@ function getPanelGroup(position: string): "front" | "back" | "accent" {
  *
  * For "front" view: pairs front_left + front_right side-by-side (or left_leg + right_leg).
  * For "back" view: the back panel centred.
+ * For "hood" view: pairs right_hood + left_hood side-by-side (right_hood on left, seam in centre).
  */
 function buildCompositeLayout(
   panels: { position: string; width: number; height: number }[],
-  view: "front" | "back"
+  view: "front" | "back" | "hood"
 ): {
   compositeW: number;
   compositeH: number;
@@ -106,15 +230,15 @@ function buildCompositeLayout(
     return { compositeW: 1, compositeH: 1, slots: [] };
   }
 
-  // Sort: for front view, "right" panel goes first (left side of composite) because
-  // on a zip hoodie, front_right is the panel to the RIGHT of the zip as you look at it,
-  // which sits on the LEFT half of the front composite. This puts the zip seam in the centre.
+  // Sort: for front/hood view, "right" panel goes first (left side of composite) because
+  // on a zip hoodie, front_right/right_hood is the panel to the RIGHT of the seam as you
+  // look at it, which sits on the LEFT half of the composite. This puts the seam in the centre.
   // For back view, "left" panel goes first (standard left-to-right reading order).
   const sorted = [...viewPanels].sort((a, b) => {
     const aIsLeft = a.position.includes("left") || a.position.includes("_l");
     const bIsLeft = b.position.includes("left") || b.position.includes("_l");
-    if (view === "front") {
-      // right panel first (left side of composite = zip seam in centre)
+    if (view === "front" || view === "hood") {
+      // right panel first (left side of composite = seam in centre)
       return aIsLeft ? 1 : bIsLeft ? -1 : 0;
     } else {
       // left panel first (standard order)
@@ -233,7 +357,7 @@ export function PatternCustomizer({
   const [singlePosY,     setSinglePosY]     = useState(0);
 
   // Place on Item state
-  const [placeView,    setPlaceView]    = useState<"front" | "back">("front");
+  const [placeView,    setPlaceView]    = useState<"front" | "back" | "hood">("front");
   // Artwork placement on the composite canvas (in composite-canvas pixel coords)
   // Initialised synchronously from panelPositions so Apply works immediately on first render.
   const [placeX,       setPlaceX]       = useState(() => {
@@ -260,6 +384,17 @@ export function PatternCustomizer({
   // Back panel artwork: defaults to false (no artwork on back — just solid bgColor)
   const [backHasArtwork, setBackHasArtwork] = useState(false);
   const [backSameAsFront, setBackSameAsFront] = useState(false);
+  // Hood panel placement state
+  const [hoodPlaceX,     setHoodPlaceX]     = useState(() => {
+    const hl = buildCompositeLayout(panelPositions, "hood");
+    return hl.compositeW > 1 ? hl.compositeW / 2 : 0;
+  });
+  const [hoodPlaceY,     setHoodPlaceY]     = useState(() => {
+    const hl = buildCompositeLayout(panelPositions, "hood");
+    return hl.compositeH > 1 ? hl.compositeH * 0.45 : 0;
+  });
+  const [hoodPlaceScale, setHoodPlaceScale] = useState(0.7); // hoods are smaller panels, 70% fills nicely
+  const [hoodHasArtwork, setHoodHasArtwork] = useState(false);
 
   const [mirrorLegs, setMirrorLegs] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
@@ -352,17 +487,36 @@ export function PatternCustomizer({
   // ── Place on Item: composite layout ───────────────────────────────────────
   const frontLayout = buildCompositeLayout(panelPositions, "front");
   const backLayout  = buildCompositeLayout(panelPositions, "back");
-  const currentLayout = placeView === "front" ? frontLayout : backLayout;
-  const currentPlaceX = placeView === "front" ? placeX : (backSameAsFront ? placeX : backPlaceX);
-  const currentPlaceY = placeView === "front" ? placeY : (backSameAsFront ? placeY : backPlaceY);
-  const currentPlaceScale = placeView === "front" ? placeScale : (backSameAsFront ? placeScale : backPlaceScale);
+  const hoodLayout  = buildCompositeLayout(panelPositions, "hood");
+  const currentLayout =
+    placeView === "front" ? frontLayout :
+    placeView === "back"  ? backLayout  :
+    hoodLayout;
+  const currentPlaceX =
+    placeView === "front" ? placeX :
+    placeView === "back"  ? (backSameAsFront ? placeX : backPlaceX) :
+    hoodPlaceX;
+  const currentPlaceY =
+    placeView === "front" ? placeY :
+    placeView === "back"  ? (backSameAsFront ? placeY : backPlaceY) :
+    hoodPlaceY;
+  const currentPlaceScale =
+    placeView === "front" ? placeScale :
+    placeView === "back"  ? (backSameAsFront ? placeScale : backPlaceScale) :
+    hoodPlaceScale;
+  // Whether the current view has artwork enabled
+  const currentViewHasArtwork =
+    placeView === "front" ||
+    (placeView === "back" && backHasArtwork) ||
+    (placeView === "hood" && hoodHasArtwork);
 
   // Keep compositeWRef in sync so drag handler always has the latest value
   compositeWRef.current = currentLayout.compositeW;
 
   const setCurrentPlace = (x: number, y: number) => {
     if (placeView === "front") { setPlaceX(x); setPlaceY(y); }
-    else if (!backSameAsFront) { setBackPlaceX(x); setBackPlaceY(y); }
+    else if (placeView === "back" && !backSameAsFront) { setBackPlaceX(x); setBackPlaceY(y); }
+    else if (placeView === "hood") { setHoodPlaceX(x); setHoodPlaceY(y); }
   };
 
   // Initialise placement to centre of composite when layout changes
@@ -378,6 +532,12 @@ export function PatternCustomizer({
       setBackPlaceY(backLayout.compositeH * 0.35);
     }
   }, [backLayout.compositeW, backLayout.compositeH]);
+  useEffect(() => {
+    if (hoodLayout.compositeW > 1) {
+      setHoodPlaceX(hoodLayout.compositeW / 2);
+      setHoodPlaceY(hoodLayout.compositeH * 0.45);
+    }
+  }, [hoodLayout.compositeW, hoodLayout.compositeH]);
 
   // Live Place on Item canvas
   useEffect(() => {
@@ -398,38 +558,59 @@ export function PatternCustomizer({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Checkerboard background
-    const sz = 8;
-    for (let y = 0; y < canvas.height; y += sz)
-      for (let x = 0; x < canvas.width; x += sz) {
-        ctx.fillStyle = ((x / sz + y / sz) % 2 === 0) ? "#e5e7eb" : "#f9fafb";
-        ctx.fillRect(x, y, sz, sz);
-      }
+    // Light grey canvas background (outside panels)
+    ctx.fillStyle = "#f1f5f9";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw panel outlines with background fill
+    // Compute artwork position in preview coords (used for both clipped and unclipped drawing)
+    const img = motifImgRef.current;
+    const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
+    const artH = artW * (img.height / img.width);
+    const artX = currentPlaceX * scaleToPreview - artW / 2;
+    const artY = currentPlaceY * scaleToPreview - artH / 2;
+
+    // Draw each panel with garment shape clip
     for (const slot of layout.slots) {
       const sx = slot.x * scaleToPreview;
       const sy = slot.y * scaleToPreview;
       const sw = slot.w * scaleToPreview;
       const sh = slot.h * scaleToPreview;
-      if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(sx, sy, sw, sh); }
+
+      ctx.save();
+
+      // Build clip path using garment shape
+      drawPanelShape(ctx, slot.position, sx, sy, sw, sh);
+      ctx.clip();
+
+      // Panel background fill
+      ctx.fillStyle = bgColor || "#ffffff";
+      ctx.fillRect(sx, sy, sw, sh);
+
+      // Draw artwork within this panel's clip (only if artwork is enabled for this view)
+      if (currentViewHasArtwork) {
+        ctx.globalAlpha = 0.92;
+        ctx.drawImage(img, artX, artY, artW, artH);
+        ctx.globalAlpha = 1;
+      }
+
+      ctx.restore();
+
+      // Draw panel outline (garment shape stroke) on top of clip
+      ctx.save();
+      drawPanelShape(ctx, slot.position, sx, sy, sw, sh);
       ctx.strokeStyle = "#94a3b8";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
-      // Panel label
-      ctx.fillStyle = "rgba(100,116,139,0.7)";
-      ctx.font = "8px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(slot.position.replace(/_/g, " "), sx + sw / 2, sy + 12);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
     }
 
-    // Draw seam lines between adjacent panels
-    const xs = new Set(layout.slots.map(s => s.x).filter(x => x > 0));
-    xs.forEach(x => {
-      const px = x * scaleToPreview;
+    // Draw centre seam line (dashed red) between adjacent panels
+    const seamXs = new Set(layout.slots.map(s => s.x).filter(x => x > 0));
+    seamXs.forEach(seamX => {
+      const px = seamX * scaleToPreview;
       ctx.save();
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = "rgba(239,68,68,0.6)";
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = "rgba(239,68,68,0.7)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(px, 0); ctx.lineTo(px, canvas.height);
@@ -437,34 +618,22 @@ export function PatternCustomizer({
       ctx.restore();
     });
 
-    // Draw artwork — skip if viewing back panel with no artwork enabled
-    const showArtwork = placeView === "front" || backHasArtwork;
-    if (showArtwork) {
-      // placeScale is a fraction of composite width (e.g. 0.4 = 40% of composite width)
-      const img = motifImgRef.current;
-      const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
-      const artH = artW * (img.height / img.width);
-      const artX = currentPlaceX * scaleToPreview - artW / 2;
-      const artY = currentPlaceY * scaleToPreview - artH / 2;
-      ctx.globalAlpha = 0.9;
-      ctx.drawImage(img, artX, artY, artW, artH);
-      ctx.globalAlpha = 1;
-
-      // Artwork bounding box
+    // Draw artwork bounding box (blue dashed) if artwork is shown
+    if (currentViewHasArtwork) {
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth = 1;
-      ctx.setLineDash([2, 2]);
+      ctx.setLineDash([3, 2]);
       ctx.strokeRect(artX, artY, artW, artH);
       ctx.setLineDash([]);
     } else {
-      // Back panel with no artwork: show a "no artwork" label
-      ctx.fillStyle = "rgba(100,116,139,0.5)";
+      // No artwork: show label
+      ctx.fillStyle = "rgba(100,116,139,0.6)";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("No artwork (solid colour)", canvas.width / 2, canvas.height / 2);
     }
 
-  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor, backHasArtwork]);
+  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor, backHasArtwork, hoodHasArtwork, currentViewHasArtwork]);
 
   // Drag handlers for single-image mode
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -516,6 +685,8 @@ export function PatternCustomizer({
     const newY = placeDragRef.current.origY + dy;
     if (placeViewRef.current === "front") {
       setPlaceX(newX); setPlaceY(newY);
+    } else if (placeViewRef.current === "hood") {
+      setHoodPlaceX(newX); setHoodPlaceY(newY);
     } else if (!backSameAsFrontRef.current) {
       setBackPlaceX(newX); setBackPlaceY(newY);
     }
@@ -616,12 +787,28 @@ export function PatternCustomizer({
             // Back panel with no artwork: solid background colour only
             ctx.fillStyle = bgColor || "#ffffff";
             ctx.fillRect(0, 0, W, H);
+          } else if (group === "hood" && !hoodHasArtwork) {
+            // Hood panels with no artwork: solid accent colour (hoods are accent-coloured by default)
+            ctx.fillStyle = accentColor || bgColor || "#ffffff";
+            ctx.fillRect(0, 0, W, H);
           } else {
             // Determine which layout this panel belongs to
-            const layout = group === "front" ? frontLayout : backLayout;
-            const useX = group === "front" ? placeX : (backSameAsFront ? placeX : backPlaceX);
-            const useY = group === "front" ? placeY : (backSameAsFront ? placeY : backPlaceY);
-            const useScale = group === "front" ? placeScale : (backSameAsFront ? placeScale : backPlaceScale);
+            const layout =
+              group === "front" ? frontLayout :
+              group === "hood"  ? hoodLayout  :
+              backLayout;
+            const useX =
+              group === "front" ? placeX :
+              group === "hood"  ? hoodPlaceX :
+              (backSameAsFront ? placeX : backPlaceX);
+            const useY =
+              group === "front" ? placeY :
+              group === "hood"  ? hoodPlaceY :
+              (backSameAsFront ? placeY : backPlaceY);
+            const useScale =
+              group === "front" ? placeScale :
+              group === "hood"  ? hoodPlaceScale :
+              (backSameAsFront ? placeScale : backPlaceScale);
 
             // Find this panel's slot in the composite
             const slot = layout.slots.find(s => s.position === panel.position);
@@ -888,13 +1075,15 @@ export function PatternCustomizer({
           {/* Place on Item mode controls */}
           {mode === "place" && (
             <>
-              {/* Front / Back view tabs */}
-              {(frontLayout.slots.length > 0 || backLayout.slots.length > 0) && (
+              {/* Front / Back / Hood view tabs */}
+              {(frontLayout.slots.length > 0 || backLayout.slots.length > 0 || hoodLayout.slots.length > 0) && (
                 <div className="shrink-0 space-y-0.5">
                   <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">View</Label>
                   <div className="flex gap-1 rounded-md border p-0.5 bg-muted">
-                    {(["front", "back"] as const).filter(v =>
-                      v === "front" ? frontLayout.slots.length > 0 : backLayout.slots.length > 0
+                    {(["front", "back", "hood"] as const).filter(v =>
+                      v === "front" ? frontLayout.slots.length > 0 :
+                      v === "back"  ? backLayout.slots.length > 0 :
+                      hoodLayout.slots.length > 0
                     ).map(v => (
                       <button
                         key={v} type="button"
@@ -933,8 +1122,20 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {/* Artwork scale slider — hidden when back panel has no artwork */}
-              {(placeView === "front" || backHasArtwork) && (
+              {/* Hood panel artwork toggle */}
+              {placeView === "hood" && hoodLayout.slots.length > 0 && (
+                <div className="flex items-center justify-between rounded border px-2 py-1.5 bg-muted/30 shrink-0">
+                  <p className="text-[10px] font-medium leading-tight">Add artwork to hood</p>
+                  <Switch
+                    checked={hoodHasArtwork}
+                    onCheckedChange={setHoodHasArtwork}
+                    className="data-[state=checked]:bg-black data-[state=unchecked]:bg-gray-400 [&_span]:bg-white"
+                  />
+                </div>
+              )}
+
+              {/* Artwork scale slider — hidden when current view has no artwork */}
+              {currentViewHasArtwork && (
                 <div className="shrink-0 space-y-0.5">
                   <div className="flex justify-between items-center">
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Artwork size</Label>
@@ -945,6 +1146,7 @@ export function PatternCustomizer({
                     value={[currentPlaceScale]}
                     onValueChange={([v]) => {
                       if (placeView === "front") setPlaceScale(v);
+                      else if (placeView === "hood") setHoodPlaceScale(v);
                       else if (!backSameAsFront) setBackPlaceScale(v);
                     }}
                     className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
@@ -955,7 +1157,7 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {(placeView === "front" || backHasArtwork) && (
+              {currentViewHasArtwork && (
                 <p className="text-[10px] text-muted-foreground leading-tight shrink-0">
                   Drag the artwork in the preview to reposition it across the panels. Red dashed lines show seams.
                 </p>
@@ -966,7 +1168,7 @@ export function PatternCustomizer({
                 <div className="shrink-0 space-y-1 rounded border px-2 py-2 bg-muted/20">
                   <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Accent panels colour</Label>
                   <p className="text-[10px] text-muted-foreground leading-tight">
-                    Sleeves, hood, cuffs, pockets &amp; waistband
+                    Sleeves, cuffs, pockets &amp; waistband
                   </p>
                   <div className="flex flex-wrap gap-1.5 items-center mt-1">
                     {BG_PRESETS.filter(p => p.value !== "").map((preset) => (
@@ -997,6 +1199,10 @@ export function PatternCustomizer({
                     setPlaceX(frontLayout.compositeW / 2);
                     setPlaceY(frontLayout.compositeH * 0.35);
                     setPlaceScale(0.4);
+                  } else if (placeView === "hood") {
+                    setHoodPlaceX(hoodLayout.compositeW / 2);
+                    setHoodPlaceY(hoodLayout.compositeH * 0.45);
+                    setHoodPlaceScale(0.7);
                   } else {
                     setBackPlaceX(backLayout.compositeW / 2);
                     setBackPlaceY(backLayout.compositeH * 0.35);
