@@ -1717,19 +1717,17 @@ export default function EmbedDesign() {
 
       setMockupError(null);
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
-      // Use a 120s timeout — AOP per-panel mockups require Printify CDN to render
-      // all panel images before they can be downloaded, which can take 60-90s.
       const response = await safeFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      }, 120000);
-      
+      }, 60000);
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || `Mockup generation failed (${response.status})`);
       }
-      
+
       const result = await response.json();
       
       if (result.success && result.mockupUrls?.length > 0) {

@@ -6483,6 +6483,7 @@ ${textEdgeRestrictions}
   // ==================== STOREFRONT MOCKUP (NO SESSION TOKEN) ====================
   // Used by storefront embeds to generate Printify mockups without session tokens.
   // Includes auto-resolution of productTypeId (same logic as designer endpoint).
+
   app.post("/api/storefront/mockup", async (req: Request, res: Response) => {
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

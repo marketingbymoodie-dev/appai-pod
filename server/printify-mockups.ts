@@ -806,52 +806,18 @@ export async function generatePrintifyMockup(
 
     productId = createResult.productId;
 
-    // Publish the product so Printify triggers mockup image generation.
-    // Without this step product.images stays empty indefinitely.
-    try {
-      const publishRes = await fetch(
-        `${PRINTIFY_API_BASE}/shops/${printifyShopId}/products/${productId}/publish.json`,
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${printifyApiToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            title: true,
-            description: true,
-            images: true,
-            variants: true,
-            tags: true,
-            keyFeatures: false,
-            shipping_template: false,
-          }),
-        }
-      );
-      console.log(`[Printify] Publish response: ${publishRes.status}`);
-    } catch (pubErr: any) {
-      console.warn(`[Printify] Publish call failed (non-fatal): ${pubErr.message}`);
-    }
-
     const mockupData = await pRetry(
       async () => {
         const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
         if (!data || data.urls.length === 0) {
           throw new Error("Mockups not ready yet");
         }
-        // Also verify the first image URL is actually downloadable from the CDN.
-        // Printify lists images immediately but the CDN may not have rendered them yet.
-        const firstUrl = data.urls[0];
-        const probe = await fetch(firstUrl, { method: 'HEAD' });
-        if (!probe.ok) {
-          throw new Error(`Mockup CDN not ready yet (${probe.status} for ${firstUrl.substring(0, 60)})`);
-        }
         return data;
       },
       {
-        retries: 6,
-        minTimeout: 4000,
-        maxTimeout: 10000,
+        retries: 5,
+        minTimeout: 2000,
+        maxTimeout: 5000,
         onFailedAttempt: (error) => {
           console.log(`[Mockup] Attempt ${error.attemptNumber} failed (${error.message}). ${error.retriesLeft} retries left.`);
         },
