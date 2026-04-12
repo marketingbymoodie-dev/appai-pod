@@ -198,15 +198,36 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
   // color+zoom+position combination gets a unique Supabase path and never overwrites another color.
   const viewName = parts.slice(3).join("_") || "front";
 
-  try {
-    const response = await fetch(printifyUrl);
-    if (!response.ok) {
-      console.warn(`[Mockup Cache] Failed to download mockup (${response.status}): ${printifyUrl.substring(0, 80)}`);
+   // Retry the download to handle Printify CDN propagation delay.
+  // The product API lists images immediately but the CDN may not have rendered them yet.
+  const MAX_DOWNLOAD_RETRIES = 4;
+  const DOWNLOAD_RETRY_DELAYS = [2000, 4000, 6000, 8000]; // ms between retries
+  let buffer: Buffer | null = null;
+  for (let attempt = 0; attempt <= MAX_DOWNLOAD_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delay = DOWNLOAD_RETRY_DELAYS[attempt - 1] ?? 8000;
+      console.log(`[Mockup Cache] Retry ${attempt}/${MAX_DOWNLOAD_RETRIES} for mockup download in ${delay}ms...`);
+      await sleep(delay);
+    }
+    try {
+      const response = await fetch(printifyUrl);
+      if (!response.ok) {
+        console.warn(`[Mockup Cache] Attempt ${attempt + 1}: Failed to download mockup (${response.status}): ${printifyUrl.substring(0, 80)}`);
+        if (attempt < MAX_DOWNLOAD_RETRIES) continue;
+        return null;
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      console.log(`[Mockup Cache] Downloaded mockup on attempt ${attempt + 1} (${buffer.length} bytes)`);
+      break;
+    } catch (fetchErr: any) {
+      console.warn(`[Mockup Cache] Attempt ${attempt + 1}: Fetch exception: ${fetchErr.message}`);
+      if (attempt < MAX_DOWNLOAD_RETRIES) continue;
       return null;
     }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+  }
+  if (!buffer) return null;
+  try {
     const filename = `${cacheKey}.jpg`;
 
     // Write to local disk in two places:
@@ -251,16 +272,18 @@ async function cacheMockupImages(
     mockupData.images.map((img, i) => cacheMockupToStorage(img.url, cacheKeys[i]))
   );
 
-  for (let i = 0; i < mockupData.images.length; i++) {
+   for (let i = 0; i < mockupData.images.length; i++) {
     const result = results[i];
     const original = mockupData.images[i];
-
     if (result.status === "fulfilled" && result.value) {
       cachedUrls.push(result.value);
       cachedImages.push({ url: result.value, label: original.label });
     } else {
-      cachedUrls.push(original.url);
-      cachedImages.push(original);
+      // IMPORTANT: Do NOT fall back to original.url here.
+      // The original URL is a Printify CDN URL that requires the temp product to exist.
+      // After deleteProduct() runs, that URL returns 400/404.
+      // If caching failed, skip this view entirely rather than returning a broken URL.
+      console.warn(`[Mockup Cache] Skipping view "${original.label}" — caching failed and original URL would be invalid after product deletion`);
     }
   }
 
@@ -789,14 +812,21 @@ export async function generatePrintifyMockup(
         if (!data || data.urls.length === 0) {
           throw new Error("Mockups not ready yet");
         }
+        // Also verify the first image URL is actually downloadable from the CDN.
+        // Printify lists images immediately but the CDN may not have rendered them yet.
+        const firstUrl = data.urls[0];
+        const probe = await fetch(firstUrl, { method: 'HEAD' });
+        if (!probe.ok) {
+          throw new Error(`Mockup CDN not ready yet (${probe.status} for ${firstUrl.substring(0, 60)})`);
+        }
         return data;
       },
       {
-        retries: 5,
-        minTimeout: 2000,
-        maxTimeout: 5000,
+        retries: 8,
+        minTimeout: 3000,
+        maxTimeout: 8000,
         onFailedAttempt: (error) => {
-          console.log(`Attempt ${error.attemptNumber} failed. ${error.retriesLeft} retries left.`);
+          console.log(`[Mockup] Attempt ${error.attemptNumber} failed (${error.message}). ${error.retriesLeft} retries left.`);
         },
       }
     );
