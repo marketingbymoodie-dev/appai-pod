@@ -210,9 +210,9 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string, apiTo
       await sleep(delay);
     }
     try {
-      const fetchHeaders: Record<string, string> = {};
-      if (apiToken) fetchHeaders["Authorization"] = `Bearer ${apiToken}`;
-      const response = await fetch(printifyUrl, { headers: fetchHeaders });
+      // Printify mockup render URLs (images-api.printify.com/mockup/...) are public render
+      // endpoints that do NOT use auth headers. Adding an auth header causes 400 errors.
+      const response = await fetch(printifyUrl);
       if (!response.ok) {
         console.warn(`[Mockup Cache] Attempt ${attempt + 1}: Failed to download mockup (${response.status}): ${printifyUrl.substring(0, 80)}`);
         if (attempt < MAX_DOWNLOAD_RETRIES) continue;
@@ -400,11 +400,20 @@ async function createTemporaryProduct(
       } else if (isRightPanel && mirroredImageId) {
         // Legacy fallback: mirrored copy for right panels
         useImageId = mirroredImageId;
+        const entry = { ...imageEntry, id: useImageId };
+        placeholders.push({ position: pos.position, images: [entry] });
+      } else if (panelImageIds && panelImageIds.size > 0) {
+        // We're in per-panel mode but this panel has no dedicated image.
+        // Skip it entirely — including the primary image here would cause Printify's mockup
+        // renderer to scale a tiny placeholder to enormous dimensions (e.g. 85400x168553),
+        // exceeding their 6GB pixel limit and returning a 400 error.
+        console.log(`[Printify CreateProduct] Skipping panel "${pos.position}" — no per-panel image in per-panel mode`);
       } else {
+        // No per-panel mode: use the primary image for all panels
         useImageId = imageId;
+        const entry = { ...imageEntry, id: useImageId };
+        placeholders.push({ position: pos.position, images: [entry] });
       }
-      const entry = { ...imageEntry, id: useImageId };
-      placeholders.push({ position: pos.position, images: [entry] });
     }
   } else {
     // Standard single/double-sided
