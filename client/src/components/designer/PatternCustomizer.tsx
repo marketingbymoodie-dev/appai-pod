@@ -509,32 +509,36 @@ export function PatternCustomizer({
   useEffect(() => { backSameAsFrontRef.current = backSameAsFront; }, [backSameAsFront]);
 
   // Flat-lay images loaded state.
-  // We store HTMLImageElement objects loaded from Blob URLs that have explicit pixel
-  // dimensions injected into the SVG markup. This is required because Printify SVGs
-  // have width="100%" height="100%" — without fixed dimensions the browser cannot
-  // determine the SVG's intrinsic size, making drawImage render nothing.
-  const flatLayImgRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  // We store HTMLImageElement objects loaded from Blob URLs with explicit pixel
+  // dimensions injected into the SVG markup. We also store the parsed
+  // color_background rect and viewBox size so we can correctly scale the SVG
+  // to fill each panel slot without distortion.
+  const flatLayImgRef  = useRef<Map<string, HTMLImageElement>>(new Map());
+  // Metadata parsed from each SVG: { vbSize, cbX, cbY, cbW, cbH }
+  // cbX/cbY/cbW/cbH are the color_background rect in SVG viewBox units.
+  // Used to scale the SVG so the content rect fills the slot exactly.
+  const flatLayMetaRef = useRef<Map<string, { vbSize: number; cbX: number; cbY: number; cbW: number; cbH: number }>>(new Map());
   const [flatLayLoaded, setFlatLayLoaded] = useState(0);
 
-  // Load flat-lay SVGs: fetch text, inject explicit pixel dimensions, create Blob URL,
-  // load as HTMLImageElement. The explicit dimensions ensure the browser rasterises the
-  // SVG at the correct size so 9-arg drawImage source coords work correctly.
+  // Load flat-lay SVGs: fetch text, parse metadata, inject explicit pixel dimensions,
+  // create Blob URL, load as HTMLImageElement.
   useEffect(() => {
     const entries = Object.entries(panelFlatLayImages);
     if (entries.length === 0) return;
 
-    // Clear cache when the set of URLs changes (different product loaded)
-    const currentUrls = new Set(Object.values(panelFlatLayImages));
+    // Clear cache when the set of panel positions changes (different product loaded)
     let cacheValid = true;
     for (const [pos] of flatLayImgRef.current) {
       if (!panelFlatLayImages[pos]) { cacheValid = false; break; }
     }
-    if (!cacheValid) flatLayImgRef.current.clear();
+    if (!cacheValid) {
+      flatLayImgRef.current.clear();
+      flatLayMetaRef.current.clear();
+    }
 
     let loaded = 0;
     const total = entries.length;
     const blobUrls: string[] = []; // track for cleanup
-    void currentUrls; // suppress unused warning
 
     const done = () => {
       loaded++;
@@ -552,15 +556,42 @@ export function PatternCustomizer({
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           let svgText = await res.text();
 
-          // Determine the viewBox size for this panel.
-          // First try to parse it from the SVG text (most reliable).
-          // Fall back to the known lookup table, then to 1000 as a safe default.
+          // ── Parse viewBox size ────────────────────────────────────────────────
+          // All Printify sew-pattern SVGs have a square viewBox (0 0 N N).
           const vbMatch = svgText.match(/viewBox="[^"]*0 0 ([\d.]+) ([\d.]+)"/);
           const vbSize = vbMatch ? parseFloat(vbMatch[1]) : (SVG_VB_SIZES[pos] ?? 1000);
 
-          // Inject explicit pixel dimensions into the SVG root element.
-          // Replace width="100%" height="100%" with fixed pixel values.
-          // This forces the browser to rasterise at the correct size.
+          // ── Parse color_background rect ───────────────────────────────────────
+          // The color_background rect defines the printable area within the square
+          // viewBox. We use it to scale the SVG so this rect exactly fills the
+          // panel slot in the viewer, with the sew lines visible around the edges.
+          let cbX = 0, cbY = 0, cbW = vbSize, cbH = vbSize;
+          const cbMatch = svgText.match(/<rect[^>]+id="color_background"[^>]*>|<rect[^>]+id="color_background"[^>]*\/>/s);
+          if (cbMatch) {
+            const tag = cbMatch[0];
+            const xm = tag.match(/\bx="([\d.-]+)"/);
+            const ym = tag.match(/\by="([\d.-]+)"/);
+            const wm = tag.match(/\bwidth="([\d.]+)"/);
+            const hm = tag.match(/\bheight="([\d.]+)"/);
+            if (xm && ym && wm && hm) {
+              cbX = parseFloat(xm[1]);
+              cbY = parseFloat(ym[1]);
+              cbW = parseFloat(wm[1]);
+              cbH = parseFloat(hm[1]);
+            }
+          }
+          // Fall back to hardcoded rects for known panels if parsing failed
+          if (cbW === vbSize) {
+            const fallback = SVG_CONTENT_RECTS[pos];
+            if (fallback) { cbX = fallback.x; cbY = fallback.y; cbW = fallback.w; cbH = fallback.h; }
+          }
+
+          // Store metadata for use during drawing
+          flatLayMetaRef.current.set(pos, { vbSize, cbX, cbY, cbW, cbH });
+
+          // ── Inject explicit pixel dimensions ──────────────────────────────────
+          // Replace width="100%" height="100%" with fixed pixel values so the
+          // browser rasterises the SVG at the correct size.
           svgText = svgText
             .replace(/(<svg[^>]*?)\s+width="[^"]*"/, `$1 width="${vbSize}"`);
           svgText = svgText
@@ -766,37 +797,37 @@ export function PatternCustomizer({
 
       if (flatLayImg) {
         // ── Flat-lay SVG available ────────────────────────────────────────────
-        // flatLayImg is an HTMLImageElement loaded from a Blob URL with explicit
-        // pixel dimensions injected (width=vbSize height=vbSize). This means
-        // naturalWidth === vbSize, so 9-arg drawImage source coords are in pixels.
-        const srcRect = SVG_CONTENT_RECTS[slot.position];
+        // The SVG has a square viewBox with the panel shape inside it.
+        // We scale the full SVG so the color_background rect (the printable area)
+        // exactly fills the slot. This ensures correct proportions and no distortion.
+        //
+        // Formula:
+        //   svgScale = sw / cbW   (scale so content rect width = slot width)
+        //   svgDrawSize = vbSize * svgScale
+        //   drawX = sx - cbX * svgScale   (offset so content rect left = slot left)
+        //   drawY = sy - cbY * svgScale   (offset so content rect top = slot top)
+        //
+        // The slot rect clip ensures the SVG parts outside the slot are hidden.
+        const meta = flatLayMetaRef.current.get(slot.position);
+        const svgMeta = meta ?? { vbSize: flatLayImg.naturalWidth || 1000, cbX: 0, cbY: 0, cbW: flatLayImg.naturalWidth || 1000, cbH: flatLayImg.naturalHeight || 1000 };
+
+        // Scale SVG so content rect width fills slot width
+        const svgScale = sw / svgMeta.cbW;
+        const svgDrawSize = svgMeta.vbSize * svgScale;
+        const drawX = sx - svgMeta.cbX * svgScale;
+        const drawY = sy - svgMeta.cbY * svgScale;
 
         ctx.save();
         ctx.beginPath();
         ctx.rect(sx, sy, sw, sh);
         ctx.clip();
 
-        // 1. Fill background colour first so it shows through the SVG lines
+        // 1. Fill background colour first (shows through transparent SVG areas)
         ctx.fillStyle = bgColor || "#ffffff";
         ctx.fillRect(sx, sy, sw, sh);
 
-        // 2. Draw the SVG panel content using exact source rect
-        if (srcRect) {
-          // naturalWidth === vbSize (we injected it), so source coords are direct
-          if (srcRect.mirror) {
-            // left_hood: horizontally mirror the content
-            ctx.save();
-            ctx.translate(sx + sw, sy);
-            ctx.scale(-1, 1);
-            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, 0, 0, sw, sh);
-            ctx.restore();
-          } else {
-            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, sx, sy, sw, sh);
-          }
-        } else {
-          // Fallback: no source rect known — draw full SVG scaled to slot
-          ctx.drawImage(flatLayImg, sx, sy, sw, sh);
-        }
+        // 2. Draw the full SVG scaled so content rect fills the slot
+        ctx.drawImage(flatLayImg, drawX, drawY, svgDrawSize, svgDrawSize);
 
         // 3. Draw artwork on top
         if (currentViewHasArtwork) {
