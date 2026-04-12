@@ -41,6 +41,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_variant_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
+  { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

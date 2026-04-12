@@ -4560,10 +4560,13 @@ ${textEdgeRestrictions}
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
         panelFlatLayImages: (() => {
-          // Parse stored value
-          const stored: Record<string, string> = typeof productType.panelFlatLayImages === "string"
-            ? JSON.parse(productType.panelFlatLayImages || "{}")
-            : productType.panelFlatLayImages || {};
+          // Parse stored value (defensive — column may not exist yet on older DBs)
+          let stored: Record<string, string> = {};
+          try {
+            stored = typeof productType.panelFlatLayImages === "string"
+              ? JSON.parse(productType.panelFlatLayImages || "{}")
+              : (productType.panelFlatLayImages as any) || {};
+          } catch { stored = {}; }
           // Apply static fallback for known blueprints where Printify API returns empty views
           if (Object.keys(stored).length === 0 && productType.printifyBlueprintId) {
             const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
@@ -4824,9 +4827,13 @@ ${textEdgeRestrictions}
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],
       panelFlatLayImages: (() => {
-        const stored2: Record<string, string> = typeof productTypeToUse.panelFlatLayImages === "string"
-          ? JSON.parse(productTypeToUse.panelFlatLayImages || "{}")
-          : productTypeToUse.panelFlatLayImages || {};
+        // Parse stored value (defensive — column may not exist yet on older DBs)
+        let stored2: Record<string, string> = {};
+        try {
+          stored2 = typeof productTypeToUse.panelFlatLayImages === "string"
+            ? JSON.parse(productTypeToUse.panelFlatLayImages || "{}")
+            : (productTypeToUse.panelFlatLayImages as any) || {};
+        } catch { stored2 = {}; }
         if (Object.keys(stored2).length === 0 && productTypeToUse.printifyBlueprintId) {
           const STATIC_FLAT_LAY_SVGS2: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
