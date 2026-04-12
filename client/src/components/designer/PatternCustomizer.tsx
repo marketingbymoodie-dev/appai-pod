@@ -78,6 +78,40 @@ const PRINT_DPI = 150;
  */
 const SNAP_THRESHOLD_CSS = 8;
 
+// ── SVG content source rects ─────────────────────────────────────────────────
+//
+// Each Printify sew-pattern SVG has a square viewBox, but the actual panel
+// shape is offset within it. These rects define the exact sub-region of each
+// SVG that contains the panel artwork, so we can use the 9-argument drawImage
+// to crop it precisely and map it to the slot without any distortion or gaps.
+//
+// Verified by parsing the `color_background` rect from each SVG file.
+// The aspect ratios match Printify's print dimensions exactly (within 0.01%).
+//
+// Special case: left_hood has a rotate(-180) transform in the SVG, meaning
+// the content is flipped. We use the same source rect but draw it mirrored.
+
+interface SvgContentRect { x: number; y: number; w: number; h: number; mirror?: boolean }
+
+const SVG_CONTENT_RECTS: Record<string, SvgContentRect> = {
+  // Blueprint 451 — Unisex Zip Hoodie AOP (MWW On Demand)
+  // ViewBox 3022.87 × 3022.87
+  front_right:  { x: 771.89, y:  53.08, w: 1479.08, h: 2916.71 },
+  front_left:   { x: 771.89, y:  53.08, w: 1479.08, h: 2916.71 },
+  // ViewBox 3211.80 × 3211.80
+  back:         { x: 176.21, y: 104.50, w: 2859.37, h: 3002.80 },
+  // ViewBox 2645.01 × 2645.01
+  right_sleeve: { x: 141.14, y: 166.91, w: 2362.74, h: 2311.20 },
+  left_sleeve:  { x: 141.14, y: 166.91, w: 2362.74, h: 2311.20 },
+  // ViewBox 1889.29 × 1889.29
+  right_hood:   { x: 321.95, y: 135.66, w: 1245.38, h: 1617.96 },
+  // left_hood uses rotate(-180) transform — same source rect, drawn mirrored
+  left_hood:    { x: 321.95, y: 135.66, w: 1245.38, h: 1617.96, mirror: true },
+  // Leg panels (Blueprint 447 etc.) — add rects here when mapped
+  left_leg:     { x: 771.89, y:  53.08, w: 1479.08, h: 2916.71 },
+  right_leg:    { x: 771.89, y:  53.08, w: 1479.08, h: 2916.71 },
+};
+
 // ── Panel group helpers ───────────────────────────────────────────────────────
 
 /**
@@ -259,6 +293,23 @@ export interface PatternApplyOptions {
   panelUrls?: { position: string; dataUrl: string }[];
 }
 
+export interface AopPlacementSettings {
+  placeX: number;
+  placeY: number;
+  placeScale: number;
+  backPlaceX: number;
+  backPlaceY: number;
+  backPlaceScale: number;
+  hoodPlaceX: number;
+  hoodPlaceY: number;
+  hoodPlaceScale: number;
+  backHasArtwork: boolean;
+  backSameAsFront: boolean;
+  hoodHasArtwork: boolean;
+  accentColor: string;
+  bgColor: string;
+}
+
 interface PatternCustomizerProps {
   motifUrl: string;
   productWidth?: number;
@@ -281,6 +332,9 @@ interface PatternCustomizerProps {
   initialPattern?: PatternType;
   initialBgColor?: string;
   onSettingsChange?: (settings: { tilesAcross: number; pattern: PatternType; bgColor: string }) => void;
+  /** Persisted Place on Item placement — passed back in when reopening */
+  initialPlacement?: AopPlacementSettings;
+  onPlacementChange?: (placement: AopPlacementSettings) => void;
 }
 
 // ── Client-side Canvas tiling ────────────────────────────────────────────────
@@ -345,6 +399,8 @@ export function PatternCustomizer({
   initialPattern = "grid",
   initialBgColor = "#ffffff",
   onSettingsChange,
+  initialPlacement,
+  onPlacementChange,
 }: PatternCustomizerProps) {
   const [mode, setMode]       = useState<EditorMode>("pattern");
   const [pattern, setPattern] = useState<PatternType>(initialPattern);
@@ -361,40 +417,46 @@ export function PatternCustomizer({
   // Artwork placement on the composite canvas (in composite-canvas pixel coords)
   // Initialised synchronously from panelPositions so Apply works immediately on first render.
   const [placeX,       setPlaceX]       = useState(() => {
+    if (initialPlacement?.placeX) return initialPlacement.placeX;
     const fl = buildCompositeLayout(panelPositions, "front");
     return fl.compositeW > 1 ? fl.compositeW / 2 : 0;
   });
   const [placeY,       setPlaceY]       = useState(() => {
+    if (initialPlacement?.placeY) return initialPlacement.placeY;
     const fl = buildCompositeLayout(panelPositions, "front");
     return fl.compositeH > 1 ? fl.compositeH * 0.35 : 0;
   });
-  const [placeScale,   setPlaceScale]   = useState(0.4); // fraction of composite width (0.4 = 40%)
+  const [placeScale,   setPlaceScale]   = useState(initialPlacement?.placeScale ?? 0.4);
   // Accent panel colour (sleeves, hood, cuffs, pockets, waistband)
-  const [accentColor,  setAccentColor]  = useState("#ffffff");
+  const [accentColor,  setAccentColor]  = useState(initialPlacement?.accentColor ?? "#ffffff");
   // Whether back panel uses same placement as front or its own
   const [backPlaceX,   setBackPlaceX]   = useState(() => {
+    if (initialPlacement?.backPlaceX) return initialPlacement.backPlaceX;
     const bl = buildCompositeLayout(panelPositions, "back");
     return bl.compositeW > 1 ? bl.compositeW / 2 : 0;
   });
   const [backPlaceY,   setBackPlaceY]   = useState(() => {
+    if (initialPlacement?.backPlaceY) return initialPlacement.backPlaceY;
     const bl = buildCompositeLayout(panelPositions, "back");
     return bl.compositeH > 1 ? bl.compositeH * 0.35 : 0;
   });
-  const [backPlaceScale, setBackPlaceScale] = useState(0.4);
+  const [backPlaceScale, setBackPlaceScale] = useState(initialPlacement?.backPlaceScale ?? 0.4);
   // Back panel artwork: defaults to false (no artwork on back — just solid bgColor)
-  const [backHasArtwork, setBackHasArtwork] = useState(false);
-  const [backSameAsFront, setBackSameAsFront] = useState(false);
+  const [backHasArtwork, setBackHasArtwork] = useState(initialPlacement?.backHasArtwork ?? false);
+  const [backSameAsFront, setBackSameAsFront] = useState(initialPlacement?.backSameAsFront ?? false);
   // Hood panel placement state
   const [hoodPlaceX,     setHoodPlaceX]     = useState(() => {
+    if (initialPlacement?.hoodPlaceX) return initialPlacement.hoodPlaceX;
     const hl = buildCompositeLayout(panelPositions, "hood");
     return hl.compositeW > 1 ? hl.compositeW / 2 : 0;
   });
   const [hoodPlaceY,     setHoodPlaceY]     = useState(() => {
+    if (initialPlacement?.hoodPlaceY) return initialPlacement.hoodPlaceY;
     const hl = buildCompositeLayout(panelPositions, "hood");
     return hl.compositeH > 1 ? hl.compositeH * 0.45 : 0;
   });
-  const [hoodPlaceScale, setHoodPlaceScale] = useState(0.7); // hoods are smaller panels, 70% fills nicely
-  const [hoodHasArtwork, setHoodHasArtwork] = useState(false);
+  const [hoodPlaceScale, setHoodPlaceScale] = useState(initialPlacement?.hoodPlaceScale ?? 0.7);
+  const [hoodHasArtwork, setHoodHasArtwork] = useState(initialPlacement?.hoodHasArtwork ?? false);
 
   // Snap indicator state — true when artwork is snapped to a guide line
   const [isSnapped, setIsSnapped] = useState(false);
@@ -480,6 +542,20 @@ export function PatternCustomizer({
   useEffect(() => {
     onSettingsChange?.({ tilesAcross, pattern, bgColor });
   }, [tilesAcross, pattern, bgColor]);
+
+  // Notify parent of placement changes (for persistence across close/reopen)
+  useEffect(() => {
+    if (mode !== "place") return;
+    onPlacementChange?.({
+      placeX, placeY, placeScale,
+      backPlaceX, backPlaceY, backPlaceScale,
+      hoodPlaceX, hoodPlaceY, hoodPlaceScale,
+      backHasArtwork, backSameAsFront, hoodHasArtwork,
+      accentColor, bgColor,
+    });
+  }, [mode, placeX, placeY, placeScale, backPlaceX, backPlaceY, backPlaceScale,
+      hoodPlaceX, hoodPlaceY, hoodPlaceScale, backHasArtwork, backSameAsFront,
+      hoodHasArtwork, accentColor, bgColor]);
 
   // Live single-image canvas
   useEffect(() => {
@@ -611,18 +687,40 @@ export function PatternCustomizer({
 
       if (flatLayImg) {
         // ── Flat-lay SVG available ────────────────────────────────────────────
-        // The SVG already contains the correct panel shape with bleed zone and
-        // print area. Draw it as the background using a simple rect clip.
+        // Use the 9-argument drawImage to crop exactly the panel content area
+        // from the SVG (which has a square viewBox with content offset within it)
+        // and map it to fill the slot exactly — no distortion, no gaps.
+        const srcRect = SVG_CONTENT_RECTS[slot.position];
+
         ctx.save();
         ctx.beginPath();
         ctx.rect(sx, sy, sw, sh);
         ctx.clip();
-        ctx.drawImage(flatLayImg, sx, sy, sw, sh);
 
-        // Draw artwork on top of the flat-lay SVG (semi-transparent so the
-        // sew lines are still visible through the artwork)
+        // 1. Fill background colour first so it shows through the SVG lines
+        ctx.fillStyle = bgColor || "#ffffff";
+        ctx.fillRect(sx, sy, sw, sh);
+
+        // 2. Draw the SVG panel content at full opacity
+        if (srcRect) {
+          if (srcRect.mirror) {
+            // left_hood: horizontally mirror the content
+            ctx.save();
+            ctx.translate(sx + sw, sy);
+            ctx.scale(-1, 1);
+            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, 0, 0, sw, sh);
+            ctx.restore();
+          } else {
+            ctx.drawImage(flatLayImg, srcRect.x, srcRect.y, srcRect.w, srcRect.h, sx, sy, sw, sh);
+          }
+        } else {
+          // Fallback: no source rect known — draw full SVG scaled to slot
+          ctx.drawImage(flatLayImg, sx, sy, sw, sh);
+        }
+
+        // 3. Draw artwork on top
         if (currentViewHasArtwork) {
-          ctx.globalAlpha = 0.85;
+          ctx.globalAlpha = 0.9;
           ctx.drawImage(img, artX, artY, artW, artH);
           ctx.globalAlpha = 1;
         }
