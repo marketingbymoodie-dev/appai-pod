@@ -789,14 +789,14 @@ export function PatternCustomizer({
 
     // Compute artwork position in preview coords (used for both clipped and unclipped drawing)
     //
-    // Scale reference: (compositeW / numPanels) so the artwork size is expressed as a
-    // fraction of ONE panel width, not the full composite. This makes the scale slider
-    // consistent across front (2 panels), back (1 panel) and hood (2 panels) views —
-    // the same placeScale value produces the same visual artwork-to-panel ratio in all views.
+    // Scale reference: compositeW (the full composite canvas width).
+    // placeScale = 0.4 means the artwork is 40% of the composite width.
+    // For front (compositeW=3616): artW = 3616 * 0.4 = 1446px
+    // For back  (compositeW=3616): artW = 3616 * 0.4 = 1446px
+    // For hood  (compositeW=2490): artW = 2490 * 0.4 = 996px
+    // This is consistent across views and matches the apply logic 1:1.
     const img = motifImgRef.current;
-    const numPanels = Math.max(1, layout.slots.length);
-    const panelRefW = layout.compositeW / numPanels;
-    const artW = panelRefW * currentPlaceScale * scaleToPreview;
+    const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
     const artH = artW * (img.height / img.width);
     const artX = currentPlaceX * scaleToPreview - artW / 2;
     const artY = currentPlaceY * scaleToPreview - artH / 2;
@@ -1088,7 +1088,7 @@ export function PatternCustomizer({
         console.log("  frontLayout slots:", frontLayout.slots.map(s => `${s.position}@x=${s.x},w=${s.w}`).join(", "));
         console.log("  hoodLayout slots:", hoodLayout.slots.map(s => `${s.position}@x=${s.x},w=${s.w}`).join(", "));
         console.log("  placeX:", placeX, "placeY:", placeY, "placeScale:", placeScale);
-        console.log("  frontLayout.compositeW:", frontLayout.compositeW, "numPanels:", frontLayout.slots.length, "panelRefW:", frontLayout.compositeW / Math.max(1, frontLayout.slots.length));
+        console.log("  frontLayout.compositeW:", frontLayout.compositeW, "backLayout.compositeW:", backLayout.compositeW, "hoodLayout.compositeW:", hoodLayout.compositeW);
 
         const panelUrls: { position: string; dataUrl: string }[] = [];
         let primaryDataUrl = "";
@@ -1147,11 +1147,9 @@ export function PatternCustomizer({
               ctx.fillRect(0, 0, W, H);
 
               // The artwork is placed at (useX, useY) in composite coords with scale useScale.
-              // useScale is a fraction of ONE panel width (compositeW / numPanels).
-              // This matches the viewer formula so the visual scale is 1:1 with the print output.
-              const numPanelsInLayout = Math.max(1, layout.slots.length);
-              const panelRefW = layout.compositeW / numPanelsInLayout;
-              const artW = panelRefW * useScale;
+              // useScale is a fraction of compositeW — same reference as the viewer.
+              // artW = compositeW * useScale (e.g. 0.4 = 40% of composite width)
+              const artW = layout.compositeW * useScale;
               const artH = artW * (img.height / img.width);
               // Top-left of artwork in composite coords:
               const artLeft = useX - artW / 2;
@@ -1273,21 +1271,23 @@ export function PatternCustomizer({
           </div>
 
           {/* Live preview canvas */}
-          <div className="flex-1 min-h-0">
+          <div className="shrink-0">
             <p className="text-[10px] text-muted-foreground text-center mb-0.5">
               {mode === "single" ? "Drag to reposition" : mode === "place" ? "Drag artwork to position" : "6\u2033 \u00d7 6\u2033 preview"}
             </p>
-            <div className="w-full h-full rounded border overflow-hidden relative" style={{ minHeight: 80 }}>
+            {/* overflow-visible so tall panels (front) are not clipped at the bottom.
+                The canvas uses w-full + auto height so it never stretches vertically. */}
+            <div className="w-full rounded border overflow-hidden relative">
               {mode === "pattern" && (
                 motifLoaded ? (
                   <canvas
                     ref={patternCanvasRef}
                     width={PREVIEW_PX} height={PREVIEW_PX}
-                    className="w-full h-full"
+                    className="w-full"
                     style={{ display: "block" }}
                   />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-muted/30">
+                  <div className="w-full flex items-center justify-center bg-muted/30" style={{ height: PREVIEW_PX }}>
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   </div>
                 )
@@ -1295,7 +1295,7 @@ export function PatternCustomizer({
               {mode === "single" && (
                 <canvas
                   ref={singleCanvasRef} width={PREVIEW_PX} height={PREVIEW_PX}
-                  className="w-full h-full" style={{ cursor: "grab", display: "block" }}
+                  className="w-full" style={{ cursor: "grab", display: "block" }}
                   onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                 />
@@ -1308,7 +1308,7 @@ export function PatternCustomizer({
                     height={currentLayout.compositeH > 1
                       ? Math.round(currentLayout.compositeH * (PREVIEW_PX / currentLayout.compositeW))
                       : PREVIEW_PX}
-                    className="w-full h-full"
+                    className="w-full"
                     style={{ cursor: isSnapped ? "crosshair" : "grab", display: "block" }}
                     data-place-x={currentPlaceX}
                     data-place-y={currentPlaceY}
@@ -1318,7 +1318,7 @@ export function PatternCustomizer({
                     onMouseLeave={handlePlaceMouseUp}
                   />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-muted/30">
+                  <div className="w-full flex items-center justify-center bg-muted/30" style={{ height: PREVIEW_PX }}>
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   </div>
                 )
@@ -1483,7 +1483,7 @@ export function PatternCustomizer({
                 <div className="shrink-0 space-y-0.5">
                   <div className="flex justify-between items-center">
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Artwork size</Label>
-                    <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}% of panel</span>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}%</span>
                   </div>
                   <Slider
                     min={0.05} max={2.0} step={0.01}
