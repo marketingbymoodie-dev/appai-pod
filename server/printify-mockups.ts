@@ -806,6 +806,33 @@ export async function generatePrintifyMockup(
 
     productId = createResult.productId;
 
+    // Publish the product so Printify triggers mockup image generation.
+    // Without this step product.images stays empty indefinitely.
+    try {
+      const publishRes = await fetch(
+        `${PRINTIFY_API_BASE}/shops/${printifyShopId}/products/${productId}/publish.json`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${printifyApiToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            title: true,
+            description: true,
+            images: true,
+            variants: true,
+            tags: true,
+            keyFeatures: false,
+            shipping_template: false,
+          }),
+        }
+      );
+      console.log(`[Printify] Publish response: ${publishRes.status}`);
+    } catch (pubErr: any) {
+      console.warn(`[Printify] Publish call failed (non-fatal): ${pubErr.message}`);
+    }
+
     const mockupData = await pRetry(
       async () => {
         const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
