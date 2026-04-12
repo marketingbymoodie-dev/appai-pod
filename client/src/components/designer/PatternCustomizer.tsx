@@ -73,6 +73,14 @@ const PREVIEW_INCHES = 6;
 const PRINT_DPI = 150;
 
 /**
+ * Seam bleed in print pixels (~1 cm at 150 DPI).
+ * Each split panel (front_right, front_left, right_hood, left_hood) gets this many
+ * extra pixels of artwork past the seam edge so the artwork remains continuous
+ * across the sewn seam even with slight manufacturing misalignment.
+ */
+const SEAM_BLEED_PX = Math.round(PRINT_DPI / 2.54); // 59 px ≈ 1 cm
+
+/**
  * Snap threshold in CSS pixels — if artwork centre is within this distance
  * of a snap point, snap to it.
  */
@@ -459,7 +467,7 @@ export function PatternCustomizer({
     const bl = buildCompositeLayout(panelPositions, "back");
     return bl.compositeH > 1 ? bl.compositeH * 0.35 : 0;
   });
-  const [backPlaceScale, setBackPlaceScale] = useState(initialPlacement?.backPlaceScale ?? 0.4);
+  const [backPlaceScale, setBackPlaceScale] = useState(initialPlacement?.backPlaceScale ?? 0.4); // 40% of back panel width
   // Back panel artwork: defaults to false (no artwork on back — just solid bgColor)
   const [backHasArtwork, setBackHasArtwork] = useState(initialPlacement?.backHasArtwork ?? false);
   const [backSameAsFront, setBackSameAsFront] = useState(initialPlacement?.backSameAsFront ?? false);
@@ -780,8 +788,15 @@ export function PatternCustomizer({
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Compute artwork position in preview coords (used for both clipped and unclipped drawing)
+    //
+    // Scale reference: (compositeW / numPanels) so the artwork size is expressed as a
+    // fraction of ONE panel width, not the full composite. This makes the scale slider
+    // consistent across front (2 panels), back (1 panel) and hood (2 panels) views —
+    // the same placeScale value produces the same visual artwork-to-panel ratio in all views.
     const img = motifImgRef.current;
-    const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
+    const numPanels = Math.max(1, layout.slots.length);
+    const panelRefW = layout.compositeW / numPanels;
+    const artW = panelRefW * currentPlaceScale * scaleToPreview;
     const artH = artW * (img.height / img.width);
     const artX = currentPlaceX * scaleToPreview - artW / 2;
     const artY = currentPlaceY * scaleToPreview - artH / 2;
@@ -1073,7 +1088,7 @@ export function PatternCustomizer({
         console.log("  frontLayout slots:", frontLayout.slots.map(s => `${s.position}@x=${s.x},w=${s.w}`).join(", "));
         console.log("  hoodLayout slots:", hoodLayout.slots.map(s => `${s.position}@x=${s.x},w=${s.w}`).join(", "));
         console.log("  placeX:", placeX, "placeY:", placeY, "placeScale:", placeScale);
-        console.log("  frontLayout.compositeW:", frontLayout.compositeW);
+        console.log("  frontLayout.compositeW:", frontLayout.compositeW, "numPanels:", frontLayout.slots.length, "panelRefW:", frontLayout.compositeW / Math.max(1, frontLayout.slots.length));
 
         const panelUrls: { position: string; dataUrl: string }[] = [];
         let primaryDataUrl = "";
@@ -1132,34 +1147,38 @@ export function PatternCustomizer({
               ctx.fillRect(0, 0, W, H);
 
               // The artwork is placed at (useX, useY) in composite coords with scale useScale.
-              // useScale is a fraction of composite width (e.g. 0.4 = 40% of compositeW)
-              // The artwork's pixel size in composite coords:
-              const artW = layout.compositeW * useScale;
+              // useScale is a fraction of ONE panel width (compositeW / numPanels).
+              // This matches the viewer formula so the visual scale is 1:1 with the print output.
+              const numPanelsInLayout = Math.max(1, layout.slots.length);
+              const panelRefW = layout.compositeW / numPanelsInLayout;
+              const artW = panelRefW * useScale;
               const artH = artW * (img.height / img.width);
               // Top-left of artwork in composite coords:
               const artLeft = useX - artW / 2;
               const artTop  = useY - artH / 2;
 
-              // This panel occupies [slot.x .. slot.x + slot.w] × [slot.y .. slot.y + slot.h]
-              // in composite coords. We need to draw the portion of the artwork that falls
-              // within this panel's area, offset by the panel's position in the composite.
-              //
-              // Artwork position relative to this panel's top-left:
-              //   relX = artLeft - slot.x
-              //   relY = artTop  - slot.y
-              //
-              // This naturally handles seam bleed:
-              //   - For front_right (slot.x=0): if artwork centred at seam (useX=compositeW/2),
-              //     relX = (compositeW/2 - artW/2) - 0 = compositeW/2 - artW/2
-              //     The artwork extends from relX to relX+artW, crossing the right edge (W).
-              //     Canvas clips at W, so only the left half of the artwork is visible.
-              //   - For front_left (slot.x=compositeW/2): relX = -artW/2
-              //     The artwork starts before the left edge (seam), extending rightward.
-              //     Canvas clips at x=0, so only the right half of the artwork is visible.
-              const relX = artLeft - slot.x;
+              // Seam bleed: panels that sit at a seam edge get SEAM_BLEED_PX extra pixels
+              // of artwork past the seam so the image remains continuous across the sewn join.
+              // - Panels whose seam is on the RIGHT edge (slot.x === 0, i.e. first panel):
+              //     shift artwork LEFT by bleed → artwork extends past the right edge
+              // - Panels whose seam is on the LEFT edge (slot.x > 0, i.e. not the first panel):
+              //     shift artwork RIGHT by bleed → artwork extends past the left edge
+              // - Single-panel views (back): no seam, no bleed.
+              let bleedShift = 0;
+              if (layout.slots.length > 1) {
+                if (slot.x === 0) {
+                  // Seam on RIGHT edge — shift artwork left so it bleeds past right edge
+                  bleedShift = -SEAM_BLEED_PX;
+                } else {
+                  // Seam on LEFT edge — shift artwork right so it bleeds past left edge
+                  bleedShift = SEAM_BLEED_PX;
+                }
+              }
+
+              const relX = artLeft - slot.x + bleedShift;
               const relY = artTop  - slot.y;
 
-              console.log(`[Place on Item] Panel "${panel.position}": slot.x=${slot.x}, artLeft=${artLeft.toFixed(0)}, relX=${relX.toFixed(0)}, artW=${artW.toFixed(0)}, canvasW=${W}`);
+              console.log(`[Place on Item] Panel "${panel.position}": slot.x=${slot.x}, artLeft=${artLeft.toFixed(0)}, relX=${relX.toFixed(0)}, artW=${artW.toFixed(0)}, canvasW=${W}, bleedShift=${bleedShift}`);
 
               ctx.drawImage(img, relX, relY, artW, artH);
             }
@@ -1464,10 +1483,10 @@ export function PatternCustomizer({
                 <div className="shrink-0 space-y-0.5">
                   <div className="flex justify-between items-center">
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Artwork size</Label>
-                    <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}%</span>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{Math.round(currentPlaceScale * 100)}% of panel</span>
                   </div>
                   <Slider
-                    min={0.05} max={1.5} step={0.01}
+                    min={0.05} max={2.0} step={0.01}
                     value={[currentPlaceScale]}
                     onValueChange={([v]) => {
                       if (placeView === "front") setPlaceScale(v);
