@@ -282,11 +282,12 @@ async function cacheMockupImages(
       cachedUrls.push(result.value);
       cachedImages.push({ url: result.value, label: original.label });
     } else {
-      // IMPORTANT: Do NOT fall back to original.url here.
-      // The original URL is a Printify CDN URL that requires the temp product to exist.
-      // After deleteProduct() runs, that URL returns 400/404.
-      // If caching failed, skip this view entirely rather than returning a broken URL.
-      console.warn(`[Mockup Cache] Skipping view "${original.label}" — caching failed and original URL would be invalid after product deletion`);
+      // Caching failed — fall back to the original Printify URL.
+      // These images-api.printify.com/mockup URLs remain accessible even after the temp
+      // product is deleted (confirmed by working designs in the database).
+      console.warn(`[Mockup Cache] Caching failed for view "${original.label}" — using original Printify URL as fallback`);
+      cachedUrls.push(original.url);
+      cachedImages.push({ url: original.url, label: original.label });
     }
   }
 
