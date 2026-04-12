@@ -191,7 +191,7 @@ function selectPreferredViews(images: MockupImage[]): MockupImage[] {
   return selected;
 }
 
-async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Promise<string | null> {
+async function cacheMockupToStorage(printifyUrl: string, cacheKey: string, apiToken?: string): Promise<string | null> {
   const parts = cacheKey.split("_");
   const designId = parts[0] || cacheKey;
   // Include variant (v{id}), transform (s/x/y) and label in the view name so each
@@ -210,7 +210,9 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
       await sleep(delay);
     }
     try {
-      const response = await fetch(printifyUrl);
+      const fetchHeaders: Record<string, string> = {};
+      if (apiToken) fetchHeaders["Authorization"] = `Bearer ${apiToken}`;
+      const response = await fetch(printifyUrl, { headers: fetchHeaders });
       if (!response.ok) {
         console.warn(`[Mockup Cache] Attempt ${attempt + 1}: Failed to download mockup (${response.status}): ${printifyUrl.substring(0, 80)}`);
         if (attempt < MAX_DOWNLOAD_RETRIES) continue;
@@ -264,12 +266,13 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string): Prom
 async function cacheMockupImages(
   mockupData: { urls: string[]; images: MockupImage[] },
   cacheKeys: string[],
+  apiToken?: string,
 ): Promise<{ urls: string[]; images: MockupImage[] }> {
   const cachedUrls: string[] = [];
   const cachedImages: MockupImage[] = [];
 
   const results = await Promise.allSettled(
-    mockupData.images.map((img, i) => cacheMockupToStorage(img.url, cacheKeys[i]))
+    mockupData.images.map((img, i) => cacheMockupToStorage(img.url, cacheKeys[i], apiToken))
   );
 
    for (let i = 0; i < mockupData.images.length; i++) {
@@ -838,7 +841,7 @@ export async function generatePrintifyMockup(
       buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label, scale, x, y, doubleSided || wrapAround)
     );
 
-    const cached = await cacheMockupImages(selectedData, cacheKeys);
+    const cached = await cacheMockupImages(selectedData, cacheKeys, printifyApiToken);
 
     return {
       success: true,
