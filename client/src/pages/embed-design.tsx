@@ -977,6 +977,7 @@ export default function EmbedDesign() {
             baseMockupImages: dc.baseMockupImages || undefined,
             isAllOverPrint: dc.isAllOverPrint || false,
             placeholderPositions: dc.placeholderPositions || [],
+            panelFlatLayImages: dc.panelFlatLayImages || {},
             colorLabel: dc.colorLabel || "Color",
           });
           if (dc.frameColors?.length > 0) {
@@ -1105,6 +1106,7 @@ export default function EmbedDesign() {
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             placeholderPositions: designerConfig.placeholderPositions || [],
+            panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
           });
 
