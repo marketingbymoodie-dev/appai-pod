@@ -687,12 +687,22 @@ export async function generatePrintifyMockup(
         try {
           const b64 = extractBase64FromDataUrl(dataUrl);
           let buf = Buffer.from(b64, "base64");
-          // Do NOT resize per-panel images — Printify needs the exact panel dimensions
-          // (e.g. 1476×4500px for leggings legs). Resizing causes Printify to stretch
-          // the image to fill the panel, distorting the design.
-          // Convert to PNG to ensure consistent format and strip any metadata.
-          // Note: input may be JPEG (client sends JPEG to reduce payload size) — sharp handles both.
-          buf = await sharp(buf).png().toBuffer();
+          // Cap panel images to max 2000px on longest side for mockup generation.
+          // Printify's mockup renderer has a hard pixel-count limit (~6GB uncompressed).
+          // Full-resolution images (e.g. 4469×4693) exceed this limit and cause 400 errors.
+          // The print files are uploaded separately at full resolution when the customer orders,
+          // so this resize only affects the temporary mockup product — not print quality.
+          const MOCKUP_MAX_PX = 2000;
+          const meta = await sharp(buf).metadata();
+          const longestSide = Math.max(meta.width || 0, meta.height || 0);
+          if (longestSide > MOCKUP_MAX_PX) {
+            buf = await sharp(buf)
+              .resize({ width: MOCKUP_MAX_PX, height: MOCKUP_MAX_PX, fit: 'inside', withoutEnlargement: true })
+              .png()
+              .toBuffer();
+          } else {
+            buf = await sharp(buf).png().toBuffer();
+          }
           const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
           if (uploaded) {
             panelImageIds!.set(position, uploaded.id);
