@@ -106,11 +106,20 @@ function buildCompositeLayout(
     return { compositeW: 1, compositeH: 1, slots: [] };
   }
 
-  // Sort: "left" / "right" pairs — left first
+  // Sort: for front view, "right" panel goes first (left side of composite) because
+  // on a zip hoodie, front_right is the panel to the RIGHT of the zip as you look at it,
+  // which sits on the LEFT half of the front composite. This puts the zip seam in the centre.
+  // For back view, "left" panel goes first (standard left-to-right reading order).
   const sorted = [...viewPanels].sort((a, b) => {
-    const aL = a.position.includes("left") || a.position.includes("_l") ? 0 : 1;
-    const bL = b.position.includes("left") || b.position.includes("_l") ? 0 : 1;
-    return aL - bL;
+    const aIsLeft = a.position.includes("left") || a.position.includes("_l");
+    const bIsLeft = b.position.includes("left") || b.position.includes("_l");
+    if (view === "front") {
+      // right panel first (left side of composite = zip seam in centre)
+      return aIsLeft ? 1 : bIsLeft ? -1 : 0;
+    } else {
+      // left panel first (standard order)
+      return aIsLeft ? -1 : bIsLeft ? 1 : 0;
+    }
   });
 
   // Place panels side-by-side
@@ -271,6 +280,12 @@ export function PatternCustomizer({
   const placeDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const motifImgRef = useRef<HTMLImageElement | null>(null);
   const [motifLoaded, setMotifLoaded] = useState(false);
+  // Refs to hold latest values for use inside memoised drag callbacks (avoids stale closures)
+  const placeViewRef = useRef(placeView);
+  const backSameAsFrontRef = useRef(backSameAsFront);
+  const compositeWRef = useRef(1);
+  useEffect(() => { placeViewRef.current = placeView; }, [placeView]);
+  useEffect(() => { backSameAsFrontRef.current = backSameAsFront; }, [backSameAsFront]);
 
   // ── Derived tile sizes ─────────────────────────────────────────────────────
   const previewTileW  = PREVIEW_PX / tilesAcross;
@@ -341,6 +356,9 @@ export function PatternCustomizer({
   const currentPlaceX = placeView === "front" ? placeX : (backSameAsFront ? placeX : backPlaceX);
   const currentPlaceY = placeView === "front" ? placeY : (backSameAsFront ? placeY : backPlaceY);
   const currentPlaceScale = placeView === "front" ? placeScale : (backSameAsFront ? placeScale : backPlaceScale);
+
+  // Keep compositeWRef in sync so drag handler always has the latest value
+  compositeWRef.current = currentLayout.compositeW;
 
   const setCurrentPlace = (x: number, y: number) => {
     if (placeView === "front") { setPlaceX(x); setPlaceY(y); }
@@ -468,30 +486,40 @@ export function PatternCustomizer({
   }, []);
   const handleMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
-  // Drag handlers for Place on Item mode
+  // Drag handlers for Place on Item mode.
+  // IMPORTANT: these use refs (placeViewRef, backSameAsFrontRef, compositeWRef) instead of
+  // closure values to avoid the stale-closure bug where subsequent drags use outdated state.
   const handlePlaceMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
+    // Read current position directly from the canvas data attribute (set during render).
+    // HTML data-place-x becomes dataset.placeX in JS.
+    const canvas = placeCanvasRef.current;
+    const origX = canvas ? parseFloat(canvas.dataset.placeX || "0") : 0;
+    const origY = canvas ? parseFloat(canvas.dataset.placeY || "0") : 0;
     placeDragRef.current = {
       startX: e.clientX - rect.left,
       startY: e.clientY - rect.top,
-      origX: currentPlaceX,
-      origY: currentPlaceY,
+      origX,
+      origY,
     };
-  }, [currentPlaceX, currentPlaceY]);
+  }, []);
 
   const handlePlaceMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!placeDragRef.current || !placeCanvasRef.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const layout = currentLayout;
-    // Use actual rendered canvas width for correct drag-to-composite mapping
-    const cssToComposite = layout.compositeW / rect.width;
+    // Use refs for fresh values — avoids stale closure
+    const compositeW = compositeWRef.current;
+    const cssToComposite = compositeW / rect.width;
     const dx = (e.clientX - rect.left - placeDragRef.current.startX) * cssToComposite;
     const dy = (e.clientY - rect.top  - placeDragRef.current.startY) * cssToComposite;
-    setCurrentPlace(
-      placeDragRef.current.origX + dx,
-      placeDragRef.current.origY + dy,
-    );
-  }, [currentLayout, placeView, backSameAsFront, currentPlaceX, currentPlaceY]);
+    const newX = placeDragRef.current.origX + dx;
+    const newY = placeDragRef.current.origY + dy;
+    if (placeViewRef.current === "front") {
+      setPlaceX(newX); setPlaceY(newY);
+    } else if (!backSameAsFrontRef.current) {
+      setBackPlaceX(newX); setBackPlaceY(newY);
+    }
+  }, []);
 
   const handlePlaceMouseUp = useCallback(() => { placeDragRef.current = null; }, []);
 
@@ -751,6 +779,8 @@ export function PatternCustomizer({
                       : PREVIEW_PX}
                     className="w-full h-full"
                     style={{ cursor: "grab", display: "block" }}
+                    data-place-x={currentPlaceX}
+                    data-place-y={currentPlaceY}
                     onMouseDown={handlePlaceMouseDown}
                     onMouseMove={handlePlaceMouseMove}
                     onMouseUp={handlePlaceMouseUp}
