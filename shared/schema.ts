@@ -262,6 +262,12 @@ export const productTypes = pgTable("product_types", {
   printifyCosts: text("printify_costs").default("{}"),
   isAllOverPrint: boolean("is_all_over_print").notNull().default(false),
   placeholderPositions: text("placeholder_positions").default("[]"),
+  /**
+   * Flat-lay SVG/PNG URLs for each panel position — used as panel backgrounds in the
+   * Place on Item viewer. Stored as JSON object: { "front_right": "https://...", ... }
+   * Populated at product import time from the Printify blueprint variants `views` field.
+   */
+  panelFlatLayImages: text("panel_flat_lay_images").default("{}"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

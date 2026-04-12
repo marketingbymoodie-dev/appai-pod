@@ -72,6 +72,12 @@ const PREVIEW_INCHES = 6;
 /** Printify DPI for AOP panels */
 const PRINT_DPI = 150;
 
+/**
+ * Snap threshold in CSS pixels — if artwork centre is within this distance
+ * of a snap point, snap to it.
+ */
+const SNAP_THRESHOLD_CSS = 8;
+
 // ── Panel group helpers ───────────────────────────────────────────────────────
 
 /**
@@ -153,18 +159,6 @@ function drawPanelShape(
     const armW      = w * 0.12;
     const armH      = h * 0.28;
     const armTop    = h * 0.06;
-    ctx.moveTo(x, y + shoulderH);                                       // top-left
-    ctx.lineTo(x + w / 2 - neckW, y);                                   // top, left of neck
-    ctx.bezierCurveTo(x + w / 2 - neckW * 0.3, y, x + w / 2, y + neckDepth, x + w / 2, y + neckDepth); // left neck curve
-    ctx.bezierCurveTo(x + w / 2, y + neckDepth, x + w / 2 + neckW * 0.3, y, x + w / 2 + neckW, y); // right neck curve
-    ctx.lineTo(x + w, y + shoulderH);                                   // top-right
-    ctx.lineTo(x + w, y + armTop + armH);                               // right side, below armhole
-    ctx.bezierCurveTo(x + w, y + armTop + armH * 0.5, x + w - armW, y + armTop + armH * 0.3, x + w - armW, y + armTop + armH * 0.1);
-    ctx.bezierCurveTo(x + w - armW, y + armTop, x + w, y + armTop, x + w, y + shoulderH); // right armhole
-    // Continue down right side (already at top-right after armhole)
-    // Redo: draw full outline
-    ctx.closePath();
-    // Redraw properly
     ctx.beginPath();
     ctx.moveTo(x, y + shoulderH);
     ctx.lineTo(x + w / 2 - neckW, y);
@@ -182,7 +176,6 @@ function drawPanelShape(
   } else if (p === "right_hood") {
     // Right hood panel: arch shape, flat bottom, curved top, straight right side (seam)
     // The right hood is the LEFT panel in the composite (seam on right edge)
-    const archH = h * 0.65;  // how high the arch rises
     ctx.moveTo(x, y + h);                                               // bottom-left
     ctx.lineTo(x + w, y + h);                                           // bottom-right (seam)
     ctx.lineTo(x + w, y + h * 0.15);                                    // right side up to arch start
@@ -235,8 +228,8 @@ function buildCompositeLayout(
   // look at it, which sits on the LEFT half of the composite. This puts the seam in the centre.
   // For back view, "left" panel goes first (standard left-to-right reading order).
   const sorted = [...viewPanels].sort((a, b) => {
-    const aIsLeft = a.position.includes("left") || a.position.includes("_l");
-    const bIsLeft = b.position.includes("left") || b.position.includes("_l");
+    const aIsLeft = a.position.toLowerCase().includes("left");
+    const bIsLeft = b.position.toLowerCase().includes("left");
     if (view === "front" || view === "hood") {
       // right panel first (left side of composite = seam in centre)
       return aIsLeft ? 1 : bIsLeft ? -1 : 0;
@@ -273,6 +266,12 @@ interface PatternCustomizerProps {
   hasPairedPanels?: boolean;
   /** Full list of panel positions with their exact Printify pixel dimensions */
   panelPositions?: { position: string; width: number; height: number }[];
+  /**
+   * Optional flat-lay SVG/PNG URLs for each panel position — used as panel backgrounds
+   * in the Place on Item viewer. Keyed by Printify position name.
+   * e.g. { "front_right": "https://images.printify.com/api/catalog/xxx.svg" }
+   */
+  panelFlatLayImages?: Record<string, string>;
   onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
   isLoading?: boolean;
   /** Optional fetch override — pass safeFetch from embed-design to bypass Shopify service worker */
@@ -338,6 +337,7 @@ export function PatternCustomizer({
   productHeight = 2000,
   hasPairedPanels = false,
   panelPositions = [],
+  panelFlatLayImages = {},
   onApply,
   isLoading = false,
   fetchFn,
@@ -396,6 +396,9 @@ export function PatternCustomizer({
   const [hoodPlaceScale, setHoodPlaceScale] = useState(0.7); // hoods are smaller panels, 70% fills nicely
   const [hoodHasArtwork, setHoodHasArtwork] = useState(false);
 
+  // Snap indicator state — true when artwork is snapped to a guide line
+  const [isSnapped, setIsSnapped] = useState(false);
+
   const [mirrorLegs, setMirrorLegs] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
   const [error,      setError]      = useState<string | null>(null);
@@ -419,8 +422,33 @@ export function PatternCustomizer({
   const placeViewRef = useRef(placeView);
   const backSameAsFrontRef = useRef(backSameAsFront);
   const compositeWRef = useRef(1);
+  const compositeHRef = useRef(1);
+  const currentLayoutRef = useRef<ReturnType<typeof buildCompositeLayout> | null>(null);
   useEffect(() => { placeViewRef.current = placeView; }, [placeView]);
   useEffect(() => { backSameAsFrontRef.current = backSameAsFront; }, [backSameAsFront]);
+
+  // Flat-lay images loaded state — track which SVGs have been loaded as Image objects
+  const flatLayImgRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const [flatLayLoaded, setFlatLayLoaded] = useState(0); // increment to trigger re-render
+
+  // Load flat-lay images when panelFlatLayImages changes
+  useEffect(() => {
+    const urls = Object.values(panelFlatLayImages);
+    if (urls.length === 0) return;
+    let loaded = 0;
+    for (const [pos, url] of Object.entries(panelFlatLayImages)) {
+      if (flatLayImgRef.current.has(pos)) { loaded++; continue; }
+      const img = new window.Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        flatLayImgRef.current.set(pos, img);
+        loaded++;
+        if (loaded === urls.length) setFlatLayLoaded(n => n + 1);
+      };
+      img.onerror = () => { loaded++; if (loaded === urls.length) setFlatLayLoaded(n => n + 1); };
+      img.src = url;
+    }
+  }, [panelFlatLayImages]);
 
   // ── Derived tile sizes ─────────────────────────────────────────────────────
   const previewTileW  = PREVIEW_PX / tilesAcross;
@@ -510,8 +538,10 @@ export function PatternCustomizer({
     (placeView === "back" && backHasArtwork) ||
     (placeView === "hood" && hoodHasArtwork);
 
-  // Keep compositeWRef in sync so drag handler always has the latest value
+  // Keep refs in sync so drag handler always has the latest value
   compositeWRef.current = currentLayout.compositeW;
+  compositeHRef.current = currentLayout.compositeH;
+  currentLayoutRef.current = currentLayout;
 
   const setCurrentPlace = (x: number, y: number) => {
     if (placeView === "front") { setPlaceX(x); setPlaceY(y); }
@@ -519,25 +549,26 @@ export function PatternCustomizer({
     else if (placeView === "hood") { setHoodPlaceX(x); setHoodPlaceY(y); }
   };
 
-  // Initialise placement to centre of composite when layout changes
+  // Initialise placement to centre of composite when layout first becomes available
+  // (only set if current value is 0 — i.e. panelPositions was empty at mount time)
   useEffect(() => {
-    if (frontLayout.compositeW > 1) {
+    if (frontLayout.compositeW > 1 && placeX === 0) {
       setPlaceX(frontLayout.compositeW / 2);
-      setPlaceY(frontLayout.compositeH * 0.35); // upper-chest area
+      setPlaceY(frontLayout.compositeH * 0.35);
     }
-  }, [frontLayout.compositeW, frontLayout.compositeH]);
+  }, [frontLayout.compositeW]);
   useEffect(() => {
-    if (backLayout.compositeW > 1) {
+    if (backLayout.compositeW > 1 && backPlaceX === 0) {
       setBackPlaceX(backLayout.compositeW / 2);
       setBackPlaceY(backLayout.compositeH * 0.35);
     }
-  }, [backLayout.compositeW, backLayout.compositeH]);
+  }, [backLayout.compositeW]);
   useEffect(() => {
-    if (hoodLayout.compositeW > 1) {
+    if (hoodLayout.compositeW > 1 && hoodPlaceX === 0) {
       setHoodPlaceX(hoodLayout.compositeW / 2);
       setHoodPlaceY(hoodLayout.compositeH * 0.45);
     }
-  }, [hoodLayout.compositeW, hoodLayout.compositeH]);
+  }, [hoodLayout.compositeW]);
 
   // Live Place on Item canvas
   useEffect(() => {
@@ -569,54 +600,87 @@ export function PatternCustomizer({
     const artX = currentPlaceX * scaleToPreview - artW / 2;
     const artY = currentPlaceY * scaleToPreview - artH / 2;
 
-    // Draw each panel with garment shape clip
+    // Draw each panel with garment shape clip (or flat-lay image background)
     for (const slot of layout.slots) {
       const sx = slot.x * scaleToPreview;
       const sy = slot.y * scaleToPreview;
       const sw = slot.w * scaleToPreview;
       const sh = slot.h * scaleToPreview;
 
-      ctx.save();
+      const flatLayImg = flatLayImgRef.current.get(slot.position);
 
-      // Build clip path using garment shape
-      drawPanelShape(ctx, slot.position, sx, sy, sw, sh);
-      ctx.clip();
+      if (flatLayImg) {
+        // ── Flat-lay SVG available ────────────────────────────────────────────
+        // The SVG already contains the correct panel shape with bleed zone and
+        // print area. Draw it as the background using a simple rect clip.
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(sx, sy, sw, sh);
+        ctx.clip();
+        ctx.drawImage(flatLayImg, sx, sy, sw, sh);
 
-      // Panel background fill
-      ctx.fillStyle = bgColor || "#ffffff";
-      ctx.fillRect(sx, sy, sw, sh);
+        // Draw artwork on top of the flat-lay SVG (semi-transparent so the
+        // sew lines are still visible through the artwork)
+        if (currentViewHasArtwork) {
+          ctx.globalAlpha = 0.85;
+          ctx.drawImage(img, artX, artY, artW, artH);
+          ctx.globalAlpha = 1;
+        }
+        ctx.restore();
+      } else {
+        // ── No flat-lay image: use garment shape clip + solid fill ────────────
+        ctx.save();
+        drawPanelShape(ctx, slot.position, sx, sy, sw, sh);
+        ctx.clip();
+        ctx.fillStyle = bgColor || "#ffffff";
+        ctx.fillRect(sx, sy, sw, sh);
+        if (currentViewHasArtwork) {
+          ctx.globalAlpha = 0.92;
+          ctx.drawImage(img, artX, artY, artW, artH);
+          ctx.globalAlpha = 1;
+        }
+        ctx.restore();
 
-      // Draw artwork within this panel's clip (only if artwork is enabled for this view)
-      if (currentViewHasArtwork) {
-        ctx.globalAlpha = 0.92;
-        ctx.drawImage(img, artX, artY, artW, artH);
-        ctx.globalAlpha = 1;
+        // Draw panel outline (garment shape stroke)
+        ctx.save();
+        drawPanelShape(ctx, slot.position, sx, sy, sw, sh);
+        ctx.strokeStyle = "#94a3b8";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
       }
-
-      ctx.restore();
-
-      // Draw panel outline (garment shape stroke) on top of clip
-      ctx.save();
-      drawPanelShape(ctx, slot.position, sx, sy, sw, sh);
-      ctx.strokeStyle = "#94a3b8";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.restore();
     }
 
-    // Draw centre seam line (dashed red) between adjacent panels
+    // Draw centre seam line (dashed red, brighter when snapped) between adjacent panels
     const seamXs = new Set(layout.slots.map(s => s.x).filter(x => x > 0));
     seamXs.forEach(seamX => {
       const px = seamX * scaleToPreview;
       ctx.save();
       ctx.setLineDash([4, 3]);
-      ctx.strokeStyle = "rgba(239,68,68,0.7)";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = isSnapped ? "rgba(239,68,68,1.0)" : "rgba(239,68,68,0.7)";
+      ctx.lineWidth = isSnapped ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(px, 0); ctx.lineTo(px, canvas.height);
       ctx.stroke();
       ctx.restore();
     });
+
+    // Draw panel centre guide lines (faint blue dashed) for snap-to-panel-centre
+    for (const slot of layout.slots) {
+      const panelCentreX = (slot.x + slot.w / 2) * scaleToPreview;
+      const artCentreX = currentPlaceX * scaleToPreview;
+      const isSnapToPanelCentre = Math.abs(artCentreX - panelCentreX) < 3;
+      if (isSnapToPanelCentre) {
+        ctx.save();
+        ctx.setLineDash([3, 4]);
+        ctx.strokeStyle = "rgba(59,130,246,0.8)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(panelCentreX, 0); ctx.lineTo(panelCentreX, canvas.height);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
 
     // Draw artwork bounding box (blue dashed) if artwork is shown
     if (currentViewHasArtwork) {
@@ -633,7 +697,7 @@ export function PatternCustomizer({
       ctx.fillText("No artwork (solid colour)", canvas.width / 2, canvas.height / 2);
     }
 
-  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor, backHasArtwork, hoodHasArtwork, currentViewHasArtwork]);
+  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor, backHasArtwork, hoodHasArtwork, currentViewHasArtwork, isSnapped, flatLayLoaded]);
 
   // Drag handlers for single-image mode
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -661,7 +725,6 @@ export function PatternCustomizer({
   const handlePlaceMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     // Read current position directly from the canvas data attribute (set during render).
-    // HTML data-place-x becomes dataset.placeX in JS.
     const canvas = placeCanvasRef.current;
     const origX = canvas ? parseFloat(canvas.dataset.placeX || "0") : 0;
     const origY = canvas ? parseFloat(canvas.dataset.placeY || "0") : 0;
@@ -678,21 +741,48 @@ export function PatternCustomizer({
     const rect = e.currentTarget.getBoundingClientRect();
     // Use refs for fresh values — avoids stale closure
     const compositeW = compositeWRef.current;
+    const compositeH = compositeHRef.current;
     const cssToComposite = compositeW / rect.width;
-    const dx = (e.clientX - rect.left - placeDragRef.current.startX) * cssToComposite;
-    const dy = (e.clientY - rect.top  - placeDragRef.current.startY) * cssToComposite;
-    const newX = placeDragRef.current.origX + dx;
-    const newY = placeDragRef.current.origY + dy;
+    const rawX = placeDragRef.current.origX + (e.clientX - rect.left - placeDragRef.current.startX) * cssToComposite;
+    const rawY = placeDragRef.current.origY + (e.clientY - rect.top  - placeDragRef.current.startY) * cssToComposite;
+
+    // ── Snap-to-centre logic ──────────────────────────────────────────────────
+    // Build snap points: seam (compositeW/2) + each panel's horizontal centre
+    const layout = currentLayoutRef.current;
+    const snapThresholdComposite = SNAP_THRESHOLD_CSS * cssToComposite;
+    let snappedX = rawX;
+    let didSnap = false;
+
+    if (layout) {
+      // Seam snap points (x-coords where adjacent panels meet)
+      const snapXs: number[] = [compositeW / 2]; // seam
+      for (const slot of layout.slots) {
+        snapXs.push(slot.x + slot.w / 2); // panel centre
+      }
+      for (const snapX of snapXs) {
+        if (Math.abs(rawX - snapX) < snapThresholdComposite) {
+          snappedX = snapX;
+          didSnap = true;
+          break;
+        }
+      }
+    }
+
+    setIsSnapped(didSnap);
+
     if (placeViewRef.current === "front") {
-      setPlaceX(newX); setPlaceY(newY);
+      setPlaceX(snappedX); setPlaceY(rawY);
     } else if (placeViewRef.current === "hood") {
-      setHoodPlaceX(newX); setHoodPlaceY(newY);
+      setHoodPlaceX(snappedX); setHoodPlaceY(rawY);
     } else if (!backSameAsFrontRef.current) {
-      setBackPlaceX(newX); setBackPlaceY(newY);
+      setBackPlaceX(snappedX); setBackPlaceY(rawY);
     }
   }, []);
 
-  const handlePlaceMouseUp = useCallback(() => { placeDragRef.current = null; }, []);
+  const handlePlaceMouseUp = useCallback(() => {
+    placeDragRef.current = null;
+    setIsSnapped(false);
+  }, []);
 
   // Remove background
   const handleRemoveBg = async () => {
@@ -756,7 +846,11 @@ export function PatternCustomizer({
       // ── Place on Item mode ─────────────────────────────────────────────────
       //
       // For each panel:
-      //   - Front/back panels: crop the artwork at the panel's position within the composite
+      //   - Front/back/hood panels: crop the artwork at the panel's position within the composite.
+      //     The artwork is placed at (useX, useY) in composite coords with scale useScale.
+      //     The panel canvas is exactly W×H pixels (Printify's print dimensions).
+      //     The artwork is drawn at the correct offset relative to the panel's position in the
+      //     composite, so the seam edge naturally bleeds past the canvas edge.
       //   - Accent panels: fill with accentColor solid colour
       //
       if (mode === "place") {
@@ -764,6 +858,13 @@ export function PatternCustomizer({
           panelPositions.length > 0
             ? panelPositions
             : [{ position: "default", width: productWidth, height: productHeight }];
+
+        // Debug: log panel layout to help verify sort order
+        console.log("[Place on Item] Panel layout debug:");
+        console.log("  frontLayout slots:", frontLayout.slots.map(s => `${s.position}@x=${s.x},w=${s.w}`).join(", "));
+        console.log("  hoodLayout slots:", hoodLayout.slots.map(s => `${s.position}@x=${s.x},w=${s.w}`).join(", "));
+        console.log("  placeX:", placeX, "placeY:", placeY, "placeScale:", placeScale);
+        console.log("  frontLayout.compositeW:", frontLayout.compositeW);
 
         const panelUrls: { position: string; dataUrl: string }[] = [];
         let primaryDataUrl = "";
@@ -814,14 +915,16 @@ export function PatternCustomizer({
             const slot = layout.slots.find(s => s.position === panel.position);
             if (!slot) {
               // Panel not in layout — fill with bg colour
-              if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+              ctx.fillStyle = bgColor || "#ffffff";
+              ctx.fillRect(0, 0, W, H);
             } else {
               // Fill background
-              if (bgColor) { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, W, H); }
+              ctx.fillStyle = bgColor || "#ffffff";
+              ctx.fillRect(0, 0, W, H);
 
               // The artwork is placed at (useX, useY) in composite coords with scale useScale.
-              // The artwork's pixel size in composite coords:
               // useScale is a fraction of composite width (e.g. 0.4 = 40% of compositeW)
+              // The artwork's pixel size in composite coords:
               const artW = layout.compositeW * useScale;
               const artH = artW * (img.height / img.width);
               // Top-left of artwork in composite coords:
@@ -833,8 +936,21 @@ export function PatternCustomizer({
               // within this panel's area, offset by the panel's position in the composite.
               //
               // Artwork position relative to this panel's top-left:
+              //   relX = artLeft - slot.x
+              //   relY = artTop  - slot.y
+              //
+              // This naturally handles seam bleed:
+              //   - For front_right (slot.x=0): if artwork centred at seam (useX=compositeW/2),
+              //     relX = (compositeW/2 - artW/2) - 0 = compositeW/2 - artW/2
+              //     The artwork extends from relX to relX+artW, crossing the right edge (W).
+              //     Canvas clips at W, so only the left half of the artwork is visible.
+              //   - For front_left (slot.x=compositeW/2): relX = -artW/2
+              //     The artwork starts before the left edge (seam), extending rightward.
+              //     Canvas clips at x=0, so only the right half of the artwork is visible.
               const relX = artLeft - slot.x;
               const relY = artTop  - slot.y;
+
+              console.log(`[Place on Item] Panel "${panel.position}": slot.x=${slot.x}, artLeft=${artLeft.toFixed(0)}, relX=${relX.toFixed(0)}, artW=${artW.toFixed(0)}, canvasW=${W}`);
 
               ctx.drawImage(img, relX, relY, artW, artH);
             }
@@ -965,7 +1081,7 @@ export function PatternCustomizer({
                       ? Math.round(currentLayout.compositeH * (PREVIEW_PX / currentLayout.compositeW))
                       : PREVIEW_PX}
                     className="w-full h-full"
-                    style={{ cursor: "grab", display: "block" }}
+                    style={{ cursor: isSnapped ? "crosshair" : "grab", display: "block" }}
                     data-place-x={currentPlaceX}
                     data-place-y={currentPlaceY}
                     onMouseDown={handlePlaceMouseDown}
@@ -1159,7 +1275,7 @@ export function PatternCustomizer({
 
               {currentViewHasArtwork && (
                 <p className="text-[10px] text-muted-foreground leading-tight shrink-0">
-                  Drag the artwork in the preview to reposition it across the panels. Red dashed lines show seams.
+                  Drag the artwork in the preview to reposition it. Red line = seam. Drag near seam to snap.
                 </p>
               )}
 

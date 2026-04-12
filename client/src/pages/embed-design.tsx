@@ -55,6 +55,7 @@ interface ProductTypeConfig {
   baseMockupImages?: Record<string, string>;
   isAllOverPrint?: boolean;
   placeholderPositions?: { position: string; width: number; height: number }[];
+  panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
 }
 
@@ -4896,6 +4897,7 @@ export default function EmbedDesign() {
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
                     panelPositions={productTypeConfig?.placeholderPositions || []}
+                    panelFlatLayImages={productTypeConfig?.panelFlatLayImages || {}}
                     fetchFn={(url, options) => safeFetch(url, options, 60000)}
                     initialTilesAcross={aopPatternSettings.tilesAcross}
                     initialPattern={aopPatternSettings.pattern}

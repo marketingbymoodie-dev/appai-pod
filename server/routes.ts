@@ -4559,6 +4559,110 @@ ${textEdgeRestrictions}
         placeholderPositions: typeof productType.placeholderPositions === "string"
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
+        panelFlatLayImages: (() => {
+          // Parse stored value
+          const stored: Record<string, string> = typeof productType.panelFlatLayImages === "string"
+            ? JSON.parse(productType.panelFlatLayImages || "{}")
+            : productType.panelFlatLayImages || {};
+          // Apply static fallback for known blueprints where Printify API returns empty views
+          if (Object.keys(stored).length === 0 && productType.printifyBlueprintId) {
+            const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
+              // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
+              // Women's Cut & Sew Racerback Dress
+              276: {
+                "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
+                "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
+              },
+              // Unisex Cut & Sew Tee
+              281: {
+                "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
+                "front"               : "https://images.printify.com/api/catalog/5a01d4ceb8e7e3281f2da8e7.svg",
+              },
+              // Women's Pencil Skirt
+              285: {
+                "back"                : "https://images.printify.com/api/catalog/5a0ef125b8e7e307bc4e601c.svg",
+                "front"               : "https://images.printify.com/api/catalog/5a0ef133b8e7e3087c7ebf08.svg",
+              },
+              // Unisex Sweatshirt
+              449: {
+                "back"                : "https://images.printify.com/api/catalog/5d9c87f418831d27426218b0.svg",
+                "front"               : "https://images.printify.com/api/catalog/5d9b4bc1a54cf735a33aa246.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d9b5255e577547f153b80dc.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d9b35ebd41cb4389d15e043.svg",
+              },
+              // Unisex Pullover Hoodie
+              450: {
+                "back"                : "https://images.printify.com/api/catalog/5d971e0a2947a61bef6f40cd.svg",
+                "front"               : "https://images.printify.com/api/catalog/5d96fefa40e8da18a2274ad9.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d971d7ad69994742d3a03fb.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d971dfcc4c83a05fc3a5492.svg",
+              },
+              // Unisex Zip Hoodie
+              451: {
+                "back"                : "https://images.printify.com/api/catalog/5d9ae61ccf4e077eb561b028.svg",
+                "front_left"          : "https://images.printify.com/api/catalog/5d9c8b82c92a2a02ac3662dd.svg",
+                "front_right"         : "https://images.printify.com/api/catalog/631b2116174f5066ca0759d4.svg",
+                "left_cuff_panel"     : "https://images.printify.com/api/catalog/5d9ae385cf4e077eb561b01c.svg",
+                "left_hood"           : "https://images.printify.com/api/catalog/5d9ae1fa4e699c71a202db06.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d9ae1b44e699c71a202db03.svg",
+                "pocket_left"         : "https://images.printify.com/api/catalog/5d9c8e67c92a2a02ac3662e0.svg",
+                "pocket_right"        : "https://images.printify.com/api/catalog/5d9c8e76c92a2a02ac3662e3.svg",
+                "right_cuff_panel"    : "https://images.printify.com/api/catalog/5d9c8335c92a2a02ac3662d4.svg",
+                "right_hood"          : "https://images.printify.com/api/catalog/5d9ae1e932345a5ce56f1e1c.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d9ae1d58bb77340c7729745.svg",
+                "waistband"           : "https://images.printify.com/api/catalog/5d9b0eda32345a5ce56f1e37.svg",
+              },
+              // Crop Tee
+              627: {
+                "back"                : "https://images.printify.com/api/catalog/612e2dbdce911f74dc7fc430.svg",
+                "front"               : "https://images.printify.com/api/catalog/61165b745cbffb455d742be8.svg",
+              },
+              // Women's Capri Leggings
+              1050: {
+                "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+              },
+              // Tote Bag
+              1389: {
+                "front"               : "https://images.printify.com/api/catalog/6564848e6a2aafb6fe0ba0d3.svg",
+              },
+              // Men's Hawaiian Camp Shirt
+              1533: {
+                "back"                : "https://images.printify.com/api/catalog/66a21741405a59f9070d94c2.svg",
+                "front_left"          : "https://images.printify.com/api/catalog/66a21c3817e48cae5b0ddbe2.svg",
+                "front_right"         : "https://images.printify.com/api/catalog/66a21bb8f38ac84cd908f752.svg",
+                "left_placket"        : "https://images.printify.com/api/catalog/69a6e89c7c21676d1f0bf552.svg",
+                "right_placket"       : "https://images.printify.com/api/catalog/69a6e8695763f46f33003910.svg",
+              },
+              // Basketball Training Shorts
+              1589: {
+                "back_left_leg"       : "https://images.printify.com/api/catalog/66d70a472e7c84cf240029e6.svg",
+                "back_right_leg"      : "https://images.printify.com/api/catalog/66d70a16650830a5b305c264.svg",
+                "front_left_leg"      : "https://images.printify.com/api/catalog/66d709cd7438963da401ba55.svg",
+                "front_right_leg"     : "https://images.printify.com/api/catalog/66d709486f43297fff0ce8a5.svg",
+                "left_inner_pocket_back": "https://images.printify.com/api/catalog/66d70a44f835b084520c4364.svg",
+                "left_inner_pocket_front": "https://images.printify.com/api/catalog/66d70a13febb2981ab02c692.svg",
+                "right_inner_pocket_back": "https://images.printify.com/api/catalog/66d70a07c810c0506505ba93.svg",
+                "right_inner_pocket_front": "https://images.printify.com/api/catalog/66d70a39619c41921c006035.svg",
+              },
+              // Unisex Polo Shirt
+              1604: {
+                "back"                : "https://images.printify.com/api/catalog/66e45967b94b48b3b80449f2.svg",
+                "front"               : "https://images.printify.com/api/catalog/66e459529ec5cf39800ccb42.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/66e4597bb94b48b3b80449f3.svg",
+                "placket"             : "https://images.printify.com/api/catalog/66e459946fc58997a50cf387.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/66e459726fc58997a50cf384.svg",
+              },
+              // Pixel Fleece Blanket
+              1911: {
+                "front"               : "https://images.printify.com/api/catalog/67b745ed32ecb119d80897c9.svg",
+              },
+            };
+            const fallback = STATIC_FLAT_LAY_SVGS[productType.printifyBlueprintId];
+            if (fallback) return fallback;
+          }
+          return stored;
+        })(),
       };
 
       console.log(`[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}`);
@@ -4719,6 +4823,108 @@ ${textEdgeRestrictions}
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],
+      panelFlatLayImages: (() => {
+        const stored2: Record<string, string> = typeof productTypeToUse.panelFlatLayImages === "string"
+          ? JSON.parse(productTypeToUse.panelFlatLayImages || "{}")
+          : productTypeToUse.panelFlatLayImages || {};
+        if (Object.keys(stored2).length === 0 && productTypeToUse.printifyBlueprintId) {
+          const STATIC_FLAT_LAY_SVGS2: Record<number, Record<string, string>> = {
+              // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
+              // Women's Cut & Sew Racerback Dress
+              276: {
+                "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
+                "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
+              },
+              // Unisex Cut & Sew Tee
+              281: {
+                "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
+                "front"               : "https://images.printify.com/api/catalog/5a01d4ceb8e7e3281f2da8e7.svg",
+              },
+              // Women's Pencil Skirt
+              285: {
+                "back"                : "https://images.printify.com/api/catalog/5a0ef125b8e7e307bc4e601c.svg",
+                "front"               : "https://images.printify.com/api/catalog/5a0ef133b8e7e3087c7ebf08.svg",
+              },
+              // Unisex Sweatshirt
+              449: {
+                "back"                : "https://images.printify.com/api/catalog/5d9c87f418831d27426218b0.svg",
+                "front"               : "https://images.printify.com/api/catalog/5d9b4bc1a54cf735a33aa246.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d9b5255e577547f153b80dc.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d9b35ebd41cb4389d15e043.svg",
+              },
+              // Unisex Pullover Hoodie
+              450: {
+                "back"                : "https://images.printify.com/api/catalog/5d971e0a2947a61bef6f40cd.svg",
+                "front"               : "https://images.printify.com/api/catalog/5d96fefa40e8da18a2274ad9.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d971d7ad69994742d3a03fb.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d971dfcc4c83a05fc3a5492.svg",
+              },
+              // Unisex Zip Hoodie
+              451: {
+                "back"                : "https://images.printify.com/api/catalog/5d9ae61ccf4e077eb561b028.svg",
+                "front_left"          : "https://images.printify.com/api/catalog/5d9c8b82c92a2a02ac3662dd.svg",
+                "front_right"         : "https://images.printify.com/api/catalog/631b2116174f5066ca0759d4.svg",
+                "left_cuff_panel"     : "https://images.printify.com/api/catalog/5d9ae385cf4e077eb561b01c.svg",
+                "left_hood"           : "https://images.printify.com/api/catalog/5d9ae1fa4e699c71a202db06.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d9ae1b44e699c71a202db03.svg",
+                "pocket_left"         : "https://images.printify.com/api/catalog/5d9c8e67c92a2a02ac3662e0.svg",
+                "pocket_right"        : "https://images.printify.com/api/catalog/5d9c8e76c92a2a02ac3662e3.svg",
+                "right_cuff_panel"    : "https://images.printify.com/api/catalog/5d9c8335c92a2a02ac3662d4.svg",
+                "right_hood"          : "https://images.printify.com/api/catalog/5d9ae1e932345a5ce56f1e1c.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d9ae1d58bb77340c7729745.svg",
+                "waistband"           : "https://images.printify.com/api/catalog/5d9b0eda32345a5ce56f1e37.svg",
+              },
+              // Crop Tee
+              627: {
+                "back"                : "https://images.printify.com/api/catalog/612e2dbdce911f74dc7fc430.svg",
+                "front"               : "https://images.printify.com/api/catalog/61165b745cbffb455d742be8.svg",
+              },
+              // Women's Capri Leggings
+              1050: {
+                "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+              },
+              // Tote Bag
+              1389: {
+                "front"               : "https://images.printify.com/api/catalog/6564848e6a2aafb6fe0ba0d3.svg",
+              },
+              // Men's Hawaiian Camp Shirt
+              1533: {
+                "back"                : "https://images.printify.com/api/catalog/66a21741405a59f9070d94c2.svg",
+                "front_left"          : "https://images.printify.com/api/catalog/66a21c3817e48cae5b0ddbe2.svg",
+                "front_right"         : "https://images.printify.com/api/catalog/66a21bb8f38ac84cd908f752.svg",
+                "left_placket"        : "https://images.printify.com/api/catalog/69a6e89c7c21676d1f0bf552.svg",
+                "right_placket"       : "https://images.printify.com/api/catalog/69a6e8695763f46f33003910.svg",
+              },
+              // Basketball Training Shorts
+              1589: {
+                "back_left_leg"       : "https://images.printify.com/api/catalog/66d70a472e7c84cf240029e6.svg",
+                "back_right_leg"      : "https://images.printify.com/api/catalog/66d70a16650830a5b305c264.svg",
+                "front_left_leg"      : "https://images.printify.com/api/catalog/66d709cd7438963da401ba55.svg",
+                "front_right_leg"     : "https://images.printify.com/api/catalog/66d709486f43297fff0ce8a5.svg",
+                "left_inner_pocket_back": "https://images.printify.com/api/catalog/66d70a44f835b084520c4364.svg",
+                "left_inner_pocket_front": "https://images.printify.com/api/catalog/66d70a13febb2981ab02c692.svg",
+                "right_inner_pocket_back": "https://images.printify.com/api/catalog/66d70a07c810c0506505ba93.svg",
+                "right_inner_pocket_front": "https://images.printify.com/api/catalog/66d70a39619c41921c006035.svg",
+              },
+              // Unisex Polo Shirt
+              1604: {
+                "back"                : "https://images.printify.com/api/catalog/66e45967b94b48b3b80449f2.svg",
+                "front"               : "https://images.printify.com/api/catalog/66e459529ec5cf39800ccb42.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/66e4597bb94b48b3b80449f3.svg",
+                "placket"             : "https://images.printify.com/api/catalog/66e459946fc58997a50cf387.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/66e459726fc58997a50cf384.svg",
+              },
+              // Pixel Fleece Blanket
+              1911: {
+                "front"               : "https://images.printify.com/api/catalog/67b745ed32ecb119d80897c9.svg",
+              },
+            };
+          const fallback2 = STATIC_FLAT_LAY_SVGS2[productTypeToUse.printifyBlueprintId];
+          if (fallback2) return fallback2;
+        }
+        return stored2;
+      })(),
       sizes: sizes.map((s: any) => {
         let sizeAspectRatio = s.aspectRatio || productTypeToUse.aspectRatio;
         if (sizeType === "dimensional" && s.width && s.height) {
@@ -10038,6 +10244,120 @@ ${textEdgeRestrictions}
 
       const variantsData = await variantsResponse.json();
       const variants = variantsData.variants || variantsData || [];
+      // Extract flat-lay SVG images from the `views` field of the variants response.
+      // views[] contains { position, label, files[{ src, variant_ids }] } — one entry per
+      // print panel position. We build a map of position → SVG URL for the Place on Item viewer.
+      const panelFlatLayImages: Record<string, string> = {};
+      const views: Array<{ id?: number; label?: string; position: string; files: Array<{ src: string; variant_ids?: number[] }> }> =
+        variantsData.views || [];
+      for (const view of views) {
+        if (view.position && view.files && view.files.length > 0 && view.files[0].src) {
+          panelFlatLayImages[view.position] = view.files[0].src;
+        }
+      }
+      // Static fallback: hard-coded SVG IDs for known blueprints where the Printify API
+      // returns an empty `views` array. SVGs are served from the Printify public CDN.
+      // Identified by loading the Printify editor and intercepting network requests.
+      const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
+              // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
+              // Women's Cut & Sew Racerback Dress
+              276: {
+                "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
+                "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
+              },
+              // Unisex Cut & Sew Tee
+              281: {
+                "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
+                "front"               : "https://images.printify.com/api/catalog/5a01d4ceb8e7e3281f2da8e7.svg",
+              },
+              // Women's Pencil Skirt
+              285: {
+                "back"                : "https://images.printify.com/api/catalog/5a0ef125b8e7e307bc4e601c.svg",
+                "front"               : "https://images.printify.com/api/catalog/5a0ef133b8e7e3087c7ebf08.svg",
+              },
+              // Unisex Sweatshirt
+              449: {
+                "back"                : "https://images.printify.com/api/catalog/5d9c87f418831d27426218b0.svg",
+                "front"               : "https://images.printify.com/api/catalog/5d9b4bc1a54cf735a33aa246.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d9b5255e577547f153b80dc.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d9b35ebd41cb4389d15e043.svg",
+              },
+              // Unisex Pullover Hoodie
+              450: {
+                "back"                : "https://images.printify.com/api/catalog/5d971e0a2947a61bef6f40cd.svg",
+                "front"               : "https://images.printify.com/api/catalog/5d96fefa40e8da18a2274ad9.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d971d7ad69994742d3a03fb.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d971dfcc4c83a05fc3a5492.svg",
+              },
+              // Unisex Zip Hoodie
+              451: {
+                "back"                : "https://images.printify.com/api/catalog/5d9ae61ccf4e077eb561b028.svg",
+                "front_left"          : "https://images.printify.com/api/catalog/5d9c8b82c92a2a02ac3662dd.svg",
+                "front_right"         : "https://images.printify.com/api/catalog/631b2116174f5066ca0759d4.svg",
+                "left_cuff_panel"     : "https://images.printify.com/api/catalog/5d9ae385cf4e077eb561b01c.svg",
+                "left_hood"           : "https://images.printify.com/api/catalog/5d9ae1fa4e699c71a202db06.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/5d9ae1b44e699c71a202db03.svg",
+                "pocket_left"         : "https://images.printify.com/api/catalog/5d9c8e67c92a2a02ac3662e0.svg",
+                "pocket_right"        : "https://images.printify.com/api/catalog/5d9c8e76c92a2a02ac3662e3.svg",
+                "right_cuff_panel"    : "https://images.printify.com/api/catalog/5d9c8335c92a2a02ac3662d4.svg",
+                "right_hood"          : "https://images.printify.com/api/catalog/5d9ae1e932345a5ce56f1e1c.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/5d9ae1d58bb77340c7729745.svg",
+                "waistband"           : "https://images.printify.com/api/catalog/5d9b0eda32345a5ce56f1e37.svg",
+              },
+              // Crop Tee
+              627: {
+                "back"                : "https://images.printify.com/api/catalog/612e2dbdce911f74dc7fc430.svg",
+                "front"               : "https://images.printify.com/api/catalog/61165b745cbffb455d742be8.svg",
+              },
+              // Women's Capri Leggings
+              1050: {
+                "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+              },
+              // Tote Bag
+              1389: {
+                "front"               : "https://images.printify.com/api/catalog/6564848e6a2aafb6fe0ba0d3.svg",
+              },
+              // Men's Hawaiian Camp Shirt
+              1533: {
+                "back"                : "https://images.printify.com/api/catalog/66a21741405a59f9070d94c2.svg",
+                "front_left"          : "https://images.printify.com/api/catalog/66a21c3817e48cae5b0ddbe2.svg",
+                "front_right"         : "https://images.printify.com/api/catalog/66a21bb8f38ac84cd908f752.svg",
+                "left_placket"        : "https://images.printify.com/api/catalog/69a6e89c7c21676d1f0bf552.svg",
+                "right_placket"       : "https://images.printify.com/api/catalog/69a6e8695763f46f33003910.svg",
+              },
+              // Basketball Training Shorts
+              1589: {
+                "back_left_leg"       : "https://images.printify.com/api/catalog/66d70a472e7c84cf240029e6.svg",
+                "back_right_leg"      : "https://images.printify.com/api/catalog/66d70a16650830a5b305c264.svg",
+                "front_left_leg"      : "https://images.printify.com/api/catalog/66d709cd7438963da401ba55.svg",
+                "front_right_leg"     : "https://images.printify.com/api/catalog/66d709486f43297fff0ce8a5.svg",
+                "left_inner_pocket_back": "https://images.printify.com/api/catalog/66d70a44f835b084520c4364.svg",
+                "left_inner_pocket_front": "https://images.printify.com/api/catalog/66d70a13febb2981ab02c692.svg",
+                "right_inner_pocket_back": "https://images.printify.com/api/catalog/66d70a07c810c0506505ba93.svg",
+                "right_inner_pocket_front": "https://images.printify.com/api/catalog/66d70a39619c41921c006035.svg",
+              },
+              // Unisex Polo Shirt
+              1604: {
+                "back"                : "https://images.printify.com/api/catalog/66e45967b94b48b3b80449f2.svg",
+                "front"               : "https://images.printify.com/api/catalog/66e459529ec5cf39800ccb42.svg",
+                "left_sleeve"         : "https://images.printify.com/api/catalog/66e4597bb94b48b3b80449f3.svg",
+                "placket"             : "https://images.printify.com/api/catalog/66e459946fc58997a50cf387.svg",
+                "right_sleeve"        : "https://images.printify.com/api/catalog/66e459726fc58997a50cf384.svg",
+              },
+              // Pixel Fleece Blanket
+              1911: {
+                "front"               : "https://images.printify.com/api/catalog/67b745ed32ecb119d80897c9.svg",
+              },
+            };
+      if (Object.keys(panelFlatLayImages).length === 0) {
+        const staticSvgs = STATIC_FLAT_LAY_SVGS[parseInt(blueprintId)];
+        if (staticSvgs) {
+          Object.assign(panelFlatLayImages, staticSvgs);
+          console.log(`[Import] Using static flat-lay SVG mapping for blueprint ${blueprintId}: ${Object.keys(staticSvgs).join(", ")}`);
+        }
+      }
+      console.log(`[Import] Extracted ${Object.keys(panelFlatLayImages).length} flat-lay images from views:`, Object.keys(panelFlatLayImages).join(", "));
 
       // Parse variants to extract sizes and colors
       // Sizes are purely catalog metadata - variant info goes in variantMap
@@ -10731,6 +11051,7 @@ ${textEdgeRestrictions}
         doubleSidedPrint,
         isAllOverPrint,
         placeholderPositions: JSON.stringify(placeholderPositions),
+        panelFlatLayImages: JSON.stringify(panelFlatLayImages),
         colorOptionName: blueprintColorOptionName,
         isActive: true,
         sortOrder: existingTypes.length,
