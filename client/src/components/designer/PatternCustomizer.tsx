@@ -1211,7 +1211,8 @@ export function PatternCustomizer({
             }
           }
 
-          const dataUrl = canvas.toDataURL("image/png");
+          // Use JPEG quality 92 to keep payload small (PNG is ~5-10MB per panel at print resolution)
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
           panelUrls.push({ position: panel.position, dataUrl });
           if (!primaryDataUrl) primaryDataUrl = dataUrl;
         }

@@ -653,6 +653,7 @@ export async function generatePrintifyMockup(
           // (e.g. 1476×4500px for leggings legs). Resizing causes Printify to stretch
           // the image to fill the panel, distorting the design.
           // Convert to PNG to ensure consistent format and strip any metadata.
+          // Note: input may be JPEG (client sends JPEG to reduce payload size) — sharp handles both.
           buf = await sharp(buf).png().toBuffer();
           const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
           if (uploaded) {
