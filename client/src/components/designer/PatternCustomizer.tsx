@@ -79,7 +79,7 @@ const PRINT_DPI = 150;
  * across the sewn seam even with slight manufacturing misalignment.
  * The user can adjust this via the "Seam offset" slider in Place on Item mode.
  */
-const DEFAULT_SEAM_BLEED_PX = Math.round(PRINT_DPI / 2.54); // 59 px ≈ 1 cm
+const DEFAULT_SEAM_BLEED_PX = 70; // 70 px — tested on zip hoodie, best split across zipper
 
 /**
  * Snap threshold in CSS pixels — if artwork centre is within this distance
