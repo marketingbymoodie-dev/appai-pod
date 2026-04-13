@@ -26,6 +26,7 @@ import {
   uploadDesignFileToSupabase,
   getSupabaseDesignPublicUrl,
 } from "./supabaseDesigns";
+import { uploadMockupToSupabase } from "./supabaseMockups";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
   return Uint8Array.from(buf);
@@ -6671,6 +6672,38 @@ ${textEdgeRestrictions}
         resolvedProductTypeId: productType.id,
         requestedProductTypeId: parsedId,
       });
+
+      // ========== CACHE MOCKUP IMAGES TO SUPABASE ==========
+      // Printify mockup URLs are temporary — they expire once the temp product is deleted.
+      // Download each mockup image and upload to Supabase for permanent storage.
+      if (result.success && result.mockupImages && result.mockupImages.length > 0) {
+        const cacheDesignId = correlationId;
+        console.log(`[Storefront Mockup] [${correlationId}] Caching ${result.mockupImages.length} mockup images to Supabase...`);
+        const cachedImages = await Promise.all(
+          result.mockupImages.map(async (img: { url: string; label: string }, idx: number) => {
+            try {
+              const viewName = img.label || `view-${idx}`;
+              const cachedUrl = await uploadMockupToSupabase({
+                sourceUrl: img.url,
+                designId: cacheDesignId,
+                viewName,
+              });
+              if (cachedUrl) {
+                console.log(`[Storefront Mockup] [${correlationId}] Cached ${viewName} → ${cachedUrl.substring(0, 80)}`);
+                return { url: cachedUrl, label: img.label };
+              }
+            } catch (cacheErr: any) {
+              console.warn(`[Storefront Mockup] [${correlationId}] Cache failed for ${img.label}:`, cacheErr.message);
+            }
+            // Fall back to original Printify URL if caching fails
+            return img;
+          })
+        );
+        result.mockupImages = cachedImages;
+        result.mockupUrls = cachedImages.map((img: { url: string }) => img.url);
+        console.log(`[Storefront Mockup] [${correlationId}] Caching complete. URLs now point to Supabase.`);
+      }
+
       res.json({ ...result, correlationId });
     } catch (error: any) {
       console.error(`[Storefront Mockup] [${correlationId}] Error:`, error);
