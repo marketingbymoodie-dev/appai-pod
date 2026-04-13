@@ -1,12 +1,5 @@
-import { fetch } from "undici";
 import sharp from "sharp";
 import pRetry from "p-retry";
-import {
-  buildMockupCacheKey,
-  getCachedMockup,
-  saveMockupToCache,
-} from "./mockup-cache";
-import { supabase } from "./supabase";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -179,90 +172,6 @@ function normalizeImageUrl(url: string): string {
     return url.replace(appUrl, "");
   }
   return url;
-}
-
-async function cacheMockupToStorage(
-  printifyUrl: string,
-  cacheKey: string,
-  apiToken?: string
-): Promise<string | null> {
-  try {
-    const fetchOptions: any = {};
-    if (apiToken) {
-      fetchOptions.headers = {
-        Authorization: `Bearer ${apiToken}`,
-      };
-    }
-
-    const response = await pRetry(
-      async () => {
-        const res = await fetch(printifyUrl, fetchOptions);
-        if (!res.ok) {
-          throw new Error(`Failed to fetch mockup from Printify: ${res.status} ${res.statusText}`);
-        }
-        return res;
-      },
-      {
-        retries: 3,
-        minTimeout: 1000,
-        onFailedAttempt: (error) => {
-          console.warn(`[Mockup Cache] Download attempt ${error.attemptNumber} failed: ${error.message}`);
-        },
-      }
-    );
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const fileName = `${cacheKey}.jpg`;
-    const { data, error } = await supabase.storage
-      .from("designs")
-      .upload(`mockups/${fileName}`, buffer, {
-        contentType: "image/jpeg",
-        upsert: true,
-      });
-
-    if (error) {
-      console.error("[Mockup Cache] Supabase upload error:", error);
-      return null;
-    }
-
-    const { data: publicUrlData } = supabase.storage
-      .from("designs")
-      .getPublicUrl(`mockups/${fileName}`);
-
-    const publicUrl = publicUrlData.publicUrl;
-    saveMockupToCache(cacheKey, publicUrl);
-    return publicUrl;
-  } catch (error) {
-    console.error("[Mockup Cache] Error caching mockup:", error);
-    return null;
-  }
-}
-
-async function cacheMockupImages(
-  mockupData: { urls: string[]; images: MockupImage[] },
-  cacheKeys: string[],
-  apiToken?: string
-): Promise<{ urls: string[]; images: MockupImage[] }> {
-  const cachedUrls: string[] = [];
-  const cachedImages: MockupImage[] = [];
-
-  const results = await Promise.allSettled(
-    mockupData.urls.map((url, i) => cacheMockupToStorage(url, cacheKeys[i], apiToken))
-  );
-
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    const original = mockupData.images[i];
-    if (result.status === "fulfilled" && result.value) {
-      cachedUrls.push(result.value);
-      cachedImages.push({ url: result.value, label: original.label });
-    } else {
-      console.warn(`[Mockup Cache] Caching failed for view "${original.label}" — using original Printify URL as fallback`);
-      cachedUrls.push(original.url);
-      cachedImages.push({ url: original.url, label: original.label });
-    }
-  }
-  return { urls: cachedUrls, images: cachedImages };
 }
 
 async function uploadImageToPrintify(
@@ -519,37 +428,6 @@ export async function generatePrintifyMockup(
     };
   }
 
-  const preferredCacheKeys = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map(
-    (label) =>
-      buildMockupCacheKey(
-        imageUrl,
-        blueprintId,
-        providerId,
-        variantId,
-        label,
-        scale,
-        x,
-        y,
-        doubleSided || wrapAround
-      )
-  );
-  const cachedPaths = preferredCacheKeys.map(getCachedMockup);
-  const allCached = cachedPaths.every((p) => p !== null);
-
-  if (allCached) {
-    const urls = cachedPaths as string[];
-    const images = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map((label, i) => ({
-      url: urls[i],
-      label,
-    }));
-    return {
-      success: true,
-      mockupUrls: urls,
-      mockupImages: images,
-      source: "printify",
-    };
-  }
-
   let productId: string | null = null;
   try {
     const isAop = !!(request.aopPositions && request.aopPositions.length > 0);
@@ -608,7 +486,6 @@ export async function generatePrintifyMockup(
       } catch (wrapErr) {}
     }
 
-    let mirroredUploadBuffer: Buffer | null = null;
     const panelImageIds = new Map<string, string>();
 
     if (isAop && request.panelUrls && request.panelUrls.length > 0) {
@@ -680,30 +557,11 @@ export async function generatePrintifyMockup(
     );
 
     const selected = selectPreferredViews(mockupData.images);
-    const cacheKeys = selected.map((img) =>
-      buildMockupCacheKey(
-        imageUrl,
-        blueprintId,
-        providerId,
-        variantId,
-        img.label,
-        scale,
-        x,
-        y,
-        doubleSided || wrapAround
-      )
-    );
-
-    const cached = await cacheMockupImages(
-      { urls: selected.map((s) => s.url), images: selected },
-      cacheKeys,
-      printifyApiToken
-    );
 
     return {
       success: true,
-      mockupUrls: cached.urls,
-      mockupImages: cached.images,
+      mockupUrls: selected.map((s) => s.url),
+      mockupImages: selected,
       source: "printify",
     };
   } catch (error: any) {
