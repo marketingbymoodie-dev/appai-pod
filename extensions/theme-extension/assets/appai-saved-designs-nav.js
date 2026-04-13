@@ -489,6 +489,26 @@
 
       observer.observe(document.body, { childList: true, subtree: true });
 
+      // ── Listen for refresh messages from the customizer iframe ──────────────
+      window.addEventListener('message', function (event) {
+        if (event.data && event.data.type === 'APPAI_REFRESH_GALLERY') {
+          console.log('[AppAI Nav] Refreshing gallery data...');
+          fetchDesigns(customerId, shop).then(function (newData) {
+            if (newData && newData.designs) {
+              window.__APPAI_SAVED_DESIGNS__ = newData.designs;
+              // Update the count badge if it exists
+              var badge = document.getElementById('appai-saved-count');
+              if (badge) badge.textContent = newData.designs.length;
+              // If the drawer is currently open, re-render its content
+              var drawer = document.getElementById(DRAWER_ID);
+              if (drawer && drawer.classList.contains('appai-open')) {
+                openDrawer(newData.designs);
+              }
+            }
+          });
+        }
+      });
+
     }).catch(function (e) {
       console.warn('[AppAI Nav] Failed to fetch saved designs:', e);
     });

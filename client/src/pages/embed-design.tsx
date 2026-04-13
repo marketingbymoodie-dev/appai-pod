@@ -2314,7 +2314,14 @@ export default function EmbedDesign() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ shop: saveShop, customerId: saveCustomerId }),
             })
-              .then(r => r.json()).then(d => { console.log('[AutoSave] my-designs response:', d); if (d.designs) setSavedDesigns(d.designs); })
+              .then(r => r.json()).then(d => { 
+                console.log('[AutoSave] my-designs response:', d); 
+                if (d.designs) {
+                  setSavedDesigns(d.designs);
+                  // Notify parent to refresh its gallery view
+                  window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                }
+              })
               .catch(() => {}).finally(() => setSavedDesignsLoading(false));
           }
         }).catch((e) => { console.error('[AutoSave] save-design error:', e); }); // log errors for debugging
@@ -4246,6 +4253,8 @@ export default function EmbedDesign() {
                                       });
                                       if (r.ok) {
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
+                                        // Notify parent to refresh its gallery view
+                                        window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
                                       }
                                     } catch {}
                                   }}
