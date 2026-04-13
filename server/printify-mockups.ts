@@ -764,25 +764,24 @@ export async function generatePrintifyMockup(
     // designImageUrl (which may be a mockup URL, not the original artwork) to Printify.
     let uploadedImage: { id: string } | null = null;
     if (panelImageIds && panelImageIds.size > 0) {
-      // Pick the largest panel image as primary — not the first one.
-      // Promise.all uploads concurrently, so the Map insertion order depends on which
-      // upload finishes first. Tiny panels (e.g. 4×4 cuff) upload fastest and get inserted
-      // first. If that tiny image becomes the primary, Printify scales it to fill large
-      // panels (sleeves, waistband) → 85400×168553 → exceeds 6GB pixel limit → 400 error.
-      // By picking the largest panel, the fallback image is a real-sized canvas.
-      let bestPanelId = panelImageIds.values().next().value as string;
-      let bestPanelArea = 0;
-      const aopPos = request.aopPositions || [];
-      for (const [position, pid] of panelImageIds.entries()) {
-        const posInfo = aopPos.find(p => p.position === position);
-        const area = posInfo ? posInfo.width * posInfo.height : 0;
-        if (area > bestPanelArea) {
-          bestPanelArea = area;
-          bestPanelId = pid;
+      // Use a safe 1000x1000 white placeholder as the primary image for AOP products.
+      // This avoids using a panel canvas (which might be too large) or a 4x4 cuff (which
+      // causes massive scaling errors) as the primary image.
+      const placeholderBuffer = await sharp({
+        create: {
+          width: 1000,
+          height: 1000,
+          channels: 4,
+          background: { r: 255, g: 255, b: 255, alpha: 1 }
         }
+      }).png().toBuffer();
+      
+      uploadedImage = await uploadImageToPrintify(placeholderBuffer, printifyApiToken);
+      if (!uploadedImage) {
+        // Fallback to first panel if placeholder upload fails
+        uploadedImage = { id: panelImageIds.values().next().value as string };
       }
-      uploadedImage = { id: bestPanelId };
-      console.log(`[Printify AOP] Using largest panel image as primary: ${bestPanelId} (area: ${bestPanelArea})`);
+      console.log(`[Printify AOP] Using safe 1000x1000 placeholder as primary: ${uploadedImage.id}`);
     } else {
       uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
       if (!uploadedImage) {
