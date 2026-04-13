@@ -179,19 +179,28 @@ async function uploadImageToPrintify(
   apiToken: string
 ): Promise<PrintifyImage | null> {
   let requestBody: Record<string, string>;
+  let uploadMethod: string;
+
   if (Buffer.isBuffer(imageUrlOrBuffer)) {
+    const base64Data = imageUrlOrBuffer.toString("base64");
+    uploadMethod = `buffer (${base64Data.length} chars base64)`;
     requestBody = {
       file_name: `design-${Date.now()}.png`,
-      contents: imageUrlOrBuffer.toString("base64"),
+      contents: base64Data,
     };
   } else if (isDataUrl(imageUrlOrBuffer)) {
     const base64Data = extractBase64FromDataUrl(imageUrlOrBuffer);
-    if (!base64Data) return null;
+    if (!base64Data) {
+      console.error("[Printify Upload] Failed to extract base64 from data URL");
+      return null;
+    }
+    uploadMethod = `data-url (${base64Data.length} chars base64)`;
     requestBody = {
       file_name: `design-${Date.now()}.png`,
       contents: base64Data,
     };
   } else {
+    uploadMethod = `url: ${imageUrlOrBuffer.substring(0, 100)}`;
     requestBody = {
       file_name: `design-${Date.now()}.png`,
       url: imageUrlOrBuffer,
@@ -200,8 +209,10 @@ async function uploadImageToPrintify(
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
+      console.log(`[Printify Upload] Attempt ${attempt}/${MAX_RETRIES} via ${uploadMethod}`);
+
       const response = await fetch(
-        `${PRINTIFY_API_BASE}/shops/uploads/images.json`,
+        `${PRINTIFY_API_BASE}/uploads/images.json`,
         {
           method: "POST",
           headers: {
@@ -212,11 +223,17 @@ async function uploadImageToPrintify(
         }
       );
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Printify Upload] Attempt ${attempt} failed (${response.status}):`, errorText.substring(0, 500));
+        if (response.status >= 400 && response.status < 500) return null;
         if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
         return null;
       }
-      return (await response.json()) as PrintifyImage;
-    } catch (error) {
+      const result = await response.json();
+      console.log(`[Printify Upload] Success on attempt ${attempt}: id=${result.id}, ${result.width}x${result.height}`);
+      return result as PrintifyImage;
+    } catch (error: any) {
+      console.error(`[Printify Upload] Attempt ${attempt} exception:`, error.message || error);
       if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
       return null;
     }
@@ -489,13 +506,27 @@ export async function generatePrintifyMockup(
     const panelImageIds = new Map<string, string>();
 
     if (isAop && request.panelUrls && request.panelUrls.length > 0) {
-      const uploadPromises = request.panelUrls.map(async (panel) => {
-        const result = await uploadImageToPrintify(panel.dataUrl, printifyApiToken);
-        if (result) {
-          panelImageIds.set(panel.position, result.id);
+      console.log(`[Printify AOP] Uploading ${request.panelUrls.length} per-panel images`);
+      await Promise.all(request.panelUrls.map(async ({ position, dataUrl }) => {
+        try {
+          const b64 = extractBase64FromDataUrl(dataUrl);
+          if (!b64) {
+            console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data`);
+            return;
+          }
+          let buf = Buffer.from(b64, "base64");
+          buf = await sharp(buf).png().toBuffer();
+          const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
+          if (uploaded) {
+            panelImageIds.set(position, uploaded.id);
+            console.log(`[Printify AOP] Panel "${position}" uploaded: ${uploaded.id}`);
+          } else {
+            console.warn(`[Printify AOP] Panel "${position}" upload failed`);
+          }
+        } catch (panelErr: any) {
+          console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message}`);
         }
-      });
-      await Promise.all(uploadPromises);
+      }));
     }
 
     let uploadedImage: { id: string } | null = null;
