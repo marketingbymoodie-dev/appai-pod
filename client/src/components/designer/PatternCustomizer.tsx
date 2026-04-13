@@ -965,6 +965,30 @@ export function PatternCustomizer({
   }, []);
   const handleMouseUp = useCallback(() => { dragRef.current = null; }, []);
 
+  // Touch handlers for single-image mode (mobile drag support)
+  const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    dragRef.current = {
+      startX: touch.clientX - rect.left,
+      startY: touch.clientY - rect.top,
+      origX: singlePosX,
+      origY: singlePosY,
+    };
+  }, [singlePosX, singlePosY]);
+  const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (!dragRef.current) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dx = (touch.clientX - rect.left - dragRef.current.startX) / rect.width * 100;
+    const dy = (touch.clientY - rect.top  - dragRef.current.startY) / rect.height * 100;
+    setSinglePosX(Math.max(-100, Math.min(100, dragRef.current.origX + dx)));
+    setSinglePosY(Math.max(-100, Math.min(100, dragRef.current.origY + dy)));
+  }, []);
+  const handleTouchEnd = useCallback(() => { dragRef.current = null; }, []);
+
   // Drag handlers for Place on Item mode.
   // IMPORTANT: these use refs (placeViewRef, backSameAsFrontRef, compositeWRef) instead of
   // closure values to avoid the stale-closure bug where subsequent drags use outdated state.
@@ -1026,6 +1050,66 @@ export function PatternCustomizer({
   }, []);
 
   const handlePlaceMouseUp = useCallback(() => {
+    placeDragRef.current = null;
+    setIsSnapped(false);
+  }, []);
+
+  // Touch handlers for Place on Item mode (mobile drag support)
+  const handlePlaceTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    const canvas = placeCanvasRef.current;
+    const origX = canvas ? parseFloat(canvas.dataset.placeX || "0") : 0;
+    const origY = canvas ? parseFloat(canvas.dataset.placeY || "0") : 0;
+    placeDragRef.current = {
+      startX: touch.clientX - rect.left,
+      startY: touch.clientY - rect.top,
+      origX,
+      origY,
+    };
+  }, []);
+
+  const handlePlaceTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (!placeDragRef.current || !placeCanvasRef.current) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = e.currentTarget.getBoundingClientRect();
+    const compositeW = compositeWRef.current;
+    const compositeH = compositeHRef.current;
+    const cssToComposite = compositeW / rect.width;
+    const rawX = placeDragRef.current.origX + (touch.clientX - rect.left - placeDragRef.current.startX) * cssToComposite;
+    const rawY = placeDragRef.current.origY + (touch.clientY - rect.top  - placeDragRef.current.startY) * cssToComposite;
+
+    // Snap-to-centre logic (same as mouse handler)
+    const layout = currentLayoutRef.current;
+    const snapThresholdComposite = SNAP_THRESHOLD_CSS * cssToComposite;
+    let snappedX = rawX;
+    let didSnap = false;
+    if (layout) {
+      const snapXs: number[] = [compositeW / 2];
+      for (const slot of layout.slots) {
+        snapXs.push(slot.x + slot.w / 2);
+      }
+      for (const snapX of snapXs) {
+        if (Math.abs(rawX - snapX) < snapThresholdComposite) {
+          snappedX = snapX;
+          didSnap = true;
+          break;
+        }
+      }
+    }
+    setIsSnapped(didSnap);
+    if (placeViewRef.current === "front") {
+      setPlaceX(snappedX); setPlaceY(rawY);
+    } else if (placeViewRef.current === "hood") {
+      setHoodPlaceX(snappedX); setHoodPlaceY(rawY);
+    } else if (!backSameAsFrontRef.current) {
+      setBackPlaceX(snappedX); setBackPlaceY(rawY);
+    }
+  }, []);
+
+  const handlePlaceTouchEnd = useCallback(() => {
     placeDragRef.current = null;
     setIsSnapped(false);
   }, []);
@@ -1328,6 +1412,8 @@ export function PatternCustomizer({
                   className="w-full" style={{ cursor: "grab", display: "block" }}
                   onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
+                  onTouchStart={handleTouchStart} onTouchMove={handleTouchMove}
+                  onTouchEnd={handleTouchEnd}
                 />
               )}
               {mode === "place" && (
@@ -1346,6 +1432,9 @@ export function PatternCustomizer({
                     onMouseMove={handlePlaceMouseMove}
                     onMouseUp={handlePlaceMouseUp}
                     onMouseLeave={handlePlaceMouseUp}
+                    onTouchStart={handlePlaceTouchStart}
+                    onTouchMove={handlePlaceTouchMove}
+                    onTouchEnd={handlePlaceTouchEnd}
                   />
                 ) : (
                   <div className="w-full flex items-center justify-center bg-muted/30" style={{ height: PREVIEW_PX }}>
