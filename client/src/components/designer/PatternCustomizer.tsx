@@ -73,12 +73,13 @@ const PREVIEW_INCHES = 6;
 const PRINT_DPI = 150;
 
 /**
- * Seam bleed in print pixels (~1 cm at 150 DPI).
+ * Default seam bleed in print pixels (~1 cm at 150 DPI).
  * Each split panel (front_right, front_left, right_hood, left_hood) gets this many
  * extra pixels of artwork past the seam edge so the artwork remains continuous
  * across the sewn seam even with slight manufacturing misalignment.
+ * The user can adjust this via the "Seam offset" slider in Place on Item mode.
  */
-const SEAM_BLEED_PX = Math.round(PRINT_DPI / 2.54); // 59 px ≈ 1 cm
+const DEFAULT_SEAM_BLEED_PX = Math.round(PRINT_DPI / 2.54); // 59 px ≈ 1 cm
 
 /**
  * Snap threshold in CSS pixels — if artwork centre is within this distance
@@ -305,15 +306,19 @@ export interface AopPlacementSettings {
   placeX: number;
   placeY: number;
   placeScale: number;
+  placeRotation: number;
   backPlaceX: number;
   backPlaceY: number;
   backPlaceScale: number;
+  backPlaceRotation: number;
   hoodPlaceX: number;
   hoodPlaceY: number;
   hoodPlaceScale: number;
+  hoodPlaceRotation: number;
   backHasArtwork: boolean;
   backSameAsFront: boolean;
   hoodHasArtwork: boolean;
+  seamOffset: number;
   accentColor: string;
   bgColor: string;
 }
@@ -454,6 +459,7 @@ export function PatternCustomizer({
     return fl.compositeH > 1 ? fl.compositeH * 0.35 : 0;
   });
   const [placeScale,   setPlaceScale]   = useState(initialPlacement?.placeScale ?? 0.4);
+  const [placeRotation, setPlaceRotation] = useState(initialPlacement?.placeRotation ?? 0);
   // Accent panel colour (sleeves, hood, cuffs, pockets, waistband)
   const [accentColor,  setAccentColor]  = useState(initialPlacement?.accentColor ?? "#ffffff");
   // Whether back panel uses same placement as front or its own
@@ -468,6 +474,7 @@ export function PatternCustomizer({
     return bl.compositeH > 1 ? bl.compositeH * 0.35 : 0;
   });
   const [backPlaceScale, setBackPlaceScale] = useState(initialPlacement?.backPlaceScale ?? 0.4); // 40% of back panel width
+  const [backPlaceRotation, setBackPlaceRotation] = useState(initialPlacement?.backPlaceRotation ?? 0);
   // Back panel artwork: defaults to false (no artwork on back — just solid bgColor)
   const [backHasArtwork, setBackHasArtwork] = useState(initialPlacement?.backHasArtwork ?? false);
   const [backSameAsFront, setBackSameAsFront] = useState(initialPlacement?.backSameAsFront ?? false);
@@ -483,7 +490,11 @@ export function PatternCustomizer({
     return hl.compositeH > 1 ? hl.compositeH * 0.45 : 0;
   });
   const [hoodPlaceScale, setHoodPlaceScale] = useState(initialPlacement?.hoodPlaceScale ?? 0.7);
+  const [hoodPlaceRotation, setHoodPlaceRotation] = useState(initialPlacement?.hoodPlaceRotation ?? 0);
   const [hoodHasArtwork, setHoodHasArtwork] = useState(initialPlacement?.hoodHasArtwork ?? false);
+  // Seam offset: how many print-pixels of artwork bleed past the seam edge.
+  // Default is ~59px (1cm at 150 DPI). User can adjust via slider.
+  const [seamOffset, setSeamOffset] = useState(initialPlacement?.seamOffset ?? DEFAULT_SEAM_BLEED_PX);
 
   // Snap indicator state — true when artwork is snapped to a guide line
   const [isSnapped, setIsSnapped] = useState(false);
@@ -665,15 +676,16 @@ export function PatternCustomizer({
   useEffect(() => {
     if (mode !== "place") return;
     onPlacementChange?.({
-      placeX, placeY, placeScale,
-      backPlaceX, backPlaceY, backPlaceScale,
-      hoodPlaceX, hoodPlaceY, hoodPlaceScale,
+      placeX, placeY, placeScale, placeRotation,
+      backPlaceX, backPlaceY, backPlaceScale, backPlaceRotation,
+      hoodPlaceX, hoodPlaceY, hoodPlaceScale, hoodPlaceRotation,
       backHasArtwork, backSameAsFront, hoodHasArtwork,
-      accentColor, bgColor,
+      seamOffset, accentColor, bgColor,
     });
-  }, [mode, placeX, placeY, placeScale, backPlaceX, backPlaceY, backPlaceScale,
-      hoodPlaceX, hoodPlaceY, hoodPlaceScale, backHasArtwork, backSameAsFront,
-      hoodHasArtwork, accentColor, bgColor]);
+  }, [mode, placeX, placeY, placeScale, placeRotation,
+      backPlaceX, backPlaceY, backPlaceScale, backPlaceRotation,
+      hoodPlaceX, hoodPlaceY, hoodPlaceScale, hoodPlaceRotation,
+      backHasArtwork, backSameAsFront, hoodHasArtwork, seamOffset, accentColor, bgColor]);
 
   // Live single-image canvas
   useEffect(() => {
@@ -726,6 +738,10 @@ export function PatternCustomizer({
     placeView === "front" ? placeScale :
     placeView === "back"  ? (backSameAsFront ? placeScale : backPlaceScale) :
     hoodPlaceScale;
+  const currentPlaceRotation =
+    placeView === "front" ? placeRotation :
+    placeView === "back"  ? (backSameAsFront ? placeRotation : backPlaceRotation) :
+    hoodPlaceRotation;
   // Whether the current view has artwork enabled
   const currentViewHasArtwork =
     placeView === "front" ||
@@ -798,8 +814,11 @@ export function PatternCustomizer({
     const img = motifImgRef.current;
     const artW = layout.compositeW * currentPlaceScale * scaleToPreview;
     const artH = artW * (img.height / img.width);
-    const artX = currentPlaceX * scaleToPreview - artW / 2;
-    const artY = currentPlaceY * scaleToPreview - artH / 2;
+    const artCX = currentPlaceX * scaleToPreview;
+    const artCY = currentPlaceY * scaleToPreview;
+    const artX = artCX - artW / 2;
+    const artY = artCY - artH / 2;
+    const rotRad = (currentPlaceRotation * Math.PI) / 180;
 
     // Draw each panel with garment shape clip (or flat-lay image background)
     for (const slot of layout.slots) {
@@ -859,7 +878,15 @@ export function PatternCustomizer({
         if (currentViewHasArtwork) {
           offCtx.globalCompositeOperation = "source-atop";
           offCtx.globalAlpha = 0.9;
-          offCtx.drawImage(img, artX - sx, artY - sy, artW, artH);
+          if (rotRad !== 0) {
+            offCtx.save();
+            offCtx.translate(artCX - sx, artCY - sy);
+            offCtx.rotate(rotRad);
+            offCtx.drawImage(img, -artW / 2, -artH / 2, artW, artH);
+            offCtx.restore();
+          } else {
+            offCtx.drawImage(img, artX - sx, artY - sy, artW, artH);
+          }
           offCtx.globalAlpha = 1;
           offCtx.globalCompositeOperation = "source-over";
         }
@@ -882,7 +909,15 @@ export function PatternCustomizer({
         ctx.fillRect(sx, sy, sw, sh);
         if (currentViewHasArtwork) {
           ctx.globalAlpha = 0.92;
-          ctx.drawImage(img, artX, artY, artW, artH);
+          if (rotRad !== 0) {
+            ctx.save();
+            ctx.translate(artCX, artCY);
+            ctx.rotate(rotRad);
+            ctx.drawImage(img, -artW / 2, -artH / 2, artW, artH);
+            ctx.restore();
+          } else {
+            ctx.drawImage(img, artX, artY, artW, artH);
+          }
           ctx.globalAlpha = 1;
         }
         ctx.restore();
@@ -930,11 +965,19 @@ export function PatternCustomizer({
 
     // Draw artwork bounding box (blue dashed) if artwork is shown
     if (currentViewHasArtwork) {
+      ctx.save();
       ctx.strokeStyle = "#3b82f6";
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 2]);
-      ctx.strokeRect(artX, artY, artW, artH);
+      if (rotRad !== 0) {
+        ctx.translate(artCX, artCY);
+        ctx.rotate(rotRad);
+        ctx.strokeRect(-artW / 2, -artH / 2, artW, artH);
+      } else {
+        ctx.strokeRect(artX, artY, artW, artH);
+      }
       ctx.setLineDash([]);
+      ctx.restore();
     } else {
       // No artwork: show label
       ctx.fillStyle = "rgba(100,116,139,0.6)";
@@ -943,7 +986,7 @@ export function PatternCustomizer({
       ctx.fillText("No artwork (solid colour)", canvas.width / 2, canvas.height / 2);
     }
 
-  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, bgColor, backHasArtwork, hoodHasArtwork, currentViewHasArtwork, isSnapped, flatLayLoaded]);
+  }, [mode, motifLoaded, placeView, currentLayout, currentPlaceX, currentPlaceY, currentPlaceScale, currentPlaceRotation, bgColor, backHasArtwork, hoodHasArtwork, currentViewHasArtwork, isSnapped, flatLayLoaded]);
 
   // Drag handlers for single-image mode
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1236,6 +1279,10 @@ export function PatternCustomizer({
               group === "front" ? placeScale :
               group === "hood"  ? hoodPlaceScale :
               (backSameAsFront ? placeScale : backPlaceScale);
+            const useRotation =
+              group === "front" ? placeRotation :
+              group === "hood"  ? hoodPlaceRotation :
+              (backSameAsFront ? placeRotation : backPlaceRotation);
 
             // Find this panel's slot in the composite
             const slot = layout.slots.find(s => s.position === panel.position);
@@ -1257,37 +1304,40 @@ export function PatternCustomizer({
               const artLeft = useX - artW / 2;
               const artTop  = useY - artH / 2;
 
-              // Seam bleed: panels that sit at a seam edge get SEAM_BLEED_PX extra pixels
+              // Seam bleed: panels that sit at a seam edge get seamOffset extra pixels
               // of artwork past the seam so the image remains continuous across the sewn join.
+              // The user can adjust this via the "Seam offset" slider.
               //
-              // In the composite, the seam is at the boundary between the two panels.
-              // front_right: slot.x=0, seam on its RIGHT edge.
-              //   We want the artwork to extend past the RIGHT edge of this panel.
-              //   relX = artLeft - slot.x + bleedShift
-              //   To push artwork further RIGHT (past the seam), bleedShift = +SEAM_BLEED_PX.
-              // front_left: slot.x=1808, seam on its LEFT edge.
-              //   We want the artwork to extend past the LEFT edge of this panel.
-              //   relX = artLeft - slot.x + bleedShift
-              //   artLeft - slot.x is already negative (artwork starts left of panel).
-              //   To push artwork further LEFT (past the seam), bleedShift = -SEAM_BLEED_PX.
-              // - Single-panel views (back): no seam, no bleed.
+              // front_right: slot.x=0, seam on its RIGHT edge → bleedShift = +seamOffset
+              // front_left: slot.x>0, seam on its LEFT edge → bleedShift = -seamOffset
+              // Single-panel views (back): no seam, no bleed.
               let bleedShift = 0;
               if (layout.slots.length > 1) {
                 if (slot.x === 0) {
-                  // Seam on RIGHT edge — shift artwork RIGHT so it bleeds past right edge
-                  bleedShift = SEAM_BLEED_PX;
+                  bleedShift = seamOffset;
                 } else {
-                  // Seam on LEFT edge — shift artwork LEFT so it bleeds past left edge
-                  bleedShift = -SEAM_BLEED_PX;
+                  bleedShift = -seamOffset;
                 }
               }
 
               const relX = artLeft - slot.x + bleedShift;
               const relY = artTop  - slot.y;
+              const applyRotRad = (useRotation * Math.PI) / 180;
 
-              console.log(`[Place on Item] Panel "${panel.position}": slot.x=${slot.x}, artLeft=${artLeft.toFixed(0)}, relX=${relX.toFixed(0)}, artW=${artW.toFixed(0)}, canvasW=${W}, bleedShift=${bleedShift}`);
+              console.log(`[Place on Item] Panel "${panel.position}": slot.x=${slot.x}, artLeft=${artLeft.toFixed(0)}, relX=${relX.toFixed(0)}, artW=${artW.toFixed(0)}, canvasW=${W}, bleedShift=${bleedShift}, rotation=${useRotation}`);
 
-              ctx.drawImage(img, relX, relY, artW, artH);
+              if (applyRotRad !== 0) {
+                // Draw artwork rotated around its centre (relative to panel canvas)
+                const artCenterX = relX + artW / 2;
+                const artCenterY = relY + artH / 2;
+                ctx.save();
+                ctx.translate(artCenterX, artCenterY);
+                ctx.rotate(applyRotRad);
+                ctx.drawImage(img, -artW / 2, -artH / 2, artW, artH);
+                ctx.restore();
+              } else {
+                ctx.drawImage(img, relX, relY, artW, artH);
+              }
             }
           }
 
@@ -1616,10 +1666,87 @@ export function PatternCustomizer({
                 </div>
               )}
 
+              {/* Rotation control — 20° increment button */}
+              {currentViewHasArtwork && (
+                <div className="shrink-0 space-y-0.5">
+                  <div className="flex justify-between items-center">
+                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Rotation</Label>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{currentPlaceRotation}°</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button type="button" title="Rotate -20°"
+                      onClick={() => {
+                        const next = ((currentPlaceRotation - 20) % 360 + 360) % 360;
+                        const norm = next > 180 ? next - 360 : next;
+                        if (placeView === "front") setPlaceRotation(norm);
+                        else if (placeView === "hood") setHoodPlaceRotation(norm);
+                        else if (!backSameAsFront) setBackPlaceRotation(norm);
+                      }}
+                      disabled={busy}
+                      className="flex items-center justify-center w-7 h-7 rounded border bg-muted/30 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </button>
+                    <div className="flex-1 flex gap-0.5">
+                      {[0, 20, 40, 60, 80, 90].map(deg => (
+                        <button key={deg} type="button"
+                          onClick={() => {
+                            if (placeView === "front") setPlaceRotation(deg);
+                            else if (placeView === "hood") setHoodPlaceRotation(deg);
+                            else if (!backSameAsFront) setBackPlaceRotation(deg);
+                          }}
+                          disabled={busy}
+                          className={`flex-1 py-0.5 rounded text-[9px] transition-colors ${
+                            currentPlaceRotation === deg
+                              ? "bg-foreground text-background font-medium"
+                              : "bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          }`}>
+                          {deg}°
+                        </button>
+                      ))}
+                    </div>
+                    <button type="button" title="Rotate +20°"
+                      onClick={() => {
+                        const next = ((currentPlaceRotation + 20) % 360 + 360) % 360;
+                        const norm = next > 180 ? next - 360 : next;
+                        if (placeView === "front") setPlaceRotation(norm);
+                        else if (placeView === "hood") setHoodPlaceRotation(norm);
+                        else if (!backSameAsFront) setBackPlaceRotation(norm);
+                      }}
+                      disabled={busy}
+                      className="flex items-center justify-center w-7 h-7 rounded border bg-muted/30 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
+                      <RotateCcw className="h-3.5 w-3.5" style={{ transform: "scaleX(-1)" }} />
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {currentViewHasArtwork && (
                 <p className="text-[10px] text-muted-foreground leading-tight shrink-0">
                   Drag the artwork in the preview to reposition it. Red line = seam. Drag near seam to snap.
                 </p>
+              )}
+
+              {/* Seam offset slider — controls how much artwork bleeds past the zipper/seam */}
+              {currentViewHasArtwork && currentLayout.slots.length > 1 && (
+                <div className="shrink-0 space-y-0.5 rounded border px-2 py-2 bg-muted/20">
+                  <div className="flex justify-between items-center">
+                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Seam offset</Label>
+                    <span className="text-[10px] text-muted-foreground tabular-nums">{seamOffset}px</span>
+                  </div>
+                  <Slider
+                    min={0} max={300} step={5}
+                    value={[seamOffset]}
+                    onValueChange={([v]) => setSeamOffset(v)}
+                    className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
+                  />
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
+                    <span>No overlap</span><span>More overlap</span>
+                  </div>
+                  <p className="text-[9px] text-muted-foreground leading-tight mt-0.5">
+                    Controls how much artwork extends past the zipper/seam. Default: {DEFAULT_SEAM_BLEED_PX}px (~1cm).
+                    Increase to ensure artwork spans the seam without gaps.
+                  </p>
+                </div>
               )}
 
               {/* Accent panel colour */}
@@ -1658,14 +1785,17 @@ export function PatternCustomizer({
                     setPlaceX(frontLayout.compositeW / 2);
                     setPlaceY(frontLayout.compositeH * 0.35);
                     setPlaceScale(0.4);
+                    setPlaceRotation(0);
                   } else if (placeView === "hood") {
                     setHoodPlaceX(hoodLayout.compositeW / 2);
                     setHoodPlaceY(hoodLayout.compositeH * 0.45);
                     setHoodPlaceScale(0.7);
+                    setHoodPlaceRotation(0);
                   } else {
                     setBackPlaceX(backLayout.compositeW / 2);
                     setBackPlaceY(backLayout.compositeH * 0.35);
                     setBackPlaceScale(0.4);
+                    setBackPlaceRotation(0);
                   }
                 }}
                 disabled={busy}
