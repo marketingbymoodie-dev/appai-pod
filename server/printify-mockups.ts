@@ -1,11 +1,121 @@
-import pRetry from "p-retry";
-
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
+import { fetch } from "undici";
 import sharp from "sharp";
-import { getStorageDir } from "./replit_integrations/object_storage";
-import { uploadMockupToSupabase, getSupabasePublicUrl } from "./supabaseMockups";
+import pRetry from "p-retry";
+import {
+  buildMockupCacheKey,
+  getCachedMockup,
+  saveMockupToCache,
+} from "./mockup-cache";
+import { supabase } from "./supabase";
+
+const PRINTIFY_API_BASE = "https://api.printify.com/v1";
+const MAX_RETRIES = 3;
+const MAX_MOCKUP_VIEWS = 4;
+const PREFERRED_LABELS = [
+  "front",
+  "back",
+  "lifestyle",
+  "on-person-1-front",
+  "on-person-2-front",
+  "on-person-3-front",
+  "on-person-4-front",
+  "on-person-5-front",
+  "on-person-6-front",
+  "on-person-7-front",
+  "on-person-8-front",
+  "on-person-9-front",
+  "on-person-10-front",
+  "on-person-11-front",
+  "on-person-12-front",
+  "on-person-13-front",
+  "on-person-14-front",
+  "on-person-15-front",
+  "on-person-16-front",
+  "on-person-17-front",
+  "on-person-18-front",
+  "on-person-19-front",
+  "on-person-20-front",
+  "on-person-21-front",
+  "on-person-22-front",
+  "on-person-23-front",
+  "on-person-24-front",
+  "on-person-25-front",
+  "on-person-26-front",
+  "on-person-27-front",
+  "on-person-28-front",
+  "on-person-29-front",
+  "on-person-30-front",
+  "on-person-31-front",
+  "on-person-32-front",
+  "on-person-33-front",
+  "on-person-34-front",
+  "on-person-35-front",
+  "on-person-36-front",
+  "on-person-37-front",
+  "on-person-38-front",
+  "on-person-39-front",
+  "on-person-40-front",
+  "on-person-41-front",
+  "on-person-42-front",
+  "on-person-43-front",
+  "on-person-44-front",
+  "on-person-45-front",
+  "on-person-46-front",
+  "on-person-47-front",
+  "on-person-48-front",
+  "on-person-49-front",
+  "on-person-50-front",
+  "on-person-51-front",
+  "on-person-52-front",
+  "on-person-53-front",
+  "on-person-54-front",
+  "on-person-55-front",
+  "on-person-56-front",
+  "on-person-57-front",
+  "on-person-58-front",
+  "on-person-59-front",
+  "on-person-60-front",
+  "on-person-61-front",
+  "on-person-62-front",
+  "on-person-63-front",
+  "on-person-64-front",
+  "on-person-65-front",
+  "on-person-66-front",
+  "on-person-67-front",
+  "on-person-68-front",
+  "on-person-69-front",
+  "on-person-70-front",
+  "on-person-71-front",
+  "on-person-72-front",
+  "on-person-73-front",
+  "on-person-74-front",
+  "on-person-75-front",
+  "on-person-76-front",
+  "on-person-77-front",
+  "on-person-78-front",
+  "on-person-79-front",
+  "on-person-80-front",
+  "on-person-81-front",
+  "on-person-82-front",
+  "on-person-83-front",
+  "on-person-84-front",
+  "on-person-85-front",
+  "on-person-86-front",
+  "on-person-87-front",
+  "on-person-88-front",
+  "on-person-89-front",
+  "on-person-90-front",
+  "on-person-91-front",
+  "on-person-92-front",
+  "on-person-93-front",
+  "on-person-94-front",
+  "on-person-95-front",
+  "on-person-96-front",
+  "on-person-97-front",
+  "on-person-98-front",
+  "on-person-99-front",
+  "on-person-100-front",
+];
 
 interface MockupRequest {
   blueprintId: number;
@@ -14,29 +124,19 @@ interface MockupRequest {
   imageUrl: string;
   printifyApiToken: string;
   printifyShopId: string;
-  scale?: number; // 0-2 range, default 1
-  x?: number; // -1 to 1 range, default 0 (center)
-  y?: number; // -1 to 1 range, default 0 (center)
-  doubleSided?: boolean; // Send image to both front and back
-  /** Wrap-around: product uses a single print area that wraps both sides (e.g. pillows).
-   *  When true, the image is duplicated to fill the full wrap area. */
+  scale?: number;
+  x?: number;
+  y?: number;
+  doubleSided?: boolean;
   wrapAround?: boolean;
-  /** Direction to duplicate for wrap-around: 'horizontal' (side-by-side) or 'vertical' (top-to-bottom).
-   *  Defaults to 'horizontal' if not specified. */
-  wrapDirection?: 'horizontal' | 'vertical';
-  /** AOP: list of all panel positions to fill with the same image */
+  wrapDirection?: "horizontal" | "vertical";
   aopPositions?: { position: string; width: number; height: number }[];
-  /** AOP: when true, right_* panels will receive a horizontally flipped copy of the pattern */
-  mirrorLegs?: boolean;
-  /** AOP per-panel images — one data URL per Printify placeholder position.
-   *  When provided, each panel gets its own correctly-sized and inseam-aligned image
-   *  instead of the same square canvas scaled to fit every panel. */
   panelUrls?: { position: string; dataUrl: string }[];
 }
 
 interface MockupImage {
   url: string;
-  label: string; // e.g., "front", "back", "lifestyle"
+  label: string;
 }
 
 interface MockupResult {
@@ -45,7 +145,7 @@ interface MockupResult {
   mockupImages: MockupImage[];
   source: "printify" | "fallback";
   error?: string;
-  step?: "printify_upload" | "temp_product" | "mockup_fetch" | "image_duplicate";
+  step?: "printify_upload" | "temp_product" | "mockup_fetch";
 }
 
 interface PrintifyImage {
@@ -59,206 +159,81 @@ interface PrintifyImage {
   upload_time: string;
 }
 
-const PRINTIFY_API_BASE = "https://api.printify.com/v1";
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function isDataUrl(url: string): boolean {
   return url.startsWith("data:");
 }
 
-/**
- * Fix accidental double-prefixed URLs (e.g. APP_URL + Supabase URL).
- * Pattern: "https://railway...https://supabase.../path" → "https://supabase.../path"
- */
+function extractBase64FromDataUrl(dataUrl: string): string | null {
+  const match = dataUrl.match(/^data:image\/\w+;base64,(.+)$/);
+  return match ? match[1] : null;
+}
+
 function normalizeImageUrl(url: string): string {
-  if (!url || typeof url !== "string") return url;
-  // Detect double URL: our origin + absolute URL
-  const secondProto = url.indexOf("https://", 8); // skip first "https://"
-  if (secondProto > 0) {
-    const fixed = url.slice(secondProto);
-    console.warn(`[Printify] Fixed double-prefixed image URL (${url.length} → ${fixed.length} chars)`);
-    return fixed;
-  }
-  const secondHttp = url.indexOf("http://", 7);
-  if (secondHttp > 0) {
-    const fixed = url.slice(secondHttp);
-    console.warn(`[Printify] Fixed double-prefixed image URL (http)`);
-    return fixed;
+  if (typeof url !== "string") return url;
+  const appUrl = process.env.APP_URL || "";
+  if (appUrl && url.startsWith(appUrl) && url.includes("supabase.co")) {
+    return url.replace(appUrl, "");
   }
   return url;
 }
 
-function extractBase64FromDataUrl(dataUrl: string): string {
-  const base64Match = dataUrl.match(/^data:image\/[^;]+;base64,(.+)$/);
-  return base64Match ? base64Match[1] : "";
-}
-
-function isAllowedImageUrl(url: string): boolean {
-  if (isDataUrl(url)) return true;
-
+async function cacheMockupToStorage(
+  printifyUrl: string,
+  cacheKey: string,
+  apiToken?: string
+): Promise<string | null> {
   try {
-    const parsedUrl = new URL(url);
-    const allowedHosts = [
-      process.env.REPLIT_DEV_DOMAIN,
-      process.env.REPL_SLUG ? `${process.env.REPL_SLUG}.${process.env.REPL_OWNER}.repl.co` : null,
-      'storage.googleapis.com',
-      'up.railway.app', // Railway hosted apps
-    ].filter(Boolean);
-
-    return allowedHosts.some(host => host && parsedUrl.hostname.includes(host as string));
-  } catch {
-    return false;
-  }
-}
-
-
-const MAX_RETRIES = 3;
-const MAX_MOCKUP_VIEWS = 4;
-// For double-sided products, prioritize front and back; for others, prefer lifestyle shots
-const PREFERRED_LABELS = ["front", "back", "left", "right", "close-up"];
-
-async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
-
-/**
- * Build a deterministic cache key for a single mockup view.
- * Includes the design image hash, blueprint, provider, variant, and label
- * so different designs/products never collide.
- */
-function buildMockupCacheKey(
-  designImageUrl: string,
-  blueprintId: number,
-  providerId: number,
-  variantId: number,
-  label: string,
-  scale: number = 1,
-  x: number = 0,
-  y: number = 0,
-  doubleSided: boolean = false,
-): string {
-  const designHash = crypto.createHash("sha256").update(designImageUrl).digest("hex").substring(0, 12);
-  const s = Math.round(scale * 100);
-  const px = Math.round(x * 100);
-  const py = Math.round(y * 100);
-  const ds = doubleSided ? "_ds" : "";
-  return `${designHash}_bp${blueprintId}_pr${providerId}_v${variantId}_s${s}_x${px}_y${py}${ds}_${label}`;
-}
-
-/**
- * Check if a cached mockup exists on Supabase (via local disk marker).
- * Returns Supabase CDN URL if available, otherwise falls back to /objects/designs/{filename}
- * which is served via the App Proxy route. Returns null on cache miss.
- */
-function getCachedMockup(cacheKey: string): string | null {
-  const filename = `${cacheKey}.jpg`;
-  const filePath = path.join(getStorageDir(), "mockups", filename);
-  try {
-    fs.accessSync(filePath, fs.constants.F_OK);
-  } catch {
-    return null;
-  }
-
-  const parts = cacheKey.split("_");
-  const designId = parts[0] || cacheKey;
-  // Include variant (v{id}), transform (s/x/y) and label in the view name so each
-  // color+zoom+position combination gets a unique Supabase path and never overwrites another color.
-  const viewName = parts.slice(3).join("_") || "front";
-  // Prefer Supabase CDN URL; fall back to local designs/ path (served via App Proxy route)
-  return getSupabasePublicUrl(designId, viewName) ?? `/objects/designs/${filename}`;
-}
-
-/**
- * Pick up to MAX_MOCKUP_VIEWS images, preferring PREFERRED_LABELS in order.
- */
-function selectPreferredViews(images: MockupImage[]): MockupImage[] {
-  const selected: MockupImage[] = [];
-  const used = new Set<number>();
-
-  for (const label of PREFERRED_LABELS) {
-    if (selected.length >= MAX_MOCKUP_VIEWS) break;
-    const idx = images.findIndex((img, i) => img.label === label && !used.has(i));
-    if (idx !== -1) {
-      selected.push(images[idx]);
-      used.add(idx);
+    const fetchOptions: any = {};
+    if (apiToken) {
+      fetchOptions.headers = {
+        Authorization: `Bearer ${apiToken}`,
+      };
     }
-  }
 
-  for (let i = 0; i < images.length && selected.length < MAX_MOCKUP_VIEWS; i++) {
-    if (!used.has(i)) {
-      selected.push(images[i]);
-      used.add(i);
-    }
-  }
-
-  return selected;
-}
-
-async function cacheMockupToStorage(printifyUrl: string, cacheKey: string, apiToken?: string): Promise<string | null> {
-  const parts = cacheKey.split("_");
-  const designId = parts[0] || cacheKey;
-  // Include variant (v{id}), transform (s/x/y) and label in the view name so each
-  // color+zoom+position combination gets a unique Supabase path and never overwrites another color.
-  const viewName = parts.slice(3).join("_") || "front";
-
-   // Retry the download to handle Printify CDN propagation delay.
-  // The product API lists images immediately but the CDN may not have rendered them yet.
-  const MAX_DOWNLOAD_RETRIES = 4;
-  const DOWNLOAD_RETRY_DELAYS = [2000, 4000, 6000, 8000]; // ms between retries
-  let buffer: Buffer | null = null;
-  for (let attempt = 0; attempt <= MAX_DOWNLOAD_RETRIES; attempt++) {
-    if (attempt > 0) {
-      const delay = DOWNLOAD_RETRY_DELAYS[attempt - 1] ?? 8000;
-      console.log(`[Mockup Cache] Retry ${attempt}/${MAX_DOWNLOAD_RETRIES} for mockup download in ${delay}ms...`);
-      await sleep(delay);
-    }
-    try {
-      // Printify mockup render URLs (images-api.printify.com/mockup/...) are public render
-      // endpoints that do NOT use auth headers. Adding an auth header causes 400 errors.
-      const response = await fetch(printifyUrl);
-      if (!response.ok) {
-        console.warn(`[Mockup Cache] Attempt ${attempt + 1}: Failed to download mockup (${response.status}): ${printifyUrl.substring(0, 80)}`);
-        if (attempt < MAX_DOWNLOAD_RETRIES) continue;
-        return null;
+    const response = await pRetry(
+      async () => {
+        const res = await fetch(printifyUrl, fetchOptions);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch mockup from Printify: ${res.status} ${res.statusText}`);
+        }
+        return res;
+      },
+      {
+        retries: 3,
+        minTimeout: 1000,
+        onFailedAttempt: (error) => {
+          console.warn(`[Mockup Cache] Download attempt ${error.attemptNumber} failed: ${error.message}`);
+        },
       }
-      const arrayBuffer = await response.arrayBuffer();
-      buffer = Buffer.from(arrayBuffer);
-      console.log(`[Mockup Cache] Downloaded mockup on attempt ${attempt + 1} (${buffer.length} bytes)`);
-      break;
-    } catch (fetchErr: any) {
-      console.warn(`[Mockup Cache] Attempt ${attempt + 1}: Fetch exception: ${fetchErr.message}`);
-      if (attempt < MAX_DOWNLOAD_RETRIES) continue;
+    );
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const fileName = `${cacheKey}.jpg`;
+    const { data, error } = await supabase.storage
+      .from("designs")
+      .upload(`mockups/${fileName}`, buffer, {
+        contentType: "image/jpeg",
+        upsert: true,
+      });
+
+    if (error) {
+      console.error("[Mockup Cache] Supabase upload error:", error);
       return null;
     }
-  }
-  if (!buffer) return null;
-  try {
-    const filename = `${cacheKey}.jpg`;
 
-    // Write to local disk in two places:
-    // 1. mockups/ subdirectory for getCachedMockup cache-first lookup
-    // 2. designs/ subdirectory as fallback serve path (has a working App Proxy route)
-    const mockupsDir = path.join(getStorageDir(), "mockups");
-    const designsDir = path.join(getStorageDir(), "designs");
-    await fs.promises.mkdir(mockupsDir, { recursive: true });
-    await fs.promises.mkdir(designsDir, { recursive: true });
-    await fs.promises.writeFile(path.join(mockupsDir, filename), buffer);
-    // Also write to designs/ so the /api/proxy/objects/designs/:filename proxy route can serve it
-    await fs.promises.writeFile(path.join(designsDir, filename), buffer);
+    const { data: publicUrlData } = supabase.storage
+      .from("designs")
+      .getPublicUrl(`mockups/${fileName}`);
 
-    // Upload to Supabase for public CDN URL
-    try {
-      const publicUrl = await uploadMockupToSupabase({ buffer, designId, viewName });
-      if (publicUrl) return publicUrl;
-    } catch (err: any) {
-      console.warn(`[Mockup Cache] Supabase upload failed (${designId}/${viewName}): ${err.message || err}`);
-    }
-
-    // Supabase unavailable/failed — serve from designs/ via the App Proxy route.
-    // This is critical: the Printify CDN URL becomes invalid after the temp product is deleted.
-    // The designs/ path has a working proxy route: /api/proxy/objects/designs/:filename
-    // which Shopify rewrites from /apps/appai/objects/designs/:filename.
-    console.warn(`[Mockup Cache] Supabase failed — serving from local designs/: /objects/designs/${filename}`);
-    return `/objects/designs/${filename}`;
+    const publicUrl = publicUrlData.publicUrl;
+    saveMockupToCache(cacheKey, publicUrl);
+    return publicUrl;
   } catch (error) {
-    console.warn("[Mockup Cache] Download failed, cannot cache mockup");
+    console.error("[Mockup Cache] Error caching mockup:", error);
     return null;
   }
 }
@@ -266,31 +241,27 @@ async function cacheMockupToStorage(printifyUrl: string, cacheKey: string, apiTo
 async function cacheMockupImages(
   mockupData: { urls: string[]; images: MockupImage[] },
   cacheKeys: string[],
-  apiToken?: string,
+  apiToken?: string
 ): Promise<{ urls: string[]; images: MockupImage[] }> {
   const cachedUrls: string[] = [];
   const cachedImages: MockupImage[] = [];
 
   const results = await Promise.allSettled(
-    mockupData.images.map((img, i) => cacheMockupToStorage(img.url, cacheKeys[i], apiToken))
+    mockupData.urls.map((url, i) => cacheMockupToStorage(url, cacheKeys[i], apiToken))
   );
 
-   for (let i = 0; i < mockupData.images.length; i++) {
+  for (let i = 0; i < results.length; i++) {
     const result = results[i];
     const original = mockupData.images[i];
     if (result.status === "fulfilled" && result.value) {
       cachedUrls.push(result.value);
       cachedImages.push({ url: result.value, label: original.label });
     } else {
-      // Caching failed — fall back to the original Printify URL.
-      // These images-api.printify.com/mockup URLs remain accessible even after the temp
-      // product is deleted (confirmed by working designs in the database).
       console.warn(`[Mockup Cache] Caching failed for view "${original.label}" — using original Printify URL as fallback`);
       cachedUrls.push(original.url);
       cachedImages.push({ url: original.url, label: original.label });
     }
   }
-
   return { urls: cachedUrls, images: cachedImages };
 }
 
@@ -299,28 +270,19 @@ async function uploadImageToPrintify(
   apiToken: string
 ): Promise<PrintifyImage | null> {
   let requestBody: Record<string, string>;
-  let uploadMethod: string;
-
   if (Buffer.isBuffer(imageUrlOrBuffer)) {
-    const base64Data = imageUrlOrBuffer.toString('base64');
-    uploadMethod = `buffer (${base64Data.length} chars base64)`;
     requestBody = {
       file_name: `design-${Date.now()}.png`,
-      contents: base64Data,
+      contents: imageUrlOrBuffer.toString("base64"),
     };
   } else if (isDataUrl(imageUrlOrBuffer)) {
     const base64Data = extractBase64FromDataUrl(imageUrlOrBuffer);
-    if (!base64Data) {
-      console.error("[Printify Upload] Failed to extract base64 from data URL");
-      return null;
-    }
-    uploadMethod = `data-url (${base64Data.length} chars base64)`;
+    if (!base64Data) return null;
     requestBody = {
       file_name: `design-${Date.now()}.png`,
       contents: base64Data,
     };
   } else {
-    uploadMethod = `url: ${imageUrlOrBuffer.substring(0, 100)}`;
     requestBody = {
       file_name: `design-${Date.now()}.png`,
       url: imageUrlOrBuffer,
@@ -329,31 +291,23 @@ async function uploadImageToPrintify(
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`[Printify Upload] Attempt ${attempt}/${MAX_RETRIES} via ${uploadMethod}`);
-
-      const response = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
-
+      const response = await fetch(
+        `${PRINTIFY_API_BASE}/shops/uploads/images.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        }
+      );
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[Printify Upload] Attempt ${attempt} failed (${response.status}):`, errorText.substring(0, 500));
-        // 4xx = client error, not retryable
-        if (response.status >= 400 && response.status < 500) return null;
         if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
         return null;
       }
-
-      const result = await response.json();
-      console.log(`[Printify Upload] Success on attempt ${attempt}: id=${result.id}, ${result.width}x${result.height}`);
-      return result;
+      return (await response.json()) as PrintifyImage;
     } catch (error) {
-      console.error(`[Printify Upload] Attempt ${attempt} exception:`, error);
       if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
       return null;
     }
@@ -374,46 +328,44 @@ async function createTemporaryProduct(
   doubleSided: boolean = false,
   aopPositions?: { position: string; width: number; height: number }[],
   mirroredImageId?: string,
-  /** Per-panel image IDs — when provided, each panel uses its own uploaded image */
   panelImageIds?: Map<string, string>
 ): Promise<{ productId: string } | { error: string }> {
-  const printifyX = 0.5 + (x * 0.5);
-  const printifyY = 0.5 + (y * 0.5);
-
-  const imageEntry = { id: imageId, x: printifyX, y: printifyY, scale: scale, angle: 0 };
-  const placeholders: Array<{ position: string; images: typeof imageEntry[] }> = [];
+  const printifyX = 0.5 + x * 0.5;
+  const printifyY = 0.5 + y * 0.5;
+  const imageEntry = {
+    id: imageId,
+    x: printifyX,
+    y: printifyY,
+    scale: scale,
+    angle: 0,
+  };
+  const placeholders: Array<{ position: string; images: typeof imageEntry[] }> =
+    [];
 
   if (aopPositions && aopPositions.length > 0) {
-    // AOP: use per-panel image IDs if available, otherwise fall back to same image for all panels
     for (const pos of aopPositions) {
       const isRightPanel = pos.position.startsWith("right");
       let useImageId: string;
       if (panelImageIds && panelImageIds.has(pos.position)) {
-        // Per-panel image: already correctly sized and inseam-aligned by the client canvas.
-        // Use scale=100, x=0.5, y=0.5 so Printify fills the panel exactly without any
-        // additional scaling or offset. Using the user's placeScale/x/y here would cause
-        // double-scaling (artwork scaled once in the canvas, then again by Printify).
         useImageId = panelImageIds.get(pos.position)!;
-        const panelEntry = { id: useImageId, x: 0.5, y: 0.5, scale: 100, angle: 0 };
+        const panelEntry = {
+          id: useImageId,
+          x: 0.5,
+          y: 0.5,
+          scale: 100,
+          angle: 0,
+        };
         placeholders.push({ position: pos.position, images: [panelEntry] });
         continue;
       } else if (isRightPanel && mirroredImageId) {
-        // Legacy fallback: mirrored copy for right panels
         useImageId = mirroredImageId;
-        const entry = { ...imageEntry, id: useImageId };
-        placeholders.push({ position: pos.position, images: [entry] });
       } else {
-        // No per-panel image for this position — use the primary image as fallback.
-        // The primary image is now guaranteed to be the largest panel canvas (not a tiny
-        // placeholder), so Printify can scale it to fill this panel without exceeding limits.
-        // Use scale=100, x=0.5, y=0.5 since the primary is already a rendered panel canvas.
         useImageId = imageId;
-        const entry = { id: useImageId, x: 0.5, y: 0.5, scale: 100, angle: 0 };
-        placeholders.push({ position: pos.position, images: [entry] });
       }
+      const entry = { ...imageEntry, id: useImageId };
+      placeholders.push({ position: pos.position, images: [entry] });
     }
   } else {
-    // Standard single/double-sided
     placeholders.push({ position: "front", images: [imageEntry] });
     if (doubleSided) {
       placeholders.push({ position: "back", images: [imageEntry] });
@@ -429,56 +381,45 @@ async function createTemporaryProduct(
     print_areas: [{ variant_ids: [variantId], placeholders }],
   };
 
-  console.log(`[Printify CreateProduct] doubleSided=${doubleSided}, aopPositions=${JSON.stringify(aopPositions || null)}, placeholders=${JSON.stringify(placeholders.map(p => p.position))}`);
-  console.log(`[Printify CreateProduct] Full print_areas:`, JSON.stringify(requestBody.print_areas, null, 2));
-
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`[Printify] Creating temp product (attempt ${attempt}/${MAX_RETRIES}):`, {
-        shopId, blueprintId, providerId, variantId, imageId, scale, x: printifyX, y: printifyY, doubleSided,
-      });
-
       const response = await fetch(
         `${PRINTIFY_API_BASE}/shops/${shopId}/products.json`,
         {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${apiToken}`,
+            Authorization: `Bearer ${apiToken}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(requestBody),
         }
       );
-
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`[Printify] Attempt ${attempt} create product failed (${response.status}):`, errorText.substring(0, 500));
-        // 4xx = client error, not retryable
         if (response.status >= 400 && response.status < 500) {
-          return { error: `Printify rejected product (${response.status}): ${errorText.substring(0, 200)}` };
+          return {
+            error: `Printify rejected product (${
+              response.status
+            }): ${errorText.substring(0, 200)}`,
+          };
         }
         if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
-        return { error: `Printify server error after ${MAX_RETRIES} attempts (${response.status})` };
+        return {
+          error: `Printify server error after ${MAX_RETRIES} attempts (${response.status})`,
+        };
       }
-
       const product = await response.json();
-      console.log(`[Printify] Temp product created on attempt ${attempt}:`, product.id);
       return { productId: product.id };
     } catch (error: any) {
-      console.error(`[Printify] Attempt ${attempt} create product exception:`, error);
       if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
-      return { error: `Exception after ${MAX_RETRIES} attempts: ${error.message || String(error)}` };
+      return {
+        error: `Exception after ${MAX_RETRIES} attempts: ${
+          error.message || String(error)
+        }`,
+      };
     }
   }
   return { error: "Unexpected: exhausted retries" };
-}
-
-function extractCameraLabel(url: string): string {
-  const match = url.match(/camera_label=([^&]+)/);
-  if (match) {
-    return match[1];
-  }
-  return "front";
 }
 
 async function getProductMockups(
@@ -490,66 +431,62 @@ async function getProductMockups(
     const response = await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`,
       {
-        headers: {
-          "Authorization": `Bearer ${apiToken}`,
-        },
+        headers: { Authorization: `Bearer ${apiToken}` },
       }
     );
-
-    if (!response.ok) {
-      return null;
-    }
-
+    if (!response.ok) return null;
     const product = await response.json();
-    console.log("PRINTIFY PRODUCT KEYS:", Object.keys(product));
-    console.log("BLUEPRINT ID:", product.blueprint_id);
-    console.log("PRINT PROVIDER ID:", product.print_provider_id);
-    console.log("PRINT AREAS:", JSON.stringify(product.print_areas, null, 2));
-    console.log("PLACEHOLDERS:", JSON.stringify(product.placeholders, null, 2));
-    const mockupUrls: string[] = [];
-    const mockupImages: MockupImage[] = [];
+    if (!product.images || product.images.length === 0) return null;
 
-    if (product.images && Array.isArray(product.images)) {
-      for (const image of product.images) {
-        if (image.src) {
-          const label = extractCameraLabel(image.src);
-          // Skip size-chart images
-          if (label === "size-chart") continue;
-          
-          mockupUrls.push(image.src);
-          mockupImages.push({
-            url: image.src,
-            label: label,
-          });
-        }
-      }
-    }
+    const images = product.images.map((img: any) => ({
+      url: img.src,
+      label: extractCameraLabel(img.src),
+    }));
 
-    return mockupUrls.length > 0 ? { urls: mockupUrls, images: mockupImages } : null;
+    return {
+      urls: images.map((img: any) => img.url),
+      images,
+    };
   } catch (error) {
-    console.error("Error fetching product mockups:", error);
     return null;
   }
 }
 
-async function deleteProduct(
-  shopId: string,
-  productId: string,
-  apiToken: string
-): Promise<void> {
+function extractCameraLabel(url: string): string {
+  const match = url.match(/camera_label=([^&]+)/);
+  return match ? match[1] : "front";
+}
+
+function selectPreferredViews(images: MockupImage[]): MockupImage[] {
+  const selected: MockupImage[] = [];
+  const seenLabels = new Set<string>();
+
+  for (const label of PREFERRED_LABELS) {
+    const match = images.find((img) => img.label === label);
+    if (match && !seenLabels.has(label)) {
+      selected.push(match);
+      seenLabels.add(label);
+      if (selected.length >= MAX_MOCKUP_VIEWS) break;
+    }
+  }
+
+  if (selected.length === 0 && images.length > 0) {
+    return images.slice(0, MAX_MOCKUP_VIEWS);
+  }
+
+  return selected;
+}
+
+async function deleteProduct(shopId: string, productId: string, apiToken: string) {
   try {
     await fetch(
       `${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`,
       {
         method: "DELETE",
-        headers: {
-          "Authorization": `Bearer ${apiToken}`,
-        },
+        headers: { Authorization: `Bearer ${apiToken}` },
       }
     );
-  } catch (error) {
-    console.error("Error deleting temporary product:", error);
-  }
+  } catch (error) {}
 }
 
 export async function generatePrintifyMockup(
@@ -569,8 +506,8 @@ export async function generatePrintifyMockup(
     wrapAround = false,
   } = request;
 
-  // Fix accidental double-prefixed URLs (e.g. APP_URL + Supabase URL) before any use
-  const imageUrl = typeof rawImageUrl === "string" ? normalizeImageUrl(rawImageUrl) : rawImageUrl;
+  const imageUrl =
+    typeof rawImageUrl === "string" ? normalizeImageUrl(rawImageUrl) : rawImageUrl;
 
   if (!printifyApiToken || !printifyShopId) {
     return {
@@ -582,15 +519,24 @@ export async function generatePrintifyMockup(
     };
   }
 
-  // --- Cache-first: check if all preferred views are already cached ---
   const preferredCacheKeys = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map(
-    (label) => buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, label, scale, x, y, doubleSided || wrapAround)
+    (label) =>
+      buildMockupCacheKey(
+        imageUrl,
+        blueprintId,
+        providerId,
+        variantId,
+        label,
+        scale,
+        x,
+        y,
+        doubleSided || wrapAround
+      )
   );
   const cachedPaths = preferredCacheKeys.map(getCachedMockup);
   const allCached = cachedPaths.every((p) => p !== null);
 
   if (allCached) {
-    console.log(`[Mockup Cache] Full cache hit for ${MAX_MOCKUP_VIEWS} views — skipping Printify`);
     const urls = cachedPaths as string[];
     const images = PREFERRED_LABELS.slice(0, MAX_MOCKUP_VIEWS).map((label, i) => ({
       url: urls[i],
@@ -604,40 +550,29 @@ export async function generatePrintifyMockup(
     };
   }
 
-  // --- Cache miss: call Printify ---
   let productId: string | null = null;
-
   try {
-    // For wrap-around products (e.g. pillows): the "front" placeholder covers both
-    // sides as a single continuous 2:1 area. Duplicate the 1:1 image side-by-side
-    // so both front and back show the same artwork.
     const isAop = !!(request.aopPositions && request.aopPositions.length > 0);
     let uploadUrl: string | Buffer = imageUrl;
 
     if (wrapAround && !isAop) {
-      const direction = request.wrapDirection || 'horizontal';
+      const direction = request.wrapDirection || "horizontal";
       try {
         let originalBuffer: Buffer;
         if (isDataUrl(imageUrl)) {
-          const b64 = extractBase64FromDataUrl(imageUrl);
-          originalBuffer = Buffer.from(b64, "base64");
+          originalBuffer = Buffer.from(extractBase64FromDataUrl(imageUrl)!, "base64");
         } else {
           const fetchRes = await fetch(imageUrl);
-          if (fetchRes.ok) {
-            originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
-          } else {
-            console.warn("[Printify Wrap] Could not fetch image for duplication — using original");
-            originalBuffer = Buffer.alloc(0);
-          }
+          originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
         }
+
         if (originalBuffer.length > 0) {
           const metadata = await sharp(originalBuffer).metadata();
           const w = metadata.width || 1024;
           const h = metadata.height || 1024;
-
           let wrappedBuffer: Buffer;
-          if (direction === 'vertical') {
-            // Duplicate top-to-bottom (1:2 canvas)
+
+          if (direction === "vertical") {
             wrappedBuffer = await sharp({
               create: {
                 width: w,
@@ -652,9 +587,7 @@ export async function generatePrintifyMockup(
               ])
               .png()
               .toBuffer();
-            console.log(`[Printify Wrap] Duplicated ${w}x${h} image to ${w}x${h * 2} vertical wrap-around (${wrappedBuffer.length} bytes)`);
           } else {
-            // Duplicate side-by-side (2:1 canvas)
             wrappedBuffer = await sharp({
               create: {
                 width: w * 2,
@@ -669,119 +602,28 @@ export async function generatePrintifyMockup(
               ])
               .png()
               .toBuffer();
-            console.log(`[Printify Wrap] Duplicated ${w}x${h} image to ${w * 2}x${h} horizontal wrap-around (${wrappedBuffer.length} bytes)`);
           }
           uploadUrl = wrappedBuffer;
         }
-      } catch (wrapErr: any) {
-        console.warn("[Printify Wrap] Image duplication failed, falling back to original:", wrapErr.message);
-        uploadUrl = imageUrl;
-      }
+      } catch (wrapErr) {}
     }
-    let mirroredUploadBuffer: Buffer | null = null;
 
-    // ── AOP per-panel upload path ───────────────────────────────────────────────────
-    // When panelUrls are provided (per-panel inseam-aligned canvases), upload each one
-    // separately and build a Map<position, imageId> for createTemporaryProduct.
-    let panelImageIds: Map<string, string> | undefined;
+    let mirroredUploadBuffer: Buffer | null = null;
+    const panelImageIds = new Map<string, string>();
 
     if (isAop && request.panelUrls && request.panelUrls.length > 0) {
-      panelImageIds = new Map();
-      console.log(`[Printify AOP] Uploading ${request.panelUrls.length} per-panel images`);
-
-      await Promise.all(request.panelUrls.map(async ({ position, dataUrl }) => {
-        try {
-          const b64 = extractBase64FromDataUrl(dataUrl);
-          let buf = Buffer.from(b64, "base64");
-          // Cap panel images to max 2000px on longest side for mockup generation.
-          // Printify's mockup renderer has a hard pixel-count limit (~6GB uncompressed).
-          // Full-resolution images (e.g. 4469×4693) exceed this limit and cause 400 errors.
-          // The print files are uploaded separately at full resolution when the customer orders,
-          // so this resize only affects the temporary mockup product — not print quality.
-          const MOCKUP_MAX_PX = 2000;
-          const meta = await sharp(buf).metadata();
-          const longestSide = Math.max(meta.width || 0, meta.height || 0);
-          if (longestSide > MOCKUP_MAX_PX) {
-            buf = await sharp(buf)
-              .resize({ width: MOCKUP_MAX_PX, height: MOCKUP_MAX_PX, fit: 'inside', withoutEnlargement: true })
-              .png()
-              .toBuffer();
-          } else {
-            buf = await sharp(buf).png().toBuffer();
-          }
-          const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
-          if (uploaded) {
-            panelImageIds!.set(position, uploaded.id);
-            console.log(`[Printify AOP] Panel "${position}" uploaded: ${uploaded.id}`);
-          } else {
-            console.warn(`[Printify AOP] Panel "${position}" upload failed — will fall back to primary image`);
-          }
-        } catch (panelErr: any) {
-          console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message} — falling back`);
+      const uploadPromises = request.panelUrls.map(async (panel) => {
+        const result = await uploadImageToPrintify(panel.dataUrl, printifyApiToken);
+        if (result) {
+          panelImageIds.set(panel.position, result.id);
         }
-      }));
-    } else if (isAop) {
-      // Legacy path: single image for all panels (with optional mirror for right panels)
-      try {
-        let originalBuffer: Buffer;
-        if (isDataUrl(imageUrl)) {
-          const b64 = extractBase64FromDataUrl(imageUrl);
-          originalBuffer = Buffer.from(b64, "base64");
-        } else {
-          const fetchRes = await fetch(imageUrl);
-          if (fetchRes.ok) {
-            originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
-          } else {
-            console.warn("[Printify AOP] Could not fetch pattern for resize — using original URL");
-            originalBuffer = Buffer.alloc(0);
-          }
-        }
-
-        if (originalBuffer.length > 0) {
-          uploadUrl = await sharp(originalBuffer)
-            .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
-            .png()
-            .toBuffer();
-          console.log(`[Printify AOP] Resized pattern to ≤1024px for mockup upload (${(uploadUrl as Buffer).length} bytes)`);
-
-          if (request.mirrorLegs) {
-            mirroredUploadBuffer = await sharp(uploadUrl as Buffer)
-              .flop()
-              .png()
-              .toBuffer();
-            console.log(`[Printify AOP] Created mirrored pattern for right panels (${mirroredUploadBuffer.length} bytes)`);
-          }
-        }
-      } catch (resizeErr: any) {
-        console.warn("[Printify AOP] Resize/mirror failed, falling back to original URL:", resizeErr.message);
-        uploadUrl = imageUrl;
-        mirroredUploadBuffer = null;
-      }
+      });
+      await Promise.all(uploadPromises);
     }
 
-    // When per-panel images were uploaded, reuse the first panel's image ID as the
-    // primary image (required by createTemporaryProduct). This avoids uploading the
-    // designImageUrl (which may be a mockup URL, not the original artwork) to Printify.
     let uploadedImage: { id: string } | null = null;
-    if (panelImageIds && panelImageIds.size > 0) {
-      // Use a safe 1000x1000 white placeholder as the primary image for AOP products.
-      // This avoids using a panel canvas (which might be too large) or a 4x4 cuff (which
-      // causes massive scaling errors) as the primary image.
-      const placeholderBuffer = await sharp({
-        create: {
-          width: 1000,
-          height: 1000,
-          channels: 4,
-          background: { r: 255, g: 255, b: 255, alpha: 1 }
-        }
-      }).png().toBuffer();
-      
-      uploadedImage = await uploadImageToPrintify(placeholderBuffer, printifyApiToken);
-      if (!uploadedImage) {
-        // Fallback to first panel if placeholder upload fails
-        uploadedImage = { id: panelImageIds.values().next().value as string };
-      }
-      console.log(`[Printify AOP] Using safe 1000x1000 placeholder as primary: ${uploadedImage.id}`);
+    if (panelImageIds.size > 0) {
+      uploadedImage = { id: panelImageIds.values().next().value as string };
     } else {
       uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
       if (!uploadedImage) {
@@ -791,26 +633,10 @@ export async function generatePrintifyMockup(
           mockupImages: [],
           source: "fallback",
           step: "printify_upload",
-          error: "Failed to upload image to Printify after retries",
+          error: "Failed to upload image to Printify",
         };
       }
     }
-
-    // Upload mirrored copy for AOP right panels if we generated one (legacy path)
-    let resolvedMirroredImageId: string | undefined;
-    if (isAop && mirroredUploadBuffer) {
-      const mirroredImage = await uploadImageToPrintify(mirroredUploadBuffer, printifyApiToken);
-      if (mirroredImage) {
-        resolvedMirroredImageId = mirroredImage.id;
-        console.log(`[Printify AOP] Uploaded mirrored image: ${resolvedMirroredImageId}`);
-      } else {
-        console.warn("[Printify AOP] Mirrored image upload failed — right panels will use original");
-      }
-    }
-
-    // When wrapAround is active, the image is already duplicated side-by-side,
-    // so we only need the single "front" placeholder (doubleSided=false).
-    const effectiveDoubleSided = wrapAround ? false : doubleSided;
 
     const createResult = await createTemporaryProduct(
       printifyShopId,
@@ -822,9 +648,9 @@ export async function generatePrintifyMockup(
       scale,
       x,
       y,
-      effectiveDoubleSided,
+      doubleSided,
       request.aopPositions,
-      resolvedMirroredImageId,
+      undefined,
       panelImageIds
     );
 
@@ -835,45 +661,44 @@ export async function generatePrintifyMockup(
         mockupImages: [],
         source: "fallback",
         step: "temp_product",
-        error: `Failed to create temporary product: ${createResult.error}`,
+        error: createResult.error,
       };
     }
 
     productId = createResult.productId;
-
     const mockupData = await pRetry(
       async () => {
         const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
-        if (!data || data.urls.length === 0) {
-          throw new Error("Mockups not ready yet");
-        }
+        if (!data || data.urls.length === 0) throw new Error("Mockups not ready yet");
         return data;
       },
       {
         retries: 5,
         minTimeout: 2000,
         maxTimeout: 5000,
-        onFailedAttempt: (error) => {
-          console.log(`[Mockup] Attempt ${error.attemptNumber} failed (${error.message}). ${error.retriesLeft} retries left.`);
-        },
       }
     );
 
-    // Select up to 4 preferred views
     const selected = selectPreferredViews(mockupData.images);
-    const selectedData = {
-      urls: selected.map((img) => img.url),
-      images: selected,
-    };
-
-    console.log(`[Mockup Cache] Selected ${selected.length} views:`, selected.map((s) => s.label).join(", "));
-
-    // Build cache keys for the selected views
     const cacheKeys = selected.map((img) =>
-      buildMockupCacheKey(imageUrl, blueprintId, providerId, variantId, img.label, scale, x, y, doubleSided || wrapAround)
+      buildMockupCacheKey(
+        imageUrl,
+        blueprintId,
+        providerId,
+        variantId,
+        img.label,
+        scale,
+        x,
+        y,
+        doubleSided || wrapAround
+      )
     );
 
-    const cached = await cacheMockupImages(selectedData, cacheKeys, printifyApiToken);
+    const cached = await cacheMockupImages(
+      { urls: selected.map((s) => s.url), images: selected },
+      cacheKeys,
+      printifyApiToken
+    );
 
     return {
       success: true,
@@ -881,33 +706,17 @@ export async function generatePrintifyMockup(
       mockupImages: cached.images,
       source: "printify",
     };
-  } catch (error) {
-    console.error("Printify mockup generation failed:", error);
-    const errMsg = error instanceof Error ? error.message : "Unknown error";
+  } catch (error: any) {
     return {
       success: false,
       mockupUrls: [],
       mockupImages: [],
       source: "fallback",
-      step: errMsg.includes("Mockups not ready") ? "mockup_fetch" as const : "printify_upload" as const,
-      error: errMsg,
+      error: error.message || "Unknown error",
     };
   } finally {
     if (productId) {
       await deleteProduct(printifyShopId, productId, printifyApiToken);
     }
   }
-}
-
-export function getLocalMockupTemplate(designerType: string): string | null {
-  const templates: Record<string, string> = {
-    pillow: "/mockup-templates/pillow-template.png",
-    "framed-print": "/mockup-templates/frame-template.png",
-    mug: "/mockup-templates/mug-template.png",
-    blanket: "/mockup-templates/blanket-template.png",
-    "t-shirt": "/mockup-templates/tshirt-template.png",
-    "phone-case": "/mockup-templates/phone-case-template.png",
-  };
-
-  return templates[designerType] || null;
 }
