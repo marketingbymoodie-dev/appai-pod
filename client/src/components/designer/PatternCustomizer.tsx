@@ -967,7 +967,6 @@ export function PatternCustomizer({
 
   // Touch handlers for single-image mode (mobile drag support)
   const handleTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
     const touch = e.touches[0];
     const rect = e.currentTarget.getBoundingClientRect();
     dragRef.current = {
@@ -979,7 +978,6 @@ export function PatternCustomizer({
   }, [singlePosX, singlePosY]);
   const handleTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
     if (!dragRef.current) return;
-    e.preventDefault();
     const touch = e.touches[0];
     const rect = e.currentTarget.getBoundingClientRect();
     const dx = (touch.clientX - rect.left - dragRef.current.startX) / rect.width * 100;
@@ -1056,7 +1054,6 @@ export function PatternCustomizer({
 
   // Touch handlers for Place on Item mode (mobile drag support)
   const handlePlaceTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
     const touch = e.touches[0];
     const rect = e.currentTarget.getBoundingClientRect();
     const canvas = placeCanvasRef.current;
@@ -1072,7 +1069,6 @@ export function PatternCustomizer({
 
   const handlePlaceTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
     if (!placeDragRef.current || !placeCanvasRef.current) return;
-    e.preventDefault();
     const touch = e.touches[0];
     const rect = e.currentTarget.getBoundingClientRect();
     const compositeW = compositeWRef.current;
@@ -1409,7 +1405,7 @@ export function PatternCustomizer({
               {mode === "single" && (
                 <canvas
                   ref={singleCanvasRef} width={PREVIEW_PX} height={PREVIEW_PX}
-                  className="w-full" style={{ cursor: "grab", display: "block" }}
+                  className="w-full" style={{ cursor: "grab", display: "block", touchAction: "none" }}
                   onMouseDown={handleMouseDown} onMouseMove={handleMouseMove}
                   onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}
                   onTouchStart={handleTouchStart} onTouchMove={handleTouchMove}
@@ -1425,7 +1421,7 @@ export function PatternCustomizer({
                       ? Math.round(currentLayout.compositeH * (PREVIEW_PX / currentLayout.compositeW))
                       : PREVIEW_PX}
                     className="w-full"
-                    style={{ cursor: isSnapped ? "crosshair" : "grab", display: "block" }}
+                    style={{ cursor: isSnapped ? "crosshair" : "grab", display: "block", touchAction: "none" }}
                     data-place-x={currentPlaceX}
                     data-place-y={currentPlaceY}
                     onMouseDown={handlePlaceMouseDown}
