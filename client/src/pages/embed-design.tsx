@@ -4196,22 +4196,37 @@ export default function EmbedDesign() {
                                   }}
                                 >
                                   <div className="aspect-square relative bg-muted">
-                                    {d.artworkUrl ? (
-                                      <img
-                                        src={d.artworkUrl}
-                                        alt={d.baseTitle || 'Saved design'}
-                                        className="w-full h-full object-cover"
-                                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                                      />
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
+                                    {(() => {
+                                      const mockupSrc = d.mockupUrls && d.mockupUrls.length > 0 ? d.mockupUrls[0] : null;
+                                      const displaySrc = mockupSrc || d.artworkUrl;
+                                      return displaySrc ? (
+                                        <img
+                                          src={displaySrc}
+                                          alt={d.baseTitle || 'Saved design'}
+                                          className="w-full h-full object-cover"
+                                          onError={(e) => {
+                                            // If mockup URL fails, fall back to artwork URL
+                                            const img = e.target as HTMLImageElement;
+                                            if (mockupSrc && d.artworkUrl && img.src !== d.artworkUrl) {
+                                              img.src = d.artworkUrl;
+                                            } else {
+                                              img.style.display = 'none';
+                                            }
+                                          }}
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">No preview</div>
+                                      );
+                                    })()}
+                                  </div>
+                                  <div className="px-2 py-1.5">
+                                    {d.baseTitle && (
+                                      <p className="text-xs font-medium truncate">{d.baseTitle}</p>
+                                    )}
+                                    {d.prompt && (
+                                      <p className="text-[10px] text-muted-foreground truncate">{d.prompt}</p>
                                     )}
                                   </div>
-                                  {d.baseTitle && (
-                                    <div className="px-2 py-1.5">
-                                      <p className="text-xs font-medium truncate">{d.baseTitle}</p>
-                                    </div>
-                                  )}
                                 </div>
                                 {/* Delete button — visible on hover (desktop) or always visible (mobile) */}
                                 <button
