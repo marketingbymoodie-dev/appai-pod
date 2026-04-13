@@ -2413,6 +2413,11 @@ export default function EmbedDesign() {
     // Pre-check: block generation immediately if gallery is full
     if (savedDesigns.length >= galleryLimit) {
       setShowGalleryFullModal(true);
+      // Scroll to top so the modal is visible on mobile (fixed positioning
+      // inside an iframe doesn't work relative to the viewport)
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      // Also try to scroll the parent frame if embedded
+      try { window.parent?.scrollTo({ top: 0, behavior: 'smooth' }); } catch {}
       return;
     }
     
@@ -5132,7 +5137,7 @@ export default function EmbedDesign() {
       {/* Gallery Full Modal */}
       {showGalleryFullModal && (
       <div
-        className="fixed inset-0 z-[9999] flex items-center justify-center p-4"
+        className="fixed inset-0 z-[9999] flex items-start justify-center p-4 pt-8 sm:items-center sm:pt-4"
         style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
         onClick={() => setShowGalleryFullModal(false)}
       >
