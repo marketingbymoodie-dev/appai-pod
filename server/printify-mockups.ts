@@ -274,11 +274,14 @@ async function createTemporaryProduct(
       let useImageId: string;
       if (panelImageIds && panelImageIds.has(pos.position)) {
         useImageId = panelImageIds.get(pos.position)!;
+        // Per-panel images are already correctly sized for the panel.
+        // Printify scale uses 0-2 range where 1 = 100%. Using scale=1
+        // so the image fills the panel at its native resolution.
         const panelEntry = {
           id: useImageId,
           x: 0.5,
           y: 0.5,
-          scale: 100,
+          scale: 1,
           angle: 0,
         };
         placeholders.push({ position: pos.position, images: [panelEntry] });
