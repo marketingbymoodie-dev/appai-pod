@@ -402,16 +402,13 @@ async function createTemporaryProduct(
         useImageId = mirroredImageId;
         const entry = { ...imageEntry, id: useImageId };
         placeholders.push({ position: pos.position, images: [entry] });
-      } else if (panelImageIds && panelImageIds.size > 0) {
-        // We're in per-panel mode but this panel has no dedicated image.
-        // Skip it entirely — including the primary image here would cause Printify's mockup
-        // renderer to scale a tiny placeholder to enormous dimensions (e.g. 85400x168553),
-        // exceeding their 6GB pixel limit and returning a 400 error.
-        console.log(`[Printify CreateProduct] Skipping panel "${pos.position}" — no per-panel image in per-panel mode`);
       } else {
-        // No per-panel mode: use the primary image for all panels
+        // No per-panel image for this position — use the primary image as fallback.
+        // The primary image is now guaranteed to be the largest panel canvas (not a tiny
+        // placeholder), so Printify can scale it to fill this panel without exceeding limits.
+        // Use scale=100, x=0.5, y=0.5 since the primary is already a rendered panel canvas.
         useImageId = imageId;
-        const entry = { ...imageEntry, id: useImageId };
+        const entry = { id: useImageId, x: 0.5, y: 0.5, scale: 100, angle: 0 };
         placeholders.push({ position: pos.position, images: [entry] });
       }
     }
@@ -767,9 +764,25 @@ export async function generatePrintifyMockup(
     // designImageUrl (which may be a mockup URL, not the original artwork) to Printify.
     let uploadedImage: { id: string } | null = null;
     if (panelImageIds && panelImageIds.size > 0) {
-      const firstPanelId = panelImageIds.values().next().value as string;
-      uploadedImage = { id: firstPanelId };
-      console.log(`[Printify AOP] Using first panel image as primary: ${firstPanelId}`);
+      // Pick the largest panel image as primary — not the first one.
+      // Promise.all uploads concurrently, so the Map insertion order depends on which
+      // upload finishes first. Tiny panels (e.g. 4×4 cuff) upload fastest and get inserted
+      // first. If that tiny image becomes the primary, Printify scales it to fill large
+      // panels (sleeves, waistband) → 85400×168553 → exceeds 6GB pixel limit → 400 error.
+      // By picking the largest panel, the fallback image is a real-sized canvas.
+      let bestPanelId = panelImageIds.values().next().value as string;
+      let bestPanelArea = 0;
+      const aopPos = request.aopPositions || [];
+      for (const [position, pid] of panelImageIds.entries()) {
+        const posInfo = aopPos.find(p => p.position === position);
+        const area = posInfo ? posInfo.width * posInfo.height : 0;
+        if (area > bestPanelArea) {
+          bestPanelArea = area;
+          bestPanelId = pid;
+        }
+      }
+      uploadedImage = { id: bestPanelId };
+      console.log(`[Printify AOP] Using largest panel image as primary: ${bestPanelId} (area: ${bestPanelArea})`);
     } else {
       uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
       if (!uploadedImage) {
