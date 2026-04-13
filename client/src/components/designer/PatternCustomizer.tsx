@@ -1304,19 +1304,25 @@ export function PatternCustomizer({
               const artLeft = useX - artW / 2;
               const artTop  = useY - artH / 2;
 
-              // Seam bleed: panels that sit at a seam edge get seamOffset extra pixels
-              // of artwork past the seam so the image remains continuous across the sewn join.
-              // The user can adjust this via the "Seam offset" slider.
+              // Seam offset: controls how much the two panel images are pushed APART
+              // at the seam edge. A positive seamOffset shifts each panel's artwork
+              // AWAY from the seam, revealing more of the artwork on each side.
+              // Each panel also gets a duplicate bleed strip of the opposing side's
+              // artwork at the seam edge for manufacturing overlap.
               //
-              // front_right: slot.x=0, seam on its RIGHT edge → bleedShift = +seamOffset
-              // front_left: slot.x>0, seam on its LEFT edge → bleedShift = -seamOffset
-              // Single-panel views (back): no seam, no bleed.
+              // front_right (slot.x=0): seam on RIGHT edge → shift artwork LEFT (-seamOffset)
+              //   so more of the right portion of the artwork is visible on this panel.
+              // front_left (slot.x>0): seam on LEFT edge → shift artwork RIGHT (+seamOffset)
+              //   so more of the left portion of the artwork is visible on this panel.
+              // Single-panel views (back): no seam, no offset.
               let bleedShift = 0;
               if (layout.slots.length > 1) {
                 if (slot.x === 0) {
-                  bleedShift = seamOffset;
-                } else {
+                  // Right panel: shift artwork LEFT to push seam apart
                   bleedShift = -seamOffset;
+                } else {
+                  // Left panel: shift artwork RIGHT to push seam apart
+                  bleedShift = seamOffset;
                 }
               }
 
@@ -1666,58 +1672,23 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {/* Rotation control — 20° increment button */}
+              {/* Rotation — single tap-to-cycle icon */}
               {currentViewHasArtwork && (
-                <div className="shrink-0 space-y-0.5">
-                  <div className="flex justify-between items-center">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Rotation</Label>
-                    <span className="text-[10px] text-muted-foreground tabular-nums">{currentPlaceRotation}°</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button type="button" title="Rotate -20°"
-                      onClick={() => {
-                        const next = ((currentPlaceRotation - 20) % 360 + 360) % 360;
-                        const norm = next > 180 ? next - 360 : next;
-                        if (placeView === "front") setPlaceRotation(norm);
-                        else if (placeView === "hood") setHoodPlaceRotation(norm);
-                        else if (!backSameAsFront) setBackPlaceRotation(norm);
-                      }}
-                      disabled={busy}
-                      className="flex items-center justify-center w-7 h-7 rounded border bg-muted/30 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-                      <RotateCcw className="h-3.5 w-3.5" />
-                    </button>
-                    <div className="flex-1 flex gap-0.5">
-                      {[0, 20, 40, 60, 80, 90].map(deg => (
-                        <button key={deg} type="button"
-                          onClick={() => {
-                            if (placeView === "front") setPlaceRotation(deg);
-                            else if (placeView === "hood") setHoodPlaceRotation(deg);
-                            else if (!backSameAsFront) setBackPlaceRotation(deg);
-                          }}
-                          disabled={busy}
-                          className={`flex-1 py-0.5 rounded text-[9px] transition-colors ${
-                            currentPlaceRotation === deg
-                              ? "bg-foreground text-background font-medium"
-                              : "bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground"
-                          }`}>
-                          {deg}°
-                        </button>
-                      ))}
-                    </div>
-                    <button type="button" title="Rotate +20°"
-                      onClick={() => {
-                        const next = ((currentPlaceRotation + 20) % 360 + 360) % 360;
-                        const norm = next > 180 ? next - 360 : next;
-                        if (placeView === "front") setPlaceRotation(norm);
-                        else if (placeView === "hood") setHoodPlaceRotation(norm);
-                        else if (!backSameAsFront) setBackPlaceRotation(norm);
-                      }}
-                      disabled={busy}
-                      className="flex items-center justify-center w-7 h-7 rounded border bg-muted/30 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
-                      <RotateCcw className="h-3.5 w-3.5" style={{ transform: "scaleX(-1)" }} />
-                    </button>
-                  </div>
-                </div>
+                <button type="button"
+                  title={`Rotate artwork (currently ${currentPlaceRotation}°)`}
+                  onClick={() => {
+                    const ROTATION_STEPS = [0, 20, 45, 70, 90, 110, 135, 160, 180];
+                    const curIdx = ROTATION_STEPS.indexOf(currentPlaceRotation);
+                    const nextDeg = ROTATION_STEPS[(curIdx + 1) % ROTATION_STEPS.length];
+                    if (placeView === "front") setPlaceRotation(nextDeg);
+                    else if (placeView === "hood") setHoodPlaceRotation(nextDeg);
+                    else if (!backSameAsFront) setBackPlaceRotation(nextDeg);
+                  }}
+                  disabled={busy}
+                  className="flex items-center gap-1.5 shrink-0 px-2 py-1.5 rounded border bg-muted/30 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
+                  <RotateCcw className="h-3.5 w-3.5" style={{ transform: "scaleX(-1)" }} />
+                  <span className="text-[10px] tabular-nums">{currentPlaceRotation}°</span>
+                </button>
               )}
 
               {currentViewHasArtwork && (
@@ -1740,11 +1711,10 @@ export function PatternCustomizer({
                     className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
                   />
                   <div className="flex justify-between text-[10px] text-muted-foreground">
-                    <span>No overlap</span><span>More overlap</span>
+                    <span>Closer</span><span>Further apart</span>
                   </div>
                   <p className="text-[9px] text-muted-foreground leading-tight mt-0.5">
-                    Controls how much artwork extends past the zipper/seam. Default: {DEFAULT_SEAM_BLEED_PX}px (~1cm).
-                    Increase to ensure artwork spans the seam without gaps.
+                    Pushes the two panel images apart at the zipper/seam. Each panel keeps a bleed strip of the opposing side for manufacturing overlap. Default: {DEFAULT_SEAM_BLEED_PX}px (~1cm).
                   </p>
                 </div>
               )}
