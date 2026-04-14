@@ -1047,6 +1047,36 @@ export async function registerRoutes(
     res.json({ received: true });
   });
 
+  // SVG Proxy to bypass CORS issues for AOP patterns
+  app.get("/api/proxy-svg", asyncHandler(async (req: Request, res: Response) => {
+    const url = req.query.url as string;
+    if (!url) {
+      return res.status(400).send("Missing url parameter");
+    }
+
+    if (!url.startsWith("https://images.printify.com/")) {
+      return res.status(403).send("Only Printify images are allowed");
+    }
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch SVG: ${response.statusText}`);
+      }
+
+      const contentType = response.headers.get("content-type") || "image/svg+xml";
+      const buffer = await response.arrayBuffer();
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400"); // Cache for 24 hours
+      res.setHeader("Access-Control-Allow-Origin", "*"); // Allow all origins for the proxy
+      res.send(Buffer.from(buffer));
+    } catch (error: any) {
+      console.error(`[SVG Proxy] Error fetching ${url}:`, error.message);
+      res.status(500).send(`Error fetching SVG: ${error.message}`);
+    }
+  }));
+
   // In-memory cache for /api/config — avoids a DB hit on every storefront page load.
   // Style presets change only when a merchant edits them (rare), so 5 minutes is safe.
   interface ConfigCacheEntry { data: object; expiresAt: number; }

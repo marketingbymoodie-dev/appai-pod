@@ -616,12 +616,20 @@ export function PatternCustomizer({
 
       (async () => {
         try {
-          // Fetch SVG text (use fetchFn if provided to bypass Shopify service worker)
-          const doFetch = fetchFn ?? fetch;
-          const res = await doFetch(url);
-          console.log(`[PatternCustomizer] Fetching SVG for ${pos}: ${url}, status: ${res.status}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          let svgText = await res.text();
+          // Use proxy to bypass CORS issues
+          const proxyUrl = `${API_BASE}/api/proxy-svg?url=${encodeURIComponent(url)}`;
+          console.log(`[PatternCustomizer] Fetching SVG for ${pos} via proxy: ${proxyUrl}`);
+          
+          const res = await fetch(proxyUrl);
+          if (!res.ok) {
+            console.warn(`[PatternCustomizer] Proxy fetch failed for ${pos}, falling back to direct fetch: ${url}`);
+            const directRes = await fetch(url);
+            if (!directRes.ok) throw new Error(`Direct fetch also failed: ${directRes.status}`);
+            var svgText = await directRes.text();
+          } else {
+            var svgText = await res.text();
+          }
+          
           console.log(`[PatternCustomizer] SVG text for ${pos} loaded, length: ${svgText.length}`);
 
           // ── Parse viewBox size ────────────────────────────────────────────────
@@ -869,6 +877,13 @@ export function PatternCustomizer({
     ctx.fillStyle = "#f1f5f9";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    // DEBUG: Draw a red border around the canvas to verify it's visible
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(0, 0, canvas.width, canvas.height);
+    
+    console.log(`[PatternCustomizer] Drawing Place on Item canvas: ${canvas.width}x${canvas.height}, slots: ${layout.slots.length}`);
+
     // Compute artwork position in preview coords (used for both clipped and unclipped drawing)
     //
     // Scale reference: compositeW (the full composite canvas width).
@@ -894,6 +909,7 @@ export function PatternCustomizer({
       const sh = slot.h * scaleToPreview;
 
       const flatLayImg = flatLayImgRef.current.get(slot.position);
+      console.log(`[PatternCustomizer] Slot ${slot.position}: flatLayImg exists? ${!!flatLayImg}`);
 
       if (flatLayImg) {
         // ── Flat-lay SVG available ────────────────────────────────────────────
