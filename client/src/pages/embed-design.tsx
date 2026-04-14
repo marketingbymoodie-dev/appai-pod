@@ -1766,7 +1766,7 @@ export default function EmbedDesign() {
               safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ shop: shopDomain, customerId: customerId }),
+                body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
               })
                 .then(r => r.json()).then(d => { 
                   if (d.designs) {

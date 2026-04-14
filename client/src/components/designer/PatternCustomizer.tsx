@@ -198,6 +198,7 @@ function drawPanelShape(
     ctx.lineTo(x + w, y + h * 0.15);
     ctx.lineTo(x + w, y + h);
     ctx.lineTo(x + w - ankleW, y + h);
+    ctx.lineTo(x, y + h);
     ctx.lineTo(x, y + h * 0.15);
     ctx.closePath();
 
@@ -210,6 +211,7 @@ function drawPanelShape(
     ctx.lineTo(x, y + h * 0.15);
     ctx.lineTo(x, y + h);
     ctx.lineTo(x + ankleW, y + h);
+    ctx.lineTo(x + w, y + h);
     ctx.lineTo(x + w, y + h * 0.15);
     ctx.closePath();
 
