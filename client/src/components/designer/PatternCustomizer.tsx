@@ -117,9 +117,9 @@ const SVG_CONTENT_RECTS: Record<string, SvgContentRect> = {
   // left_hood uses rotate(-180) transform — same source rect, drawn mirrored
   left_hood:    { x: 321.95, y: 135.66, w: 1245.38, h: 1617.96, mirror: true },
   // Blueprint 1050 — Women's Cut & Sew Casual Leggings AOP (MWW On Demand)
-  // ViewBox 4800.00 × 4800.00
-  left_leg:     { x: 141.14, y: 166.91, w: 2362.74, h: 4559.20 },
-  right_leg:    { x: 141.14, y: 166.91, w: 2362.74, h: 4559.20 },
+  // ViewBox 3098.44 × 3098.44
+  left_leg:     { x: 276.24, y: 150.15, w: 2547.97, h: 2798.14 },
+  right_leg:    { x: 276.24, y: 150.15, w: 2547.97, h: 2798.14 },
 };
 
 // ── Panel group helpers ───────────────────────────────────────────────────────
@@ -438,8 +438,8 @@ const SVG_VB_SIZES: Record<string, number> = {
   back: 3211.80,
   right_sleeve: 2645.01, left_sleeve: 2645.01,
   right_hood: 1889.29, left_hood: 1889.29,
-  // Leggings (Blueprint 447 etc.)
-  left_leg: 3022.87, right_leg: 3022.87,
+  // Leggings (Blueprint 1050)
+  left_leg: 3098.44, right_leg: 3098.44,
   // Hawaiian shirt / other single-panel products
   front: 3022.87,
   // Basketball shorts
