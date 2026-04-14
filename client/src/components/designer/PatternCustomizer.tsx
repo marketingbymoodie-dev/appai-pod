@@ -116,9 +116,10 @@ const SVG_CONTENT_RECTS: Record<string, SvgContentRect> = {
   right_hood:   { x: 321.95, y: 135.66, w: 1245.38, h: 1617.96 },
   // left_hood uses rotate(-180) transform — same source rect, drawn mirrored
   left_hood:    { x: 321.95, y: 135.66, w: 1245.38, h: 1617.96, mirror: true },
-  // Leg panels (Blueprint 447 etc.) — add rects here when mapped
-  left_leg:     { x: 771.89, y:  53.08, w: 1479.08, h: 2916.71 },
-  right_leg:    { x: 771.89, y:  53.08, w: 1479.08, h: 2916.71 },
+  // Blueprint 1050 — Women's Cut & Sew Casual Leggings AOP (MWW On Demand)
+  // ViewBox 4800.00 × 4800.00
+  left_leg:     { x: 141.14, y: 166.91, w: 2362.74, h: 4559.20 },
+  right_leg:    { x: 141.14, y: 166.91, w: 2362.74, h: 4559.20 },
 };
 
 // ── Panel group helpers ───────────────────────────────────────────────────────
@@ -152,46 +153,64 @@ function drawPanelShape(
   const p = position.toLowerCase();
   ctx.beginPath();
 
-  if (p === "front_right" || p === "left_leg") {
+  if (p === "front_right") {
     // Front-right panel (left side of composite — zip seam on RIGHT edge)
-    // Neckline: curve from top-right inward
-    // Shoulder: slopes down from top-left
-    // Armhole: cutout on left side
-    // Bottom: straight
-    const neckDepth = h * 0.18;  // how deep the neckline dips
-    const neckW     = w * 0.55;  // how wide the neckline is (from right edge)
-    const shoulderH = h * 0.08;  // shoulder slope height
-    const armW      = w * 0.18;  // armhole width
-    const armH      = h * 0.30;  // armhole height
-    const armTop    = h * 0.08;  // where armhole starts (from top)
-    ctx.moveTo(x, y + shoulderH);                                       // top-left (after shoulder slope)
-    ctx.lineTo(x + w - neckW, y);                                       // top, before neckline
-    ctx.bezierCurveTo(x + w - neckW * 0.3, y, x + w, y + neckDepth * 0.4, x + w, y + neckDepth); // neckline curve
-    ctx.lineTo(x + w, y + h);                                           // zip seam (right edge) down to bottom
-    ctx.lineTo(x, y + h);                                               // bottom edge
-    // Armhole cutout on left side (going back up)
-    ctx.lineTo(x, y + armTop + armH);                                   // left side, below armhole
-    ctx.bezierCurveTo(x, y + armTop + armH * 0.5, x + armW, y + armTop + armH * 0.3, x + armW, y + armTop + armH * 0.1);
-    ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH); // armhole top curve back to shoulder
-    ctx.closePath();
-
-  } else if (p === "front_left" || p === "right_leg") {
-    // Front-left panel (right side of composite — zip seam on LEFT edge)
-    // Mirror of front_right
     const neckDepth = h * 0.18;
     const neckW     = w * 0.55;
     const shoulderH = h * 0.08;
     const armW      = w * 0.18;
     const armH      = h * 0.30;
     const armTop    = h * 0.08;
-    ctx.moveTo(x + w, y + shoulderH);                                   // top-right
-    ctx.lineTo(x + neckW, y);                                           // top, before neckline
-    ctx.bezierCurveTo(x + neckW * 0.3, y, x, y + neckDepth * 0.4, x, y + neckDepth); // neckline
-    ctx.lineTo(x, y + h);                                               // zip seam (left edge) down
-    ctx.lineTo(x + w, y + h);                                           // bottom
-    ctx.lineTo(x + w, y + armTop + armH);                               // right side, below armhole
+    ctx.moveTo(x, y + shoulderH);
+    ctx.lineTo(x + w - neckW, y);
+    ctx.bezierCurveTo(x + w - neckW * 0.3, y, x + w, y + neckDepth * 0.4, x + w, y + neckDepth);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x, y + armTop + armH);
+    ctx.bezierCurveTo(x, y + armTop + armH * 0.5, x + armW, y + armTop + armH * 0.3, x + armW, y + armTop + armH * 0.1);
+    ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH);
+    ctx.closePath();
+
+  } else if (p === "front_left") {
+    // Front-left panel (right side of composite — zip seam on LEFT edge)
+    const neckDepth = h * 0.18;
+    const neckW     = w * 0.55;
+    const shoulderH = h * 0.08;
+    const armW      = w * 0.18;
+    const armH      = h * 0.30;
+    const armTop    = h * 0.08;
+    ctx.moveTo(x + w, y + shoulderH);
+    ctx.lineTo(x + neckW, y);
+    ctx.bezierCurveTo(x + neckW * 0.3, y, x, y + neckDepth * 0.4, x, y + neckDepth);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x + w, y + armTop + armH);
     ctx.bezierCurveTo(x + w, y + armTop + armH * 0.5, x + w - armW, y + armTop + armH * 0.3, x + w - armW, y + armTop + armH * 0.1);
     ctx.bezierCurveTo(x + w - armW, y + armTop, x + w, y + armTop, x + w, y + shoulderH);
+    ctx.closePath();
+
+  } else if (p === "left_leg") {
+    // Left leg panel (left side of composite — inseam on RIGHT edge)
+    const waistW = w * 0.85;
+    const ankleW = w * 0.45;
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + waistW, y);
+    ctx.lineTo(x + w, y + h * 0.15);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x + w - ankleW, y + h);
+    ctx.lineTo(x, y + h * 0.15);
+    ctx.closePath();
+
+  } else if (p === "right_leg") {
+    // Right leg panel (right side of composite — inseam on LEFT edge)
+    const waistW = w * 0.85;
+    const ankleW = w * 0.45;
+    ctx.moveTo(x + w, y);
+    ctx.lineTo(x + w - waistW, y);
+    ctx.lineTo(x, y + h * 0.15);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + ankleW, y + h);
+    ctx.lineTo(x + w, y + h * 0.15);
     ctx.closePath();
 
   } else if (p === "back" || p === "back_side" || p === "backside") {
@@ -298,7 +317,9 @@ export interface PatternApplyOptions {
   mirrorLegs: boolean;
   mode: EditorMode;
   singleTransform?: { scale: number; rotation: number; posX: number; posY: number };
-  /** Per-panel canvases — one per Printify placeholder position */
+  patternTransform?: { offsetX: number; offsetY: number };
+  panelUrls?: { position: string; dataUrl: string }[];
+}position */
   panelUrls?: { position: string; dataUrl: string }[];
 }
 
@@ -344,7 +365,13 @@ interface PatternCustomizerProps {
   initialTilesAcross?: number;
   initialPattern?: PatternType;
   initialBgColor?: string;
-  onSettingsChange?: (settings: { tilesAcross: number; pattern: PatternType; bgColor: string }) => void;
+  onSettingsChange?: (settings: {
+    tilesAcross: number;
+    pattern: PatternType;
+    bgColor: string;
+    patternOffsetX: number;
+    patternOffsetY: number;
+  }) => void;
   /** Persisted Place on Item placement — passed back in when reopening */
   initialPlacement?: AopPlacementSettings;
   onPlacementChange?: (placement: AopPlacementSettings) => void;
@@ -359,6 +386,8 @@ function drawTiledPattern(
     pattern: PatternType;
     tileW: number;
     bgColor: string;
+    offsetX?: number;
+    offsetY?: number;
     forExport?: boolean;
   }
 ) {
@@ -382,13 +411,16 @@ function drawTiledPattern(
 
   const tileW = Math.max(1, Math.round(opts.tileW));
   const tileH = Math.max(1, Math.round(tileW * (img.height / img.width)));
-  const cols = Math.ceil(W / tileW) + 2;
-  const rows = Math.ceil(H / tileH) + 2;
+  const cols = Math.ceil(W / tileW) + 3;
+  const rows = Math.ceil(H / tileH) + 3;
 
-  for (let row = -1; row < rows; row++) {
-    for (let col = -1; col < cols; col++) {
-      let x = col * tileW;
-      let y = row * tileH;
+  const offX = (opts.offsetX || 0) % tileW;
+  const offY = (opts.offsetY || 0) % tileH;
+
+  for (let row = -2; row < rows; row++) {
+    for (let col = -2; col < cols; col++) {
+      let x = col * tileW + offX;
+      let y = row * tileH + offY;
       if (opts.pattern === "brick" && row % 2 !== 0) x += tileW / 2;
       if (opts.pattern === "half"  && col % 2 !== 0) y += tileH / 2;
       ctx.drawImage(img, x, y, tileW, tileH);
@@ -438,6 +470,8 @@ export function PatternCustomizer({
   const [pattern, setPattern] = useState<PatternType>(initialPattern);
 
   const [tilesAcross, setTilesAcross] = useState<number>(initialTilesAcross);
+  const [patternOffsetX, setPatternOffsetX] = useState<number>(0);
+  const [patternOffsetY, setPatternOffsetY] = useState<number>(0);
 
   const [singleScale,    setSingleScale]    = useState(1.0);
   const [singleRotation, setSingleRotation] = useState(0);
@@ -664,13 +698,25 @@ export function PatternCustomizer({
     if (mode !== "pattern" || !motifLoaded || !motifImgRef.current) return;
     const canvas = patternCanvasRef.current;
     if (!canvas) return;
-    drawTiledPattern(canvas, motifImgRef.current, { pattern, tileW: previewTileW, bgColor });
-  }, [mode, motifLoaded, pattern, tilesAcross, bgColor, previewTileW]);
+    drawTiledPattern(canvas, motifImgRef.current, {
+      pattern,
+      tileW: previewTileW,
+      bgColor,
+      offsetX: patternOffsetX,
+      offsetY: patternOffsetY
+    });
+  }, [mode, motifLoaded, pattern, tilesAcross, bgColor, previewTileW, patternOffsetX, patternOffsetY]);
 
   // Notify parent of settings changes
   useEffect(() => {
-    onSettingsChange?.({ tilesAcross, pattern, bgColor });
-  }, [tilesAcross, pattern, bgColor]);
+    onSettingsChange?.({
+      tilesAcross,
+      pattern,
+      bgColor,
+      patternOffsetX,
+      patternOffsetY
+    });
+  }, [tilesAcross, pattern, bgColor, patternOffsetX, patternOffsetY]);
 
   // Notify parent of placement changes (for persistence across close/reopen)
   useEffect(() => {
@@ -1366,6 +1412,10 @@ export function PatternCustomizer({
       const panelUrls: { position: string; dataUrl: string }[] = [];
       let primaryDataUrl = "";
 
+      // Scale the preview offsets (PREVIEW_PX) to the export tile size
+      // We need to know the tile size in the preview to calculate the relative offset
+      const previewTileW = PREVIEW_PX / tilesAcross;
+
       for (const panel of panels) {
         const W = panel.width;
         const H = panel.height;
@@ -1373,15 +1423,31 @@ export function PatternCustomizer({
         const totalTilesAcrossPanel = tilesPerInch * panelWidthIn;
         const panelTileW = W / totalTilesAcrossPanel;
 
+        // The offset in the preview is in pixels relative to PREVIEW_PX.
+        // We need to scale this to the actual panel's tile size.
+        const exportScale = panelTileW / previewTileW;
+
         const canvas = document.createElement("canvas");
         canvas.width = W; canvas.height = H;
-        drawTiledPattern(canvas, img, { pattern, tileW: panelTileW, bgColor, forExport: true });
+        drawTiledPattern(canvas, img, {
+          pattern,
+          tileW: panelTileW,
+          bgColor,
+          offsetX: patternOffsetX * exportScale,
+          offsetY: patternOffsetY * exportScale,
+          forExport: true
+        });
         const dataUrl = canvas.toDataURL("image/png");
         panelUrls.push({ position: panel.position, dataUrl });
         if (!primaryDataUrl) primaryDataUrl = dataUrl;
       }
 
-      await onApply(primaryDataUrl, { mirrorLegs, mode, panelUrls });
+      await onApply(primaryDataUrl, {
+        mirrorLegs,
+        mode,
+        patternTransform: { offsetX: patternOffsetX, offsetY: patternOffsetY },
+        panelUrls
+      });
 
     } catch (err: any) {
       setError(err.message || "Pattern generation failed");
@@ -1551,9 +1617,54 @@ export function PatternCustomizer({
                   className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
                 />
                 <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>Fewer, larger</span><span>More, smaller</span>
+                  <span>Smaller</span>
+                  <span>Larger</span>
                 </div>
               </div>
+
+              <div className="shrink-0 rounded border px-2 py-2 space-y-1.5 bg-muted/20">
+                <div className="flex items-center justify-between">
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">X Offset</Label>
+                  <span className="text-[10px] font-mono text-muted-foreground">{patternOffsetX}px</span>
+                </div>
+                <Slider
+                  min={-200} max={200} step={1}
+                  value={[patternOffsetX]}
+                  onValueChange={([v]) => setPatternOffsetX(v)}
+                  className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
+                />
+                <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <span>Left</span>
+                  <span>Right</span>
+                </div>
+              </div>
+
+              <div className="shrink-0 rounded border px-2 py-2 space-y-1.5 bg-muted/20">
+                <div className="flex items-center justify-between">
+                  <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Y Offset</Label>
+                  <span className="text-[10px] font-mono text-muted-foreground">{patternOffsetY}px</span>
+                </div>
+                <Slider
+                  min={-200} max={200} step={1}
+                  value={[patternOffsetY]}
+                  onValueChange={([v]) => setPatternOffsetY(v)}
+                  className="py-0 [&_[role=slider]]:bg-black [&_[role=slider]]:border-black [&_[role=slider]]:w-4 [&_[role=slider]]:h-4"
+                />
+                <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <span>Up</span>
+                  <span>Down</span>
+                </div>
+              </div>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setPatternOffsetX(0); setPatternOffsetY(0); }}
+                className="h-6 text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Reset offsets
+              </Button>
             </>
           )}
 

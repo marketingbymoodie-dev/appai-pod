@@ -1,0 +1,160 @@
+
+> rest-express@1.0.0 build
+> tsx script/build.ts
+
+building client...
+vite v7.3.1 building client environment for production...
+transforming...
+
+A PostCSS plugin did not pass the `from` option to `postcss.parse`. This may cause imported assets to be incorrectly transformed. If you've recently added a PostCSS plugin that raised this warning, please contact the package author to fix the issue.
+✓ 112 modules transformed.
+✗ Build failed in 2.72s
+[vite:esbuild] Transform failed with 1 error:
+/home/ubuntu/appai-pod/client/src/components/designer/PatternCustomizer.tsx:322:12: ERROR: Unterminated regular expression
+file: /home/ubuntu/appai-pod/client/src/components/designer/PatternCustomizer.tsx:322:12
+
+Unterminated regular expression
+320 |    patternTransform?: { offsetX: number; offsetY: number };
+321 |    panelUrls?: { position: string; dataUrl: string }[];
+322 |  }position */
+    |              ^
+323 |    panelUrls?: { position: string; dataUrl: string }[];
+324 |  }
+
+    at failureErrorWithLog (/home/ubuntu/appai-pod/node_modules/.pnpm/esbuild@0.27.4/node_modules/esbuild/lib/main.js:1748:15)
+    at /home/ubuntu/appai-pod/node_modules/.pnpm/esbuild@0.27.4/node_modules/esbuild/lib/main.js:1017:50
+    at responseCallbacks.<computed> (/home/ubuntu/appai-pod/node_modules/.pnpm/esbuild@0.27.4/node_modules/esbuild/lib/main.js:884:9)
+    at handleIncomingPacket (/home/ubuntu/appai-pod/node_modules/.pnpm/esbuild@0.27.4/node_modules/esbuild/lib/main.js:939:12)
+    at Socket.readFromStdout (/home/ubuntu/appai-pod/node_modules/.pnpm/esbuild@0.27.4/node_modules/esbuild/lib/main.js:862:7)
+    at Socket.emit (node:events:524:28)
+    at addChunk (node:internal/streams/readable:561:12)
+    at readableAddChunkPushByteMode (node:internal/streams/readable:512:3)
+    at Readable.push (node:internal/streams/readable:392:5)
+    at Pipe.onStreamRead (node:internal/stream_base_commons:189:23) {
+  errors: [Getter/Setter],
+  warnings: [Getter/Setter],
+  frame: '\n' +
+    'Unterminated regular expression\n' +
+    '320 |    patternTransform?: { offsetX: number; offsetY: number };\n' +
+    '321 |    panelUrls?: { position: string; dataUrl: string }[];\n' +
+    '322 |  }position */\n' +
+    '    |              ^\n' +
+    '323 |    panelUrls?: { position: string; dataUrl: string }[];\n' +
+    '324 |  }\n',
+  loc: {
+    column: 12,
+    file: '/home/ubuntu/appai-pod/client/src/components/designer/PatternCustomizer.tsx',
+    length: 0,
+    line: 322,
+    lineText: '}position */',
+    namespace: '',
+    suggestion: ''
+  },
+  code: 'PLUGIN_ERROR',
+  plugin: 'vite:esbuild',
+  hook: 'transform',
+  id: '/home/ubuntu/appai-pod/client/src/components/designer/PatternCustomizer.tsx',
+  watchFiles: [
+    '/home/ubuntu/appai-pod/client/index.html',
+    '/home/ubuntu/appai-pod/client/src/main.tsx',
+    '/home/ubuntu/appai-pod/package.json',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react-dom@18.3.1_react@18.3.1/node_modules/react-dom/client.js',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react@18.3.1/node_modules/react/jsx-runtime.js',
+    '/home/ubuntu/appai-pod/client/src/App.tsx',
+    '/home/ubuntu/appai-pod/client/src/index.css',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react@18.3.1/node_modules/react/cjs/react-jsx-runtime.production.min.js',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react-dom@18.3.1_react@18.3.1/node_modules/react-dom/index.js',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react@18.3.1/node_modules/react/index.js',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react-dom@18.3.1_react@18.3.1/node_modules/react-dom/cjs/react-dom.production.min.js',
+    '/home/ubuntu/appai-pod/node_modules/.pnpm/react@18.3.1/node_modules/react/cjs/react.production.min.js',
+    '/home/ubuntu/appai-pod/client/src/components/designer/adapters/index.ts',
+    '/home/ubuntu/appai-pod/client/src/components/designer/index.ts',
+    '/home/ubuntu/appai-pod/client/src/components/designer/types.ts',
+    '/home/ubuntu/appai-pod/client/src/components/designer/useDesignerState.ts',
+    '/home/ubuntu/appai-pod/client/src/hooks/use-auth.ts',
+    '/home/ubuntu/appai-pod/client/src/hooks/use-toast.ts',
+    '/home/ubuntu/appai-pod/client/src/hooks/use-upload.ts',
+    '/home/ubuntu/appai-pod/client/src/lib/auth-utils.ts',
+    '/home/ubuntu/appai-pod/client/src/lib/queryClient.ts',
+    '/home/ubuntu/appai-pod/client/src/lib/urlBase.ts',
+    '/home/ubuntu/appai-pod/client/src/lib/utils.ts',
+    '/home/ubuntu/appai-pod/client/src/pages/embed-bridge.test.ts',
+    '/home/ubuntu/appai-pod/client/src/vite-env.d.ts',
+    '/home/ubuntu/appai-pod/client/src/components/ObjectUploader.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/admin/branding-settings.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/admin-layout.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/credit-display.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/BaseDesigner.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/FrameColorSelector.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/MockupPreview.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/PatternCustomizer.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/ProductMockup.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/SafeZoneMask.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/SizeSelector.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/StyleSelector.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/ZoomControls.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/adapters/FramedPrintAdapter.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/designer/adapters/PillowAdapter.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/accordion.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/alert-dialog.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/alert.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/aspect-ratio.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/avatar.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/badge.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/breadcrumb.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/button.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/calendar.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/card.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/carousel.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/chart.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/checkbox.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/collapsible.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/command.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/context-menu.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/dialog.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/drawer.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/dropdown-menu.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/form.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/hover-card.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/input-otp.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/input.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/label.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/menubar.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/navigation-menu.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/pagination.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/popover.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/progress.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/radio-group.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/resizable.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/scroll-area.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/select.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/separator.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/sheet.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/sidebar.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/skeleton.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/slider.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/switch.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/table.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/tabs.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/textarea.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/toast.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/toaster.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/toggle-group.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/toggle.tsx',
+    '/home/ubuntu/appai-pod/client/src/components/ui/tooltip.tsx',
+    '/home/ubuntu/appai-pod/client/src/hooks/use-mobile.tsx',
+    '/home/ubuntu/appai-pod/client/src/lib/shopify.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/coupons.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/create-product.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/credits.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/customizer-pages.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/dashboard.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/plan-picker-page.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/plan-picker.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/products.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/settings.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin/styles.tsx',
+    '/home/ubuntu/appai-pod/client/src/pages/admin.tsx',
+    ... 62 more items
+  ]
+}
