@@ -58,6 +58,7 @@ interface ProductTypeConfig {
   placeholderPositions?: { position: string; width: number; height: number }[];
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
+  printifyBlueprintId?: number;
 }
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
@@ -4952,7 +4953,7 @@ export default function EmbedDesign() {
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
                     panelPositions={productTypeConfig?.placeholderPositions || []}
-                    panelFlatLayImages={productTypeConfig?.id === 256 || productTypeConfig?.id === 1050 ? {
+                    panelFlatLayImages={productTypeConfig?.printifyBlueprintId === 1050 ? {
                       "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
                       "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
                     } : productTypeConfig?.panelFlatLayImages || {}}
