@@ -17,7 +17,7 @@ import {
   FrameColorSelector,
   SizeSelector,
   StyleSelector,
-  PatternCustomizer as PatternCustomizerV2,
+  PatternCustomizer,
   type ImageTransform,
   type PrintSize,
   type FrameColor,
@@ -4968,7 +4968,7 @@ export default function EmbedDesign() {
               {/* AOP Pattern Step — solid overlay on top of the canvas, no bleed-through */}
               {showPatternStep && aopPendingMotifUrl && (
                 <div className="absolute inset-0 z-30 bg-background rounded-md overflow-hidden">
-                  <PatternCustomizerV2
+                  <PatternCustomizer
                     motifUrl={aopPendingMotifUrl}
                     productWidth={(() => {
                       const positions = productTypeConfig?.placeholderPositions || [];

@@ -9,8 +9,8 @@ export { useDesignerState } from "./useDesignerState";
 export { BaseDesigner } from "./BaseDesigner";
 export type { ProductAdapter, ControlsProps, MockupProps } from "./BaseDesigner";
 export { FramedPrintAdapter, PillowAdapter } from "./adapters";
-export { PatternCustomizer } from "./PatternCustomizerV2";
-export type { PatternType, PatternApplyOptions, EditorMode, AopPlacementSettings } from "./PatternCustomizerV2";
+export { PatternCustomizer } from "./PatternCustomizer";
+export type { PatternType, PatternApplyOptions, EditorMode, AopPlacementSettings } from "./PatternCustomizer";
 export type {
   PrintSize,
   FrameColor,
