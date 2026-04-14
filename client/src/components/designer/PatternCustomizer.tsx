@@ -319,8 +319,6 @@ export interface PatternApplyOptions {
   singleTransform?: { scale: number; rotation: number; posX: number; posY: number };
   patternTransform?: { offsetX: number; offsetY: number };
   panelUrls?: { position: string; dataUrl: string }[];
-}position */
-  panelUrls?: { position: string; dataUrl: string }[];
 }
 
 export interface AopPlacementSettings {
