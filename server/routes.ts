@@ -4584,6 +4584,13 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
+              // Women's Cut & Sew Casual Leggings (AOP)
+              256: {
+                "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
+                "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
+                "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+              },
               // Unisex Cut & Sew Tee
               281: {
                 "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
@@ -4849,6 +4856,13 @@ ${textEdgeRestrictions}
               276: {
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
+              },
+              // Women's Cut & Sew Casual Leggings (AOP)
+              256: {
+                "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
+                "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
+                "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
               },
               // Unisex Cut & Sew Tee
               281: {
@@ -10312,6 +10326,13 @@ ${textEdgeRestrictions}
               276: {
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
+              },
+              // Women's Cut & Sew Casual Leggings (AOP)
+              256: {
+                "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
+                "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
+                "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
               },
               // Unisex Cut & Sew Tee
               281: {
