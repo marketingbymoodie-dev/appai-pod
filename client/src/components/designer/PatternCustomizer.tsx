@@ -1158,7 +1158,7 @@ export function PatternCustomizer({
     setIsRemovingBg(true); setBgRemoveError(null);
     try {
       const doFetch = fetchFn ?? fetch;
-      const res = await doFetch(`${API_BASE}/api/remove-background`, {
+      const res = await doFetch(`${API_BASE}/api/pattern/remove-bg`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageUrl: motifUrl }),

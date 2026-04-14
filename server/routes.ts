@@ -228,9 +228,17 @@ async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60)
   }
 
   // Average the corner samples to get the background color
-  const avgR = Math.round(cornerSamples.reduce((s, c) => s + c.r, 0) / cornerSamples.length);
-  const avgG = Math.round(cornerSamples.reduce((s, c) => s + c.g, 0) / cornerSamples.length);
-  const avgB = Math.round(cornerSamples.reduce((s, c) => s + c.b, 0) / cornerSamples.length);
+  let avgR = Math.round(cornerSamples.reduce((s, c) => s + c.r, 0) / cornerSamples.length);
+  let avgG = Math.round(cornerSamples.reduce((s, c) => s + c.g, 0) / cornerSamples.length);
+  let avgB = Math.round(cornerSamples.reduce((s, c) => s + c.b, 0) / cornerSamples.length);
+  
+  // Special case: if corners are very bright (white/off-white), force pure white detection
+  // This helps with AI-generated images that have slight compression artifacts in the white background
+  if (avgR > 240 && avgG > 240 && avgB > 240) {
+    console.log(`[Chroma Key] Bright corners detected (${avgR},${avgG},${avgB}), forcing white background removal`);
+    avgR = 255; avgG = 255; avgB = 255;
+  }
+  
   console.log(`[Chroma Key] Detected corner bg color: rgb(${avgR},${avgG},${avgB})`);
 
   // Remove all pixels matching the detected background color (with tolerance)
@@ -471,12 +479,11 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       }
     } catch (err) {
       console.error("[saveImageToStorage] remove.bg failed, falling back to chroma key:", (err as Error).message);
-      // Fallback to chroma key if Picsart fails (only for non-AOP)
-      if (!isAllOverPrint) {
-        buffer = await removeChromaKeyBackground(buffer);
-        extension = "png";
-        actualMimeType = "image/png";
-      }
+      // Fallback to chroma key if remove.bg fails
+      // We now enable this for AOP too, as it helps remove the white background AI often generates
+      buffer = await removeChromaKeyBackground(buffer);
+      extension = "png";
+      actualMimeType = "image/png";
     }
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =

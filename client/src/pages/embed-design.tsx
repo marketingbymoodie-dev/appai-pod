@@ -1748,6 +1748,7 @@ export default function EmbedDesign() {
         // in the background — enabling instant Add to Cart.
         if (isStorefront && savedJobIdRef.current && shopDomain) {
           const baseVariantForShadow = selectedVariantParam || overrideVariantId || '';
+          console.log('[Mockups] Saving permanent mockup URLs to job:', savedJobIdRef.current);
           safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1757,7 +1758,27 @@ export default function EmbedDesign() {
               mockupUrls: result.mockupUrls,
               ...(productId && baseVariantForShadow ? { baseProductId: productId, baseVariantId: baseVariantForShadow } : {}),
             }),
-          }).catch(() => {}); // fire-and-forget, non-critical
+          }).then(r => r.json()).then(saved => {
+            console.log('[Mockups] save-mockups response:', saved);
+            if (saved.saved) {
+              // Refresh saved designs list so the new mockup shows up in the dropdown
+              setSavedDesignsLoading(true);
+              safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shop: shopDomain, customerId: customerId }),
+              })
+                .then(r => r.json()).then(d => { 
+                  if (d.designs) {
+                    setSavedDesigns(d.designs);
+                    // Notify parent to refresh its gallery view
+                    console.log('[Mockups] Notifying parent to refresh gallery');
+                    window.parent.postMessage({ type: 'APPAI_REFRESH_GALLERY' }, '*');
+                  }
+                })
+                .catch(() => {}).finally(() => setSavedDesignsLoading(false));
+            }
+          }).catch((e) => { console.error('[Mockups] save-mockups error:', e); });
 
           // Poll for the pre-created shadow variant (server creates it in background ~5-15s)
           // Once ready, store it so Add to Cart can use it instantly.

@@ -10,7 +10,7 @@ export { BaseDesigner } from "./BaseDesigner";
 export type { ProductAdapter, ControlsProps, MockupProps } from "./BaseDesigner";
 export { FramedPrintAdapter, PillowAdapter } from "./adapters";
 export { PatternCustomizer } from "./PatternCustomizer";
-export type { PatternType, PatternApplyOptions, EditorMode } from "./PatternCustomizer";
+export type { PatternType, PatternApplyOptions, EditorMode, AopPlacementSettings } from "./PatternCustomizer";
 export type {
   PrintSize,
   FrameColor,
