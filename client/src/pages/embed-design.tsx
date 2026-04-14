@@ -63,6 +63,17 @@ interface ProductTypeConfig {
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
 
+// Build stamp for deployment verification
+const BUILD_TIMESTAMP = new Date().toISOString();
+const BUILD_COMMIT = "cc5dfd6"; // Latest commit with printifyBlueprintId fix
+
+console.log("[AOP BUILD]", {
+  build: BUILD_TIMESTAMP,
+  commit: BUILD_COMMIT,
+  file: "embed-design.tsx",
+  timestamp: Date.now(),
+});
+
 /**
  * Parse JSON from a Response, with a guard against HTML responses.
  * Throws a descriptive error instead of cryptic "Unexpected token <".
@@ -3888,6 +3899,25 @@ export default function EmbedDesign() {
             </CardContent>
           </Card>
         )}
+
+        {/* Build Badge for Deployment Verification */}
+        <div
+          style={{
+            position: "fixed",
+            bottom: 8,
+            right: 8,
+            zIndex: 999999,
+            background: "#ff6b6b",
+            color: "white",
+            padding: "4px 8px",
+            fontSize: "10px",
+            borderRadius: "3px",
+            fontFamily: "monospace",
+            whiteSpace: "nowrap",
+          }}
+        >
+          BUILD: cc5dfd6
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Generator/form panel — right on desktop, first on mobile */}
