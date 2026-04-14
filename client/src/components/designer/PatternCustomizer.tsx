@@ -1553,7 +1553,8 @@ export function PatternCustomizer({
                     width={PREVIEW_PX}
                     height={currentLayout.compositeH > 1
                       ? Math.round(currentLayout.compositeH * (PREVIEW_PX / currentLayout.compositeW))
-                      : PREVIEW_PX}
+                      : PREVIEW_PX || 40 // Safety fallback to ensure canvas has a visible height
+                    }
                     className="w-full"
                     style={{ cursor: isSnapped ? "crosshair" : "grab", display: "block", touchAction: "none" }}
                     data-place-x={currentPlaceX}

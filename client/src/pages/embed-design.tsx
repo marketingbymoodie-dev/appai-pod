@@ -4952,7 +4952,12 @@ export default function EmbedDesign() {
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
                     panelPositions={productTypeConfig?.placeholderPositions || []}
-                    panelFlatLayImages={productTypeConfig?.panelFlatLayImages || {}}
+                    panelFlatLayImages={productTypeConfig?.id === 256 ? {
+                      "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
+                      "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
+                      "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
+                      "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+                    } : productTypeConfig?.panelFlatLayImages || {}}
                     fetchFn={(url, options) => safeFetch(url, options, 60000)}
                     initialTilesAcross={aopPatternSettings.tilesAcross}
                     initialPattern={aopPatternSettings.pattern}
