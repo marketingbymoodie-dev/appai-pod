@@ -589,6 +589,7 @@ export function PatternCustomizer({
   // create Blob URL, load as HTMLImageElement.
   useEffect(() => {
     const entries = Object.entries(panelFlatLayImages);
+    console.log("[PatternCustomizer] panelFlatLayImages entries:", entries);
     if (entries.length === 0) return;
 
     // Clear cache when the set of panel positions changes (different product loaded)
@@ -618,8 +619,10 @@ export function PatternCustomizer({
           // Fetch SVG text (use fetchFn if provided to bypass Shopify service worker)
           const doFetch = fetchFn ?? fetch;
           const res = await doFetch(url);
+          console.log(`[PatternCustomizer] Fetching SVG for ${pos}: ${url}, status: ${res.status}`);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           let svgText = await res.text();
+          console.log(`[PatternCustomizer] SVG text for ${pos} loaded, length: ${svgText.length}`);
 
           // ── Parse viewBox size ────────────────────────────────────────────────
           // All Printify sew-pattern SVGs have a square viewBox (0 0 N N).
@@ -670,12 +673,17 @@ export function PatternCustomizer({
           // Load as HTMLImageElement
           const img = new window.Image();
           img.onload = () => {
+            console.log(`[PatternCustomizer] Image for ${pos} loaded from blobUrl: ${blobUrl}`);
             flatLayImgRef.current.set(pos, img);
             done();
           };
-          img.onerror = () => { done(); };
+          img.onerror = (e) => {
+            console.error(`[PatternCustomizer] Error loading image for ${pos} from blobUrl: ${blobUrl}`, e);
+            done();
+          };
           img.src = blobUrl;
-        } catch {
+        } catch (err) {
+          console.error(`[PatternCustomizer] Error in SVG loading for ${pos}:`, err);
           done();
         }
       })();
