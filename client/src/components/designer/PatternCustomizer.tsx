@@ -294,6 +294,10 @@ function buildCompositeLayout(
   const sorted = [...viewPanels].sort((a, b) => {
     const aIsLeft = a.position.toLowerCase().includes("left");
     const bIsLeft = b.position.toLowerCase().includes("left");
+    // Special handling for leggings (Blueprint 256) to ensure left_leg is on the left
+    if (view === "front" && panels.some(p => p.position === "left_leg")) {
+      return aIsLeft ? -1 : bIsLeft ? 1 : 0; // left panel first
+    }
     if (view === "front" || view === "hood") {
       // right panel first (left side of composite = seam in centre)
       return aIsLeft ? 1 : bIsLeft ? -1 : 0;
@@ -307,6 +311,14 @@ function buildCompositeLayout(
   let x = 0;
   const maxH = Math.max(...sorted.map(p => p.height));
   const slots = sorted.map(p => {
+    // For leggings, we want to center them horizontally
+    if (view === "front" && panels.some(p => p.position === "left_leg")) {
+      const totalWidth = sorted.reduce((sum, p) => sum + p.width, 0);
+      const startX = (x === 0) ? (maxH * 0.1) : 0; // Add some padding on the left
+      const slot = { position: p.position, x: startX + x, y: 0, w: p.width, h: p.height };
+      x += p.width;
+      return slot;
+    }
     const slot = { position: p.position, x, y: 0, w: p.width, h: p.height };
     x += p.width;
     return slot;
