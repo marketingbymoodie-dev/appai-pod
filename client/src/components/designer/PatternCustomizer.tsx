@@ -340,6 +340,7 @@ export function PatternCustomizer({
   const [isLoading, setIsLoading] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [motifImage, setMotifImage] = useState<HTMLImageElement | null>(null);
+  const [panelSvgImages, setPanelSvgImages] = useState<{ [key: string]: HTMLImageElement }>({});
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [seamOffset, setSeamOffset] = useState(DEFAULT_SEAM_BLEED_PX);
   const [mirrorMode, setMirrorMode] = useState(false);
@@ -353,6 +354,40 @@ export function PatternCustomizer({
     img.onerror = () => console.error("Failed to load motif image");
     img.src = motifUrl;
   }, [motifUrl]);
+
+  // Load SVG panel images for leggings
+  useEffect(() => {
+    const loadPanelSvgs = async () => {
+      const svgMap: { [key: string]: HTMLImageElement } = {};
+      const panelPositions = productTypeConfig?.placeholderPositions || [];
+      
+      for (const panel of panelPositions) {
+        const position = panel.position;
+        if (position === "left_leg" || position === "left_side" || position === "right_leg" || position === "right_side") {
+          try {
+            // Try to find the SVG in the injected content first
+            const svgElement = document.querySelector(`svg[data-panel="${position}"]`);
+            if (svgElement) {
+              const svgString = new XMLSerializer().serializeToString(svgElement);
+              const blob = new Blob([svgString], { type: "image/svg+xml" });
+              const url = URL.createObjectURL(blob);
+              const img = new Image();
+              img.crossOrigin = "anonymous";
+              img.onload = () => {
+                svgMap[position] = img;
+                setPanelSvgImages(prev => ({ ...prev, [position]: img }));
+              };
+              img.src = url;
+            }
+          } catch (e) {
+            console.error(`Failed to load SVG for ${position}:`, e);
+          }
+        }
+      }
+    };
+    
+    loadPanelSvgs();
+  }, [productTypeConfig]);
 
   // Draw preview canvas
   useEffect(() => {
@@ -377,7 +412,7 @@ export function PatternCustomizer({
     } else if (mode === "place") {
       drawPlaceOnItemPreview(ctx, motifImage);
     }
-  }, [motifImage, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg]);
+  }, [motifImage, panelSvgImages, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg]);
 
   const drawPatternPreview = (
     ctx: CanvasRenderingContext2D,
@@ -421,7 +456,7 @@ export function PatternCustomizer({
 
     // Check if this is a leggings product
     if (isLeggingsProduct(panels)) {
-      drawLeggingsPreview(ctx, img, panels);
+      drawLeggingsPreview(ctx, img, panels, panelSvgImages);
     } else {
       drawCompositePreview(ctx, img, panels);
     }
@@ -483,7 +518,8 @@ export function PatternCustomizer({
   const drawLeggingsPreview = (
     ctx: CanvasRenderingContext2D,
     img: HTMLImageElement,
-    panels: Array<{ position: string; width: number; height: number }>
+    panels: Array<{ position: string; width: number; height: number }>,
+    svgImages: { [key: string]: HTMLImageElement }
   ) => {
     console.log("[PatternCustomizer] drawLeggingsPreview called with panels:", panels);
     console.log("[PatternCustomizer] motifImage:", img);
@@ -509,13 +545,13 @@ export function PatternCustomizer({
     const offsetY = (ctx.canvas.height - scaledTotalH) / 2;
 
     // Draw left leg
-    drawLegPanel(ctx, layout.leftLeg, offsetX, offsetY, scale, img, "left");
+    drawLegPanel(ctx, layout.leftLeg, offsetX, offsetY, scale, img, "left", svgImages);
 
     // Draw right leg
-    drawLegPanel(ctx, layout.rightLeg, offsetX, offsetY, scale, img, "right");
+    drawLegPanel(ctx, layout.rightLeg, offsetX, offsetY, scale, img, "right", svgImages);
 
     // Draw snap guides
-    drawSnapGuides(ctx, layout, offsetX, offsetY, scale);
+    drawSnapGuides(ctx, layout, offsetX, offsetY, scale, svgImages);
   };
 
   const drawLegPanel = (
@@ -525,7 +561,8 @@ export function PatternCustomizer({
     offsetY: number,
     scale: number,
     img: HTMLImageElement,
-    legSide: "left" | "right"
+    legSide: "left" | "right",
+    svgImages?: { [key: string]: HTMLImageElement }
   ) => {
     const slotX = offsetX + slot.x * scale;
     const slotY = offsetY + slot.y * scale;
@@ -536,6 +573,11 @@ export function PatternCustomizer({
     ctx.save();
     drawPanelShape(ctx, slot.position, slotX, slotY, slotW, slotH);
     ctx.clip();
+
+    // Draw SVG panel image (sew pattern) as background if available
+    if (svgImages && svgImages[slot.position]) {
+      ctx.drawImage(svgImages[slot.position], slotX, slotY, slotW, slotH);
+    }
 
     // Draw red border
     ctx.strokeStyle = "#ff0000";
@@ -572,7 +614,8 @@ export function PatternCustomizer({
     layout: any,
     offsetX: number,
     offsetY: number,
-    scale: number
+    scale: number,
+    svgImages?: { [key: string]: HTMLImageElement }
   ) => {
     // Red dashed vertical line down the center of each leg
     ctx.strokeStyle = "#ff0000";
