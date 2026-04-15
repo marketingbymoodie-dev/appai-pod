@@ -130,7 +130,8 @@ const SVG_CONTENT_RECTS: Record<string, SvgContentRect> = {
  */
 function getPanelGroup(position: string): "front" | "back" | "hood" | "accent" {
   const p = position.toLowerCase();
-  if (p.includes("front") || p === "left_leg" || p === "right_leg") return "front";
+  // CHATGPT FIX: Leggings use "left_side" and "right_side" for placeholder positions
+  if (p.includes("front") || p === "left_leg" || p === "right_leg" || p === "left_side" || p === "right_side") return "front";
   if (p.includes("back") || p === "back_side" || p === "backside") return "back";
   if (p.includes("hood")) return "hood";
   return "accent";
@@ -295,7 +296,7 @@ function buildCompositeLayout(
     const aIsLeft = a.position.toLowerCase().includes("left");
     const bIsLeft = b.position.toLowerCase().includes("left");
     // Special handling for leggings (Blueprint 256) to ensure left_leg is on the left
-    if (view === "front" && panels.some(p => p.position === "left_leg")) {
+    if (view === "front" && panels.some(p => p.position === "left_leg" || p.position === "left_side")) {
       return aIsLeft ? -1 : bIsLeft ? 1 : 0; // left panel first
     }
     if (view === "front" || view === "hood") {
@@ -312,7 +313,7 @@ function buildCompositeLayout(
   const maxH = Math.max(...sorted.map(p => p.height));
   const slots = sorted.map(p => {
     // For leggings, we want to center them horizontally
-    if (view === "front" && panels.some(p => p.position === "left_leg")) {
+    if (view === "front" && panels.some(p => p.position === "left_leg" || p.position === "left_side")) {
       const totalWidth = sorted.reduce((sum, p) => sum + p.width, 0);
       const startX = (x === 0) ? (maxH * 0.1) : 0; // Add some padding on the left
       const slot = { position: p.position, x: startX + x, y: 0, w: p.width, h: p.height };
