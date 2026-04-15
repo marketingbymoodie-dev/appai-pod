@@ -322,29 +322,55 @@ function buildLeggingsLayout(
 
 interface PatternCustomizerProps {
   motifUrl: string;
-  productTypeConfig: any;
-  onApply: (result: any) => void;
+  productWidth?: number;
+  productHeight?: number;
+  hasPairedPanels?: boolean;
+  panelPositions?: Array<{ position: string; width: number; height: number }>;
+  panelFlatLayImages?: Record<string, string>;
+  fetchFn?: (url: string, options?: any) => Promise<Response>;
+  initialTilesAcross?: number;
+  initialPattern?: PatternType;
+  initialBgColor?: string;
+  onSettingsChange?: (settings: any) => void;
+  initialPlacement?: any;
+  onPlacementChange?: (placement: any) => void;
+  onApply: (result: any, options?: any) => void | Promise<void>;
   onCancel: () => void;
+  productTypeConfig?: any; // Legacy prop, kept for backward compatibility
 }
 
 export function PatternCustomizer({
   motifUrl,
-  productTypeConfig,
+  productWidth,
+  productHeight,
+  hasPairedPanels,
+  panelPositions,
+  panelFlatLayImages,
+  fetchFn,
+  initialTilesAcross,
+  initialPattern,
+  initialBgColor,
+  onSettingsChange,
+  initialPlacement,
+  onPlacementChange,
   onApply,
   onCancel,
+  productTypeConfig,
 }: PatternCustomizerProps) {
-  const [mode, setMode] = useState<EditorMode>("pattern");
-  const [patternType, setPatternType] = useState<PatternType>("grid");
-  const [scale, setScale] = useState(5);
-  const [bgColor, setBgColor] = useState("");
+  // Use panelPositions as productTypeConfig for backward compatibility
+  const config = productTypeConfig || { placeholderPositions: panelPositions || [] };
+  const [mode, setMode] = useState<EditorMode>(initialPattern ? "pattern" : "pattern");
+  const [patternType, setPatternType] = useState<PatternType>(initialPattern || "grid");
+  const [scale, setScale] = useState(initialTilesAcross || 5);
+  const [bgColor, setBgColor] = useState(initialBgColor || "");
   const [isLoading, setIsLoading] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [motifImage, setMotifImage] = useState<HTMLImageElement | null>(null);
   const [panelSvgImages, setPanelSvgImages] = useState<{ [key: string]: HTMLImageElement }>({});
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [seamOffset, setSeamOffset] = useState(DEFAULT_SEAM_BLEED_PX);
-  const [mirrorMode, setMirrorMode] = useState(false);
-  const [activeLeg, setActiveLeg] = useState<"left" | "right">("right");
+  const [dragOffset, setDragOffset] = useState(initialPlacement?.dragOffset || { x: 0, y: 0 });
+  const [seamOffset, setSeamOffset] = useState(initialPlacement?.seamOffset || DEFAULT_SEAM_BLEED_PX);
+  const [mirrorMode, setMirrorMode] = useState(initialPlacement?.mirrorMode || false);
+  const [activeLeg, setActiveLeg] = useState<"left" | "right">(initialPlacement?.activeLeg || "right");
 
   // Load motif image
   useEffect(() => {
@@ -370,10 +396,10 @@ export function PatternCustomizer({
   useEffect(() => {
     const loadPanelSvgs = async () => {
       const svgMap: { [key: string]: HTMLImageElement } = {};
-      const panelPositions = productTypeConfig?.placeholderPositions || [];
-      const blueprintId = productTypeConfig?.printifyBlueprintId;
+      const positions = panelPositions || config?.placeholderPositions || [];
+      const blueprintId = productTypeConfig?.printifyBlueprintId || 1050; // Default to leggings blueprint
       
-      for (const panel of panelPositions) {
+      for (const panel of positions) {
         const position = panel.position;
         if (position === "left_leg" || position === "left_side" || position === "right_leg" || position === "right_side") {
           try {
@@ -437,7 +463,7 @@ export function PatternCustomizer({
     };
     
     loadPanelSvgs();
-  }, [productTypeConfig]);
+  }, [panelPositions, productTypeConfig, config]);
 
   // Helper to cache a rendered panel image
   const cacheRenderedPanel = async (blueprintId: number, panelName: string, img: HTMLImageElement) => {
@@ -481,12 +507,18 @@ export function PatternCustomizer({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = PREVIEW_PX;
-    canvas.height = PREVIEW_PX;
+    // Use provided dimensions or defaults
+    const canvasW = productWidth ? Math.min(productWidth, 400) : PREVIEW_PX;
+    const canvasH = productHeight ? Math.min(productHeight, 400) : PREVIEW_PX;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
 
     // Fill background
     ctx.fillStyle = bgColor || "transparent";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Determine if this is a leggings product (has paired panels)
+    const isLeggings = hasPairedPanels && panelPositions?.some(p => p.position.includes("leg") || p.position.includes("side"));
 
     // Draw pattern based on mode
     if (mode === "pattern") {
@@ -494,9 +526,27 @@ export function PatternCustomizer({
     } else if (mode === "single") {
       drawSingleImagePreview(ctx, motifImage);
     } else if (mode === "place") {
-      drawPlaceOnItemPreview(ctx, motifImage);
+      if (isLeggings) {
+        drawLeggingsPreview(ctx, motifImage);
+      } else {
+        drawPlaceOnItemPreview(ctx, motifImage);
+      }
     }
   }, [motifImage, panelSvgImages, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg]);
+
+  // Notify parent of settings changes
+  useEffect(() => {
+    if (onSettingsChange) {
+      onSettingsChange({ tilesAcross: scale, pattern: patternType, bgColor });
+    }
+  }, [scale, patternType, bgColor, onSettingsChange]);
+
+  // Notify parent of placement changes
+  useEffect(() => {
+    if (onPlacementChange) {
+      onPlacementChange({ dragOffset, seamOffset, mirrorMode, activeLeg });
+    }
+  }, [dragOffset, seamOffset, mirrorMode, activeLeg, onPlacementChange]);
 
   const drawPatternPreview = (
     ctx: CanvasRenderingContext2D,
