@@ -990,7 +990,7 @@ export function PatternCustomizer({
           // 3. Draw the offscreen canvas to the main canvas
           ctx.drawImage(off, sx, sy);
         }
-        ctx.restore();p)
+        ctx.restore();
         if (currentViewHasArtwork) {
           offCtx.globalCompositeOperation = "source-atop";
           offCtx.globalAlpha = 0.9;
