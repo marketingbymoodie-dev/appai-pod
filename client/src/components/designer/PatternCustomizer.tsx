@@ -485,9 +485,17 @@ export function PatternCustomizer({
     img: HTMLImageElement,
     panels: Array<{ position: string; width: number; height: number }>
   ) => {
+    console.log("[PatternCustomizer] drawLeggingsPreview called with panels:", panels);
+    console.log("[PatternCustomizer] motifImage:", img);
+    
     // Build leggings layout
     const layout = buildLeggingsLayout(panels);
-    if (!layout.leftLeg || !layout.rightLeg) return;
+    console.log("[PatternCustomizer] leggings layout:", layout);
+    
+    if (!layout.leftLeg || !layout.rightLeg) {
+      console.log("[PatternCustomizer] Missing left or right leg!");
+      return;
+    }
 
     // Calculate total width and height
     const totalW = layout.leftLeg.w + layout.gap + layout.rightLeg.w;
