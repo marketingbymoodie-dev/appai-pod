@@ -526,13 +526,13 @@ export function PatternCustomizer({
     } else if (mode === "single") {
       drawSingleImagePreview(ctx, motifImage);
     } else if (mode === "place") {
-      if (isLeggings) {
-        drawLeggingsPreview(ctx, motifImage);
+      if (isLeggings && panelPositions) {
+        drawLeggingsPreview(ctx, motifImage, panelPositions, panelSvgImages);
       } else {
         drawPlaceOnItemPreview(ctx, motifImage);
       }
     }
-  }, [motifImage, panelSvgImages, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg]);
+  }, [motifImage, panelSvgImages, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg, panelPositions, hasPairedPanels]);
 
   // Notify parent of settings changes
   useEffect(() => {
@@ -652,18 +652,25 @@ export function PatternCustomizer({
   const drawLeggingsPreview = (
     ctx: CanvasRenderingContext2D,
     img: HTMLImageElement,
-    panels: Array<{ position: string; width: number; height: number }>,
-    svgImages: { [key: string]: HTMLImageElement }
+    panels?: Array<{ position: string; width: number; height: number }>,
+    svgImages?: { [key: string]: HTMLImageElement }
   ) => {
     console.log("[PatternCustomizer] drawLeggingsPreview called with panels:", panels);
     console.log("[PatternCustomizer] motifImage:", img);
+    console.log("[PatternCustomizer] svgImages:", svgImages);
+    
+    // Guard against missing panels
+    if (!panels || panels.length === 0) {
+      console.warn("[PatternCustomizer] No panels provided to drawLeggingsPreview");
+      return;
+    }
     
     // Build leggings layout
     const layout = buildLeggingsLayout(panels);
     console.log("[PatternCustomizer] leggings layout:", layout);
     
     if (!layout.leftLeg || !layout.rightLeg) {
-      console.log("[PatternCustomizer] Missing left or right leg!");
+      console.warn("[PatternCustomizer] Missing left or right leg!");
       return;
     }
 
