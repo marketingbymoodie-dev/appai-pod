@@ -1839,6 +1839,7 @@ export default function EmbedDesign() {
       !mockupFailed
     ) {
       if (productTypeConfig.isAllOverPrint) {
+        console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
         setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
@@ -1871,6 +1872,7 @@ export default function EmbedDesign() {
     ) return;
 
     if (productTypeConfig.isAllOverPrint) {
+      console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
       setAopPatternUrl(null);
       setShowPatternStep(true);
