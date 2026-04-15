@@ -50,7 +50,7 @@ const PATTERN_OPTIONS = [
 ];
 
 const BG_PRESETS = [
-  { label: "Transparent", value: "" },
+  { label: "Transparent", value: "transparent" },
   { label: "White",       value: "#ffffff" },
   { label: "Black",       value: "#000000" },
   { label: "Navy",        value: "#1e3a5f" },
@@ -706,13 +706,13 @@ export function PatternCustomizer({
 
         <div>
           <Label>Background</Label>
-          <Select value={bgColor || "transparent"} onValueChange={setBgColor}>
+          <Select value={bgColor === "" ? "transparent" : bgColor} onValueChange={v => setBgColor(v === "transparent" ? "" : v)}>
             <SelectTrigger>
               <SelectValue placeholder="Select background" />
             </SelectTrigger>
             <SelectContent>
               {BG_PRESETS.map(preset => (
-                <SelectItem key={preset.value || "transparent"} value={preset.value || "transparent"}>
+                <SelectItem key={preset.value} value={preset.value}>
                   {preset.label}
                 </SelectItem>
               ))}
