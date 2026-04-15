@@ -190,9 +190,34 @@ function drawPanelShape(
     ctx.bezierCurveTo(x + w - armW, y + armTop, x + w, y + armTop, x + w, y + shoulderH);
     ctx.closePath();
 
-  } else if (p === "left_leg" || p === "left_side" || p === "right_leg" || p === "right_side") {
-    // Leggings: Use rectangular clipping for now to ensure SVG alignment
-    ctx.rect(x, y, w, h);
+  } else if (p === "left_leg" || p === "left_side") {
+    // Left leg panel (now on the RIGHT side of composite — outer seam on LEFT edge)
+    const waistCurve = h * 0.05;
+    const kneeY      = h * 0.55;
+    const ankleW     = w * 0.45;
+    
+    ctx.moveTo(x + w * 0.9, y + waistCurve); // Start at waist-right (inseam side)
+    ctx.bezierCurveTo(x + w * 0.6, y, x + w * 0.3, y, x + w * 0.1, y + waistCurve); // Waist curve
+    ctx.lineTo(x, y + h * 0.15); // Down to outer hip (center seam)
+    ctx.bezierCurveTo(x + w * 0.8, kneeY, x + w, y + h * 0.3, x + w, y + h * 0.15); // Outer leg curve
+    ctx.lineTo(x + w * 0.2, y + h); // Down inseam to ankle
+    ctx.lineTo(x + w * 0.2 + ankleW, y + h); // Across ankle
+    ctx.lineTo(x + w * 0.9, y + waistCurve);
+    ctx.closePath();
+
+  } else if (p === "right_leg" || p === "right_side") {
+    // Right leg panel (now on the LEFT side of composite — outer seam on RIGHT edge)
+    const waistCurve = h * 0.05;
+    const kneeY      = h * 0.55;
+    const ankleW     = w * 0.45;
+    
+    ctx.moveTo(x + w * 0.1, y + waistCurve); // Start at waist-left (inseam side)
+    ctx.bezierCurveTo(x + w * 0.4, y, x + w * 0.7, y, x + w * 0.9, y + waistCurve); // Waist curve
+    ctx.lineTo(x + w, y + h * 0.15); // Down to outer hip (center seam)
+    ctx.bezierCurveTo(x + w * 0.2, kneeY, x, y + h * 0.3, x, y + h * 0.15); // Outer leg curve
+    ctx.lineTo(x + w * 0.8, y + h); // Down inseam to ankle
+    ctx.lineTo(x + w * 0.8 - ankleW, y + h); // Across ankle
+    ctx.lineTo(x + w * 0.1, y + waistCurve);
     ctx.closePath();
 
   } else if (p === "back" || p === "back_side" || p === "backside") {
@@ -274,9 +299,9 @@ function buildCompositeLayout(
   const sorted = [...viewPanels].sort((a, b) => {
     const aIsLeft = a.position.toLowerCase().includes("left");
     const bIsLeft = b.position.toLowerCase().includes("left");
-    // Special handling for leggings: Original order for SVG alignment
+    // Special handling for leggings: Swap panels so outer seams are in the center
     if (view === "front" && panels.some(p => p.position === "left_leg" || p.position === "left_side")) {
-      return aIsLeft ? -1 : bIsLeft ? 1 : 0; // left panel first
+      return aIsLeft ? 1 : bIsLeft ? -1 : 0; // right panel first
     }
     if (view === "front" || view === "hood") {
       // right panel first (left side of composite = seam in centre)
@@ -291,12 +316,12 @@ function buildCompositeLayout(
   let x = 0;
   const maxH = Math.max(...sorted.map(p => p.height));
   const slots = sorted.map(p => {
-    // For leggings, we want to center them horizontally
+    // For leggings, we want to center them horizontally with a gap
     if (view === "front" && panels.some(p => p.position === "left_leg" || p.position === "left_side")) {
-      const totalWidth = sorted.reduce((sum, p) => sum + p.width, 0);
-      const startX = (x === 0) ? (maxH * 0.1) : 0; // Add some padding on the left
+      const gap = maxH * 0.05; // 5% gap
+      const startX = (x === 0) ? (maxH * 0.1) : gap; 
       const slot = { position: p.position, x: startX + x, y: 0, w: p.width, h: p.height };
-      x += p.width;
+      x += p.width + startX;
       return slot;
     }
     const slot = { position: p.position, x, y: 0, w: p.width, h: p.height };
