@@ -355,6 +355,17 @@ export function PatternCustomizer({
     img.src = motifUrl;
   }, [motifUrl]);
 
+  // Helper to map placeholder position names to SVG panel names
+  const mapPositionToSvgName = (position: string): string => {
+    const mapping: { [key: string]: string } = {
+      "left_side": "left_leg",
+      "right_side": "right_leg",
+      "left_leg": "left_leg",
+      "right_leg": "right_leg",
+    };
+    return mapping[position] || position;
+  };
+
   // Load SVG panel images for leggings
   useEffect(() => {
     const loadPanelSvgs = async () => {
@@ -365,8 +376,12 @@ export function PatternCustomizer({
         const position = panel.position;
         if (position === "left_leg" || position === "left_side" || position === "right_leg" || position === "right_side") {
           try {
+            // Map the position name to the SVG panel name
+            const svgPanelName = mapPositionToSvgName(position);
+            console.log(`[PatternCustomizer] Loading SVG for position "${position}" -> SVG "${svgPanelName}"`);
+            
             // Try to find the SVG in the injected content first
-            const svgElement = document.querySelector(`svg[data-panel="${position}"]`);
+            const svgElement = document.querySelector(`svg[data-panel="${svgPanelName}"]`);
             if (svgElement) {
               const svgString = new XMLSerializer().serializeToString(svgElement);
               const blob = new Blob([svgString], { type: "image/svg+xml" });
@@ -374,13 +389,17 @@ export function PatternCustomizer({
               const img = new Image();
               img.crossOrigin = "anonymous";
               img.onload = () => {
+                console.log(`[PatternCustomizer] SVG loaded for ${position}`);
                 svgMap[position] = img;
                 setPanelSvgImages(prev => ({ ...prev, [position]: img }));
               };
+              img.onerror = () => console.error(`[PatternCustomizer] Failed to load SVG image for ${position}`);
               img.src = url;
+            } else {
+              console.warn(`[PatternCustomizer] SVG element not found for panel "${svgPanelName}"`);
             }
           } catch (e) {
-            console.error(`Failed to load SVG for ${position}:`, e);
+            console.error(`[PatternCustomizer] Failed to load SVG for ${position}:`, e);
           }
         }
       }
@@ -575,8 +594,13 @@ export function PatternCustomizer({
     ctx.clip();
 
     // Draw SVG panel image (sew pattern) as background if available
+    // Map the position name to the SVG panel name
+    const svgPanelName = mapPositionToSvgName(slot.position);
     if (svgImages && svgImages[slot.position]) {
+      console.log(`[PatternCustomizer] Drawing SVG for ${slot.position}`);
       ctx.drawImage(svgImages[slot.position], slotX, slotY, slotW, slotH);
+    } else {
+      console.warn(`[PatternCustomizer] SVG image not available for ${slot.position}`);
     }
 
     // Draw red border
