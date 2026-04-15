@@ -623,11 +623,13 @@ export function PatternCustomizer({
       (async () => {
         try {
           // Use proxy to bypass CORS issues
-          // IMPORTANT: API_BASE is "/apps/appai" in proxy mode, which is relative to the Shopify storefront.
-          // The proxy endpoint is on Railway, so we need to construct the full URL.
-          const proxyUrl = `${API_BASE}/api/proxy-svg?url=${encodeURIComponent(url)}`;
-          console.log(`[PatternCustomizer] API_BASE=${API_BASE}, proxyUrl=${proxyUrl}, window.location.origin=${window.location.origin}`);
-          console.log(`[PatternCustomizer] Fetching SVG for ${pos} via proxy: ${proxyUrl}`);
+          // CRITICAL FIX: API_BASE is "/apps/appai" (relative URL) in proxy mode.
+          // When iframe fetches from relative URL, browser resolves it to Shopify domain, not Railway!
+          // Solution: Use absolute URL pointing to Railway backend.
+          const railwayAppUrl = "https://appai-pod-production.up.railway.app";
+          const proxyUrl = `${railwayAppUrl}/apps/appai/api/proxy-svg?url=${encodeURIComponent(url)}`;
+          console.log(`[PatternCustomizer] Using absolute proxy URL: ${proxyUrl}`);
+          console.log(`[PatternCustomizer] Fetching SVG for ${pos} via proxy`);
           
           console.log(`[PatternCustomizer] About to fetch from: ${proxyUrl}`);
           const res = await fetch(proxyUrl, { credentials: 'include' });
