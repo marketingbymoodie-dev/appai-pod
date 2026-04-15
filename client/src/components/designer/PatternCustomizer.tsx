@@ -922,8 +922,17 @@ export function PatternCustomizer({
       const sw = slot.w * scaleToPreview;
       const sh = slot.h * scaleToPreview;
 
-      const flatLayImg = flatLayImgRef.current.get(slot.position);
-      console.log(`[PatternCustomizer] Slot ${slot.position}: flatLayImg exists? ${!!flatLayImg}`);
+      // CHATGPT FIX: Handle key mismatch between placeholder positions and panel images
+      // Leggings use "left_side" for placeholder but "left_leg" for SVG panel.
+      let positionKey = slot.position;
+      if (positionKey === 'left_side' && !flatLayImgRef.current.has(positionKey)) {
+        positionKey = 'left_leg';
+      } else if (positionKey === 'right_side' && !flatLayImgRef.current.has(positionKey)) {
+        positionKey = 'right_leg';
+      }
+
+      const flatLayImg = flatLayImgRef.current.get(positionKey);
+      console.log(`[PatternCustomizer] Slot ${slot.position}: flatLayImg exists? ${!!flatLayImg} (tried key: ${positionKey})`);
 
       if (flatLayImg) {
         // ── Flat-lay SVG available ────────────────────────────────────────────
@@ -938,7 +947,7 @@ export function PatternCustomizer({
         //   drawY = sy - cbY * svgScale   (offset so content rect top = slot top)
         //
         // The slot rect clip ensures the SVG parts outside the slot are hidden.
-        const meta = flatLayMetaRef.current.get(slot.position);
+        const meta = flatLayMetaRef.current.get(positionKey);
         const svgMeta = meta ?? { vbSize: flatLayImg.naturalWidth || 1000, cbX: 0, cbY: 0, cbW: flatLayImg.naturalWidth || 1000, cbH: flatLayImg.naturalHeight || 1000 };
 
         // Scale SVG so content rect width fills slot width
