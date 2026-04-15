@@ -138,6 +138,14 @@ function getPanelGroup(position: string): "front" | "back" | "hood" | "accent" {
 }
 
 /**
+ * Check if this is a leggings product (has left_leg/right_leg or left_side/right_side)
+ */
+function isLeggingsProduct(panels: Array<{ position: string }>): boolean {
+  const positions = panels.map(p => p.position.toLowerCase());
+  return positions.some(p => p.includes("leg") || p.includes("side"));
+}
+
+/**
  * Draw a garment-shaped clip path for a panel in the preview canvas.
  * Uses normalised bezier curves to approximate actual Printify panel shapes.
  * After calling this, the ctx clip is set — draw artwork, then ctx.restore().
@@ -291,6 +299,25 @@ function buildCompositeLayout(
   return { compositeW, compositeH: maxH, slots };
 }
 
+/**
+ * Build a separate layout for leggings with each leg as an independent panel.
+ * Returns: { leftLeg, rightLeg, gap }
+ */
+function buildLeggingsLayout(
+  panels: Array<{ position: string; width: number; height: number }>
+): { leftLeg: PanelSlot | null; rightLeg: PanelSlot | null; gap: number } {
+  const leftPanel = panels.find(p => p.position.toLowerCase().includes("left"));
+  const rightPanel = panels.find(p => p.position.toLowerCase().includes("right"));
+
+  const gap = 40; // Gap between legs in pixels
+
+  return {
+    leftLeg: leftPanel ? { position: leftPanel.position, x: 0, y: 0, w: leftPanel.width, h: leftPanel.height } : null,
+    rightLeg: rightPanel ? { position: rightPanel.position, x: leftPanel ? leftPanel.width + gap : 0, y: 0, w: rightPanel.width, h: rightPanel.height } : null,
+    gap,
+  };
+}
+
 // ── Main PatternCustomizer component ─────────────────────────────────────────
 
 interface PatternCustomizerProps {
@@ -315,6 +342,8 @@ export function PatternCustomizer({
   const [motifImage, setMotifImage] = useState<HTMLImageElement | null>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [seamOffset, setSeamOffset] = useState(DEFAULT_SEAM_BLEED_PX);
+  const [mirrorMode, setMirrorMode] = useState(false);
+  const [activeLeg, setActiveLeg] = useState<"left" | "right">("right");
 
   // Load motif image
   useEffect(() => {
@@ -348,7 +377,7 @@ export function PatternCustomizer({
     } else if (mode === "place") {
       drawPlaceOnItemPreview(ctx, motifImage);
     }
-  }, [motifImage, mode, patternType, scale, bgColor]);
+  }, [motifImage, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg]);
 
   const drawPatternPreview = (
     ctx: CanvasRenderingContext2D,
@@ -381,7 +410,6 @@ export function PatternCustomizer({
   };
 
   const drawPlaceOnItemPreview = (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
-    const panelFlatLayImages = productTypeConfig?.panelFlatLayImages || {};
     const placeholderPositions = productTypeConfig?.placeholderPositions || [];
 
     // Build panel list
@@ -391,6 +419,19 @@ export function PatternCustomizer({
       height: pos.height || 300,
     }));
 
+    // Check if this is a leggings product
+    if (isLeggingsProduct(panels)) {
+      drawLeggingsPreview(ctx, img, panels);
+    } else {
+      drawCompositePreview(ctx, img, panels);
+    }
+  };
+
+  const drawCompositePreview = (
+    ctx: CanvasRenderingContext2D,
+    img: HTMLImageElement,
+    panels: Array<{ position: string; width: number; height: number }>
+  ) => {
     // Build layout
     const layout = buildCompositeLayout("front", panels);
     if (layout.compositeW === 0) return;
@@ -439,6 +480,121 @@ export function PatternCustomizer({
     ctx.stroke();
   };
 
+  const drawLeggingsPreview = (
+    ctx: CanvasRenderingContext2D,
+    img: HTMLImageElement,
+    panels: Array<{ position: string; width: number; height: number }>
+  ) => {
+    // Build leggings layout
+    const layout = buildLeggingsLayout(panels);
+    if (!layout.leftLeg || !layout.rightLeg) return;
+
+    // Calculate total width and height
+    const totalW = layout.leftLeg.w + layout.gap + layout.rightLeg.w;
+    const totalH = Math.max(layout.leftLeg.h, layout.rightLeg.h);
+
+    // Scale to fit canvas
+    const scale = Math.min(ctx.canvas.width / totalW, ctx.canvas.height / totalH);
+    const scaledTotalW = totalW * scale;
+    const scaledTotalH = totalH * scale;
+    const offsetX = (ctx.canvas.width - scaledTotalW) / 2;
+    const offsetY = (ctx.canvas.height - scaledTotalH) / 2;
+
+    // Draw left leg
+    drawLegPanel(ctx, layout.leftLeg, offsetX, offsetY, scale, img, "left");
+
+    // Draw right leg
+    drawLegPanel(ctx, layout.rightLeg, offsetX, offsetY, scale, img, "right");
+
+    // Draw snap guides
+    drawSnapGuides(ctx, layout, offsetX, offsetY, scale);
+  };
+
+  const drawLegPanel = (
+    ctx: CanvasRenderingContext2D,
+    slot: PanelSlot,
+    offsetX: number,
+    offsetY: number,
+    scale: number,
+    img: HTMLImageElement,
+    legSide: "left" | "right"
+  ) => {
+    const slotX = offsetX + slot.x * scale;
+    const slotY = offsetY + slot.y * scale;
+    const slotW = slot.w * scale;
+    const slotH = slot.h * scale;
+
+    // Draw panel shape
+    ctx.save();
+    drawPanelShape(ctx, slot.position, slotX, slotY, slotW, slotH);
+    ctx.clip();
+
+    // Draw red border
+    ctx.strokeStyle = "#ff0000";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(slotX, slotY, slotW, slotH);
+
+    // Determine which drag offset to use
+    const currentDragOffset = activeLeg === legSide ? dragOffset : { x: 0, y: 0 };
+
+    // Draw motif image
+    const scale2 = Math.min(slotW / img.width, slotH / img.height);
+    const w = img.width * scale2;
+    const h = img.height * scale2;
+    const x = slotX + (slotW - w) / 2 + currentDragOffset.x;
+    const y = slotY + (slotH - h) / 2 + currentDragOffset.y;
+
+    // Mirror left leg if needed
+    if (legSide === "left" && mirrorMode) {
+      ctx.save();
+      ctx.translate(slotX + slotW / 2, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-(slotX + slotW / 2), 0);
+      ctx.drawImage(img, x, y, w, h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, x, y, w, h);
+    }
+
+    ctx.restore();
+  };
+
+  const drawSnapGuides = (
+    ctx: CanvasRenderingContext2D,
+    layout: any,
+    offsetX: number,
+    offsetY: number,
+    scale: number
+  ) => {
+    // Red dashed vertical line down the center of each leg
+    ctx.strokeStyle = "#ff0000";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+
+    // Left leg center line
+    const leftCenterX = offsetX + (layout.leftLeg.x + layout.leftLeg.w / 2) * scale;
+    ctx.beginPath();
+    ctx.moveTo(leftCenterX, offsetY);
+    ctx.lineTo(leftCenterX, offsetY + layout.leftLeg.h * scale);
+    ctx.stroke();
+
+    // Right leg center line
+    const rightCenterX = offsetX + (layout.rightLeg.x + layout.rightLeg.w / 2) * scale;
+    ctx.beginPath();
+    ctx.moveTo(rightCenterX, offsetY);
+    ctx.lineTo(rightCenterX, offsetY + layout.rightLeg.h * scale);
+    ctx.stroke();
+
+    // Red dashed horizontal line at crotch (roughly 70% down from top)
+    const crotchY = offsetY + layout.leftLeg.h * scale * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(offsetX, crotchY);
+    ctx.lineTo(offsetX + (layout.leftLeg.w + layout.gap + layout.rightLeg.w) * scale, crotchY);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+  };
+
   const handleApply = async () => {
     setIsLoading(true);
     try {
@@ -453,6 +609,7 @@ export function PatternCustomizer({
           scale,
           dragOffset,
           seamOffset,
+          mirrorMode,
         }),
       }).then(r => r.json());
 
@@ -516,10 +673,35 @@ export function PatternCustomizer({
         )}
 
         {mode === "place" && (
-          <div>
-            <Label>Seam Offset: {seamOffset}px</Label>
-            <Slider value={[seamOffset]} onValueChange={v => setSeamOffset(v[0])} min={0} max={200} />
-          </div>
+          <>
+            <div>
+              <Label>Seam Offset: {seamOffset}px</Label>
+              <Slider value={[seamOffset]} onValueChange={v => setSeamOffset(v[0])} min={0} max={200} />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Switch checked={mirrorMode} onCheckedChange={setMirrorMode} />
+              <Label>Mirror Mode</Label>
+            </div>
+
+            <div>
+              <Label>Active Leg</Label>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setActiveLeg("left")}
+                  className={`px-3 py-1 rounded ${activeLeg === "left" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                >
+                  Left
+                </button>
+                <button
+                  onClick={() => setActiveLeg("right")}
+                  className={`px-3 py-1 rounded ${activeLeg === "right" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                >
+                  Right
+                </button>
+              </div>
+            </div>
+          </>
         )}
 
         <div>
