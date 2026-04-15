@@ -706,13 +706,13 @@ export function PatternCustomizer({
 
         <div>
           <Label>Background</Label>
-          <Select value={bgColor} onValueChange={setBgColor}>
+          <Select value={bgColor || "transparent"} onValueChange={setBgColor}>
             <SelectTrigger>
-              <SelectValue />
+              <SelectValue placeholder="Select background" />
             </SelectTrigger>
             <SelectContent>
               {BG_PRESETS.map(preset => (
-                <SelectItem key={preset.value} value={preset.value}>
+                <SelectItem key={preset.value || "transparent"} value={preset.value || "transparent"}>
                   {preset.label}
                 </SelectItem>
               ))}
