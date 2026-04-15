@@ -366,11 +366,12 @@ export function PatternCustomizer({
     return mapping[position] || position;
   };
 
-  // Load SVG panel images for leggings
+  // Load SVG panel images for leggings (with caching support)
   useEffect(() => {
     const loadPanelSvgs = async () => {
       const svgMap: { [key: string]: HTMLImageElement } = {};
       const panelPositions = productTypeConfig?.placeholderPositions || [];
+      const blueprintId = productTypeConfig?.printifyBlueprintId;
       
       for (const panel of panelPositions) {
         const position = panel.position;
@@ -380,7 +381,32 @@ export function PatternCustomizer({
             const svgPanelName = mapPositionToSvgName(position);
             console.log(`[PatternCustomizer] Loading SVG for position "${position}" -> SVG "${svgPanelName}"`);
             
-            // Try to find the SVG in the injected content first
+            // Try to load from cache first (if blueprint ID is available)
+            if (blueprintId) {
+              try {
+                const cacheResponse = await fetch(
+                  `${API_BASE}/api/cached-panel-image?blueprintId=${blueprintId}&panelName=${svgPanelName}`
+                );
+                if (cacheResponse.ok) {
+                  const cached = await cacheResponse.json();
+                  console.log(`[PatternCustomizer] Using cached panel image for ${svgPanelName}`);
+                  const img = new Image();
+                  img.crossOrigin = "anonymous";
+                  img.onload = () => {
+                    svgMap[position] = img;
+                    setPanelSvgImages(prev => ({ ...prev, [position]: img }));
+                  };
+                  img.onerror = () => console.error(`[PatternCustomizer] Failed to load cached SVG for ${position}`);
+                  img.src = cached.imageDataUrl;
+                  continue; // Skip to next panel
+                }
+              } catch (e) {
+                console.warn(`[PatternCustomizer] Cache lookup failed for ${svgPanelName}:`, e);
+                // Fall through to load from injected SVG
+              }
+            }
+            
+            // Try to find the SVG in the injected content
             const svgElement = document.querySelector(`svg[data-panel="${svgPanelName}"]`);
             if (svgElement) {
               const svgString = new XMLSerializer().serializeToString(svgElement);
@@ -392,6 +418,11 @@ export function PatternCustomizer({
                 console.log(`[PatternCustomizer] SVG loaded for ${position}`);
                 svgMap[position] = img;
                 setPanelSvgImages(prev => ({ ...prev, [position]: img }));
+                
+                // Cache the rendered panel for future use
+                if (blueprintId) {
+                  cacheRenderedPanel(blueprintId, svgPanelName, img);
+                }
               };
               img.onerror = () => console.error(`[PatternCustomizer] Failed to load SVG image for ${position}`);
               img.src = url;
@@ -407,6 +438,40 @@ export function PatternCustomizer({
     
     loadPanelSvgs();
   }, [productTypeConfig]);
+
+  // Helper to cache a rendered panel image
+  const cacheRenderedPanel = async (blueprintId: number, panelName: string, img: HTMLImageElement) => {
+    try {
+      // Create a canvas to render the image as a data URL
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      
+      ctx.drawImage(img, 0, 0);
+      const dataUrl = canvas.toDataURL("image/png");
+      
+      // Send to server for caching
+      const response = await fetch(`${API_BASE}/api/cache-panel-image`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          blueprintId,
+          panelName,
+          panelWidth: img.width,
+          panelHeight: img.height,
+          svgDataUrl: dataUrl,
+        }),
+      });
+      
+      if (response.ok) {
+        console.log(`[PatternCustomizer] Cached panel ${panelName} for blueprint ${blueprintId}`);
+      }
+    } catch (e) {
+      console.warn(`[PatternCustomizer] Failed to cache panel ${panelName}:`, e);
+    }
+  };
 
   // Draw preview canvas
   useEffect(() => {
@@ -594,8 +659,6 @@ export function PatternCustomizer({
     ctx.clip();
 
     // Draw SVG panel image (sew pattern) as background if available
-    // Map the position name to the SVG panel name
-    const svgPanelName = mapPositionToSvgName(slot.position);
     if (svgImages && svgImages[slot.position]) {
       console.log(`[PatternCustomizer] Drawing SVG for ${slot.position}`);
       ctx.drawImage(svgImages[slot.position], slotX, slotY, slotW, slotH);

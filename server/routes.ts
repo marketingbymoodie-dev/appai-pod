@@ -10,8 +10,8 @@ import path from "path";
 import sharp from "sharp";
 import { storage } from "./storage";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts } from "@shared/schema";
-import { eq, and, desc, inArray, sql } from "drizzle-orm";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
+import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
@@ -1074,6 +1074,82 @@ export async function registerRoutes(
     } catch (error: any) {
       console.error(`[SVG Proxy] Error fetching ${url}:`, error.message);
       res.status(500).send(`Error fetching SVG: ${error.message}`);
+    }
+  }));
+
+  // Endpoint to generate and cache masked panel images for AOP products
+  // POST /api/cache-panel-image
+  // Body: { blueprintId, panelName, panelWidth, panelHeight, svgDataUrl }
+  app.post("/api/cache-panel-image", asyncHandler(async (req: Request, res: Response) => {
+    const { blueprintId, panelName, panelWidth, panelHeight, svgDataUrl } = req.body;
+
+    if (!blueprintId || !panelName || !panelWidth || !panelHeight || !svgDataUrl) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    try {
+      // Check if this panel is already cached
+      const existing = await db.query.cachedPanelImages.findFirst({
+        where: and(
+          eq(cachedPanelImages.blueprintId, blueprintId),
+          eq(cachedPanelImages.panelName, panelName)
+        ),
+      });
+
+      if (existing) {
+        console.log(`[Cache Panel] Panel ${panelName} already cached for blueprint ${blueprintId}`);
+        return res.json({ cached: true, id: existing.id });
+      }
+
+      // Insert new cached panel image
+      const result = await db.insert(cachedPanelImages).values({
+        blueprintId,
+        panelName,
+        panelWidth,
+        panelHeight,
+        imageDataUrl: svgDataUrl,
+      }).returning({ id: cachedPanelImages.id });
+
+      console.log(`[Cache Panel] Cached panel ${panelName} for blueprint ${blueprintId}`);
+      res.json({ cached: true, id: result[0].id });
+    } catch (error: any) {
+      console.error(`[Cache Panel] Error caching panel:`, error.message);
+      res.status(500).json({ error: error.message });
+    }
+  }));
+
+  // Endpoint to retrieve cached panel images
+  // GET /api/cached-panel-image?blueprintId=1050&panelName=left_leg
+  app.get("/api/cached-panel-image", asyncHandler(async (req: Request, res: Response) => {
+    const { blueprintId, panelName } = req.query;
+
+    if (!blueprintId || !panelName) {
+      return res.status(400).json({ error: "Missing blueprintId or panelName" });
+    }
+
+    try {
+      const cached = await db.query.cachedPanelImages.findFirst({
+        where: and(
+          eq(cachedPanelImages.blueprintId, parseInt(blueprintId as string)),
+          eq(cachedPanelImages.panelName, panelName as string)
+        ),
+      });
+
+      if (!cached) {
+        return res.status(404).json({ error: "Panel not cached" });
+      }
+
+      res.json({
+        id: cached.id,
+        blueprintId: cached.blueprintId,
+        panelName: cached.panelName,
+        panelWidth: cached.panelWidth,
+        panelHeight: cached.panelHeight,
+        imageDataUrl: cached.imageDataUrl,
+      });
+    } catch (error: any) {
+      console.error(`[Cache Panel] Error retrieving cached panel:`, error.message);
+      res.status(500).json({ error: error.message });
     }
   }));
 

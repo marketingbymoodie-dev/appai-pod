@@ -644,3 +644,23 @@ export interface DesignerConfig {
     safeZoneMargin: number;
   };
 }
+
+// Cached masked panel images for AOP products (e.g., leggings)
+// Pre-renders the SVG sew patterns with clipping masks applied, stored as PNG data URLs
+// Keyed by blueprint ID + panel name, generated once and reused for all designs
+export const cachedPanelImages = pgTable("cached_panel_images", {
+  id: serial("id").primaryKey(),
+  blueprintId: integer("blueprint_id").notNull(), // Printify blueprint ID (e.g., 1050 for leggings)
+  panelName: text("panel_name").notNull(), // e.g., "left_leg", "right_leg"
+  panelWidth: integer("panel_width").notNull(), // Rendered width in pixels
+  panelHeight: integer("panel_height").notNull(), // Rendered height in pixels
+  imageDataUrl: text("image_data_url").notNull(), // PNG as data URL
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertCachedPanelImageSchema = createInsertSchema(cachedPanelImages).omit({
+  id: true,
+  createdAt: true,
+});
+export type CachedPanelImage = typeof cachedPanelImages.$inferSelect;
+export type InsertCachedPanelImage = z.infer<typeof insertCachedPanelImageSchema>;
