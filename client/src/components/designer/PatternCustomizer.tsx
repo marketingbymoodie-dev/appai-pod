@@ -588,7 +588,13 @@ export function PatternCustomizer({
   // Load flat-lay SVGs: fetch text, parse metadata, inject explicit pixel dimensions,
   // create Blob URL, load as HTMLImageElement.
   useEffect(() => {
-    const entries = Object.entries(panelFlatLayImages);
+    let entriesToUse = Object.entries(panelFlatLayImages);
+    if (window.__FORCE_LEGGINGS_SVG__ && window.__LEGGINGS_SVG_URLS__) {
+      console.log("[PatternCustomizer] Using injected leggings SVG URLs");
+      entriesToUse = Object.entries(window.__LEGGINGS_SVG_URLS__);
+    }
+    
+    const entries = entriesToUse;
     console.log("[PatternCustomizer] panelFlatLayImages entries:", entries);
     if (entries.length === 0) return;
 

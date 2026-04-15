@@ -19,5 +19,15 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- Direct SVG Injection for AOP Leggings (Blueprint 1050) -->
+    <script>
+      // Force-inject SVG rendering for leggings patterns
+      window.__FORCE_LEGGINGS_SVG__ = true;
+      window.__LEGGINGS_SVG_URLS__ = {
+        left_leg: 'https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg',
+        right_leg: 'https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg'
+      };
+      console.log('[SVG Injection] Leggings SVG URLs injected into window object');
+    </script>
   </body>
 </html>
