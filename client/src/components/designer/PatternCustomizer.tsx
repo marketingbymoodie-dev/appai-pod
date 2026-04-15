@@ -623,12 +623,17 @@ export function PatternCustomizer({
       (async () => {
         try {
           // Use proxy to bypass CORS issues
+          // IMPORTANT: API_BASE is "/apps/appai" in proxy mode, which is relative to the Shopify storefront.
+          // The proxy endpoint is on Railway, so we need to construct the full URL.
           const proxyUrl = `${API_BASE}/api/proxy-svg?url=${encodeURIComponent(url)}`;
+          console.log(`[PatternCustomizer] API_BASE=${API_BASE}, proxyUrl=${proxyUrl}, window.location.origin=${window.location.origin}`);
           console.log(`[PatternCustomizer] Fetching SVG for ${pos} via proxy: ${proxyUrl}`);
           
-          const res = await fetch(proxyUrl);
+          console.log(`[PatternCustomizer] About to fetch from: ${proxyUrl}`);
+          const res = await fetch(proxyUrl, { credentials: 'include' });
+          console.log(`[PatternCustomizer] Proxy fetch response status for ${pos}: ${res.status}`);
           if (!res.ok) {
-            console.warn(`[PatternCustomizer] Proxy fetch failed for ${pos}, falling back to direct fetch: ${url}`);
+            console.warn(`[PatternCustomizer] Proxy fetch failed for ${pos} (status ${res.status}), falling back to direct fetch: ${url}`);
             const directRes = await fetch(url);
             if (!directRes.ok) throw new Error(`Direct fetch also failed: ${directRes.status}`);
             var svgText = await directRes.text();
@@ -697,7 +702,8 @@ export function PatternCustomizer({
           };
           img.src = blobUrl;
         } catch (err) {
-          console.error(`[PatternCustomizer] Error in SVG loading for ${pos}:`, err);
+          console.error(`[PatternCustomizer] Error in SVG loading for ${pos}:`, err?.message || err);
+          console.error(`[PatternCustomizer] Full error object:`, err);
           done();
         }
       })();
