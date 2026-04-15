@@ -632,7 +632,7 @@ export function PatternCustomizer({
           console.log(`[PatternCustomizer] Fetching SVG for ${pos} via proxy`);
           
           console.log(`[PatternCustomizer] About to fetch from: ${proxyUrl}`);
-          const res = await fetch(proxyUrl, { credentials: 'include' });
+          const res = await fetch(proxyUrl, { mode: 'no-cors', credentials: 'include' });
           console.log(`[PatternCustomizer] Proxy fetch response status for ${pos}: ${res.status}`);
           if (!res.ok) {
             console.warn(`[PatternCustomizer] Proxy fetch failed for ${pos} (status ${res.status}), falling back to direct fetch: ${url}`);
