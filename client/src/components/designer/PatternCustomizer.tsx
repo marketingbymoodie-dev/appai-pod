@@ -190,30 +190,37 @@ function drawPanelShape(
     ctx.bezierCurveTo(x + w - armW, y + armTop, x + w, y + armTop, x + w, y + shoulderH);
     ctx.closePath();
 
-  } else if (p === "left_leg") {
+  } else if (p === "left_leg" || p === "left_side") {
     // Left leg panel (left side of composite — inseam on RIGHT edge)
-    const waistW = w * 0.85;
-    const ankleW = w * 0.45;
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + waistW, y);
-    ctx.lineTo(x + w, y + h * 0.15);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w - ankleW, y + h);
-    ctx.lineTo(x, y + h);
-    ctx.lineTo(x, y + h * 0.15);
+    // Leggings have a curved waist, curved outer hip, and tapered leg.
+    const waistCurve = h * 0.05;
+    const hipCurve   = w * 0.15;
+    const kneeY      = h * 0.55;
+    const ankleW     = w * 0.45;
+    
+    ctx.moveTo(x + w * 0.1, y + waistCurve); // Start at waist-left
+    ctx.bezierCurveTo(x + w * 0.4, y, x + w * 0.7, y, x + w * 0.9, y + waistCurve); // Waist curve
+    ctx.lineTo(x + w, y + h * 0.15); // Down to crotch/inseam start
+    ctx.lineTo(x + w * 0.8, y + h); // Down inseam to ankle
+    ctx.lineTo(x + w * 0.8 - ankleW, y + h); // Across ankle
+    ctx.bezierCurveTo(x + w * 0.2, kneeY, x, y + h * 0.3, x, y + h * 0.15); // Outer leg curve (hip to ankle)
+    ctx.lineTo(x + w * 0.1, y + waistCurve);
     ctx.closePath();
 
-  } else if (p === "right_leg") {
+  } else if (p === "right_leg" || p === "right_side") {
     // Right leg panel (right side of composite — inseam on LEFT edge)
-    const waistW = w * 0.85;
-    const ankleW = w * 0.45;
-    ctx.moveTo(x + w, y);
-    ctx.lineTo(x + w - waistW, y);
-    ctx.lineTo(x, y + h * 0.15);
-    ctx.lineTo(x, y + h);
-    ctx.lineTo(x + ankleW, y + h);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x + w, y + h * 0.15);
+    const waistCurve = h * 0.05;
+    const hipCurve   = w * 0.15;
+    const kneeY      = h * 0.55;
+    const ankleW     = w * 0.45;
+    
+    ctx.moveTo(x + w * 0.9, y + waistCurve); // Start at waist-right
+    ctx.bezierCurveTo(x + w * 0.6, y, x + w * 0.3, y, x + w * 0.1, y + waistCurve); // Waist curve
+    ctx.lineTo(x, y + h * 0.15); // Down to crotch/inseam start
+    ctx.lineTo(x + w * 0.2, y + h); // Down inseam to ankle
+    ctx.lineTo(x + w * 0.2 + ankleW, y + h); // Across ankle
+    ctx.bezierCurveTo(x + w * 0.8, kneeY, x + w, y + h * 0.3, x + w, y + h * 0.15); // Outer leg curve
+    ctx.lineTo(x + w * 0.9, y + waistCurve);
     ctx.closePath();
 
   } else if (p === "back" || p === "back_side" || p === "backside") {
@@ -956,10 +963,9 @@ export function PatternCustomizer({
         const svgDrawSize = svgMeta.vbSize * svgScale;
         const drawX = sx - svgMeta.cbX * svgScale;
         const drawY = sy - svgMeta.cbY * svgScale;
-
         ctx.save();
-        ctx.beginPath();
-        ctx.rect(sx, sy, sw, sh);
+        // Use the actual garment shape for clipping
+        drawPanelShape(ctx, positionKey, sx, sy, sw, sh);
         ctx.clip();
 
         // Use an offscreen canvas so we can composite bgColor onto the garment shape
@@ -968,19 +974,23 @@ export function PatternCustomizer({
         const offH = Math.ceil(sh);
         const off = document.createElement("canvas");
         off.width = offW; off.height = offH;
-        const offCtx = off.getContext("2d")!;
-
-        // 1. Draw SVG into offscreen canvas (garment shape + sewing lines)
-        offCtx.drawImage(flatLayImg, drawX - sx, drawY - sy, svgDrawSize, svgDrawSize);
-
-        // 2. Replace garment fill with bgColor using source-in composite:
-        //    source-in keeps only pixels where destination (SVG) is opaque.
-        offCtx.globalCompositeOperation = "source-in";
-        offCtx.fillStyle = bgColor || "#ffffff";
-        offCtx.fillRect(0, 0, offW, offH);
-        offCtx.globalCompositeOperation = "source-over";
-
-        // 3. Draw artwork into offscreen canvas (clipped to garment shape via source-atop)
+        const octx = off.getContext("2d");
+        if (octx) {
+          // 1. Draw the SVG shape (the garment)
+          octx.drawImage(flatLayImg, drawX - sx, drawY - sy, svgDrawSize, svgDrawSize);
+          
+          // 2. Composite the background color onto the garment shape
+          if (bgColor) {
+            octx.globalCompositeOperation = "source-in";
+            octx.fillStyle = bgColor;
+            octx.fillRect(0, 0, offW, offH);
+            octx.globalCompositeOperation = "source-over";
+          }
+          
+          // 3. Draw the offscreen canvas to the main canvas
+          ctx.drawImage(off, sx, sy);
+        }
+        ctx.restore();p)
         if (currentViewHasArtwork) {
           offCtx.globalCompositeOperation = "source-atop";
           offCtx.globalAlpha = 0.9;
