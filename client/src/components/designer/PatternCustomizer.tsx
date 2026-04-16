@@ -170,52 +170,15 @@ function drawPanelShape(
     ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH);
     ctx.closePath();
 
-  } else if (p === "left_leg" || p === "left_side" || p === "right_leg" || p === "right_side") {
+  } else if (position.includes("leg") || position.includes("side")) {
     // Leggings: Use rectangular clipping to ensure perfect SVG alignment
     ctx.rect(x, y, w, h);
     ctx.closePath();
 
-  } else if (p === "back" || p === "back_side" || p === "backside") {
-    // Back panel: neckline at top-centre, shoulder slopes, armhole cutouts both sides
-    const neckDepth = h * 0.10;
-    const neckW     = w * 0.30;  // half-width of neckline
-    const shoulderH = h * 0.06;
-    const armW      = w * 0.12;
-    const armH      = h * 0.28;
-    const armTop    = h * 0.06;
-    ctx.beginPath();
-    ctx.moveTo(x, y + shoulderH);
-    ctx.lineTo(x + w / 2 - neckW, y);
-    ctx.bezierCurveTo(x + w / 2 - neckW * 0.3, y, x + w / 2, y + neckDepth, x + w / 2, y + neckDepth);
-    ctx.bezierCurveTo(x + w / 2, y + neckDepth, x + w / 2 + neckW * 0.3, y, x + w / 2 + neckW, y);
-    ctx.lineTo(x + w, y + shoulderH);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x, y + h);
-    // Left armhole cutout (going back up left side)
-    ctx.lineTo(x, y + armTop + armH);
-    ctx.bezierCurveTo(x, y + armTop + armH * 0.5, x + armW, y + armTop + armH * 0.3, x + armW, y + armTop + armH * 0.1);
-    ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH);
-    ctx.closePath();
-
-  } else if (p === "right_hood") {
-    // Right hood panel: arch shape, flat bottom, curved top, straight right side (seam)
-    // The right hood is the LEFT panel in the composite (seam on right edge)
-    ctx.moveTo(x, y + h);                                               // bottom-left
-    ctx.lineTo(x + w, y + h);                                           // bottom-right (seam)
-    ctx.lineTo(x + w, y + h * 0.15);                                    // right side up to arch start
-    ctx.bezierCurveTo(x + w, y, x + w * 0.7, y, x + w * 0.5, y);      // arch top-right
-    ctx.bezierCurveTo(x + w * 0.3, y, x, y, x, y + h * 0.15);         // arch top-left
-    ctx.lineTo(x, y + h);                                               // left side down
-    ctx.closePath();
-
-  } else if (p === "left_hood") {
-    // Left hood panel: mirror of right_hood (seam on left edge)
-    ctx.moveTo(x, y + h);                                               // bottom-left (seam)
-    ctx.lineTo(x + w, y + h);                                           // bottom-right
-    ctx.lineTo(x + w, y + h * 0.15);                                    // right side up
-    ctx.bezierCurveTo(x + w, y, x + w * 0.3, y, x + w * 0.5, y);      // arch top-right
-    ctx.bezierCurveTo(x + w * 0.7, y, x, y, x, y + h * 0.15);         // arch top-left
-    ctx.lineTo(x, y + h);                                               // left side down
+  } else if (position.includes("hood")) {
+    // Hood panels: arch shape
+    // Simplified for now, will need more precise paths for actual hood shapes
+    ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) / 2, 0, Math.PI * 2);
     ctx.closePath();
 
   } else {
@@ -740,6 +703,16 @@ export function PatternCustomizer({
                 />
               </div>
             </div>
+
+            <div className="flex gap-2 flex-col mt-auto">
+              <Button onClick={() => { handleApply(); setShowMockups(true); }} disabled={isLoading} className="w-full">
+                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Apply
+              </Button>
+              <Button onClick={onCancel} variant="outline" className="w-full">
+                Cancel
+              </Button>
+            </div>
           </div>
 
           {/* Right column: Product info and buttons */}
@@ -788,4 +761,3 @@ export function PatternCustomizer({
       )}
     </div>
   );
-}
