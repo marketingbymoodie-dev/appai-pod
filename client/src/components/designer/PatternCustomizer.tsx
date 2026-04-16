@@ -853,27 +853,24 @@ export function PatternCustomizer({
   }, [dragOffset]);
 
   return (
-    <div className="flex flex-col md:flex-row gap-4 p-4 max-w-full">
-      <div className="flex-1">
+    <div className="flex flex-col md:flex-row gap-4 p-4 w-full h-full overflow-hidden">
+      <div className="flex-1 min-h-0 md:min-h-auto flex flex-col">
         <canvas
           ref={canvasRef}
-          className="border border-gray-300 rounded w-full touch-none"
-          style={{ width: "100%", height: "auto", touchAction: "none" }}
+          className="border border-gray-300 rounded w-full flex-1 touch-none"
+          style={{ width: "100%", height: "100%", touchAction: "none", display: "block" }}
           onTouchStart={(e) => {
-            if (e.touches.length !== 1) return;
             const touch = e.touches[0];
             const rect = canvasRef.current?.getBoundingClientRect();
             if (!rect) return;
             const x = touch.clientX - rect.left;
             const y = touch.clientY - rect.top;
-            // Store for drag calculation
             (canvasRef.current as any).touchStartX = x;
             (canvasRef.current as any).touchStartY = y;
             (canvasRef.current as any).touchStartOffset = { ...dragOffset };
           }}
           onTouchMove={(e) => {
             if (e.touches.length !== 1) return;
-            e.preventDefault();
             const touch = e.touches[0];
             const rect = canvasRef.current?.getBoundingClientRect();
             if (!rect) return;
@@ -892,7 +889,7 @@ export function PatternCustomizer({
         />
       </div>
 
-      <div className="flex-1 space-y-4 md:max-w-xs">
+      <div className="flex-1 space-y-4 md:max-w-xs overflow-y-auto md:overflow-y-visible">
         <div>
           <Label>Mode</Label>
           <div className="flex gap-2">
@@ -941,27 +938,40 @@ export function PatternCustomizer({
             </div>
 
             <div className="flex items-center gap-2">
-              <Switch checked={mirrorMode} onCheckedChange={setMirrorMode} />
               <Label>Mirror Mode</Label>
+              <Switch 
+                checked={mirrorMode} 
+                onCheckedChange={(checked) => {
+                  setMirrorMode(checked);
+                  // When enabling mirror mode, sync both legs to have the same offset
+                  if (checked && activeLeg === "right") {
+                    // If right leg is active, copy its offset to left leg
+                    setDragOffset(dragOffset);
+                  }
+                }}
+                className="data-[state=checked]:bg-black"
+              />
             </div>
 
-            <div>
-              <Label>Active Leg</Label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setActiveLeg("left")}
-                  className={`px-3 py-1 rounded ${activeLeg === "left" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
-                >
-                  Left
-                </button>
-                <button
-                  onClick={() => setActiveLeg("right")}
-                  className={`px-3 py-1 rounded ${activeLeg === "right" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
-                >
-                  Right
-                </button>
+            {hasPairedPanels && (
+              <div>
+                <Label>Active Leg</Label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setActiveLeg("left")}
+                    className={`px-3 py-1 rounded ${activeLeg === "left" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                  >
+                    Left
+                  </button>
+                  <button
+                    onClick={() => setActiveLeg("right")}
+                    className={`px-3 py-1 rounded ${activeLeg === "right" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                  >
+                    Right
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </>
         )}
 
@@ -990,7 +1000,7 @@ export function PatternCustomizer({
           </div>
         </div>
 
-        <div className="flex gap-2 flex-col md:flex-row">
+        <div className="flex gap-2 flex-col md:flex-row mt-auto">
           <Button onClick={handleApply} disabled={isLoading} className="flex-1">
             {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Apply

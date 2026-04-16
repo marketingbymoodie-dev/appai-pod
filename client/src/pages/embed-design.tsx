@@ -994,6 +994,7 @@ export default function EmbedDesign() {
             placeholderPositions: dc.placeholderPositions || [],
             panelFlatLayImages: dc.panelFlatLayImages || {},
             colorLabel: dc.colorLabel || "Color",
+            printifyBlueprintId: dc.printifyBlueprintId,
           });
           if (dc.frameColors?.length > 0) {
             setSelectedFrameColor(dc.frameColors[0].id);
@@ -1123,6 +1124,7 @@ export default function EmbedDesign() {
             placeholderPositions: designerConfig.placeholderPositions || [],
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
+            printifyBlueprintId: designerConfig.printifyBlueprintId,
           });
 
           if (designerConfig.frameColors?.length > 0) {
