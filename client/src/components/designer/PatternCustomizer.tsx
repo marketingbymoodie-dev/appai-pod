@@ -714,11 +714,13 @@ export function PatternCustomizer({
     ctx.clip();
 
     // Draw SVG panel image (sew pattern) as background if available
-    if (svgImages && svgImages[slot.position]) {
-      console.log(`[PatternCustomizer] Drawing SVG for ${slot.position}`);
-      ctx.drawImage(svgImages[slot.position], slotX, slotY, slotW, slotH);
+    // Map the position to the SVG name (e.g., "left_side" -> "left_leg")
+    const svgName = mapPositionToSvgName(slot.position);
+    if (svgImages && svgImages[svgName]) {
+      console.log(`[PatternCustomizer] Drawing SVG for ${slot.position} (mapped to ${svgName})`);
+      ctx.drawImage(svgImages[svgName], slotX, slotY, slotW, slotH);
     } else {
-      console.warn(`[PatternCustomizer] SVG image not available for ${slot.position}`);
+      console.warn(`[PatternCustomizer] SVG image not available for ${slot.position} (mapped to ${svgName}). Available keys:`, Object.keys(svgImages || {}));
     }
 
     // Draw red border
@@ -814,16 +816,44 @@ export function PatternCustomizer({
     }
   };
 
-  // Add touch event handlers for mobile drag support
+  // Add mouse and touch drag support
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let dragStartOffset = { x: 0, y: 0 };
+
+    // Mouse events
+    const handleMouseDown = (e: MouseEvent) => {
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      dragStartOffset = { ...dragOffset };
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - dragStartX;
+      const deltaY = e.clientY - dragStartY;
+      setDragOffset({
+        x: dragStartOffset.x + deltaX,
+        y: dragStartOffset.y + deltaY,
+      });
+    };
+
+    const handleMouseUp = () => {
+      isDragging = false;
+    };
+
+    // Touch events
     let touchStartX = 0;
     let touchStartY = 0;
     let touchStartOffset = { x: 0, y: 0 };
 
-    const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const handleTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
       const touch = e.touches[0];
       touchStartX = touch.clientX;
@@ -831,9 +861,8 @@ export function PatternCustomizer({
       touchStartOffset = { ...dragOffset };
     };
 
-    const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    const handleTouchMove = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
-      e.preventDefault();
       const touch = e.touches[0];
       const deltaX = touch.clientX - touchStartX;
       const deltaY = touch.clientY - touchStartY;
@@ -843,53 +872,38 @@ export function PatternCustomizer({
       });
     };
 
-    canvas.addEventListener("touchstart" as any, handleTouchStart as any, { passive: true });
-    canvas.addEventListener("touchmove" as any, handleTouchMove as any, { passive: false });
+    canvas.addEventListener("mousedown", handleMouseDown);
+    canvas.addEventListener("mousemove", handleMouseMove);
+    canvas.addEventListener("mouseup", handleMouseUp);
+    canvas.addEventListener("mouseleave", handleMouseUp);
+    canvas.addEventListener("touchstart", handleTouchStart, { passive: true });
+    canvas.addEventListener("touchmove", handleTouchMove, { passive: true });
 
     return () => {
-      canvas.removeEventListener("touchstart" as any, handleTouchStart as any);
-      canvas.removeEventListener("touchmove" as any, handleTouchMove as any);
+      canvas.removeEventListener("mousedown", handleMouseDown);
+      canvas.removeEventListener("mousemove", handleMouseMove);
+      canvas.removeEventListener("mouseup", handleMouseUp);
+      canvas.removeEventListener("mouseleave", handleMouseUp);
+      canvas.removeEventListener("touchstart", handleTouchStart);
+      canvas.removeEventListener("touchmove", handleTouchMove);
     };
   }, [dragOffset]);
 
   return (
-    <div className="flex flex-col md:flex-row gap-4 p-4 w-full h-full overflow-hidden">
-      <div className="flex-1 min-h-0 md:min-h-auto flex flex-col">
-        <canvas
-          ref={canvasRef}
-          className="border border-gray-300 rounded w-full flex-1 touch-none"
-          style={{ width: "100%", height: "100%", touchAction: "none", display: "block" }}
-          onTouchStart={(e) => {
-            const touch = e.touches[0];
-            const rect = canvasRef.current?.getBoundingClientRect();
-            if (!rect) return;
-            const x = touch.clientX - rect.left;
-            const y = touch.clientY - rect.top;
-            (canvasRef.current as any).touchStartX = x;
-            (canvasRef.current as any).touchStartY = y;
-            (canvasRef.current as any).touchStartOffset = { ...dragOffset };
-          }}
-          onTouchMove={(e) => {
-            if (e.touches.length !== 1) return;
-            const touch = e.touches[0];
-            const rect = canvasRef.current?.getBoundingClientRect();
-            if (!rect) return;
-            const x = touch.clientX - rect.left;
-            const y = touch.clientY - rect.top;
-            const startX = (canvasRef.current as any).touchStartX || 0;
-            const startY = (canvasRef.current as any).touchStartY || 0;
-            const startOffset = (canvasRef.current as any).touchStartOffset || { x: 0, y: 0 };
-            const deltaX = x - startX;
-            const deltaY = y - startY;
-            setDragOffset({
-              x: startOffset.x + deltaX,
-              y: startOffset.y + deltaY,
-            });
-          }}
-        />
+    <div className="flex flex-col md:grid md:grid-cols-3 gap-4 p-4 w-full h-full">
+      {/* Left column: Artwork preview (square, above fold) */}
+      <div className="flex flex-col md:row-span-2">
+        <div className="aspect-square border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
+          <canvas
+            ref={canvasRef}
+            className="w-full h-full touch-none cursor-grab active:cursor-grabbing"
+            style={{ touchAction: "none", display: "block" }}
+          />
+        </div>
       </div>
 
-      <div className="flex-1 space-y-4 md:max-w-xs overflow-y-auto md:overflow-y-visible">
+      {/* Middle column: Controls */}
+      <div className="flex flex-col space-y-4 overflow-y-auto md:overflow-y-visible">
         <div>
           <Label>Mode</Label>
           <div className="flex gap-2">
@@ -925,7 +939,13 @@ export function PatternCustomizer({
 
             <div>
               <Label>Scale: {scale}</Label>
-              <Slider value={[scale]} onValueChange={v => setScale(v[0])} min={1} max={10} />
+              <Slider 
+                value={[scale]} 
+                onValueChange={v => setScale(v[0])} 
+                min={1} 
+                max={10}
+                className="[&_[role=slider]]:bg-black [&_[role=slider]]:border-2 [&_[role=slider]]:border-black"
+              />
             </div>
           </>
         )}
@@ -934,23 +954,30 @@ export function PatternCustomizer({
           <>
             <div>
               <Label>Seam Offset: {seamOffset}px</Label>
-              <Slider value={[seamOffset]} onValueChange={v => setSeamOffset(v[0])} min={0} max={200} />
+              <Slider 
+                value={[seamOffset]} 
+                onValueChange={v => setSeamOffset(v[0])} 
+                min={0} 
+                max={200}
+                className="[&_[role=slider]]:bg-black [&_[role=slider]]:border-2 [&_[role=slider]]:border-black"
+              />
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <Label>Mirror Mode</Label>
-              <Switch 
-                checked={mirrorMode} 
-                onCheckedChange={(checked) => {
-                  setMirrorMode(checked);
-                  // When enabling mirror mode, sync both legs to have the same offset
-                  if (checked && activeLeg === "right") {
-                    // If right leg is active, copy its offset to left leg
-                    setDragOffset(dragOffset);
-                  }
-                }}
-                className="data-[state=checked]:bg-black"
-              />
+              <div className="w-12 h-6 rounded-full border-2 border-black" style={{ backgroundColor: mirrorMode ? "#000" : "#f0f0f0" }}>
+                <button
+                  onClick={() => {
+                    setMirrorMode(!mirrorMode);
+                    if (!mirrorMode && activeLeg === "right") {
+                      setDragOffset(dragOffset);
+                    }
+                  }}
+                  className="w-full h-full flex items-center justify-center rounded-full"
+                >
+                  <div className="w-5 h-5 rounded-full bg-black border-2 border-black" />
+                </button>
+              </div>
             </div>
 
             {hasPairedPanels && (
@@ -1000,12 +1027,22 @@ export function PatternCustomizer({
           </div>
         </div>
 
-        <div className="flex gap-2 flex-col md:flex-row mt-auto">
-          <Button onClick={handleApply} disabled={isLoading} className="flex-1">
+      </div>
+
+      {/* Right column: Product preview and buttons */}
+      <div className="flex flex-col space-y-4 md:row-span-2">
+        <div className="flex-1 border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
+          {/* Placeholder for product mockup */}
+          <div className="text-gray-400 text-center">
+            <p className="text-sm">Product preview</p>
+          </div>
+        </div>
+        <div className="flex gap-2 flex-col">
+          <Button onClick={handleApply} disabled={isLoading} className="w-full">
             {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Apply
           </Button>
-          <Button onClick={onCancel} variant="outline" className="flex-1">
+          <Button onClick={onCancel} variant="outline" className="w-full">
             Cancel
           </Button>
         </div>
