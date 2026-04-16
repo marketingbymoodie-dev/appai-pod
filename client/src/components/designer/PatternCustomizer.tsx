@@ -601,13 +601,13 @@ export function PatternCustomizer({
   }, [dragOffset]);
 
   return (
-    <div className="w-full h-screen flex flex-col md:flex-row">
+    <div className="w-full">
       {!showMockups ? (
-        // 3-column layout: Pattern preview (left) | Controls (middle) | Product info (right)
-        <>
-          {/* Left column: Pattern preview - 1/3 width */}
-          <div className="w-full md:w-1/3 flex flex-col p-4 border-r border-gray-300 overflow-y-auto">
-            <div className="flex-1 border border-gray-300 rounded bg-gray-50 flex items-center justify-center min-h-96">
+        // 3-column layout: Pattern preview | Controls | Product info
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
+          {/* Left column: Pattern preview */}
+          <div className="flex flex-col">
+            <div className="aspect-square border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
               <canvas
                 ref={canvasRef}
                 className="w-full h-full touch-none cursor-grab active:cursor-grabbing"
@@ -616,8 +616,8 @@ export function PatternCustomizer({
             </div>
           </div>
 
-          {/* Middle column: Controls - 1/3 width */}
-          <div className="w-full md:w-1/3 flex flex-col space-y-4 p-4 border-r border-gray-300 overflow-y-auto">
+          {/* Middle column: Controls */}
+          <div className="flex flex-col space-y-4 overflow-y-auto">
             <div>
               <Label>Mode</Label>
               <div className="flex gap-2">
@@ -625,7 +625,7 @@ export function PatternCustomizer({
                   <button
                     key={m}
                     onClick={() => setMode(m)}
-                    className={`px-3 py-1 rounded text-sm ${mode === m ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                    className={`px-3 py-1 rounded ${mode === m ? "bg-blue-500 text-white" : "bg-gray-200"}`}
                   >
                     {m}
                   </button>
@@ -700,13 +700,13 @@ export function PatternCustomizer({
                     <div className="flex gap-2">
                       <button
                         onClick={() => setActiveLeg("left")}
-                        className={`px-3 py-1 rounded text-sm ${activeLeg === "left" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                        className={`px-3 py-1 rounded ${activeLeg === "left" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
                       >
                         Left
                       </button>
                       <button
                         onClick={() => setActiveLeg("right")}
-                        className={`px-3 py-1 rounded text-sm ${activeLeg === "right" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                        className={`px-3 py-1 rounded ${activeLeg === "right" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
                       >
                         Right
                       </button>
@@ -740,8 +740,14 @@ export function PatternCustomizer({
                 />
               </div>
             </div>
+          </div>
 
-            <div className="flex gap-2 flex-col mt-auto">
+          {/* Right column: Product info and buttons */}
+          <div className="flex flex-col space-y-4">
+            <div className="border border-gray-300 rounded p-4 bg-gray-50">
+              <p className="text-sm text-gray-600">Product preview</p>
+            </div>
+            <div className="flex gap-2 flex-col">
               <Button onClick={() => { handleApply(); setShowMockups(true); }} disabled={isLoading} className="w-full">
                 {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Apply
@@ -751,20 +757,12 @@ export function PatternCustomizer({
               </Button>
             </div>
           </div>
-
-          {/* Right column: Product info - 1/3 width */}
-          <div className="w-full md:w-1/3 flex flex-col space-y-4 p-4 overflow-y-auto">
-            <div className="border border-gray-300 rounded p-4 bg-gray-50">
-              <h3 className="font-semibold mb-2">Product</h3>
-              <p className="text-sm text-gray-600">Product preview</p>
-            </div>
-          </div>
-        </>
+        </div>
       ) : (
         // 2-column layout: Processing mockups | Product info
-        <>
-          {/* Left column: Processing/Mockups - 2/3 width */}
-          <div className="w-full md:w-2/3 flex flex-col space-y-4 p-4 border-r border-gray-300 overflow-y-auto">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
+          {/* Left column: Processing/Mockups */}
+          <div className="flex flex-col space-y-4">
             <div className="border border-gray-300 rounded p-4 bg-gray-50 flex items-center justify-center min-h-96">
               {isLoading ? (
                 <div className="text-center">
@@ -777,17 +775,16 @@ export function PatternCustomizer({
             </div>
           </div>
 
-          {/* Right column: Product info - 1/3 width */}
-          <div className="w-full md:w-1/3 flex flex-col space-y-4 p-4 overflow-y-auto">
+          {/* Right column: Product info */}
+          <div className="flex flex-col space-y-4">
             <div className="border border-gray-300 rounded p-4 bg-gray-50">
-              <h3 className="font-semibold mb-2">Product</h3>
               <p className="text-sm text-gray-600">Product details</p>
             </div>
             <Button onClick={() => setShowMockups(false)} variant="outline" className="w-full">
               Back to Editor
             </Button>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
