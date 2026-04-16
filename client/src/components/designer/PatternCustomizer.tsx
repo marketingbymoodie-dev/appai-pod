@@ -814,17 +814,85 @@ export function PatternCustomizer({
     }
   };
 
+  // Add touch event handlers for mobile drag support
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchStartOffset = { x: 0, y: 0 };
+
+    const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchStartOffset = { ...dragOffset };
+    };
+
+    const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      const deltaX = touch.clientX - touchStartX;
+      const deltaY = touch.clientY - touchStartY;
+      setDragOffset({
+        x: touchStartOffset.x + deltaX,
+        y: touchStartOffset.y + deltaY,
+      });
+    };
+
+    canvas.addEventListener("touchstart" as any, handleTouchStart as any, { passive: true });
+    canvas.addEventListener("touchmove" as any, handleTouchMove as any, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("touchstart" as any, handleTouchStart as any);
+      canvas.removeEventListener("touchmove" as any, handleTouchMove as any);
+    };
+  }, [dragOffset]);
+
   return (
-    <div className="flex gap-4 p-4">
+    <div className="flex flex-col md:flex-row gap-4 p-4 max-w-full">
       <div className="flex-1">
         <canvas
           ref={canvasRef}
-          className="border border-gray-300 rounded"
-          style={{ width: "100%", height: "auto" }}
+          className="border border-gray-300 rounded w-full touch-none"
+          style={{ width: "100%", height: "auto", touchAction: "none" }}
+          onTouchStart={(e) => {
+            if (e.touches.length !== 1) return;
+            const touch = e.touches[0];
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const x = touch.clientX - rect.left;
+            const y = touch.clientY - rect.top;
+            // Store for drag calculation
+            (canvasRef.current as any).touchStartX = x;
+            (canvasRef.current as any).touchStartY = y;
+            (canvasRef.current as any).touchStartOffset = { ...dragOffset };
+          }}
+          onTouchMove={(e) => {
+            if (e.touches.length !== 1) return;
+            e.preventDefault();
+            const touch = e.touches[0];
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            const x = touch.clientX - rect.left;
+            const y = touch.clientY - rect.top;
+            const startX = (canvasRef.current as any).touchStartX || 0;
+            const startY = (canvasRef.current as any).touchStartY || 0;
+            const startOffset = (canvasRef.current as any).touchStartOffset || { x: 0, y: 0 };
+            const deltaX = x - startX;
+            const deltaY = y - startY;
+            setDragOffset({
+              x: startOffset.x + deltaX,
+              y: startOffset.y + deltaY,
+            });
+          }}
         />
       </div>
 
-      <div className="flex-1 space-y-4">
+      <div className="flex-1 space-y-4 md:max-w-xs">
         <div>
           <Label>Mode</Label>
           <div className="flex gap-2">
@@ -899,26 +967,35 @@ export function PatternCustomizer({
 
         <div>
           <Label>Background</Label>
-          <Select value={bgColor === "" ? "transparent" : bgColor} onValueChange={v => setBgColor(v === "transparent" ? "" : v)}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select background" />
-            </SelectTrigger>
-            <SelectContent>
-              {BG_PRESETS.map(preset => (
-                <SelectItem key={preset.value} value={preset.value}>
-                  {preset.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex gap-2 items-center">
+            <Select value={bgColor === "" ? "transparent" : bgColor} onValueChange={v => setBgColor(v === "transparent" ? "" : v)}>
+              <SelectTrigger className="flex-1">
+                <SelectValue placeholder="Select background" />
+              </SelectTrigger>
+              <SelectContent>
+                {BG_PRESETS.map(preset => (
+                  <SelectItem key={preset.value} value={preset.value}>
+                    {preset.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <input
+              type="color"
+              value={bgColor === "" ? "#ffffff" : bgColor}
+              onChange={(e) => setBgColor(e.target.value)}
+              className="w-12 h-10 rounded cursor-pointer border border-gray-300"
+              title="Custom color picker"
+            />
+          </div>
         </div>
 
-        <div className="flex gap-2">
-          <Button onClick={handleApply} disabled={isLoading}>
+        <div className="flex gap-2 flex-col md:flex-row">
+          <Button onClick={handleApply} disabled={isLoading} className="flex-1">
             {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Apply
           </Button>
-          <Button onClick={onCancel} variant="outline">
+          <Button onClick={onCancel} variant="outline" className="flex-1">
             Cancel
           </Button>
         </div>
