@@ -890,10 +890,10 @@ export function PatternCustomizer({
   }, [dragOffset]);
 
   return (
-    <div className="flex flex-col md:grid md:grid-cols-3 gap-4 p-4 w-full h-full">
-      {/* Left column: Artwork preview (square, above fold) */}
-      <div className="flex flex-col md:row-span-2">
-        <div className="aspect-square border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
+    <div className="fixed inset-0 bg-white z-50 flex flex-col md:grid md:grid-cols-3 gap-0">
+      {/* Left column: Pattern preview */}
+      <div className="flex flex-col border-r border-gray-300 p-4 overflow-hidden md:row-span-2">
+        <div className="flex-1 border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
           <canvas
             ref={canvasRef}
             className="w-full h-full touch-none cursor-grab active:cursor-grabbing"
@@ -903,7 +903,7 @@ export function PatternCustomizer({
       </div>
 
       {/* Middle column: Controls */}
-      <div className="flex flex-col space-y-4 overflow-y-auto md:overflow-y-visible">
+      <div className="flex flex-col border-r border-gray-300 p-4 overflow-y-auto md:overflow-y-auto">
         <div>
           <Label>Mode</Label>
           <div className="flex gap-2">
@@ -1030,8 +1030,8 @@ export function PatternCustomizer({
       </div>
 
       {/* Right column: Product preview and buttons */}
-      <div className="flex flex-col space-y-4 md:row-span-2">
-        <div className="flex-1 border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
+      <div className="flex flex-col p-4 overflow-y-auto md:row-span-2">
+        <div className="flex-1 border border-gray-300 rounded bg-gray-50 flex items-center justify-center mb-4">
           {/* Placeholder for product mockup */}
           <div className="text-gray-400 text-center">
             <p className="text-sm">Product preview</p>
