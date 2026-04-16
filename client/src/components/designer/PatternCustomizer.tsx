@@ -432,16 +432,14 @@ export function PatternCustomizer({
               }
             }
             
-            // Try to find the SVG in the injected content
-            const svgElement = document.querySelector(`svg[data-panel="${svgPanelName}"]`);
-            if (svgElement) {
-              const svgString = new XMLSerializer().serializeToString(svgElement);
-              const blob = new Blob([svgString], { type: "image/svg+xml" });
-              const url = URL.createObjectURL(blob);
+            // Try to load from panelFlatLayImages URLs (passed as prop)
+            const svgUrl = panelFlatLayImages?.[svgPanelName];
+            if (svgUrl) {
+              console.log(`[PatternCustomizer] Loading SVG from URL for ${svgPanelName}: ${svgUrl}`);
               const img = new Image();
               img.crossOrigin = "anonymous";
               img.onload = () => {
-                console.log(`[PatternCustomizer] SVG loaded for ${position}`);
+                console.log(`[PatternCustomizer] SVG loaded from URL for ${position}`);
                 svgMap[position] = img;
                 setPanelSvgImages(prev => ({ ...prev, [position]: img }));
                 
@@ -450,10 +448,10 @@ export function PatternCustomizer({
                   cacheRenderedPanel(blueprintId, svgPanelName, img);
                 }
               };
-              img.onerror = () => console.error(`[PatternCustomizer] Failed to load SVG image for ${position}`);
-              img.src = url;
+              img.onerror = () => console.error(`[PatternCustomizer] Failed to load SVG from URL for ${position}: ${svgUrl}`);
+              img.src = svgUrl;
             } else {
-              console.warn(`[PatternCustomizer] SVG element not found for panel "${svgPanelName}"`);
+              console.warn(`[PatternCustomizer] No SVG URL found for panel "${svgPanelName}"`);
             }
           } catch (e) {
             console.error(`[PatternCustomizer] Failed to load SVG for ${position}:`, e);
@@ -463,7 +461,7 @@ export function PatternCustomizer({
     };
     
     loadPanelSvgs();
-  }, [panelPositions, productTypeConfig, config]);
+  }, [panelPositions, panelFlatLayImages, productTypeConfig, config]);
 
   // Helper to cache a rendered panel image
   const cacheRenderedPanel = async (blueprintId: number, panelName: string, img: HTMLImageElement) => {
@@ -532,7 +530,7 @@ export function PatternCustomizer({
         drawPlaceOnItemPreview(ctx, motifImage);
       }
     }
-  }, [motifImage, panelSvgImages, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg, panelPositions, hasPairedPanels]);
+  }, [motifImage, panelSvgImages, mode, patternType, scale, bgColor, dragOffset, mirrorMode, activeLeg, panelPositions, hasPairedPanels, panelFlatLayImages]);
 
   // Notify parent of settings changes
   useEffect(() => {
