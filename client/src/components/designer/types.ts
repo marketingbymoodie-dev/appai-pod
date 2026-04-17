@@ -48,6 +48,23 @@ export interface ImageTransform {
   y: number;
 }
 
+/** Per-panel artwork placement transform (stored in preview-canvas pixel space). */
+export interface PanelTransform {
+  dxPx: number;     // horizontal drag offset in preview-canvas pixels
+  dyPx: number;     // vertical drag offset in preview-canvas pixels
+  scalePct: number; // additional scale factor (100 = no change)
+}
+
+/** Persistent AOP placement state passed between PatternCustomizer sessions. */
+export interface AopPlacementSettings {
+  perPanelTransforms: Record<string, PanelTransform>;
+  activePanel: string | null;
+  mirrorMode: boolean;
+  seamBleedPx: number;
+  activeLeg?: string; // legacy compat
+  dragOffset?: { x: number; y: number }; // legacy compat
+}
+
 export interface LifestyleMockupConfig {
   src: string;
   frameArea: {
@@ -88,6 +105,8 @@ export interface ProductDesignerConfig {
   doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;
   placeholderPositions?: { position: string; width: number; height: number }[];
+  /** Map of panel position name → SVG URL for the sew-pattern flat-lay viewer. */
+  panelFlatLayImages?: Record<string, string>;
 }
 
 export interface DesignerState {

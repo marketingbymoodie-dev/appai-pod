@@ -1,8 +1,6 @@
 /**
  * PatternCustomizer — AOP pattern/placement tool.
  *
- * Rendered as a solid overlay on top of the product canvas (absolute inset-0).
- *
  * Layout: tight 2-column grid
  *   Left  (40%) — motif thumbnail + live pattern preview canvas
  *   Right (60%) — all controls stacked compactly
@@ -10,28 +8,19 @@
  * Four modes:
  *   • Pattern      — client-side Canvas tiling (instant, no server call)
  *   • Single Image — client-side Canvas placement with drag support
- *   • Place on Item — drag artwork onto a flat composite view of the garment panels;
- *                     the system crops the correct portion to each panel automatically.
- *                     Accent panels (sleeves, hood, cuffs, pockets, waistband) get a
- *                     user-chosen solid colour.
+ *   • Place on Item — drag artwork onto each sew panel independently;
+ *                     center-snap guides (dashed), per-panel drag/scale,
+ *                     mirror toggle to copy placement across paired panels.
  *
- * Background removal is an optional separate step (dedicated button).
- * "Apply" is the only server call — generates the final high-res output.
- *
- * Preview model (Pattern mode):
- *   The preview canvas is a fixed 6×6 inch viewport into the final print.
- *   The SCALE slider (1–10) controls how many tiles appear across that 6-inch window.
- *     scale=1  → 1 tile fills the 6-inch window (large motif)
- *     scale=10 → 10 tiles across the 6-inch window (small, dense pattern)
+ * Hoodie front panels get seam bleed (artwork overlaps across the zip seam).
+ * Hood and back panels are rendered in separate "view" tabs.
  */
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { API_BASE } from "@/lib/urlBase";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Loader2, LayoutGrid, ImageIcon, RotateCcw, Move } from "lucide-react";
-import { Switch } from "@/components/ui/switch";
+import { Loader2 } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -39,14 +28,32 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { PanelTransform, AopPlacementSettings } from "./types";
+
+// ── Public types ──────────────────────────────────────────────────────────────
 
 export type PatternType = "grid" | "brick" | "half";
 export type EditorMode = "pattern" | "single" | "place";
 
+export interface PatternApplyOptions {
+  panelUrls?: { position: string; dataUrl: string }[];
+  mirrorLegs?: boolean;
+  seamOffset?: number;
+  mode?: EditorMode;
+  patternType?: PatternType;
+  tilesAcross?: number;
+  bgColor?: string;
+  perPanelTransforms?: Record<string, PanelTransform>;
+}
+
+export type { AopPlacementSettings };
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
 const PATTERN_OPTIONS = [
-  { value: "grid"  as PatternType, label: "Grid",        desc: "Straight repeat" },
-  { value: "brick" as PatternType, label: "Brick offset", desc: "Rows offset 50%" },
-  { value: "half"  as PatternType, label: "Half-drop",   desc: "Cols offset 50%" },
+  { value: "grid"  as PatternType, label: "Grid",         desc: "Straight repeat" },
+  { value: "brick" as PatternType, label: "Brick offset",  desc: "Rows offset 50%" },
+  { value: "half"  as PatternType, label: "Half-drop",    desc: "Cols offset 50%" },
 ];
 
 const BG_PRESETS = [
@@ -61,12 +68,9 @@ const BG_PRESETS = [
 ];
 
 /** Logical pixel size of the preview canvas element */
-const PREVIEW_PX = 200;
+const PREVIEW_PX = 280;
 
-/**
- * Fixed viewport size in inches shown in the preview.
- * The slider value = number of tiles visible across this window.
- */
+/** Fixed viewport size in inches shown in the preview. */
 const PREVIEW_INCHES = 6;
 
 /** Printify DPI for AOP panels */
@@ -77,183 +81,212 @@ const PRINT_DPI = 150;
  * Each split panel (front_right, front_left, right_hood, left_hood) gets this many
  * extra pixels of artwork past the seam edge so the artwork remains continuous
  * across the sewn seam even with slight manufacturing misalignment.
- * The user can adjust this via the "Seam offset" slider in Place on Item mode.
  */
-const DEFAULT_SEAM_BLEED_PX = 70; // 70 px — tested on zip hoodie, best split across zipper
+const DEFAULT_SEAM_BLEED_PX = 70;
 
-/**
- * Snap threshold in CSS pixels — if artwork centre is within this distance
- * of a snap point, snap to it.
- */
-const SNAP_THRESHOLD_CSS = 8;
+/** Snap threshold in CSS pixels — snaps when artwork centre is within this distance. */
+const SNAP_THRESHOLD_PX = 10;
 
-// ── SVG content source rects ─────────────────────────────────────────────────
-//
-// Each Printify sew-pattern SVG has a square viewBox, but the actual panel
-// shape is offset within it. These rects define the exact sub-region of each
-// SVG that contains the panel artwork, so we can use the 9-argument drawImage
-// to crop it precisely and map it to the slot without any distortion or gaps.
-//
-// Verified by parsing the `color_background` rect from each SVG file.
-// The aspect ratios match Printify's print dimensions exactly (within 0.01%).
-//
-// Special case: left_hood has a rotate(-180) transform in the SVG, meaning
-// its content is upside-down. We flip it during canvas rendering.
-//
-const SVG_SOURCE_RECTS: Record<string, { x: number; y: number; w: number; h: number }> = {
-  "left_leg":       { x: 0,     y: 0,     w: 1000, h: 1500 },
-  "right_leg":      { x: 0,     y: 0,     w: 1000, h: 1500 },
-  "front_left_leg": { x: 0,     y: 0,     w: 1000, h: 1500 },
-  "front_right_leg":{ x: 0,     y: 0,     w: 1000, h: 1500 },
-  "back_left_leg":  { x: 0,     y: 0,     w: 1000, h: 1500 },
-  "back_right_leg": { x: 0,     y: 0,     w: 1000, h: 1500 },
-};
+// ── Panel geometry helpers ────────────────────────────────────────────────────
 
-/**
- * Map position names to SVG names.
- * Printify uses "left_side" / "right_side" in the API, but SVGs are named "left_leg" / "right_leg".
- */
-function mapPositionToSvgName(position: string): string {
-  const lower = position.toLowerCase();
-  if (lower.includes("left_side") || lower === "left_side") return "left_leg";
-  if (lower.includes("right_side") || lower === "right_side") return "right_leg";
-  if (lower.includes("front_left")) return "front_left_leg";
-  if (lower.includes("front_right")) return "front_right_leg";
-  if (lower.includes("back_left")) return "back_left_leg";
-  if (lower.includes("back_right")) return "back_right_leg";
-  return position;
+interface PanelSlot { position: string; x: number; y: number; w: number; h: number }
+
+function detectProductKind(
+  panels: Array<{ position: string }>
+): "hoodie" | "leggings" | "generic" {
+  const p = panels.map(x => x.position.toLowerCase());
+  if (p.some(x => x.includes("hood") || x.includes("front_") || x.includes("back_"))) return "hoodie";
+  if (p.some(x => x.includes("_side") || x.includes("_leg"))) return "leggings";
+  return "generic";
 }
 
-/**
- * Determine which composite view (front/back/hood) a panel belongs to.
- */
 function getPanelGroup(position: string): "front" | "back" | "hood" {
-  const lower = position.toLowerCase();
-  if (lower.includes("hood")) return "hood";
-  if (lower.includes("back")) return "back";
+  const l = position.toLowerCase();
+  if (l.includes("hood")) return "hood";
+  if (l.includes("back")) return "back";
   return "front";
 }
 
 /**
- * Draw the clipped shape for a panel on the canvas.
- * For leggings, this is a simple rectangle.
- * For hoodies, this includes curved neckline and armholes.
+ * Which panels are seam-pairs for hoodie-type products?  Returns [leftPos, rightPos].
+ * Only hoodie-style products have composite seam panels (front_left/front_right, etc.).
+ * Leggings left_side/right_side are independent and must NOT be paired here.
  */
-function drawPanelShape(
-  ctx: CanvasRenderingContext2D,
-  position: string,
-  x: number,
-  y: number,
-  w: number,
-  h: number
-) {
-  ctx.beginPath();
+function getSeamPairs(
+  panels: Array<{ position: string }>
+): Array<[string, string]> {
+  const pairs: Array<[string, string]> = [];
+  // Only pair positions that explicitly have a sub-group prefix (e.g., "front_left", "left_hood")
+  // Leggings use "left_side" / "right_side" which do NOT have a common group prefix like "front_"
+  const SEAM_PREFIXES = ["front_left", "front_right", "left_hood", "right_hood",
+                         "back_left", "back_right", "left_back", "right_back"];
+  const isSeamCandidate = (pos: string) =>
+    SEAM_PREFIXES.some(pfx => pos.toLowerCase().startsWith(pfx));
 
-  if (position === "front" || position === "back") {
-    // Front/back panel: neckline at top-centre, shoulder slopes, armhole cutouts both sides
-    const neckDepth = h * 0.10;
-    const neckW     = w * 0.30;  // half-width of neckline
-    const shoulderH = h * 0.06;
-    const armW      = w * 0.12;
-    const armH      = h * 0.28;
-    const armTop    = h * 0.06;
-    ctx.moveTo(x, y + shoulderH);
-    ctx.lineTo(x + w / 2 - neckW, y);
-    ctx.bezierCurveTo(x + w / 2 - neckW * 0.3, y, x + w / 2, y + neckDepth, x + w / 2, y + neckDepth);
-    ctx.bezierCurveTo(x + w / 2, y + neckDepth, x + w / 2 + neckW * 0.3, y, x + w / 2 + neckW, y);
-    ctx.lineTo(x + w, y + shoulderH);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x, y + h);
-    // Left armhole cutout (going back up left side)
-    ctx.lineTo(x, y + armTop + armH);
-    ctx.bezierCurveTo(x, y + armTop + armH * 0.5, x + armW, y + armTop + armH * 0.3, x + armW, y + armTop + armH * 0.1);
-    ctx.bezierCurveTo(x + armW, y + armTop, x, y + armTop, x, y + shoulderH);
-    ctx.closePath();
-
-  } else if (position.includes("leg") || position.includes("side")) {
-    // Leggings: Use rectangular clipping to ensure perfect SVG alignment
-    ctx.rect(x, y, w, h);
-    ctx.closePath();
-
-  } else if (position.includes("hood")) {
-    // Hood panels: arch shape
-    // Simplified for now, will need more precise paths for actual hood shapes
-    ctx.arc(x + w / 2, y + h / 2, Math.min(w, h) / 2, 0, Math.PI * 2);
-    ctx.closePath();
-
-  } else {
-    // Default: rectangular clip
-    ctx.rect(x, y, w, h);
-    ctx.closePath();
+  const seamPanels = panels.filter(p => isSeamCandidate(p.position));
+  const groups = ["front", "hood", "back"] as const;
+  for (const g of groups) {
+    const left  = seamPanels.find(p => getPanelGroup(p.position) === g && p.position.toLowerCase().includes("left"));
+    const right = seamPanels.find(p => getPanelGroup(p.position) === g && p.position.toLowerCase().includes("right"));
+    if (left && right) pairs.push([left.position, right.position]);
   }
+  return pairs;
 }
-
-// ── Composite layout builder ─────────────────────────────────────────────────
-
-interface PanelSlot { position: string; x: number; y: number; w: number; h: number }
 
 /**
  * Build the flat composite layout for a given view.
- * Returns: { compositeW, compositeH, slots }
+ * Front view: right panel first (seam at centre), left panel second.
  */
 function buildCompositeLayout(
   view: "front" | "back" | "hood",
   panels: Array<{ position: string; width: number; height: number }>
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   const viewPanels = panels.filter(p => getPanelGroup(p.position) === view);
-  if (viewPanels.length === 0) {
-    return { compositeW: 0, compositeH: 0, slots: [] };
-  }
+  if (viewPanels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
 
   const maxH = Math.max(...viewPanels.map(p => p.height));
 
-  // For back view, "left" panel goes first (standard left-to-right reading order).
   const sorted = [...viewPanels].sort((a, b) => {
-    const aIsLeft = a.position.toLowerCase().includes("left");
-    const bIsLeft = b.position.toLowerCase().includes("left");
-    if (view === "front" || view === "hood") {
-      // right panel first (left side of composite = seam in centre)
-      return aIsLeft ? 1 : -1;
-    } else {
-      // back: left panel first
-      return aIsLeft ? -1 : 1;
-    }
+    const aLeft = a.position.toLowerCase().includes("left");
+    const bLeft = b.position.toLowerCase().includes("left");
+    // front & hood: right first (seam at centre); back: left first
+    if (view === "back") return aLeft ? -1 : 1;
+    return aLeft ? 1 : -1;
   });
 
+  const GAP = 40;
   let x = 0;
   const slots: PanelSlot[] = [];
   for (const p of sorted) {
     slots.push({ position: p.position, x, y: 0, w: p.width, h: p.height });
-    x += p.width + 40; // 40px gap
+    x += p.width + GAP;
   }
-
-  return {
-    compositeW: x - 40,
-    compositeH: maxH,
-    slots,
-  };
+  return { compositeW: x - GAP, compositeH: maxH, slots };
 }
 
-/**
- * Build a separate layout for leggings with each leg as an independent panel.
- * Returns: { leftLeg, rightLeg, gap }
- */
+/** Build leggings side-by-side layout. */
 function buildLeggingsLayout(
   panels: Array<{ position: string; width: number; height: number }>
 ): { leftLeg: PanelSlot | null; rightLeg: PanelSlot | null; gap: number } {
-  const leftPanel = panels.find(p => p.position.toLowerCase().includes("left"));
+  const leftPanel  = panels.find(p => p.position.toLowerCase().includes("left"));
   const rightPanel = panels.find(p => p.position.toLowerCase().includes("right"));
-
-  const gap = 40; // Gap between legs in pixels
-
+  const gap = 40;
   return {
-    leftLeg: leftPanel ? { position: leftPanel.position, x: 0, y: 0, w: leftPanel.width, h: leftPanel.height } : null,
-    rightLeg: rightPanel ? { position: rightPanel.position, x: leftPanel ? leftPanel.width + gap : 0, y: 0, w: rightPanel.width, h: rightPanel.height } : null,
+    leftLeg:  leftPanel  ? { position: leftPanel.position,  x: 0,                       y: 0, w: leftPanel.width,  h: leftPanel.height  } : null,
+    rightLeg: rightPanel ? { position: rightPanel.position, x: (leftPanel?.width || 0) + gap, y: 0, w: rightPanel.width, h: rightPanel.height } : null,
     gap,
   };
 }
 
-// ── Main PatternCustomizer component ─────────────────────────────────────────
+// ── Canvas draw helpers ───────────────────────────────────────────────────────
+
+/**
+ * Draw the artwork (motif) into a slot according to a PanelTransform.
+ * Also handles mirror-X for mirrored panels.
+ */
+function drawArtworkInSlot(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  slotX: number,
+  slotY: number,
+  slotW: number,
+  slotH: number,
+  transform: PanelTransform,
+  mirrorX = false,
+) {
+  const scaleFactor = (transform.scalePct / 100);
+  const baseScale = Math.min(slotW / img.width, slotH / img.height) * scaleFactor;
+  const w = img.width  * baseScale;
+  const h = img.height * baseScale;
+  // Centre of artwork in slot (before user offset)
+  const cx = slotX + slotW / 2 + transform.dxPx;
+  const cy = slotY + slotH / 2 + transform.dyPx;
+  const x = cx - w / 2;
+  const y = cy - h / 2;
+
+  ctx.save();
+  if (mirrorX) {
+    ctx.translate(slotX + slotW / 2, 0);
+    ctx.scale(-1, 1);
+    ctx.translate(-(slotX + slotW / 2), 0);
+  }
+  ctx.drawImage(img, x, y, w, h);
+  ctx.restore();
+}
+
+/** Draw the SVG sew-pattern shape as a background (or clip mask). */
+function drawSvgBackground(
+  ctx: CanvasRenderingContext2D,
+  svgImages: Record<string, HTMLImageElement>,
+  position: string,
+  slotX: number, slotY: number, slotW: number, slotH: number,
+) {
+  const svgName = mapPositionToSvgName(position);
+  const svgImg  = svgImages[svgName] || svgImages[position];
+  if (svgImg) {
+    ctx.drawImage(svgImg, slotX, slotY, slotW, slotH);
+  }
+}
+
+/** Draw center snap guides (dashed cross) for the active panel slot. */
+function drawSnapGuides(
+  ctx: CanvasRenderingContext2D,
+  slotX: number, slotY: number, slotW: number, slotH: number,
+) {
+  const cx = slotX + slotW / 2;
+  const cy = slotY + slotH / 2;
+  ctx.save();
+  ctx.strokeStyle = "rgba(0,120,255,0.7)";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5, 4]);
+  // Vertical centre
+  ctx.beginPath(); ctx.moveTo(cx, slotY); ctx.lineTo(cx, slotY + slotH); ctx.stroke();
+  // Horizontal centre
+  ctx.beginPath(); ctx.moveTo(slotX, cy); ctx.lineTo(slotX + slotW, cy); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/** Highlight active panel with a thin coloured border. */
+function drawActiveBorder(
+  ctx: CanvasRenderingContext2D,
+  slotX: number, slotY: number, slotW: number, slotH: number,
+  active: boolean,
+) {
+  ctx.save();
+  ctx.strokeStyle = active ? "rgba(0,120,255,0.85)" : "rgba(0,0,0,0.2)";
+  ctx.lineWidth = active ? 2 : 1;
+  ctx.setLineDash(active ? [] : [4, 4]);
+  ctx.strokeRect(slotX + 1, slotY + 1, slotW - 2, slotH - 2);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function mapPositionToSvgName(position: string): string {
+  const l = position.toLowerCase();
+  if (l === "left_side"  || l.includes("left_side"))  return "left_leg";
+  if (l === "right_side" || l.includes("right_side")) return "right_leg";
+  if (l.includes("front_left"))  return "front_left_leg";
+  if (l.includes("front_right")) return "front_right_leg";
+  if (l.includes("back_left"))   return "back_left_leg";
+  if (l.includes("back_right"))  return "back_right_leg";
+  return position;
+}
+
+// ── Snap helper ───────────────────────────────────────────────────────────────
+
+/**
+ * Given raw drag deltas and slot dimensions, apply centre-snap if the artwork
+ * centre would land within SNAP_THRESHOLD_PX of the slot centre.
+ * Returns the (possibly snapped) dx/dy values.
+ */
+function applySnap(dxPx: number, dyPx: number): { dxPx: number; dyPx: number } {
+  const snappedX = Math.abs(dxPx) < SNAP_THRESHOLD_PX ? 0 : dxPx;
+  const snappedY = Math.abs(dyPx) < SNAP_THRESHOLD_PX ? 0 : dyPx;
+  return { dxPx: snappedX, dyPx: snappedY };
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 interface PatternCustomizerProps {
   motifUrl: string;
@@ -262,24 +295,23 @@ interface PatternCustomizerProps {
   hasPairedPanels?: boolean;
   panelPositions?: Array<{ position: string; width: number; height: number }>;
   panelFlatLayImages?: Record<string, string>;
-  fetchFn?: (url: string, options?: any) => Promise<Response>;
+  fetchFn?: (url: string, options?: RequestInit) => Promise<Response>;
   initialTilesAcross?: number;
   initialPattern?: PatternType;
   initialBgColor?: string;
-  onSettingsChange?: (settings: any) => void;
-  initialPlacement?: any;
-  onPlacementChange?: (placement: any) => void;
-  onApply: (result: any, options?: any) => void | Promise<void>;
-  onCancel: () => void;
-  productTypeConfig?: any; // Legacy prop, kept for backward compatibility
+  onSettingsChange?: (settings: PatternApplyOptions) => void;
+  initialPlacement?: AopPlacementSettings;
+  onPlacementChange?: (placement: AopPlacementSettings) => void;
+  onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
+  onCancel?: () => void;
+  isLoading?: boolean;
+  productTypeConfig?: { placeholderPositions?: Array<{ position: string; width: number; height: number }> };
 }
 
 export function PatternCustomizer({
   motifUrl,
-  productWidth,
-  productHeight,
   hasPairedPanels,
-  panelPositions,
+  panelPositions: panelPositionsProp,
   panelFlatLayImages,
   fetchFn,
   initialTilesAcross,
@@ -290,474 +322,794 @@ export function PatternCustomizer({
   onPlacementChange,
   onApply,
   onCancel,
+  isLoading: externalLoading,
   productTypeConfig,
 }: PatternCustomizerProps) {
-  // Use panelPositions as productTypeConfig for backward compatibility
-  const config = productTypeConfig || { placeholderPositions: panelPositions || [] };
-  const [mode, setMode] = useState<EditorMode>(initialPattern ? "pattern" : "pattern");
+  // Resolve panel positions from either direct prop or productTypeConfig
+  const panelPositions = panelPositionsProp || productTypeConfig?.placeholderPositions || [];
+
+  // ── Local state ────────────────────────────────────────────────────────────
+
+  const [mode, setMode] = useState<EditorMode>("pattern");
   const [patternType, setPatternType] = useState<PatternType>(initialPattern || "grid");
   const [scale, setScale] = useState(initialTilesAcross || 5);
   const [bgColor, setBgColor] = useState(initialBgColor || "");
-  const [isLoading, setIsLoading] = useState(false);
+  const [applyLoading, setApplyLoading] = useState(false);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [motifImage, setMotifImage] = useState<HTMLImageElement | null>(null);
-  const [panelSvgImages, setPanelSvgImages] = useState<{ [key: string]: HTMLImageElement }>({});
-  const [dragOffset, setDragOffset] = useState(initialPlacement?.dragOffset || { x: 0, y: 0 });
-  const [seamOffset, setSeamOffset] = useState(initialPlacement?.seamOffset || DEFAULT_SEAM_BLEED_PX);
-  const [mirrorMode, setMirrorMode] = useState(initialPlacement?.mirrorMode || false);
-  const [activeLeg, setActiveLeg] = useState<"left" | "right">(initialPlacement?.activeLeg || "right");
-  const [showMockups, setShowMockups] = useState(false);
+  const [svgImages, setSvgImages]   = useState<Record<string, HTMLImageElement>>({});
 
-  // Load motif image
+  // Per-panel placement transforms
+  const [perPanelTransforms, setPerPanelTransforms] = useState<Record<string, PanelTransform>>(
+    initialPlacement?.perPanelTransforms || {}
+  );
+  const [activePanel, setActivePanel] = useState<string | null>(
+    initialPlacement?.activePanel || null
+  );
+  const [mirrorMode, setMirrorMode] = useState(initialPlacement?.mirrorMode ?? false);
+  const [seamBleedPx, setSeamBleedPx] = useState(
+    initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
+  );
+
+  // Active view for hoodie (front / back / hood)
+  const [activeView, setActiveView] = useState<"front" | "back" | "hood">("front");
+
+  const productKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
+
+  // ── Image loading ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => setMotifImage(img);
-    img.onerror = () => console.error("Failed to load motif image");
+    img.onload  = () => setMotifImage(img);
+    img.onerror = () => console.error("[PatternCustomizer] Failed to load motif image");
     img.src = motifUrl;
   }, [motifUrl]);
 
-  // Load SVG panel images from panelFlatLayImages
+  const [svgLoadErrors, setSvgLoadErrors] = useState<string[]>([]);
+
   useEffect(() => {
-    if (!panelFlatLayImages) return;
-
-    const loadSvgImages = async () => {
-      const images: { [key: string]: HTMLImageElement } = {};
-      for (const [name, url] of Object.entries(panelFlatLayImages)) {
-        try {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          await new Promise((resolve, reject) => {
-            img.onload = resolve;
-            img.onerror = reject;
-            img.src = url;
-          });
-          images[name] = img;
-          console.log(`[PatternCustomizer] Loaded SVG: ${name}`);
-        } catch (err) {
-          console.warn(`[PatternCustomizer] Failed to load SVG ${name}:`, err);
+    if (!panelFlatLayImages || Object.keys(panelFlatLayImages).length === 0) return;
+    const loaded: Record<string, HTMLImageElement> = {};
+    const errors: string[] = [];
+    let pending = Object.keys(panelFlatLayImages).length;
+    for (const [name, url] of Object.entries(panelFlatLayImages)) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        loaded[name] = img;
+        pending--;
+        if (pending === 0) {
+          setSvgImages({ ...loaded });
+          if (errors.length > 0) setSvgLoadErrors(errors);
         }
-      }
-      setPanelSvgImages(images);
-    };
-
-    loadSvgImages();
+      };
+      img.onerror = () => {
+        console.warn(`[PatternCustomizer] SVG load failed for position "${name}": ${url.substring(0, 80)}`);
+        errors.push(name);
+        pending--;
+        if (pending === 0) {
+          setSvgImages({ ...loaded });
+          setSvgLoadErrors(errors);
+        }
+      };
+      img.src = url;
+    }
   }, [panelFlatLayImages]);
 
-  // Draw the preview on canvas
+  // Initialise panel transforms when positions become available
+  useEffect(() => {
+    if (panelPositions.length === 0) return;
+    setPerPanelTransforms(prev => {
+      const next = { ...prev };
+      for (const p of panelPositions) {
+        if (!next[p.position]) {
+          next[p.position] = { dxPx: 0, dyPx: 0, scalePct: 100 };
+        }
+      }
+      return next;
+    });
+    if (!activePanel) {
+      // Leggings default: right leg. Hoodie default: front_right (the primary seam panel).
+      const right = panelPositions.find(p => {
+        const l = p.position.toLowerCase();
+        return l.includes("right") && !l.includes("back");
+      });
+      setActivePanel(right?.position || panelPositions[0]?.position || null);
+    }
+  }, [panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Preview canvas render ──────────────────────────────────────────────────
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !motifImage) return;
-
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = PREVIEW_PX;
+    canvas.width  = PREVIEW_PX;
     canvas.height = PREVIEW_PX;
 
-    // Clear canvas
-    ctx.fillStyle = bgColor || "transparent";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, PREVIEW_PX, PREVIEW_PX);
+    if (bgColor && bgColor !== "transparent") {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, PREVIEW_PX, PREVIEW_PX);
+    }
 
     if (mode === "pattern") {
-      // Draw tiled pattern
-      const tileSize = (PREVIEW_INCHES * 96) / scale; // 96 DPI for screen
-      for (let row = 0; row < Math.ceil(PREVIEW_PX / tileSize) + 1; row++) {
-        for (let col = 0; col < Math.ceil(PREVIEW_PX / tileSize) + 1; col++) {
-          const x = col * tileSize;
-          const y = row * tileSize;
-          ctx.drawImage(motifImage, x, y, tileSize, tileSize);
+      const tileSize = (PREVIEW_INCHES * 96) / scale;
+      for (let row = -1; row < Math.ceil(PREVIEW_PX / tileSize) + 1; row++) {
+        for (let col = -1; col < Math.ceil(PREVIEW_PX / tileSize) + 1; col++) {
+          ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
         }
       }
-    } else if (mode === "place" && hasPairedPanels && panelPositions) {
-      // Draw leggings preview
-      const layout = buildLeggingsLayout(panelPositions);
-      const scale = Math.min(PREVIEW_PX / (layout.leftLeg?.w || 100 + layout.gap + layout.rightLeg?.w || 100), 1);
-      const offsetX = (PREVIEW_PX - ((layout.leftLeg?.w || 0) + layout.gap + (layout.rightLeg?.w || 0)) * scale) / 2;
-      const offsetY = (PREVIEW_PX - ((layout.leftLeg?.h || 0) * scale)) / 2;
-
-      if (layout.leftLeg) drawLegPanel(ctx, layout.leftLeg, offsetX, offsetY, scale, motifImage, "left", panelSvgImages);
-      if (layout.rightLeg) drawLegPanel(ctx, layout.rightLeg, offsetX, offsetY, scale, motifImage, "right", panelSvgImages);
+    } else if (mode === "place" && panelPositions.length > 0) {
+      renderPanelPreview(ctx, motifImage);
     }
-  }, [mode, scale, bgColor, motifImage, panelPositions, hasPairedPanels, dragOffset, mirrorMode, activeLeg, panelSvgImages]);
+  }, [mode, scale, bgColor, motifImage, panelPositions, perPanelTransforms, activePanel, mirrorMode, svgImages, activeView]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const drawLegPanel = (
-    ctx: CanvasRenderingContext2D,
-    slot: PanelSlot,
-    offsetX: number,
-    offsetY: number,
-    scale: number,
-    img: HTMLImageElement,
-    legSide: "left" | "right",
-    svgImages?: { [key: string]: HTMLImageElement }
-  ) => {
-    const slotX = offsetX + slot.x * scale;
-    const slotY = offsetY + slot.y * scale;
-    const slotW = slot.w * scale;
-    const slotH = slot.h * scale;
+  const renderPanelPreview = useCallback(
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
+      if (productKind === "hoodie") {
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+        if (compositeW === 0) return;
+        const scl = Math.min((PREVIEW_PX - 20) / compositeW, (PREVIEW_PX - 20) / compositeH, 1);
+        const offX = (PREVIEW_PX - compositeW * scl) / 2;
+        const offY = (PREVIEW_PX - compositeH * scl) / 2;
 
-    // Draw panel shape
-    ctx.save();
-    drawPanelShape(ctx, slot.position, slotX, slotY, slotW, slotH);
-    ctx.clip();
+        for (const slot of slots) {
+          const sx = offX + slot.x * scl;
+          const sy = offY + slot.y * scl;
+          const sw = slot.w * scl;
+          const sh = slot.h * scl;
 
-    // Draw SVG panel image (sew pattern) as background if available
-    // Map the position to the SVG name (e.g., "left_side" -> "left_leg")
-    const svgName = mapPositionToSvgName(slot.position);
-    if (svgImages && svgImages[svgName]) {
-      console.log(`[PatternCustomizer] Drawing SVG for ${slot.position} (mapped to ${svgName})`);
-      ctx.drawImage(svgImages[svgName], slotX, slotY, slotW, slotH);
-    } else {
-      console.warn(`[PatternCustomizer] SVG image not available for ${slot.position} (mapped to ${svgName}). Available keys:`, Object.keys(svgImages || {}));
-    }
+          // Background (SVG sew pattern)
+          ctx.save();
+          ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
+          drawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
 
-    // Draw red border
-    ctx.strokeStyle = "#ff0000";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(slotX, slotY, slotW, slotH);
+          // Artwork: determine if this panel is the mirror target
+          const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+          const mirrorTarget = mirrorMode && isMirrorTarget(slot.position, slots);
+          const sourcePos    = mirrorTarget ? getMirrorSource(slot.position, slots) : null;
+          const effectiveT   = sourcePos ? (perPanelTransforms[sourcePos] || t) : t;
 
-    // Determine which drag offset to use
-    const currentDragOffset = activeLeg === legSide ? dragOffset : { x: 0, y: 0 };
+          drawArtworkInSlot(ctx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
+          ctx.restore();
 
-    // Draw motif image
-    const scale2 = Math.min(slotW / img.width, slotH / img.height);
-    const w = img.width * scale2;
-    const h = img.height * scale2;
-    const x = slotX + (slotW - w) / 2 + currentDragOffset.x;
-    const y = slotY + (slotH - h) / 2 + currentDragOffset.y;
+          drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
+          if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
+        }
 
-    // Mirror left leg if needed
-    if (legSide === "left" && mirrorMode) {
-      ctx.save();
-      ctx.translate(slotX + slotW / 2, 0);
-      ctx.scale(-1, 1);
-      ctx.translate(-(slotX + slotW / 2), 0);
-      ctx.drawImage(img, x, y, w, h);
-      ctx.restore();
-    } else {
-      ctx.drawImage(img, x, y, w, h);
-    }
+        // Seam centre indicator between paired panels
+        if (slots.length === 2) {
+          const right = slots[0]; const left = slots[1];
+          const seamX = offX + (right.x + right.w) * scl + (left.x - right.x - right.w) * scl / 2;
+          ctx.save();
+          ctx.strokeStyle = "rgba(255,80,80,0.6)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath(); ctx.moveTo(seamX, offY); ctx.lineTo(seamX, offY + compositeH * scl); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      } else {
+        // Leggings (or generic paired panels)
+        const { leftLeg, rightLeg, gap } = buildLeggingsLayout(panelPositions);
+        const totalW = (leftLeg?.w || 0) + gap + (rightLeg?.w || 0);
+        const totalH = Math.max(leftLeg?.h || 0, rightLeg?.h || 0);
+        if (totalW === 0) return;
+        const scl  = Math.min((PREVIEW_PX - 20) / totalW, (PREVIEW_PX - 20) / totalH, 1);
+        const offX = (PREVIEW_PX - totalW * scl) / 2;
+        const offY = (PREVIEW_PX - totalH * scl) / 2;
 
-    ctx.restore();
-  };
+        for (const leg of [rightLeg, leftLeg]) {
+          if (!leg) continue;
+          const sx = offX + leg.x * scl;
+          const sy = offY + leg.y * scl;
+          const sw = leg.w * scl;
+          const sh = leg.h * scl;
 
-  const drawSnapGuides = (
-    ctx: CanvasRenderingContext2D,
-    layout: any,
-    offsetX: number,
-    offsetY: number,
-    scale: number,
-    svgImages?: { [key: string]: HTMLImageElement }
-  ) => {
-    // Draw vertical centerline (seam)
-    ctx.strokeStyle = "#ff0000";
-    ctx.setLineDash([5, 5]);
-    ctx.lineWidth = 1;
-    const centerX = offsetX + (layout.leftLeg?.w || 0) * scale + layout.gap * scale / 2;
-    ctx.beginPath();
-    ctx.moveTo(centerX, offsetY);
-    ctx.lineTo(centerX, offsetY + (layout.leftLeg?.h || 0) * scale);
-    ctx.stroke();
+          ctx.save();
+          ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
+          drawSvgBackground(ctx, svgImages, leg.position, sx, sy, sw, sh);
 
-    // Draw horizontal crotch line
-    const crotchY = offsetY + (layout.leftLeg?.h || 0) * scale * 0.7;
-    ctx.beginPath();
-    ctx.moveTo(offsetX, crotchY);
-    ctx.lineTo(offsetX + ((layout.leftLeg?.w || 0) + layout.gap + (layout.rightLeg?.w || 0)) * scale, crotchY);
-    ctx.stroke();
+          const t = perPanelTransforms[leg.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+          const isLeft = leg.position.toLowerCase().includes("left");
+          const doMirror = mirrorMode && isLeft;
+          const effectiveT = doMirror
+            ? (perPanelTransforms[rightLeg?.position || ""] || t)
+            : t;
 
-    ctx.setLineDash([]);
-  };
+          drawArtworkInSlot(ctx, img, sx, sy, sw, sh, effectiveT, doMirror);
+          ctx.restore();
 
-  const handleApply = async () => {
-    setIsLoading(true);
-    try {
-      const result = {
-        mode,
-        patternType,
-        scale,
-        bgColor,
-        dragOffset,
-        seamOffset,
-        mirrorMode,
-        activeLeg,
-      };
-      await onApply(result);
-    } catch (err) {
-      console.error("Apply failed:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+          drawActiveBorder(ctx, sx, sy, sw, sh, leg.position === activePanel);
+          if (leg.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
+        }
+      }
+    },
+    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode]
+  );
 
-  // Add mouse and touch drag support
+  // ── Mirror helpers ─────────────────────────────────────────────────────────
+
+  function isMirrorTarget(pos: string, slots: PanelSlot[]): boolean {
+    if (!mirrorMode) return false;
+    const l = pos.toLowerCase();
+    return l.includes("left");
+  }
+
+  function getMirrorSource(pos: string, slots: PanelSlot[]): string | null {
+    const source = slots.find(s => {
+      const sl = s.position.toLowerCase();
+      const pl = pos.toLowerCase();
+      // Match same group (front/hood/back) but opposite side
+      const sameGroup = (sl.includes("front") && pl.includes("front")) ||
+                        (sl.includes("hood")  && pl.includes("hood"))  ||
+                        (sl.includes("back")  && pl.includes("back"));
+      return sameGroup && sl.includes("right");
+    });
+    return source?.position || null;
+  }
+
+  // ── Drag handling ──────────────────────────────────────────────────────────
+
+  // We track drag in canvas pixel space and translate to preview-canvas offsets.
+  const dragRef = useRef<{
+    active: boolean;
+    startClientX: number;
+    startClientY: number;
+    startDx: number;
+    startDy: number;
+    panel: string;
+  }>({ active: false, startClientX: 0, startClientY: 0, startDx: 0, startDy: 0, panel: "" });
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    let isDragging = false;
-    let dragStartX = 0;
-    let dragStartY = 0;
-    let dragStartOffset = { x: 0, y: 0 };
-
-    // Mouse events
-    const handleMouseDown = (e: MouseEvent) => {
-      isDragging = true;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      dragStartOffset = { ...dragOffset };
+    const onMouseDown = (e: MouseEvent) => {
+      if (!activePanel || mode !== "place") return;
+      const t = perPanelTransforms[activePanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+      dragRef.current = {
+        active: true,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startDx: t.dxPx,
+        startDy: t.dyPx,
+        panel: activePanel,
+      };
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const deltaX = e.clientX - dragStartX;
-      const deltaY = e.clientY - dragStartY;
-      setDragOffset({
-        x: dragStartOffset.x + deltaX,
-        y: dragStartOffset.y + deltaY,
-      });
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragRef.current.active) return;
+      const rawDx = dragRef.current.startDx + (e.clientX - dragRef.current.startClientX);
+      const rawDy = dragRef.current.startDy + (e.clientY - dragRef.current.startClientY);
+      const { dxPx, dyPx } = applySnap(rawDx, rawDy);
+      updatePanelTransform(dragRef.current.panel, { dxPx, dyPx });
     };
 
-    const handleMouseUp = () => {
-      isDragging = false;
-    };
+    const onMouseUp = () => { dragRef.current.active = false; };
 
-    // Touch events
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let touchStartOffset = { x: 0, y: 0 };
-
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
+    const onTouchStart = (e: TouchEvent) => {
+      if (!activePanel || mode !== "place" || e.touches.length !== 1) return;
+      const t = perPanelTransforms[activePanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
       const touch = e.touches[0];
-      touchStartX = touch.clientX;
-      touchStartY = touch.clientY;
-      touchStartOffset = { ...dragOffset };
+      dragRef.current = {
+        active: true,
+        startClientX: touch.clientX,
+        startClientY: touch.clientY,
+        startDx: t.dxPx,
+        startDy: t.dyPx,
+        panel: activePanel,
+      };
     };
 
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
+    const onTouchMove = (e: TouchEvent) => {
+      if (!dragRef.current.active || e.touches.length !== 1) return;
       const touch = e.touches[0];
-      const deltaX = touch.clientX - touchStartX;
-      const deltaY = touch.clientY - touchStartY;
-      setDragOffset({
-        x: touchStartOffset.x + deltaX,
-        y: touchStartOffset.y + deltaY,
-      });
+      const rawDx = dragRef.current.startDx + (touch.clientX - dragRef.current.startClientX);
+      const rawDy = dragRef.current.startDy + (touch.clientY - dragRef.current.startClientY);
+      const { dxPx, dyPx } = applySnap(rawDx, rawDy);
+      updatePanelTransform(dragRef.current.panel, { dxPx, dyPx });
     };
 
-    canvas.addEventListener("mousedown", handleMouseDown);
-    canvas.addEventListener("mousemove", handleMouseMove);
-    canvas.addEventListener("mouseup", handleMouseUp);
-    canvas.addEventListener("mouseleave", handleMouseUp);
-    canvas.addEventListener("touchstart", handleTouchStart, { passive: true });
-    canvas.addEventListener("touchmove", handleTouchMove, { passive: true });
+    canvas.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup",   onMouseUp);
+    canvas.addEventListener("touchstart", onTouchStart, { passive: true });
+    canvas.addEventListener("touchmove",  onTouchMove,  { passive: false });
+    window.addEventListener("touchend",   onMouseUp);
 
     return () => {
-      canvas.removeEventListener("mousedown", handleMouseDown);
-      canvas.removeEventListener("mousemove", handleMouseMove);
-      canvas.removeEventListener("mouseup", handleMouseUp);
-      canvas.removeEventListener("mouseleave", handleMouseUp);
-      canvas.removeEventListener("touchstart", handleTouchStart);
-      canvas.removeEventListener("touchmove", handleTouchMove);
+      canvas.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup",   onMouseUp);
+      canvas.removeEventListener("touchstart", onTouchStart);
+      canvas.removeEventListener("touchmove",  onTouchMove);
+      window.removeEventListener("touchend",   onMouseUp);
     };
-  }, [dragOffset]);
+  }, [activePanel, mode, perPanelTransforms]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updatePanelTransform = useCallback(
+    (position: string, partial: Partial<PanelTransform>) => {
+      setPerPanelTransforms(prev => ({
+        ...prev,
+        [position]: { ...(prev[position] || { dxPx: 0, dyPx: 0, scalePct: 100 }), ...partial },
+      }));
+    },
+    []
+  );
+
+  // Notify parent of placement changes
+  useEffect(() => {
+    if (!onPlacementChange) return;
+    onPlacementChange({ perPanelTransforms, activePanel, mirrorMode, seamBleedPx });
+  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Full-res panel export ──────────────────────────────────────────────────
+
+  /**
+   * Render a single panel to a full-resolution canvas and return its dataUrl.
+   * Used for non-seam panels (back, hood, leggings).
+   * dxPx/dyPx are stored in preview-canvas pixel space; upscaled to print-pixel space here.
+   */
+  async function exportPanelImage(
+    pos: { position: string; width: number; height: number },
+    img: HTMLImageElement,
+  ): Promise<string> {
+    const canvas = document.createElement("canvas");
+    canvas.width  = pos.width;
+    canvas.height = pos.height;
+    const ctx = canvas.getContext("2d")!;
+
+    if (bgColor && bgColor !== "transparent") {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, pos.width, pos.height);
+    }
+
+    const t = perPanelTransforms[pos.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+
+    // Compute upscale factor: preview slot width → print width
+    let previewSlotW = PREVIEW_PX;
+    if (productKind === "hoodie") {
+      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
+      if (layout.compositeW > 0) {
+        const scl = Math.min((PREVIEW_PX - 20) / layout.compositeW, (PREVIEW_PX - 20) / layout.compositeH, 1);
+        const found = layout.slots.find(s => s.position === pos.position);
+        if (found) previewSlotW = found.w * scl;
+      }
+    } else {
+      const { leftLeg, rightLeg, gap } = buildLeggingsLayout(panelPositions);
+      const totalW = (leftLeg?.w || 0) + gap + (rightLeg?.w || 0);
+      const totalH = Math.max(leftLeg?.h || 0, rightLeg?.h || 0);
+      if (totalW > 0) {
+        const scl = Math.min((PREVIEW_PX - 20) / totalW, (PREVIEW_PX - 20) / totalH, 1);
+        previewSlotW = pos.width * scl;
+      }
+    }
+    const upscale = pos.width / (previewSlotW || pos.width);
+
+    const printT: PanelTransform = {
+      dxPx:     t.dxPx * upscale,
+      dyPx:     t.dyPx * upscale,
+      scalePct: t.scalePct,
+    };
+
+    // Draw SVG background if available
+    const svgName = mapPositionToSvgName(pos.position);
+    const svgImg  = svgImages[svgName] || svgImages[pos.position];
+    if (svgImg) ctx.drawImage(svgImg, 0, 0, pos.width, pos.height);
+
+    drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
+
+    return canvas.toDataURL("image/png");
+  }
+
+  // ── Apply handler ──────────────────────────────────────────────────────────
+
+  const handleApply = useCallback(async () => {
+    if (!motifImage) return;
+    setApplyLoading(true);
+    try {
+      if (mode !== "place" || panelPositions.length === 0) {
+        // Pattern mode — generate a tiled raster image at reasonable resolution
+        // and pass it as the patternUrl so all AOP panels use the tiled version.
+        const TILE_OUT = 1200;
+        const canvas = document.createElement("canvas");
+        canvas.width  = TILE_OUT;
+        canvas.height = TILE_OUT;
+        const ctx = canvas.getContext("2d")!;
+        if (bgColor && bgColor !== "transparent") {
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
+        }
+        const tileSize = Math.round(TILE_OUT / scale);
+        for (let row = -1; row < Math.ceil(TILE_OUT / tileSize) + 1; row++) {
+          for (let col = -1; col < Math.ceil(TILE_OUT / tileSize) + 1; col++) {
+            ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
+          }
+        }
+        const tiledDataUrl = canvas.toDataURL("image/png");
+        await onApply(tiledDataUrl, {
+          mode,
+          patternType,
+          tilesAcross: scale,
+          bgColor,
+          perPanelTransforms,
+        });
+        return;
+      }
+
+      // Place on Item mode — generate full-res per-panel images
+      const panelUrls: { position: string; dataUrl: string }[] = [];
+      const seamPairs = getSeamPairs(panelPositions);
+
+      // Track which positions are handled by composite export
+      const compositeCovered = new Set<string>();
+
+      // Seam-pair panels: render as a single composite then crop each side.
+      // This guarantees artwork continuity across the seam with no pixel offset.
+      for (const [leftPos, rightPos] of seamPairs) {
+        const rightDef = panelPositions.find(p => p.position === rightPos);
+        const leftDef  = panelPositions.find(p => p.position === leftPos);
+        if (!rightDef || !leftDef) continue;
+
+        const compositeW = rightDef.width + leftDef.width;
+        const compositeH = Math.max(rightDef.height, leftDef.height);
+
+        // Compute upscale from preview-canvas pixels to print pixels
+        const view = getPanelGroup(rightPos);
+        const layout = buildCompositeLayout(view, panelPositions);
+        const layoutScl = layout.compositeW > 0
+          ? Math.min((PREVIEW_PX - 20) / layout.compositeW, (PREVIEW_PX - 20) / layout.compositeH, 1)
+          : 1;
+        const rightPreviewSlotW = rightDef.width * layoutScl;
+        const upscale = rightDef.width / (rightPreviewSlotW || rightDef.width);
+
+        // Use the right panel transform scaled to print space
+        const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+        const printT: PanelTransform = {
+          dxPx: tRight.dxPx * upscale,
+          dyPx: tRight.dyPx * upscale,
+          scalePct: tRight.scalePct,
+        };
+
+        // Render composite canvas
+        const compositeCanvas = document.createElement("canvas");
+        compositeCanvas.width  = compositeW;
+        compositeCanvas.height = compositeH;
+        const ctx = compositeCanvas.getContext("2d")!;
+        if (bgColor && bgColor !== "transparent") {
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(0, 0, compositeW, compositeH);
+        }
+
+        // Draw SVG sew-pattern backgrounds
+        const rightSvgImg = svgImages[mapPositionToSvgName(rightPos)] || svgImages[rightPos];
+        const leftSvgImg  = svgImages[mapPositionToSvgName(leftPos)]  || svgImages[leftPos];
+        if (rightSvgImg) ctx.drawImage(rightSvgImg, 0,              0, rightDef.width, rightDef.height);
+        if (leftSvgImg)  ctx.drawImage(leftSvgImg,  rightDef.width, 0, leftDef.width,  leftDef.height);
+
+        // Draw artwork in the full composite (ensures seam-edge continuity)
+        drawArtworkInSlot(ctx, motifImage, 0, 0, compositeW, compositeH, printT, false);
+
+        // Crop right panel canvas
+        const cropRight = document.createElement("canvas");
+        cropRight.width  = rightDef.width;
+        cropRight.height = rightDef.height;
+        cropRight.getContext("2d")!.drawImage(compositeCanvas,
+          0, 0, rightDef.width, rightDef.height,
+          0, 0, rightDef.width, rightDef.height
+        );
+        panelUrls.push({ position: rightPos, dataUrl: cropRight.toDataURL("image/png") });
+
+        // Crop left panel canvas (or mirror-flipped if mirrorMode is on)
+        const cropLeft = document.createElement("canvas");
+        cropLeft.width  = leftDef.width;
+        cropLeft.height = leftDef.height;
+        const ctxL = cropLeft.getContext("2d")!;
+        if (mirrorMode) {
+          // Mirror left from the composite right-panel crop
+          ctxL.save();
+          ctxL.translate(leftDef.width, 0);
+          ctxL.scale(-1, 1);
+          ctxL.drawImage(compositeCanvas,
+            0, 0, leftDef.width, leftDef.height,
+            0, 0, leftDef.width, leftDef.height
+          );
+          ctxL.restore();
+        } else {
+          ctxL.drawImage(compositeCanvas,
+            rightDef.width, 0, leftDef.width, leftDef.height,
+            0,              0, leftDef.width, leftDef.height
+          );
+        }
+        panelUrls.push({ position: leftPos, dataUrl: cropLeft.toDataURL("image/png") });
+
+        compositeCovered.add(rightPos);
+        compositeCovered.add(leftPos);
+      }
+
+      // Remaining panels: independent per-panel export
+      // For leggings mirror mode: left leg mirrors the right leg's artwork
+      for (const p of panelPositions) {
+        if (compositeCovered.has(p.position)) continue;
+
+        const isLeft = p.position.toLowerCase().includes("left");
+        const isLeggings = productKind === "leggings";
+        const doMirror = mirrorMode && isLeggings && isLeft;
+
+        if (doMirror) {
+          // Find the paired right panel
+          const rightPanel = panelPositions.find(q => {
+            const ql = q.position.toLowerCase();
+            return ql.includes("right") &&
+              (ql.includes("side") || ql.includes("leg")) &&
+              !compositeCovered.has(q.position);
+          });
+          if (rightPanel) {
+            // Render the right panel normally
+            const rightDataUrl = await exportPanelImage(rightPanel, motifImage);
+            // Mirror it for the left panel
+            const mirrorCanvas = document.createElement("canvas");
+            mirrorCanvas.width  = p.width;
+            mirrorCanvas.height = p.height;
+            const mCtx = mirrorCanvas.getContext("2d")!;
+            const srcImg = new Image();
+            await new Promise<void>(resolve => {
+              srcImg.onload = () => resolve();
+              srcImg.src = rightDataUrl;
+            });
+            mCtx.save();
+            mCtx.translate(p.width, 0);
+            mCtx.scale(-1, 1);
+            mCtx.drawImage(srcImg, 0, 0, p.width, p.height);
+            mCtx.restore();
+            panelUrls.push({ position: p.position, dataUrl: mirrorCanvas.toDataURL("image/png") });
+            continue;
+          }
+        }
+
+        const dataUrl = await exportPanelImage(p, motifImage);
+        panelUrls.push({ position: p.position, dataUrl });
+      }
+
+      await onApply(motifUrl, {
+        mode,
+        panelUrls,
+        mirrorLegs: mirrorMode,
+        seamOffset: seamBleedPx,
+        perPanelTransforms,
+      });
+    } catch (err) {
+      console.error("[PatternCustomizer] Apply failed:", err);
+    } finally {
+      setApplyLoading(false);
+    }
+  }, [mode, motifImage, motifUrl, panelPositions, patternType, scale, bgColor,
+      perPanelTransforms, mirrorMode, seamBleedPx, svgImages, productKind, onApply]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Panel list for controls ────────────────────────────────────────────────
+
+  const panelGroups: Record<string, Array<{ position: string; width: number; height: number }>> = {};
+  for (const p of panelPositions) {
+    const g = productKind === "hoodie" ? getPanelGroup(p.position) : "all";
+    if (!panelGroups[g]) panelGroups[g] = [];
+    panelGroups[g].push(p);
+  }
+
+  const isLoading = applyLoading || !!externalLoading;
+  const activePanelT = activePanel ? (perPanelTransforms[activePanel] || { dxPx: 0, dyPx: 0, scalePct: 100 }) : null;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="w-full">
-      {!showMockups ? (
-        // 3-column layout: Pattern preview | Controls | Product info
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4">
-          {/* Left column: Pattern preview */}
-          <div className="flex flex-col">
-            <div className="aspect-square border border-gray-300 rounded bg-gray-50 flex items-center justify-center">
-              <canvas
-                ref={canvasRef}
-                className="w-full h-full touch-none cursor-grab active:cursor-grabbing"
-                style={{ touchAction: "none", display: "block" }}
-              />
-            </div>
+    <div className="w-full h-full flex flex-col">
+      {/* Mode tabs */}
+      <div className="flex gap-1 px-4 pt-3 pb-1 border-b">
+        {(["pattern", "place"] as EditorMode[]).map(m => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`px-3 py-1 text-xs rounded font-medium transition-colors ${
+              mode === m
+                ? "bg-foreground text-background"
+                : "bg-muted text-muted-foreground hover:bg-muted/80"
+            }`}
+          >
+            {m === "pattern" ? "Pattern" : "Place on Item"}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-[1fr_200px] gap-4 p-4 flex-1 min-h-0">
+        {/* Left: preview canvas */}
+        <div className="flex flex-col gap-2">
+          <div
+            className="relative border border-border rounded bg-muted flex items-center justify-center overflow-hidden"
+            style={{ aspectRatio: "1/1", width: "100%" }}
+          >
+            <canvas
+              ref={canvasRef}
+              className="max-w-full max-h-full touch-none"
+              style={{
+                cursor: mode === "place" ? "grab" : "default",
+                display: "block",
+                touchAction: "none",
+              }}
+            />
           </div>
 
-          {/* Middle column: Controls */}
-          <div className="flex flex-col space-y-4 overflow-y-auto">
-            <div>
-              <Label>Mode</Label>
-              <div className="flex gap-2">
-                {(["pattern", "single", "place"] as EditorMode[]).map(m => (
+          {/* Hoodie view tabs */}
+          {mode === "place" && productKind === "hoodie" && (() => {
+            const availableViews = (["front", "back", "hood"] as const).filter(v =>
+              panelPositions.some(p => getPanelGroup(p.position) === v)
+            );
+            if (availableViews.length < 2) return null;
+            return (
+              <div className="flex gap-1">
+                {availableViews.map(v => (
                   <button
-                    key={m}
-                    onClick={() => setMode(m)}
-                    className={`px-3 py-1 rounded ${mode === m ? "bg-blue-500 text-white" : "bg-gray-200"}`}
+                    key={v}
+                    onClick={() => setActiveView(v)}
+                    className={`px-2 py-0.5 text-xs rounded capitalize transition-colors ${
+                      activeView === v
+                        ? "bg-foreground text-background"
+                        : "bg-muted text-muted-foreground"
+                    }`}
                   >
-                    {m}
+                    {v}
                   </button>
                 ))}
               </div>
+            );
+          })()}
+
+          {/* Panel selector for place mode */}
+          {/* SVG load diagnostic warning */}
+          {mode === "place" && svgLoadErrors.length > 0 && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 px-1">
+              Panel shapes unavailable: {svgLoadErrors.join(", ")}
+            </p>
+          )}
+
+          {mode === "place" && panelPositions.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {panelPositions.map(p => (
+                <button
+                  key={p.position}
+                  onClick={() => setActivePanel(p.position)}
+                  className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
+                    activePanel === p.position
+                      ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                      : "border-border text-muted-foreground hover:border-foreground"
+                  }`}
+                >
+                  {p.position.replace(/_/g, " ")}
+                </button>
+              ))}
             </div>
+          )}
+        </div>
 
-            {mode === "pattern" && (
-              <>
-                <div>
-                  <Label>Pattern Type</Label>
-                  <Select value={patternType} onValueChange={v => setPatternType(v as PatternType)}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {PATTERN_OPTIONS.map(opt => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+        {/* Right: controls */}
+        <div className="flex flex-col gap-3 overflow-y-auto">
 
-                <div>
-                  <Label>Scale: {scale}</Label>
-                  <Slider 
-                    value={[scale]} 
-                    onValueChange={v => setScale(v[0])} 
-                    min={1} 
-                    max={10}
-                    className="[&_[role=slider]]:bg-black [&_[role=slider]]:border-2 [&_[role=slider]]:border-black"
-                  />
-                </div>
-              </>
-            )}
-
-            {mode === "place" && (
-              <>
-                <div>
-                  <Label>Seam Offset: {seamOffset}px</Label>
-                  <Slider 
-                    value={[seamOffset]} 
-                    onValueChange={v => setSeamOffset(v[0])} 
-                    min={0} 
-                    max={200}
-                    className="[&_[role=slider]]:bg-black [&_[role=slider]]:border-2 [&_[role=slider]]:border-black"
-                  />
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <Label>Mirror Mode</Label>
-                  <div className="w-12 h-6 rounded-full border-2 border-black" style={{ backgroundColor: mirrorMode ? "#000" : "#f0f0f0" }}>
-                    <button
-                      onClick={() => {
-                        setMirrorMode(!mirrorMode);
-                        if (!mirrorMode && activeLeg === "right") {
-                          setDragOffset(dragOffset);
-                        }
-                      }}
-                      className="w-full h-full flex items-center justify-center rounded-full"
-                    >
-                      <div className="w-5 h-5 rounded-full bg-black border-2 border-black" />
-                    </button>
-                  </div>
-                </div>
-
-                {hasPairedPanels && (
-                  <div>
-                    <Label>Active Leg</Label>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setActiveLeg("left")}
-                        className={`px-3 py-1 rounded ${activeLeg === "left" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
-                      >
-                        Left
-                      </button>
-                      <button
-                        onClick={() => setActiveLeg("right")}
-                        className={`px-3 py-1 rounded ${activeLeg === "right" ? "bg-blue-500 text-white" : "bg-gray-200"}`}
-                      >
-                        Right
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            <div>
-              <Label>Background</Label>
-              <div className="flex gap-2 items-center">
-                <Select value={bgColor === "" ? "transparent" : bgColor} onValueChange={v => setBgColor(v === "transparent" ? "" : v)}>
-                  <SelectTrigger className="flex-1">
-                    <SelectValue placeholder="Select background" />
+          {mode === "pattern" && (
+            <>
+              <div>
+                <Label className="text-xs">Pattern</Label>
+                <Select value={patternType} onValueChange={v => setPatternType(v as PatternType)}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {BG_PRESETS.map(preset => (
-                      <SelectItem key={preset.value} value={preset.value}>
-                        {preset.label}
+                    {PATTERN_OPTIONS.map(opt => (
+                      <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                        {opt.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                <input
-                  type="color"
-                  value={bgColor === "" ? "#ffffff" : bgColor}
-                  onChange={(e) => setBgColor(e.target.value)}
-                  className="w-12 h-10 rounded cursor-pointer border border-gray-300"
-                  title="Custom color picker"
-                />
               </div>
-            </div>
+              <div>
+                <Label className="text-xs">Scale: {scale}</Label>
+                <Slider value={[scale]} onValueChange={v => setScale(v[0])} min={1} max={10} className="mt-1" />
+              </div>
+            </>
+          )}
 
-            <div className="flex gap-2 flex-col mt-auto">
-              <Button onClick={() => { handleApply(); setShowMockups(true); }} disabled={isLoading} className="w-full">
-                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Apply
-              </Button>
-              <Button onClick={onCancel} variant="outline" className="w-full">
-                Cancel
-              </Button>
-            </div>
-          </div>
-
-          {/* Right column: Product info and buttons */}
-          <div className="flex flex-col space-y-4">
-            <div className="border border-gray-300 rounded p-4 bg-gray-50">
-              <p className="text-sm text-gray-600">Product preview</p>
-            </div>
-            <div className="flex gap-2 flex-col">
-              <Button onClick={() => { handleApply(); setShowMockups(true); }} disabled={isLoading} className="w-full">
-                {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Apply
-              </Button>
-              <Button onClick={onCancel} variant="outline" className="w-full">
-                Cancel
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        // 2-column layout: Processing mockups | Product info
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
-          {/* Left column: Processing/Mockups */}
-          <div className="flex flex-col space-y-4">
-            <div className="border border-gray-300 rounded p-4 bg-gray-50 flex items-center justify-center min-h-96">
-              {isLoading ? (
-                <div className="text-center">
-                  <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
-                  <p className="text-sm text-gray-600">Processing mockups...</p>
+          {mode === "place" && (
+            <>
+              {activePanelT && activePanel && (
+                <div>
+                  <Label className="text-xs">Scale: {activePanelT.scalePct}%</Label>
+                  <Slider
+                    value={[activePanelT.scalePct]}
+                    onValueChange={v => updatePanelTransform(activePanel, { scalePct: v[0] })}
+                    min={20} max={200} step={5}
+                    className="mt-1"
+                  />
                 </div>
-              ) : (
-                <p className="text-sm text-gray-600">Mockup preview</p>
               )}
+
+              {activePanelT && activePanel && (
+                <button
+                  onClick={() => updatePanelTransform(activePanel, { dxPx: 0, dyPx: 0, scalePct: 100 })}
+                  className="text-xs underline text-muted-foreground text-left"
+                >
+                  Reset panel
+                </button>
+              )}
+
+              <div className="flex items-center gap-2">
+                <Label className="text-xs flex-1">Mirror panels</Label>
+                <button
+                  onClick={() => setMirrorMode(m => !m)}
+                  className={`relative w-9 h-5 rounded-full transition-colors ${mirrorMode ? "bg-foreground" : "bg-muted border border-border"}`}
+                >
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full transition-transform ${mirrorMode ? "bg-background translate-x-4" : "bg-muted-foreground translate-x-0.5"}`} />
+                </button>
+              </div>
+
+              {getSeamPairs(panelPositions).length > 0 && (
+                <div>
+                  <Label className="text-xs">Seam bleed: {seamBleedPx}px</Label>
+                  <Slider
+                    value={[seamBleedPx]}
+                    onValueChange={v => setSeamBleedPx(v[0])}
+                    min={0} max={200} step={5}
+                    className="mt-1"
+                  />
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Background */}
+          <div>
+            <Label className="text-xs">Background</Label>
+            <div className="flex gap-1 mt-1">
+              <Select
+                value={bgColor === "" ? "transparent" : bgColor}
+                onValueChange={v => setBgColor(v === "transparent" ? "" : v)}
+              >
+                <SelectTrigger className="h-8 text-xs flex-1">
+                  <SelectValue placeholder="Select" />
+                </SelectTrigger>
+                <SelectContent>
+                  {BG_PRESETS.map(p => (
+                    <SelectItem key={p.value} value={p.value} className="text-xs">{p.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <input
+                type="color"
+                value={bgColor === "" ? "#ffffff" : bgColor}
+                onChange={e => setBgColor(e.target.value)}
+                className="w-8 h-8 rounded border border-border cursor-pointer"
+                title="Custom colour"
+              />
             </div>
           </div>
 
-          {/* Right column: Product info */}
-          <div className="flex flex-col space-y-4">
-            <div className="border border-gray-300 rounded p-4 bg-gray-50">
-              <p className="text-sm text-gray-600">Product details</p>
-            </div>
-            <Button onClick={() => setShowMockups(false)} variant="outline" className="w-full">
-              Back to Editor
+          {/* Actions */}
+          <div className="flex flex-col gap-2 mt-auto pt-2">
+            <Button onClick={handleApply} disabled={isLoading} size="sm" className="w-full">
+              {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Apply
             </Button>
+            {onCancel && (
+              <Button onClick={onCancel} variant="outline" size="sm" className="w-full">
+                Cancel
+              </Button>
+            )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
+}

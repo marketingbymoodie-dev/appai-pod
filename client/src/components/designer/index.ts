@@ -17,6 +17,8 @@ export type {
   StylePreset,
   DesignerConfig,
   ImageTransform,
+  PanelTransform,
+  AopPlacementSettings as AopPlacementSettingsBase,
   LifestyleMockupConfig,
   PrintShape,
   DesignerType,

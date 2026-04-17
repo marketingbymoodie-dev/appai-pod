@@ -124,7 +124,10 @@ interface MockupRequest {
   wrapAround?: boolean;
   wrapDirection?: "horizontal" | "vertical";
   aopPositions?: { position: string; width: number; height: number }[];
+  /** Per-panel canvas images (dataUrls) — already incorporate placement/mirror transforms. */
   panelUrls?: { position: string; dataUrl: string }[];
+  /** Legacy: mirror flag. Client now bakes mirror into panelUrls so server-side handling is a no-op. */
+  mirrorLegs?: boolean;
 }
 
 interface MockupImage {

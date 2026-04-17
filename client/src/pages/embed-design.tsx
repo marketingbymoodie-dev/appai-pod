@@ -4987,10 +4987,19 @@ export default function EmbedDesign() {
                       return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
                     })()}
                     panelPositions={productTypeConfig?.placeholderPositions || []}
-                    panelFlatLayImages={productTypeConfig?.printifyBlueprintId === 1050 ? {
-                      "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
-                      "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
-                    } : productTypeConfig?.panelFlatLayImages || {}}
+                    panelFlatLayImages={(() => {
+                      // Prefer DB-persisted SVG shapes; fall back to known static URLs when DB value is empty
+                      const dbImages = productTypeConfig?.panelFlatLayImages || {};
+                      if (Object.keys(dbImages).length > 0) return dbImages;
+                      // Static fallback for blueprint 1050 (Women's Crop-top Leggings AOP)
+                      if (productTypeConfig?.printifyBlueprintId === 1050) {
+                        return {
+                          "left_leg" : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                          "right_leg": "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+                        };
+                      }
+                      return {};
+                    })()}
                     fetchFn={(url, options) => safeFetch(url, options, 60000)}
                     initialTilesAcross={aopPatternSettings.tilesAcross}
                     initialPattern={aopPatternSettings.pattern}

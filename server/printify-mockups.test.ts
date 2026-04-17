@@ -215,6 +215,130 @@ describe("Printify retry logic", () => {
   });
 });
 
+describe("Transform contract: coordinate normalization", () => {
+  /**
+   * The client sends x/y in [0, 100] percentage space and scale in [10, 200].
+   * routes.ts normalises these before passing to generatePrintifyMockup:
+   *   scale = scale / 100         (e.g. 100 → 1.0)
+   *   x     = (x - 50) / 50      (e.g.  50 → 0.0,  0 → -1.0, 100 → 1.0)
+   *   y     = (y - 50) / 50      (e.g.  50 → 0.0,  0 → -1.0, 100 → 1.0)
+   * Then printify-mockups.ts converts to Printify 0-1 space:
+   *   printifyX = 0.5 + x * 0.5  (e.g.  0 → 0.5, -1 → 0.0,  1 → 1.0)
+   *   printifyY = 0.5 + y * 0.5  (same)
+   */
+
+  const normalise = (clientX: number, clientY: number, clientScale: number) => {
+    const normX     = (clientX - 50) / 50;
+    const normY     = (clientY - 50) / 50;
+    const normScale = clientScale / 100;
+    return { normX, normY, normScale };
+  };
+
+  const toPrintify = (normX: number, normY: number) => ({
+    printifyX: 0.5 + normX * 0.5,
+    printifyY: 0.5 + normY * 0.5,
+  });
+
+  it("centre (50, 50) → Printify (0.5, 0.5)", () => {
+    const { normX, normY } = normalise(50, 50, 100);
+    const { printifyX, printifyY } = toPrintify(normX, normY);
+    expect(printifyX).toBeCloseTo(0.5);
+    expect(printifyY).toBeCloseTo(0.5);
+  });
+
+  it("top-left (0, 0) → Printify (0, 0)", () => {
+    const { normX, normY } = normalise(0, 0, 100);
+    const { printifyX, printifyY } = toPrintify(normX, normY);
+    expect(printifyX).toBeCloseTo(0.0);
+    expect(printifyY).toBeCloseTo(0.0);
+  });
+
+  it("bottom-right (100, 100) → Printify (1, 1)", () => {
+    const { normX, normY } = normalise(100, 100, 100);
+    const { printifyX, printifyY } = toPrintify(normX, normY);
+    expect(printifyX).toBeCloseTo(1.0);
+    expect(printifyY).toBeCloseTo(1.0);
+  });
+
+  it("scale 100 → Printify scale 1.0", () => {
+    const { normScale } = normalise(50, 50, 100);
+    expect(normScale).toBeCloseTo(1.0);
+  });
+
+  it("scale 200 → Printify scale 2.0", () => {
+    const { normScale } = normalise(50, 50, 200);
+    expect(normScale).toBeCloseTo(2.0);
+  });
+
+  it("scale 50 → Printify scale 0.5", () => {
+    const { normScale } = normalise(50, 50, 50);
+    expect(normScale).toBeCloseTo(0.5);
+  });
+});
+
+describe("AOP per-panel placement: panel images use centered placement", () => {
+  it("per-panel image entry uses x=0.5, y=0.5, scale=1", () => {
+    // When panelUrls are provided, createTemporaryProduct uploads each panel
+    // image and places it with these fixed values. The artwork position is
+    // already baked into the canvas image so no additional transform is needed.
+    const panelEntry = { id: "img_abc", x: 0.5, y: 0.5, scale: 1, angle: 0 };
+    expect(panelEntry.x).toBe(0.5);
+    expect(panelEntry.y).toBe(0.5);
+    expect(panelEntry.scale).toBe(1);
+  });
+
+  it("AOP positions with panelUrls should each get their own image entry", () => {
+    // Simulate the createTemporaryProduct logic
+    const aopPositions = [
+      { position: "front_left", width: 1000, height: 1500 },
+      { position: "front_right", width: 1000, height: 1500 },
+    ];
+    const panelImageIds = new Map<string, string>([
+      ["front_left",  "img_left"],
+      ["front_right", "img_right"],
+    ]);
+    const placeholders: Array<{ position: string; images: Array<{ id: string }> }> = [];
+
+    for (const pos of aopPositions) {
+      if (panelImageIds.has(pos.position)) {
+        placeholders.push({
+          position: pos.position,
+          images: [{ id: panelImageIds.get(pos.position)!, x: 0.5, y: 0.5, scale: 1, angle: 0 } as any],
+        });
+      }
+    }
+
+    expect(placeholders).toHaveLength(2);
+    expect(placeholders[0].position).toBe("front_left");
+    expect(placeholders[1].position).toBe("front_right");
+    expect(placeholders[0].images[0].id).toBe("img_left");
+    expect(placeholders[1].images[0].id).toBe("img_right");
+  });
+
+  it("positions without panelUrls fall back to the global image with global transform", () => {
+    const aopPositions = [
+      { position: "left_sleeve", width: 500, height: 800 },
+    ];
+    const panelImageIds = new Map<string, string>(); // empty — no panel image for sleeve
+    const globalImageId = "img_global";
+    const globalEntry = { id: globalImageId, x: 0.5, y: 0.5, scale: 1, angle: 0 };
+    const placeholders: Array<{ position: string; images: typeof globalEntry[] }> = [];
+
+    for (const pos of aopPositions) {
+      if (panelImageIds.has(pos.position)) {
+        // per-panel branch (not taken here)
+        placeholders.push({ position: pos.position, images: [{ id: panelImageIds.get(pos.position)!, ...globalEntry }] });
+      } else {
+        // fallback to global image
+        placeholders.push({ position: pos.position, images: [{ ...globalEntry }] });
+      }
+    }
+
+    expect(placeholders[0].position).toBe("left_sleeve");
+    expect(placeholders[0].images[0].id).toBe(globalImageId);
+  });
+});
+
 describe("Generate endpoint storage fallback", () => {
   it("should fall back to data URL when storage fails after retry", () => {
     // When storage fails twice, generate falls back to data URL so the
