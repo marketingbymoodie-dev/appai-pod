@@ -5723,11 +5723,12 @@ ${textEdgeRestrictions}
       );
       console.log(P, reqId, `installation lookup ok in ${Date.now() - t1}ms`);
       if (!installation) {
+        const appUrl = (process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, '');
         return res.status(403).json({
           error: "Shop not authorized",
           reqId,
           stage: "auth",
-          reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+          reinstallUrl: `${appUrl}/shopify/install?shop=${encodeURIComponent(shop)}`,
         });
       }
 
