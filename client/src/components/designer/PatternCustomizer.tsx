@@ -734,14 +734,14 @@ export function PatternCustomizer({
   }, [panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const renderPanelPreview = useCallback(
-    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number) => {
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number, canvasH = px) => {
       const pad = 20;
       if (productKind === "hoodie") {
         const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
         if (compositeW === 0) return;
-        const scl = Math.min((px - pad) / compositeW, (px - pad) / compositeH, 1);
+        const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
-        const offY = (px - compositeH * scl) / 2;
+        const offY = (canvasH - compositeH * scl) / 2;
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
@@ -801,9 +801,9 @@ export function PatternCustomizer({
       } else {
         const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
         if (compositeW === 0) return;
-        const scl = Math.min((px - pad) / compositeW, (px - pad) / compositeH, 1);
+        const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
-        const offY = (px - compositeH * scl) / 2;
+        const offY = (canvasH - compositeH * scl) / 2;
 
         const rightLegPos = panelPositions.find(p => {
           const l = p.position.toLowerCase();
@@ -840,13 +840,13 @@ export function PatternCustomizer({
   );
 
   const renderPatternMaskedPreview = useCallback(
-    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number) => {
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number, canvasH = px) => {
       const pad = 20;
       const drawSlots = (slots: PanelSlot[], compositeW: number, compositeH: number) => {
         if (compositeW === 0) return;
-        const scl = Math.min((px - pad) / compositeW, (px - pad) / compositeH, 1);
+        const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
-        const offY = (px - compositeH * scl) / 2;
+        const offY = (canvasH - compositeH * scl) / 2;
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
@@ -883,26 +883,43 @@ export function PatternCustomizer({
     if (!ctx) return;
 
     const px = previewPx;
-    canvas.width = px;
-    canvas.height = px;
 
-    ctx.clearRect(0, 0, px, px);
+    // Compute the aspect ratio of the panel composite so the canvas matches, eliminating
+    // blank bars when panels are much wider than tall (e.g. leggings + waistbands) or vice versa.
+    let canvasH = px;
+    if (panelPositions.length > 0 && (mode === "place" || mode === "pattern")) {
+      const layout =
+        productKind === "hoodie"
+          ? buildCompositeLayout(activeView, panelPositions)
+          : buildLinearPanelsLayout(panelPositions);
+      if (layout.compositeW > 0 && layout.compositeH > 0) {
+        const ratio = layout.compositeH / layout.compositeW;
+        // Constrain canvas height: never smaller than 30% of width or larger than 200%
+        const clampedRatio = Math.min(2.0, Math.max(0.3, ratio));
+        canvasH = Math.round(px * clampedRatio);
+      }
+    }
+
+    canvas.width = px;
+    canvas.height = canvasH;
+
+    ctx.clearRect(0, 0, px, canvasH);
     if (bgColor && bgColor !== "transparent") {
       ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, px, px);
+      ctx.fillRect(0, 0, px, canvasH);
     }
 
     if (mode === "pattern" && panelPositions.length > 0) {
-      renderPatternMaskedPreview(ctx, motifImage, px);
+      renderPatternMaskedPreview(ctx, motifImage, px, canvasH);
     } else if (mode === "pattern") {
       const tileSize = (PREVIEW_INCHES * 96) / scale;
-      for (let row = -1; row < Math.ceil(px / tileSize) + 1; row++) {
+      for (let row = -1; row < Math.ceil(canvasH / tileSize) + 1; row++) {
         for (let col = -1; col < Math.ceil(px / tileSize) + 1; col++) {
           ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
         }
       }
     } else if (mode === "place" && panelPositions.length > 0) {
-      renderPanelPreview(ctx, motifImage, px);
+      renderPanelPreview(ctx, motifImage, px, canvasH);
     }
   }, [
     mode,

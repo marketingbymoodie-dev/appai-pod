@@ -5525,8 +5525,8 @@ ${textEdgeRestrictions}
     }
     const upstream = await fetch(parsed.toString(), { headers: { Accept: "image/*,*/*" } });
     if (!upstream.ok) {
-      console.warn(`[panel-svg] Upstream ${upstream.status} for ${parsed.hostname}`);
-      return res.status(502).json({ error: "Failed to fetch panel image" });
+      console.warn(`[panel-svg] Upstream ${upstream.status} for ${parsed.href.substring(0, 80)}`);
+      return res.status(502).json({ error: `Failed to fetch panel image: upstream ${upstream.status}` });
     }
     const buf = Buffer.from(await upstream.arrayBuffer());
     const ct = upstream.headers.get("content-type") || "image/svg+xml";
@@ -11363,6 +11363,131 @@ ${textEdgeRestrictions}
       res.status(500).json({ error: "Failed to delete product type" });
     }
   });
+
+  // GET /api/admin/product-types/:id/svg-debug
+  // Diagnostic: shows stored panelFlatLayImages, tests CDN accessibility, and fetches
+  // the correct flat-lay SVG URLs from the Printify API so the merchant can see what's wrong.
+  app.get("/api/admin/product-types/:id/svg-debug", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const productTypeId = parseInt(req.params.id);
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const pt = await storage.getProductType(productTypeId);
+    if (!pt || pt.merchantId !== merchant.id) return res.status(404).json({ error: "Product type not found" });
+
+    // Parse what is stored in the DB
+    let storedImages: Record<string, string> = {};
+    try {
+      storedImages = typeof pt.panelFlatLayImages === "string"
+        ? JSON.parse(pt.panelFlatLayImages || "{}")
+        : (pt.panelFlatLayImages as any) || {};
+    } catch { storedImages = {}; }
+
+    // Test each stored URL from the server side (no auth)
+    const urlTests: Record<string, { status: number | string; contentType: string | null }> = {};
+    await Promise.all(Object.entries(storedImages).map(async ([pos, url]) => {
+      try {
+        const r = await fetch(url, { headers: { Accept: "image/*,*/*" }, signal: AbortSignal.timeout(8000) });
+        urlTests[pos] = { status: r.status, contentType: r.headers.get("content-type") };
+      } catch (e: any) {
+        urlTests[pos] = { status: e?.message || "fetch error", contentType: null };
+      }
+    }));
+
+    // Fetch the live views from Printify API for this blueprint/provider combo
+    let printifyViews: any[] = [];
+    let printifyViewsError: string | null = null;
+    if (pt.printifyBlueprintId && pt.printifyProviderId && merchant.printifyApiToken) {
+      try {
+        const vr = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers/${pt.printifyProviderId}/variants.json`,
+          { headers: { Authorization: `Bearer ${merchant.printifyApiToken}` }, signal: AbortSignal.timeout(15000) }
+        );
+        if (vr.ok) {
+          const vdata = await vr.json();
+          printifyViews = vdata.views || [];
+        } else {
+          printifyViewsError = `Printify API ${vr.status}`;
+        }
+      } catch (e: any) {
+        printifyViewsError = e?.message || "fetch error";
+      }
+    } else {
+      printifyViewsError = "Missing blueprintId, providerId, or Printify API token";
+    }
+
+    // Test Printify-returned view URLs
+    const printifyUrlTests: Record<string, { src: string; status: number | string; contentType: string | null }> = {};
+    await Promise.all(printifyViews.map(async (view: any) => {
+      const src = view.files?.[0]?.src;
+      if (!src || !view.position) return;
+      try {
+        const r = await fetch(src, { headers: { Accept: "image/*,*/*" }, signal: AbortSignal.timeout(8000) });
+        printifyUrlTests[view.position] = { src, status: r.status, contentType: r.headers.get("content-type") };
+      } catch (e: any) {
+        printifyUrlTests[view.position] = { src, status: e?.message || "fetch error", contentType: null };
+      }
+    }));
+
+    res.json({
+      productType: {
+        id: pt.id,
+        name: pt.name,
+        printifyBlueprintId: pt.printifyBlueprintId,
+        printifyProviderId: pt.printifyProviderId,
+        storedPanelFlatLayImages: storedImages,
+        storedImageCount: Object.keys(storedImages).length,
+      },
+      cdnUrlTests: urlTests,
+      printifyApiViews: { views: printifyViews.map((v: any) => ({ position: v.position, src: v.files?.[0]?.src })), error: printifyViewsError },
+      printifyApiUrlTests: printifyUrlTests,
+    });
+  }));
+
+  // POST /api/admin/product-types/:id/refresh-panel-svgs
+  // Re-fetches flat-lay SVG URLs from Printify API and saves them to panelFlatLayImages.
+  app.post("/api/admin/product-types/:id/refresh-panel-svgs", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const productTypeId = parseInt(req.params.id);
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const pt = await storage.getProductType(productTypeId);
+    if (!pt || pt.merchantId !== merchant.id) return res.status(404).json({ error: "Product type not found" });
+
+    if (!pt.printifyBlueprintId || !pt.printifyProviderId || !merchant.printifyApiToken) {
+      return res.status(400).json({ error: "Missing blueprintId, providerId, or Printify API token" });
+    }
+
+    const vr = await fetch(
+      `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers/${pt.printifyProviderId}/variants.json`,
+      { headers: { Authorization: `Bearer ${merchant.printifyApiToken}` } }
+    );
+    if (!vr.ok) return res.status(502).json({ error: `Printify API ${vr.status}` });
+
+    const vdata = await vr.json();
+    const views: any[] = vdata.views || [];
+    const newImages: Record<string, string> = {};
+    for (const view of views) {
+      if (view.position && view.files?.[0]?.src) newImages[view.position] = view.files[0].src;
+    }
+
+    if (Object.keys(newImages).length === 0) {
+      return res.status(200).json({ message: "Printify returned no views for this product. panelFlatLayImages unchanged.", views: [] });
+    }
+
+    // Alias leg/side naming
+    if (newImages.left_leg && !newImages.left_side) newImages.left_side = newImages.left_leg;
+    if (newImages.right_leg && !newImages.right_side) newImages.right_side = newImages.right_leg;
+    if (newImages.left_side && !newImages.left_leg) newImages.left_leg = newImages.left_side;
+    if (newImages.right_side && !newImages.right_leg) newImages.right_leg = newImages.right_side;
+
+    await storage.updateProductType(productTypeId, { panelFlatLayImages: JSON.stringify(newImages) });
+    console.log(`[refresh-panel-svgs] Updated productType ${productTypeId} with ${Object.keys(newImages).length} views:`, Object.keys(newImages).join(", "));
+
+    res.json({ success: true, panelFlatLayImages: newImages, count: Object.keys(newImages).length });
+  }));
 
   // POST /api/admin/product-types/:id/refresh-images - Refresh product images from Printify
   app.post("/api/admin/product-types/:id/refresh-images", isAuthenticated, async (req: any, res: Response) => {
