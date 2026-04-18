@@ -1,5 +1,5 @@
 import { useRef, useCallback } from "react";
-import { Sparkles } from "lucide-react";
+import { Sparkles, Loader2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
@@ -301,6 +301,16 @@ export function ProductMockup({
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  // Track loading state when switching between composite mockup images (carousel).
+  const [mockupImageLoading, setMockupImageLoading] = useState(false);
+  const prevMockupUrlRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (mockupUrl && mockupUrl !== prevMockupUrlRef.current) {
+      setMockupImageLoading(true);
+    }
+    prevMockupUrlRef.current = mockupUrl;
+  }, [mockupUrl]);
+
   const isLandscape = (() => {
     if (aspectRatio) {
       const [w, h] = aspectRatio.split(":").map(Number);
@@ -391,8 +401,8 @@ export function ProductMockup({
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"
-          onLoad={() => console.log("[ProductMockup] Mockup loaded successfully")}
-          onError={(e) => console.error("[ProductMockup] Mockup failed to load:", e)}
+          onLoad={() => { console.log("[ProductMockup] Mockup loaded successfully"); setMockupImageLoading(false); }}
+          onError={(e) => { console.error("[ProductMockup] Mockup failed to load:", e); setMockupImageLoading(false); }}
         />
       );
     }
@@ -556,6 +566,15 @@ export function ProductMockup({
       data-testid="product-mockup"
     >
       {renderProductMockup()}
+      {/* Small spinner shown only while the next carousel mockup image is loading for the first time. */}
+      {mockupImageLoading && !isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="flex items-center gap-2 rounded-full bg-black/55 text-white px-3 py-1.5 text-sm font-medium backdrop-blur-sm">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>Loading...</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

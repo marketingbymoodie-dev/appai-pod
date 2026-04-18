@@ -293,6 +293,9 @@ function xhrFetch(url: string, options: RequestInit = {}): Promise<Response> {
     const xhr = new XMLHttpRequest();
     const method = (options.method || 'GET').toUpperCase();
     xhr.open(method, url);
+    // Always request a Blob so binary bodies (PNG, JPEG, SVG) are not corrupted.
+    // Response.json() / .text() / .blob() all work correctly on a Blob-backed Response.
+    xhr.responseType = "blob";
 
     if (options.headers) {
       const h = options.headers as Record<string, string>;
@@ -306,8 +309,7 @@ function xhrFetch(url: string, options: RequestInit = {}): Promise<Response> {
         if (parts.length >= 2) responseHeaders.append(parts[0], parts.slice(1).join(': '));
       });
 
-      const body = xhr.responseText;
-      const resp = new Response(body, {
+      const resp = new Response(xhr.response as Blob, {
         status: xhr.status,
         statusText: xhr.statusText,
         headers: responseHeaders,
@@ -5075,8 +5077,7 @@ export default function EmbedDesign() {
                   );
                   const loadingStage: "generating" | "mockups" | "pattern" | null =
                     isGeneratingArtwork ? "generating"
-                    : (isGeneratingMockups || isAopReapplying) && isAopProduct ? "pattern"
-                    : isGeneratingMockups ? "mockups"
+                    : (isGeneratingMockups || isAopReapplying) ? "mockups"
                     : null;
 
                   // Resolve which mockup URL to show based on gallery selection.
@@ -5113,16 +5114,6 @@ export default function EmbedDesign() {
                   );
                 })()}
               </div>
-
-              {/* Explicit mockup-loading spinner overlay */}
-              {isStorefront && (mockupLoading || mockupTriggered) && generatedDesign?.imageUrl && (
-                <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
-                  <div className="rounded-full bg-black/60 text-white px-4 py-2 text-sm font-medium flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Generating mockups...
-                  </div>
-                </div>
-              )}
 
               {/* Left/right arrow navigation — only when mockups are available */}
               {isStorefront && generatedDesign?.imageUrl && (() => {
