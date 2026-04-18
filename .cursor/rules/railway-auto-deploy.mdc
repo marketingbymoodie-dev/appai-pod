@@ -1,0 +1,23 @@
+---
+description: After deploy-worthy code changes, run deploy-to-railway; warn and stop if pending Keeps may block a clean deploy.
+alwaysApply: true
+---
+
+# Railway deploy after substantive changes
+
+When you finish **deploy-worthy** work in this repo (bug fixes, features, or anything the user expects live on Railway / the Shopify app), run the **deploy-to-railway** workflow from the user’s Cursor skill (`deploy-to-railway`): local `npm run build`, then commit on the current branch, merge to `production`, push (Railway deploy), sync `main`. Do **not** wait for a separate “deploy” message unless the user said **not** to ship this change.
+
+Skip an automatic deploy for trivial-only edits (comments-only, formatting-only, or docs-only) unless the user asked to ship those too.
+
+## Before git add / commit / push — pending “Keep” changes
+
+Cursor can leave AI edits in a **pending** state until the user clicks **Keep** / **Keep All**. Unkept chunks are not what will be committed from the workspace in the normal flow.
+
+**Before** you run `git add`, `git commit`, `git merge`, or `git push` as part of deploy:
+
+1. **If this turn (or recent turns) included file edits** you intend to ship: **Stop and warn** unless it is obvious the user has already accepted everything (e.g. they explicitly said they kept changes, or they only asked for read-only analysis).
+2. The warning should be explicit, for example: ask them to click **Keep All** (or keep per-file) on any pending diffs so disk matches what will deploy; explain that deploying without keeping can omit changes or ship the wrong tree.
+3. **After they confirm** they have kept everything (or they say to proceed), continue with build → commit → merge `production` → push → sync `main`.
+4. If they say changes are **not** ready or they have **not** kept yet, **do not** commit or push; wait.
+
+This replaces needing a separate “deploy” message each time, while avoiding silent bad deploys when edits are still pending in the UI.

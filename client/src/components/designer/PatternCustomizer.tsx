@@ -455,6 +455,7 @@ export function PatternCustomizer({
   onPlacementChange,
   onApply,
   onCancel,
+  footerSlot,
   isLoading: externalLoading,
   productTypeConfig,
 }: PatternCustomizerProps) {
