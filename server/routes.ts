@@ -5506,6 +5506,35 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Proxy Printify panel SVGs so the storefront iframe can fetch them without CORS/taint issues
+  // (PatternCustomizer uses fetch + blob → Image for masking; cross-origin SVG often fails.)
+  app.get("/api/storefront/panel-svg", asyncHandler(async (req: Request, res: Response) => {
+    const raw = req.query.url as string;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({ error: "Missing url" });
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return res.status(400).json({ error: "Invalid url" });
+    }
+    const allowedHosts = new Set(["images.printify.com", "cdn.printify.com"]);
+    if (parsed.protocol !== "https:" || !allowedHosts.has(parsed.hostname)) {
+      return res.status(400).json({ error: "URL host not allowed" });
+    }
+    const upstream = await fetch(parsed.toString(), { headers: { Accept: "image/*,*/*" } });
+    if (!upstream.ok) {
+      console.warn(`[panel-svg] Upstream ${upstream.status} for ${parsed.hostname}`);
+      return res.status(502).json({ error: "Failed to fetch panel image" });
+    }
+    const ct = upstream.headers.get("content-type") || "image/svg+xml";
+    res.setHeader("Content-Type", ct);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.send(buf);
+  }));
+
   // Storefront ping endpoint - quick health check for embed to verify connectivity
   app.get("/api/storefront/ping", (req: Request, res: Response) => {
     const timestamp = Date.now();
@@ -7459,7 +7488,10 @@ ${textEdgeRestrictions}
         limit: GALLERY_LIMIT,
         designs: rows.map(d => ({
           id: d.id,
-          artworkUrl: proxyUrl(d.designImageUrl) || proxyUrl(d.thumbnailUrl),
+          artworkUrl:
+            proxyUrl(d.designImageUrl) ||
+            proxyUrl(d.thumbnailUrl) ||
+            proxyUrl(d.referenceImageUrl),
           mockupUrls: Array.isArray(d.mockupUrls) ? (d.mockupUrls as string[]) : [],
           designState: d.designState || null,
           prompt: (d as any).userPrompt || d.prompt,

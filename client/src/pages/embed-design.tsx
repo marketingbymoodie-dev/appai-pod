@@ -92,6 +92,18 @@ const STATIC_FLAT_LAY_FALLBACK: Record<number, Record<string, string>> = {
   },
 };
 
+/** Load Printify panel SVGs via our API so `fetch` works in the storefront iframe (avoids CORS / canvas taint). */
+function proxifyPrintifyPanelUrls(map: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = { ...map };
+  for (const k of Object.keys(out)) {
+    const v = out[k];
+    if (v && v.includes("printify.com")) {
+      out[k] = `${API_BASE}/api/storefront/panel-svg?url=${encodeURIComponent(v)}`;
+    }
+  }
+  return out;
+}
+
 /**
  * Parse JSON from a Response, with a guard against HTML responses.
  * Throws a descriptive error instead of cryptic "Unexpected token <".
@@ -1709,7 +1721,7 @@ export default function EmbedDesign() {
         : isShopify
           ? `${API_BASE}/api/shopify/mockup`
           : `${API_BASE}/api/mockup/generate`;
-      const payload = isStorefront ? {
+      let payload: Record<string, unknown> = isStorefront ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
@@ -1749,10 +1761,20 @@ export default function EmbedDesign() {
 
       setMockupError(null);
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
+      let body = JSON.stringify(payload);
+      // App proxies / gateways often reject multi-megabyte JSON (413). Per-panel PNGs are huge at native DPI.
+      const MAX_MOCKUP_BODY = 900_000;
+      if (body.length > MAX_MOCKUP_BODY && Array.isArray(payload.panelUrls) && payload.panelUrls.length > 0) {
+        console.warn(`[EmbedDesign] Mockup payload ${body.length} bytes — omitting panelUrls (use patternUrl only)`);
+        const { panelUrls: _omit, ...rest } = payload;
+        payload = rest;
+        body = JSON.stringify(payload);
+      }
+
       const response = await safeFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body,
       }, 60000);
 
       if (!response.ok) {
@@ -3850,7 +3872,13 @@ export default function EmbedDesign() {
         }
 
       `}</style>
-      <div className="max-w-6xl mx-auto space-y-3">
+      <div
+        className={
+          showPatternStep && aopPendingMotifUrl
+            ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-3 space-y-3"
+            : "max-w-6xl mx-auto space-y-3"
+        }
+      >
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
@@ -3950,14 +3978,20 @@ export default function EmbedDesign() {
           BUILD: cc5dfd6
         </div>
 
-        <div className={`grid grid-cols-1 gap-6 ${showPatternStep && aopPendingMotifUrl ? "lg:grid-cols-[minmax(0,1fr)_minmax(280px,400px)]" : "md:grid-cols-2"}`}>
+        <div
+          className={`grid grid-cols-1 gap-4 sm:gap-6 ${
+            showPatternStep && aopPendingMotifUrl
+              ? "lg:grid-cols-[minmax(280px,1.35fr)_minmax(22rem,42rem)]"
+              : "md:grid-cols-2"
+          }`}
+        >
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div className={`space-y-4 order-1 ${showPatternStep && aopPendingMotifUrl ? "lg:order-2" : "md:order-2"}`}>
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
                 {isLoggedIn ? (
-                  <div className="flex flex-nowrap gap-2 overflow-x-auto" data-testid="user-actions">
+                  <div className="flex flex-wrap gap-2" data-testid="user-actions">
                     {/* Combined account button: shows email on hover, click signs out */}
                     <div className="relative group flex-shrink-0">
                       <button
@@ -4288,17 +4322,18 @@ export default function EmbedDesign() {
                                   <div className="aspect-square relative bg-muted">
                                     {(() => {
                                       const mockupSrc = d.mockupUrls && d.mockupUrls.length > 0 ? d.mockupUrls[0] : null;
-                                      const displaySrc = mockupSrc || d.artworkUrl;
+                                      const mockupAbs = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : null;
+                                      const artworkAbs = d.artworkUrl ? toAbsoluteImageUrl(d.artworkUrl) : null;
+                                      const displaySrc = mockupAbs || artworkAbs;
                                       return displaySrc ? (
                                         <img
                                           src={displaySrc}
                                           alt={d.baseTitle || 'Saved design'}
                                           className="w-full h-full object-cover"
                                           onError={(e) => {
-                                            // If mockup URL fails, fall back to artwork URL
                                             const img = e.target as HTMLImageElement;
-                                            if (mockupSrc && d.artworkUrl && img.src !== d.artworkUrl) {
-                                              img.src = d.artworkUrl;
+                                            if (mockupAbs && artworkAbs && img.src !== artworkAbs) {
+                                              img.src = artworkAbs;
                                             } else {
                                               img.style.display = 'none';
                                             }
@@ -4902,7 +4937,7 @@ export default function EmbedDesign() {
                   if (merged.right_leg && !merged.right_side) merged.right_side = merged.right_leg;
                   if (merged.left_side && !merged.left_leg) merged.left_leg = merged.left_side;
                   if (merged.right_side && !merged.right_leg) merged.right_leg = merged.right_side;
-                  return merged;
+                  return proxifyPrintifyPanelUrls(merged);
                 })()}
                 fetchFn={(url, options) => safeFetch(url, options, 60000)}
                 initialTilesAcross={aopPatternSettings.tilesAcross}

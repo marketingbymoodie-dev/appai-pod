@@ -85,6 +85,29 @@ const PRINT_DPI = 150;
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
 
+/** Max dimension for panel/raster uploads — native print pixels (7–12k) exceed proxy body limits (413). */
+const MAX_PANEL_EXPORT_PX = 4000;
+
+/** Encode canvas as JPEG for smaller mockup API payloads; downscale if over max dimension. */
+function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_EXPORT_PX): string {
+  let w = canvas.width;
+  let h = canvas.height;
+  if (w <= 0 || h <= 0) return canvas.toDataURL("image/jpeg", 0.92);
+  if (Math.max(w, h) <= maxDim) {
+    return canvas.toDataURL("image/jpeg", 0.92);
+  }
+  const scale = maxDim / Math.max(w, h);
+  const nw = Math.max(1, Math.round(w * scale));
+  const nh = Math.max(1, Math.round(h * scale));
+  const out = document.createElement("canvas");
+  out.width = nw;
+  out.height = nh;
+  const octx = out.getContext("2d");
+  if (!octx) return canvas.toDataURL("image/jpeg", 0.85);
+  octx.drawImage(canvas, 0, 0, nw, nh);
+  return out.toDataURL("image/jpeg", 0.92);
+}
+
 /** Snap threshold in CSS pixels — snaps when artwork centre is within this distance. */
 const SNAP_THRESHOLD_PX = 10;
 
@@ -593,7 +616,7 @@ export function PatternCustomizer({
     const measure = () => {
       const w = el.clientWidth;
       const h = el.clientHeight;
-      const s = Math.floor(Math.min(Math.max(w, 160), Math.max(h, 160), 560));
+      const s = Math.floor(Math.min(Math.max(w, 160), Math.max(h, 160), 1100));
       if (s >= 160) setPreviewPx(s);
     };
     measure();
@@ -1077,7 +1100,7 @@ export function PatternCustomizer({
 
     drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
 
-    return canvas.toDataURL("image/png");
+    return canvasToUploadDataUrl(canvas);
   }
 
   // ── Apply handler ──────────────────────────────────────────────────────────
@@ -1091,7 +1114,7 @@ export function PatternCustomizer({
           panelPositions.length > 0
             ? Math.max(1500, ...panelPositions.flatMap(p => [p.width, p.height]))
             : 4096;
-        const TILE_OUT = Math.min(8192, Math.max(4096, Math.ceil(maxDim * 1.5)));
+        const TILE_OUT = Math.min(4096, Math.max(2048, Math.ceil(maxDim * 1.2)));
         const canvas = document.createElement("canvas");
         canvas.width  = TILE_OUT;
         canvas.height = TILE_OUT;
@@ -1101,7 +1124,7 @@ export function PatternCustomizer({
           ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
         }
         drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, scale, patternType);
-        const tiledDataUrl = canvas.toDataURL("image/png");
+        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096);
         await onApply(tiledDataUrl, {
           mode,
           patternType,
@@ -1173,7 +1196,7 @@ export function PatternCustomizer({
           0, 0, rightDef.width, rightDef.height,
           0, 0, rightDef.width, rightDef.height
         );
-        panelUrls.push({ position: rightPos, dataUrl: cropRight.toDataURL("image/png") });
+        panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight) });
 
         // Crop left panel canvas (or mirror-flipped if mirrorMode is on)
         const cropLeft = document.createElement("canvas");
@@ -1196,7 +1219,7 @@ export function PatternCustomizer({
             0,              0, leftDef.width, leftDef.height
           );
         }
-        panelUrls.push({ position: leftPos, dataUrl: cropLeft.toDataURL("image/png") });
+        panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft) });
 
         compositeCovered.add(rightPos);
         compositeCovered.add(leftPos);
@@ -1237,7 +1260,7 @@ export function PatternCustomizer({
             mCtx.scale(-1, 1);
             mCtx.drawImage(srcImg, 0, 0, p.width, p.height);
             mCtx.restore();
-            panelUrls.push({ position: p.position, dataUrl: mirrorCanvas.toDataURL("image/png") });
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas) });
             continue;
           }
         }
@@ -1281,12 +1304,12 @@ export function PatternCustomizer({
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(240px,300px)] gap-4 p-2 sm:p-3 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(260px,min(44vw,480px))] gap-4 p-2 sm:p-3 flex-1 min-h-0">
         {/* Preview — matches mockup column height when embedded */}
         <div className="flex flex-col min-h-0 min-w-0">
           <div
             ref={previewWrapRef}
-            className="relative w-full flex-1 min-h-[min(520px,72vh)] max-h-[min(560px,80vh)] border-2 border-foreground/20 rounded-md bg-muted/50 flex items-center justify-center overflow-hidden"
+            className="relative w-full flex-1 min-h-[min(480px,78vh)] max-h-[min(920px,88vh)] border-2 border-foreground/20 rounded-md bg-muted/50 flex items-center justify-center overflow-hidden"
           >
             <canvas
               ref={canvasRef}
