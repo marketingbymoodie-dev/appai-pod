@@ -1180,8 +1180,8 @@ export function PatternCustomizer({
         }
 
         // Draw SVG sew-pattern backgrounds
-        const rightSvgImg = svgImages[mapPositionToSvgName(rightPos)] || svgImages[rightPos];
-        const leftSvgImg  = svgImages[mapPositionToSvgName(leftPos)]  || svgImages[leftPos];
+        const rightSvgImg = svgImages[rightPos] || svgImages[mapPositionToSvgName(rightPos)];
+        const leftSvgImg  = svgImages[leftPos]  || svgImages[mapPositionToSvgName(leftPos)];
         if (rightSvgImg) ctx.drawImage(rightSvgImg, 0,              0, rightDef.width, rightDef.height);
         if (leftSvgImg)  ctx.drawImage(leftSvgImg,  rightDef.width, 0, leftDef.width,  leftDef.height);
 
@@ -1304,7 +1304,7 @@ export function PatternCustomizer({
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(260px,min(44vw,480px))] gap-4 p-2 sm:p-3 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)] gap-4 p-2 sm:p-3 flex-1 min-h-0">
         {/* Preview — matches mockup column height when embedded */}
         <div className="flex flex-col min-h-0 min-w-0">
           <div

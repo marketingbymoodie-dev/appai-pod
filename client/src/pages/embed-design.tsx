@@ -3981,12 +3981,18 @@ export default function EmbedDesign() {
         <div
           className={`grid grid-cols-1 gap-4 sm:gap-6 ${
             showPatternStep && aopPendingMotifUrl
-              ? "lg:grid-cols-[minmax(280px,1.35fr)_minmax(22rem,42rem)]"
+              ? "lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)_minmax(0,1fr)]"
               : "md:grid-cols-2"
           }`}
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
-          <div className={`space-y-4 order-1 ${showPatternStep && aopPendingMotifUrl ? "lg:order-2" : "md:order-2"}`}>
+          <div
+            className={`space-y-4 order-1 ${
+              showPatternStep && aopPendingMotifUrl
+                ? "lg:order-3 lg:col-start-3"
+                : "md:order-2"
+            }`}
+          >
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
@@ -4905,7 +4911,14 @@ export default function EmbedDesign() {
           </div>
 
           {/* Artwork preview panel — left on desktop, second on mobile */}
-          <div ref={artworkColumnRef} className={`order-2 ${showPatternStep && aopPendingMotifUrl ? "lg:order-1 flex flex-col min-h-[560px]" : "space-y-3 md:order-1"}`}>
+          <div
+            ref={artworkColumnRef}
+            className={`order-2 ${
+              showPatternStep && aopPendingMotifUrl
+                ? "lg:order-1 lg:col-span-2 flex flex-col min-h-[560px]"
+                : "space-y-3 md:order-1"
+            }`}
+          >
 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
