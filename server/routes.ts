@@ -5450,6 +5450,110 @@ ${textEdgeRestrictions}
     }
   });
 
+  // GET /api/storefront/debug/panel-svgs?shop=...&productTypeId=...
+  // Unauthenticated diagnostic: tests stored SVG URLs and fetches live Printify views.
+  app.get("/api/storefront/debug/panel-svgs", asyncHandler(async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+    const productTypeId = parseInt(req.query.productTypeId as string);
+    if (!shop || !productTypeId) return res.status(400).json({ error: "Missing shop or productTypeId" });
+
+    const merchant = await storage.getMerchantByShop(shop);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const pt = await storage.getProductType(productTypeId);
+    if (!pt || pt.merchantId !== merchant.id) return res.status(404).json({ error: "Product type not found" });
+
+    let storedImages: Record<string, string> = {};
+    try {
+      storedImages = typeof pt.panelFlatLayImages === "string"
+        ? JSON.parse(pt.panelFlatLayImages || "{}") : (pt.panelFlatLayImages as any) || {};
+    } catch { storedImages = {}; }
+
+    // Test each stored URL
+    const urlTests: Record<string, { status: number | string; contentType: string | null }> = {};
+    await Promise.all(Object.entries(storedImages).map(async ([pos, url]) => {
+      try {
+        const r = await fetch(url, { headers: { Accept: "image/*,*/*" }, signal: AbortSignal.timeout(8000) });
+        urlTests[pos] = { status: r.status, contentType: r.headers.get("content-type") };
+      } catch (e: any) {
+        urlTests[pos] = { status: e?.message || "error", contentType: null };
+      }
+    }));
+
+    // Fetch live views from Printify API
+    let printifyViews: any[] = [];
+    let printifyError: string | null = null;
+    if (pt.printifyBlueprintId && pt.printifyProviderId && merchant.printifyApiToken) {
+      try {
+        const vr = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers/${pt.printifyProviderId}/variants.json`,
+          { headers: { Authorization: `Bearer ${merchant.printifyApiToken}` }, signal: AbortSignal.timeout(15000) }
+        );
+        if (vr.ok) {
+          const vdata = await vr.json();
+          printifyViews = (vdata.views || []).map((v: any) => ({ position: v.position, src: v.files?.[0]?.src }));
+        } else {
+          printifyError = `Printify API ${vr.status}`;
+        }
+      } catch (e: any) { printifyError = e?.message || "error"; }
+    } else {
+      printifyError = "Missing blueprintId/providerId/apiToken";
+    }
+
+    res.json({
+      productTypeId: pt.id, name: pt.name,
+      printifyBlueprintId: pt.printifyBlueprintId,
+      printifyProviderId: pt.printifyProviderId,
+      storedImages, urlTests,
+      printifyLiveViews: printifyViews,
+      printifyError,
+    });
+  }));
+
+  // POST /api/storefront/debug/refresh-panel-svgs?shop=...&productTypeId=...
+  // Unauthenticated refresh: saves live Printify views to panelFlatLayImages in DB.
+  app.post("/api/storefront/debug/refresh-panel-svgs", asyncHandler(async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+    const productTypeId = parseInt(req.query.productTypeId as string);
+    if (!shop || !productTypeId) return res.status(400).json({ error: "Missing shop or productTypeId" });
+
+    const merchant = await storage.getMerchantByShop(shop);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const pt = await storage.getProductType(productTypeId);
+    if (!pt || pt.merchantId !== merchant.id) return res.status(404).json({ error: "Product type not found" });
+
+    if (!pt.printifyBlueprintId || !pt.printifyProviderId || !merchant.printifyApiToken) {
+      return res.status(400).json({ error: "Missing blueprintId/providerId/apiToken" });
+    }
+
+    const vr = await fetch(
+      `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers/${pt.printifyProviderId}/variants.json`,
+      { headers: { Authorization: `Bearer ${merchant.printifyApiToken}` } }
+    );
+    if (!vr.ok) return res.status(502).json({ error: `Printify API ${vr.status}` });
+
+    const vdata = await vr.json();
+    const views: any[] = vdata.views || [];
+    const newImages: Record<string, string> = {};
+    for (const view of views) {
+      if (view.position && view.files?.[0]?.src) newImages[view.position] = view.files[0].src;
+    }
+
+    if (Object.keys(newImages).length === 0) {
+      return res.status(200).json({ message: "Printify returned no views — panelFlatLayImages unchanged", views: [] });
+    }
+
+    if (newImages.left_leg && !newImages.left_side) newImages.left_side = newImages.left_leg;
+    if (newImages.right_leg && !newImages.right_side) newImages.right_side = newImages.right_leg;
+    if (newImages.left_side && !newImages.left_leg) newImages.left_leg = newImages.left_side;
+    if (newImages.right_side && !newImages.right_leg) newImages.right_leg = newImages.right_side;
+
+    await storage.updateProductType(productTypeId, { panelFlatLayImages: JSON.stringify(newImages) });
+    console.log(`[refresh-panel-svgs] Updated productType ${productTypeId} with ${Object.keys(newImages).length} views`);
+    res.json({ success: true, panelFlatLayImages: newImages, count: Object.keys(newImages).length });
+  }));
+
   // Debug endpoint to list all product types for a shop (no auth, for troubleshooting)
   app.get("/api/storefront/debug/product-types", async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
