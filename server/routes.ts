@@ -5528,10 +5528,21 @@ ${textEdgeRestrictions}
       console.warn(`[panel-svg] Upstream ${upstream.status} for ${parsed.hostname}`);
       return res.status(502).json({ error: "Failed to fetch panel image" });
     }
-    const ct = upstream.headers.get("content-type") || "image/svg+xml";
-    res.setHeader("Content-Type", ct);
-    res.setHeader("Cache-Control", "public, max-age=86400");
     const buf = Buffer.from(await upstream.arrayBuffer());
+    const ct = upstream.headers.get("content-type") || "image/svg+xml";
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    // Some browsers/iframe contexts are flaky with remote SVG masks. Rasterize once
+    // on the server so the client always receives a clean alpha PNG for panel masking.
+    if (ct.includes("svg") || ct.includes("xml")) {
+      try {
+        const png = await sharp(buf).png().toBuffer();
+        res.setHeader("Content-Type", "image/png");
+        return res.send(png);
+      } catch (e) {
+        console.warn(`[panel-svg] SVG rasterize failed for ${parsed.hostname}:`, (e as Error)?.message || e);
+      }
+    }
+    res.setHeader("Content-Type", ct);
     res.send(buf);
   }));
 

@@ -930,9 +930,17 @@ export function PatternCustomizer({
   }
 
   function getMirrorSource(pos: string, slots: PanelSlot[]): string | null {
+    const pl = pos.toLowerCase();
+    // Leggings panels often use left/right_side or left/right_leg without front/back grouping.
+    if (pl.includes("left") && (pl.includes("side") || pl.includes("leg"))) {
+      const rightLeg = slots.find(s => {
+        const sl = s.position.toLowerCase();
+        return sl.includes("right") && (sl.includes("side") || sl.includes("leg"));
+      });
+      if (rightLeg) return rightLeg.position;
+    }
     const source = slots.find(s => {
       const sl = s.position.toLowerCase();
-      const pl = pos.toLowerCase();
       // Match same group (front/hood/back) but opposite side
       const sameGroup = (sl.includes("front") && pl.includes("front")) ||
                         (sl.includes("hood")  && pl.includes("hood"))  ||
@@ -958,16 +966,27 @@ export function PatternCustomizer({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    const getEditablePanelForDrag = (panel: string): string => {
+      if (!mirrorMode || !panel) return panel;
+      const { slots } =
+        productKind === "hoodie"
+          ? buildCompositeLayout(activeView, panelPositions)
+          : buildLinearPanelsLayout(panelPositions);
+      const source = getMirrorSource(panel, slots);
+      return source || panel;
+    };
+
     const onMouseDown = (e: MouseEvent) => {
       if (!activePanel || mode !== "place") return;
-      const t = perPanelTransforms[activePanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+      const editPanel = getEditablePanelForDrag(activePanel);
+      const t = perPanelTransforms[editPanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
       dragRef.current = {
         active: true,
         startClientX: e.clientX,
         startClientY: e.clientY,
         startDx: t.dxPx,
         startDy: t.dyPx,
-        panel: activePanel,
+        panel: editPanel,
       };
     };
 
@@ -983,7 +1002,8 @@ export function PatternCustomizer({
 
     const onTouchStart = (e: TouchEvent) => {
       if (!activePanel || mode !== "place" || e.touches.length !== 1) return;
-      const t = perPanelTransforms[activePanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+      const editPanel = getEditablePanelForDrag(activePanel);
+      const t = perPanelTransforms[editPanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
       const touch = e.touches[0];
       dragRef.current = {
         active: true,
@@ -991,7 +1011,7 @@ export function PatternCustomizer({
         startClientY: touch.clientY,
         startDx: t.dxPx,
         startDy: t.dyPx,
-        panel: activePanel,
+        panel: editPanel,
       };
     };
 
@@ -1019,7 +1039,7 @@ export function PatternCustomizer({
       canvas.removeEventListener("touchmove",  onTouchMove);
       window.removeEventListener("touchend",   onMouseUp);
     };
-  }, [activePanel, mode, perPanelTransforms]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activePanel, mode, perPanelTransforms, mirrorMode, productKind, activeView, panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updatePanelTransform = useCallback(
     (position: string, partial: Partial<PanelTransform>) => {
@@ -1304,7 +1324,7 @@ export function PatternCustomizer({
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)] gap-4 p-2 sm:p-3 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)] gap-4 p-2 sm:p-3 flex-1 min-h-0">
         {/* Preview — matches mockup column height when embedded */}
         <div className="flex flex-col min-h-0 min-w-0">
           <div

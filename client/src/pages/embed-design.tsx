@@ -3981,7 +3981,7 @@ export default function EmbedDesign() {
         <div
           className={`grid grid-cols-1 gap-4 sm:gap-6 ${
             showPatternStep && aopPendingMotifUrl
-              ? "lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)_minmax(0,1fr)]"
+              ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
               : "md:grid-cols-2"
           }`}
         >
@@ -5113,6 +5113,16 @@ export default function EmbedDesign() {
                   );
                 })()}
               </div>
+
+              {/* Explicit mockup-loading spinner overlay */}
+              {isStorefront && (mockupLoading || mockupTriggered) && generatedDesign?.imageUrl && (
+                <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
+                  <div className="rounded-full bg-black/60 text-white px-4 py-2 text-sm font-medium flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Generating mockups...
+                  </div>
+                </div>
+              )}
 
               {/* Left/right arrow navigation — only when mockups are available */}
               {isStorefront && generatedDesign?.imageUrl && (() => {
