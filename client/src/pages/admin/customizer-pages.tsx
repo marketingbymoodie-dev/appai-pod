@@ -1144,7 +1144,15 @@ export default function AdminCustomizerPages() {
                                 <span className="block">The app is missing the <code>read_online_store_navigation</code> permission. Click below to reinstall — it only takes a moment.</span>
                                 <button
                                   className="mt-1 underline font-semibold text-amber-800"
-                                  onClick={() => window.open(`/shopify/reinstall?shop=${shopDomain}`, "_top")}
+                                  onClick={async () => {
+                                    try {
+                                      const res = await fetch(`/shopify/reinstall-url?shop=${encodeURIComponent(shopDomain)}`);
+                                      const data = await res.json();
+                                      window.open(data.url || `/shopify/install?shop=${encodeURIComponent(shopDomain)}`, "_top");
+                                    } catch {
+                                      window.open(`/shopify/install?shop=${encodeURIComponent(shopDomain)}`, "_top");
+                                    }
+                                  }}
                                 >
                                   Reinstall App →
                                 </button>

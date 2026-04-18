@@ -430,12 +430,49 @@ if (res.locals.shopify?.session?.shop) {
     res.status(200).send("OK");
   });
 
-  // Revoke token and redirect to reinstall (forces new permission prompt)
+  // Returns a signed reinstall URL for the given shop. Only callable by authenticated
+  // admin sessions (auth guard applied in routes.ts after this file registers routes).
+  // The resulting URL includes a time-stable HMAC key that the /shopify/reinstall
+  // route validates, ensuring no unauthenticated actor can trigger revocation.
+  app.get("/shopify/reinstall-url", async (req: Request, res: Response) => {
+    const shop = req.query.shop as string;
+    if (!shop || !isValidShopDomain(shop)) {
+      return res.status(400).json({ error: "Invalid or missing shop domain" });
+    }
+    const key = SHOPIFY_API_SECRET
+      ? crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(shop).digest("hex")
+      : "dev";
+    const url = `/shopify/reinstall?shop=${encodeURIComponent(shop)}&key=${key}`;
+    res.json({ url });
+  });
+
+  // Revoke token and redirect to reinstall (forces new permission prompt).
+  // Protected: requires a valid HMAC key to prevent unauthenticated calls from
+  // automated probes/health-checks from accidentally revoking live tokens.
+  // Generate the key via GET /shopify/reinstall-url?shop=X (admin-authenticated).
   app.get("/shopify/reinstall", async (req: Request, res: Response) => {
     const shop = req.query.shop as string;
+    const key  = req.query.key  as string;
 
     if (!shop || !isValidShopDomain(shop)) {
       return res.status(400).send("Invalid or missing shop domain");
+    }
+
+    // Require a time-stable HMAC(secret, shop) so only someone with the API
+    // secret (i.e. the server / admin UI) can trigger token revocation.
+    if (SHOPIFY_API_SECRET) {
+      const expected = crypto
+        .createHmac("sha256", SHOPIFY_API_SECRET)
+        .update(shop)
+        .digest("hex");
+      const provided = key || "";
+      const valid =
+        provided.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+      if (!valid) {
+        console.warn(`[shopify/reinstall] Blocked unauthenticated request for ${shop} from ${req.ip}`);
+        return res.status(403).send("Forbidden — reinstall requires a valid key");
+      }
     }
 
     try {

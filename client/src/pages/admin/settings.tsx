@@ -43,10 +43,17 @@ export default function AdminSettings() {
     select: (data) => data.installations,
   });
 
-  const handleReconnectStore = (shopDomain: string) => {
-    // Open Shopify reinstall in a new tab (attempts to revoke and reinstall)
-    const reinstallUrl = `${window.location.origin}/shopify/reinstall?shop=${encodeURIComponent(shopDomain)}`;
-    window.open(reinstallUrl, '_blank');
+  const handleReconnectStore = async (shopDomain: string) => {
+    try {
+      // Fetch a signed reinstall URL from the server so the key is never exposed in client code
+      const res = await fetch(`/shopify/reinstall-url?shop=${encodeURIComponent(shopDomain)}`);
+      const data = await res.json();
+      if (data.url) {
+        window.open(`${window.location.origin}${data.url}`, '_blank');
+      }
+    } catch {
+      window.open(`${window.location.origin}/shopify/install?shop=${encodeURIComponent(shopDomain)}`, '_blank');
+    }
   };
 
   const handleSyncUrls = async () => {
