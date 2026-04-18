@@ -5483,19 +5483,64 @@ ${textEdgeRestrictions}
     // Fetch live views from Printify API
     let printifyViews: any[] = [];
     let printifyError: string | null = null;
+    let blueprintImages: any[] = [];
+    let allProviderViews: any[] = [];
+
     if (pt.printifyBlueprintId && pt.printifyProviderId && merchant.printifyApiToken) {
+      const authHeaders = { Authorization: `Bearer ${merchant.printifyApiToken}` };
+      const timeout = { signal: AbortSignal.timeout(15000) };
+
+      // 1. Check variants for current provider
       try {
         const vr = await fetch(
           `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers/${pt.printifyProviderId}/variants.json`,
-          { headers: { Authorization: `Bearer ${merchant.printifyApiToken}` }, signal: AbortSignal.timeout(15000) }
+          { headers: authHeaders, ...timeout }
         );
         if (vr.ok) {
           const vdata = await vr.json();
           printifyViews = (vdata.views || []).map((v: any) => ({ position: v.position, src: v.files?.[0]?.src }));
         } else {
-          printifyError = `Printify API ${vr.status}`;
+          printifyError = `Printify variants API ${vr.status}`;
         }
       } catch (e: any) { printifyError = e?.message || "error"; }
+
+      // 2. Blueprint details — has `images` field with flat-lay thumbnails
+      try {
+        const br = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}.json`,
+          { headers: authHeaders, ...timeout }
+        );
+        if (br.ok) {
+          const bdata = await br.json();
+          blueprintImages = bdata.images || [];
+        }
+      } catch { /* non-fatal */ }
+
+      // 3. Try all providers for this blueprint to find one that has views
+      try {
+        const pr = await fetch(
+          `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers.json`,
+          { headers: authHeaders, ...timeout }
+        );
+        if (pr.ok) {
+          const providers: any[] = await pr.json();
+          await Promise.all(providers.slice(0, 5).map(async (prov: any) => {
+            try {
+              const vr2 = await fetch(
+                `https://api.printify.com/v1/catalog/blueprints/${pt.printifyBlueprintId}/print_providers/${prov.id}/variants.json`,
+                { headers: authHeaders, signal: AbortSignal.timeout(10000) }
+              );
+              if (vr2.ok) {
+                const vd2 = await vr2.json();
+                const views2 = (vd2.views || []).map((v: any) => ({ position: v.position, src: v.files?.[0]?.src }));
+                if (views2.length > 0) {
+                  allProviderViews.push({ providerId: prov.id, providerTitle: prov.title, views: views2 });
+                }
+              }
+            } catch { /* skip */ }
+          }));
+        }
+      } catch { /* non-fatal */ }
     } else {
       printifyError = "Missing blueprintId/providerId/apiToken";
     }
@@ -5506,6 +5551,8 @@ ${textEdgeRestrictions}
       printifyProviderId: pt.printifyProviderId,
       storedImages, urlTests,
       printifyLiveViews: printifyViews,
+      blueprintImages,
+      allProviderViews,
       printifyError,
     });
   }));
