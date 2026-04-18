@@ -16,11 +16,12 @@
  * Hood and back panels are rendered in separate "view" tabs.
  */
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Loader2 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -67,8 +68,8 @@ const BG_PRESETS = [
   { label: "Cream",       value: "#fffdd0" },
 ];
 
-/** Logical pixel size of the preview canvas element */
-const PREVIEW_PX = 280;
+/** Default preview canvas size; actual size follows container (ResizeObserver). */
+const PREVIEW_PX_DEFAULT = 400;
 
 /** Fixed viewport size in inches shown in the preview. */
 const PREVIEW_INCHES = 6;
@@ -95,8 +96,9 @@ function detectProductKind(
   panels: Array<{ position: string }>
 ): "hoodie" | "leggings" | "generic" {
   const p = panels.map(x => x.position.toLowerCase());
-  if (p.some(x => x.includes("hood") || x.includes("front_") || x.includes("back_"))) return "hoodie";
-  if (p.some(x => x.includes("_side") || x.includes("_leg"))) return "leggings";
+  // Leggings first — avoid classifying back_waistband / front_waistband as "hoodie" via generic "back_" / "front_"
+  if (p.some(x => x.includes("_leg") || x.includes("_side") || x.includes("waistband"))) return "leggings";
+  if (p.some(x => x.includes("hood") || /^front_(left|right)/.test(x) || /^back_(left|right)/.test(x))) return "hoodie";
   return "generic";
 }
 
@@ -178,6 +180,24 @@ function buildLeggingsLayout(
   };
 }
 
+const LEGGINGS_GAP = 40;
+
+/** All leggings / multi-panel AOP in one row (API order) — legs + waistbands. */
+function buildLinearPanelsLayout(
+  panels: Array<{ position: string; width: number; height: number }>,
+): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
+  if (panels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
+  let x = 0;
+  const slots: PanelSlot[] = [];
+  let maxH = 0;
+  for (const p of panels) {
+    slots.push({ position: p.position, x, y: 0, w: p.width, h: p.height });
+    x += p.width + LEGGINGS_GAP;
+    maxH = Math.max(maxH, p.height);
+  }
+  return { compositeW: x - LEGGINGS_GAP, compositeH: maxH, slots };
+}
+
 // ── Canvas draw helpers ───────────────────────────────────────────────────────
 
 /**
@@ -214,18 +234,39 @@ function drawArtworkInSlot(
   ctx.restore();
 }
 
-/** Draw the SVG sew-pattern shape as a background (or clip mask). */
-function drawSvgBackground(
+/** Draw the SVG sew-pattern shape as a background. Returns true if drawn. */
+function tryDrawSvgBackground(
   ctx: CanvasRenderingContext2D,
   svgImages: Record<string, HTMLImageElement>,
   position: string,
-  slotX: number, slotY: number, slotW: number, slotH: number,
-) {
-  const svgName = mapPositionToSvgName(position);
-  const svgImg  = svgImages[svgName] || svgImages[position];
-  if (svgImg) {
-    ctx.drawImage(svgImg, slotX, slotY, slotW, slotH);
+  slotX: number,
+  slotY: number,
+  slotW: number,
+  slotH: number,
+): boolean {
+  for (const key of flatLayLookupKeys(position)) {
+    const svgImg = svgImages[key];
+    if (svgImg) {
+      ctx.drawImage(svgImg, slotX, slotY, slotW, slotH);
+      return true;
+    }
   }
+  return false;
+}
+
+function getSvgImageForPosition(
+  svgImages: Record<string, HTMLImageElement>,
+  position: string,
+): HTMLImageElement | null {
+  for (const key of flatLayLookupKeys(position)) {
+    if (svgImages[key]) return svgImages[key]!;
+  }
+  return null;
+}
+
+function isLeftLegPanelPosition(position: string): boolean {
+  const l = position.toLowerCase();
+  return l.includes("left") && !l.includes("right") && (l.includes("leg") || l.includes("side"));
 }
 
 /** Draw center snap guides (dashed cross) for the active panel slot. */
@@ -273,6 +314,96 @@ function mapPositionToSvgName(position: string): string {
   return position;
 }
 
+/** Keys to try when resolving a flat-lay URL (Printify naming varies). */
+function flatLayLookupKeys(position: string): string[] {
+  const l = position.toLowerCase();
+  const keys = new Set<string>([position, mapPositionToSvgName(position)]);
+  if (l.includes("left_side") || l === "left") keys.add("left_leg");
+  if (l.includes("right_side") || l === "right") keys.add("right_leg");
+  if (l.includes("left") && !l.includes("right")) keys.add("left_leg");
+  if (l.includes("right") && !l.includes("left")) keys.add("right_leg");
+  return [...keys];
+}
+
+function resolveFlatLayUrl(
+  position: string,
+  panelFlatLayImages: Record<string, string> | undefined,
+): string | undefined {
+  if (!panelFlatLayImages) return undefined;
+  for (const k of flatLayLookupKeys(position)) {
+    if (panelFlatLayImages[k]) return panelFlatLayImages[k];
+  }
+  const lowerMap = Object.fromEntries(
+    Object.entries(panelFlatLayImages).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  for (const k of flatLayLookupKeys(position)) {
+    if (lowerMap[k.toLowerCase()]) return lowerMap[k.toLowerCase()];
+  }
+  return undefined;
+}
+
+/** Sew-safe dashed inner rect + solid outer (when SVG missing). */
+function drawFallbackPanelOutline(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(30,30,30,0.85)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
+  drawSewSafeDashed(ctx, sx, sy, sw, sh);
+  ctx.restore();
+}
+
+/** Inner dashed “safe / sew” line — drawn on top of SVG or flat fills. */
+function drawSewSafeDashed(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+) {
+  ctx.save();
+  ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = "rgba(0,0,0,0.4)";
+  ctx.lineWidth = 1;
+  const inset = Math.max(4, Math.min(sw, sh) * 0.04);
+  ctx.strokeRect(sx + inset, sy + inset, sw - 2 * inset, sh - 2 * inset);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+/**
+ * Tile motif in a rectangle with grid / brick / half-drop. `tilesAcross` = tiles across the rect width.
+ */
+function drawTiledMotifInRect(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  sx: number,
+  sy: number,
+  rw: number,
+  rh: number,
+  tilesAcross: number,
+  patternType: PatternType,
+) {
+  const tileW = Math.max(4, rw / Math.max(1, tilesAcross));
+  const tileH = tileW * (img.height / img.width);
+  const cols = Math.ceil(rw / tileW) + 2;
+  const rows = Math.ceil(rh / tileH) + 2;
+  for (let row = -1; row < rows; row++) {
+    for (let col = -1; col < cols; col++) {
+      let x = col * tileW;
+      let y = row * tileH;
+      if (patternType === "brick" && (row & 1)) x += tileW * 0.5;
+      if (patternType === "half" && (col & 1)) y += tileH * 0.5;
+      ctx.drawImage(img, sx + x, sy + y, tileW, tileH);
+    }
+  }
+}
+
 // ── Snap helper ───────────────────────────────────────────────────────────────
 
 /**
@@ -304,6 +435,8 @@ interface PatternCustomizerProps {
   onPlacementChange?: (placement: AopPlacementSettings) => void;
   onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
   onCancel?: () => void;
+  /** Optional row under Apply (e.g. Share + Edit pattern in embed). */
+  footerSlot?: ReactNode;
   isLoading?: boolean;
   productTypeConfig?: { placeholderPositions?: Array<{ position: string; width: number; height: number }> };
 }
@@ -337,6 +470,8 @@ export function PatternCustomizer({
   const [applyLoading, setApplyLoading] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const previewWrapRef = useRef<HTMLDivElement>(null);
+  const [previewPx, setPreviewPx] = useState(PREVIEW_PX_DEFAULT);
   const [motifImage, setMotifImage] = useState<HTMLImageElement | null>(null);
   const [svgImages, setSvgImages]   = useState<Record<string, HTMLImageElement>>({});
 
@@ -370,33 +505,105 @@ export function PatternCustomizer({
   const [svgLoadErrors, setSvgLoadErrors] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!panelFlatLayImages || Object.keys(panelFlatLayImages).length === 0) return;
-    const loaded: Record<string, HTMLImageElement> = {};
-    const errors: string[] = [];
-    let pending = Object.keys(panelFlatLayImages).length;
-    for (const [name, url] of Object.entries(panelFlatLayImages)) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        loaded[name] = img;
-        pending--;
-        if (pending === 0) {
-          setSvgImages({ ...loaded });
-          if (errors.length > 0) setSvgLoadErrors(errors);
-        }
-      };
-      img.onerror = () => {
-        console.warn(`[PatternCustomizer] SVG load failed for position "${name}": ${url.substring(0, 80)}`);
-        errors.push(name);
-        pending--;
-        if (pending === 0) {
-          setSvgImages({ ...loaded });
-          setSvgLoadErrors(errors);
-        }
-      };
-      img.src = url;
+    const el = previewWrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      const s = Math.floor(Math.min(Math.max(w, 160), Math.max(h, 160), 560));
+      if (s >= 160) setPreviewPx(s);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!panelFlatLayImages || Object.keys(panelFlatLayImages).length === 0) {
+      setSvgImages({});
+      setSvgLoadErrors([]);
+      return;
     }
-  }, [panelFlatLayImages]);
+
+    (async () => {
+      const loaded: Record<string, HTMLImageElement> = {};
+      const errors: string[] = [];
+
+      const loadOne = async (name: string, url: string) => {
+        if (fetchFn) {
+          try {
+            const res = await fetchFn(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            const objUrl = URL.createObjectURL(blob);
+            const img = new Image();
+            await new Promise<void>((resolve, reject) => {
+              img.onload = () => resolve();
+              img.onerror = () => reject(new Error("img"));
+              img.src = objUrl;
+            });
+            loaded[name] = img;
+            return;
+          } catch (e) {
+            console.warn(`[PatternCustomizer] fetch SVG "${name}":`, e);
+          }
+        }
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        try {
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error("img"));
+            img.src = url;
+          });
+          loaded[name] = img;
+        } catch {
+          const img2 = new Image();
+          try {
+            await new Promise<void>((resolve, reject) => {
+              img2.onload = () => resolve();
+              img2.onerror = () => reject(new Error("img"));
+              img2.src = url;
+            });
+            loaded[name] = img2;
+          } catch {
+            errors.push(name);
+            console.warn(`[PatternCustomizer] SVG load failed: ${name}`);
+          }
+        }
+      };
+
+      await Promise.all(
+        Object.entries(panelFlatLayImages).map(([name, url]) => loadOne(name, url)),
+      );
+
+      if (cancelled) return;
+
+      for (const p of panelPositions) {
+        let ref: HTMLImageElement | undefined;
+        for (const k of flatLayLookupKeys(p.position)) {
+          if (loaded[k]) {
+            ref = loaded[k];
+            break;
+          }
+        }
+        if (ref) {
+          for (const a of flatLayLookupKeys(p.position)) {
+            if (!loaded[a]) loaded[a] = ref;
+          }
+        }
+      }
+
+      setSvgImages(loaded);
+      setSvgLoadErrors(errors);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [panelFlatLayImages, fetchFn, panelPositions]);
 
   // Initialise panel transforms when positions become available
   useEffect(() => {
@@ -420,118 +627,227 @@ export function PatternCustomizer({
     }
   }, [panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Preview canvas render ──────────────────────────────────────────────────
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !motifImage) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    canvas.width  = PREVIEW_PX;
-    canvas.height = PREVIEW_PX;
-
-    ctx.clearRect(0, 0, PREVIEW_PX, PREVIEW_PX);
-    if (bgColor && bgColor !== "transparent") {
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, PREVIEW_PX, PREVIEW_PX);
-    }
-
-    if (mode === "pattern") {
-      const tileSize = (PREVIEW_INCHES * 96) / scale;
-      for (let row = -1; row < Math.ceil(PREVIEW_PX / tileSize) + 1; row++) {
-        for (let col = -1; col < Math.ceil(PREVIEW_PX / tileSize) + 1; col++) {
-          ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
-        }
-      }
-    } else if (mode === "place" && panelPositions.length > 0) {
-      renderPanelPreview(ctx, motifImage);
-    }
-  }, [mode, scale, bgColor, motifImage, panelPositions, perPanelTransforms, activePanel, mirrorMode, svgImages, activeView]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const renderPanelPreview = useCallback(
-    (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number) => {
+      const pad = 20;
       if (productKind === "hoodie") {
         const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
         if (compositeW === 0) return;
-        const scl = Math.min((PREVIEW_PX - 20) / compositeW, (PREVIEW_PX - 20) / compositeH, 1);
-        const offX = (PREVIEW_PX - compositeW * scl) / 2;
-        const offY = (PREVIEW_PX - compositeH * scl) / 2;
+        const scl = Math.min((px - pad) / compositeW, (px - pad) / compositeH, 1);
+        const offX = (px - compositeW * scl) / 2;
+        const offY = (px - compositeH * scl) / 2;
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
           const sy = offY + slot.y * scl;
           const sw = slot.w * scl;
           const sh = slot.h * scl;
+          const hasSvg = !!getSvgImageForPosition(svgImages, slot.position);
 
-          // Background (SVG sew pattern)
           ctx.save();
-          ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
-          drawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
+          ctx.beginPath();
+          ctx.rect(sx, sy, sw, sh);
+          ctx.clip();
+          if (hasSvg) {
+            tryDrawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
+          } else {
+            ctx.fillStyle = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+            ctx.fillRect(sx, sy, sw, sh);
+          }
 
-          // Artwork: determine if this panel is the mirror target
           const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
           const mirrorTarget = mirrorMode && isMirrorTarget(slot.position, slots);
-          const sourcePos    = mirrorTarget ? getMirrorSource(slot.position, slots) : null;
-          const effectiveT   = sourcePos ? (perPanelTransforms[sourcePos] || t) : t;
+          const sourcePos = mirrorTarget ? getMirrorSource(slot.position, slots) : null;
+          const effectiveT = sourcePos ? (perPanelTransforms[sourcePos] || t) : t;
 
           drawArtworkInSlot(ctx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
           ctx.restore();
 
+          if (hasSvg) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(25,25,25,0.88)";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
+            drawSewSafeDashed(ctx, sx, sy, sw, sh);
+            ctx.restore();
+          } else {
+            drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+          }
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
 
-        // Seam centre indicator between paired panels
         if (slots.length === 2) {
-          const right = slots[0]; const left = slots[1];
+          const right = slots[0];
+          const left = slots[1];
           const seamX = offX + (right.x + right.w) * scl + (left.x - right.x - right.w) * scl / 2;
           ctx.save();
           ctx.strokeStyle = "rgba(255,80,80,0.6)";
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
-          ctx.beginPath(); ctx.moveTo(seamX, offY); ctx.lineTo(seamX, offY + compositeH * scl); ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(seamX, offY);
+          ctx.lineTo(seamX, offY + compositeH * scl);
+          ctx.stroke();
           ctx.setLineDash([]);
           ctx.restore();
         }
       } else {
-        // Leggings (or generic paired panels)
-        const { leftLeg, rightLeg, gap } = buildLeggingsLayout(panelPositions);
-        const totalW = (leftLeg?.w || 0) + gap + (rightLeg?.w || 0);
-        const totalH = Math.max(leftLeg?.h || 0, rightLeg?.h || 0);
-        if (totalW === 0) return;
-        const scl  = Math.min((PREVIEW_PX - 20) / totalW, (PREVIEW_PX - 20) / totalH, 1);
-        const offX = (PREVIEW_PX - totalW * scl) / 2;
-        const offY = (PREVIEW_PX - totalH * scl) / 2;
+        const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
+        if (compositeW === 0) return;
+        const scl = Math.min((px - pad) / compositeW, (px - pad) / compositeH, 1);
+        const offX = (px - compositeW * scl) / 2;
+        const offY = (px - compositeH * scl) / 2;
 
-        for (const leg of [rightLeg, leftLeg]) {
-          if (!leg) continue;
-          const sx = offX + leg.x * scl;
-          const sy = offY + leg.y * scl;
-          const sw = leg.w * scl;
-          const sh = leg.h * scl;
+        const rightLegPos = panelPositions.find(p => {
+          const l = p.position.toLowerCase();
+          return l.includes("right") && (l.includes("leg") || l.includes("side"));
+        })?.position;
+
+        for (const slot of slots) {
+          const sx = offX + slot.x * scl;
+          const sy = offY + slot.y * scl;
+          const sw = slot.w * scl;
+          const sh = slot.h * scl;
+          const hasSvg = !!getSvgImageForPosition(svgImages, slot.position);
 
           ctx.save();
-          ctx.beginPath(); ctx.rect(sx, sy, sw, sh); ctx.clip();
-          drawSvgBackground(ctx, svgImages, leg.position, sx, sy, sw, sh);
+          ctx.beginPath();
+          ctx.rect(sx, sy, sw, sh);
+          ctx.clip();
+          if (hasSvg) {
+            tryDrawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
+          } else {
+            ctx.fillStyle = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+            ctx.fillRect(sx, sy, sw, sh);
+          }
 
-          const t = perPanelTransforms[leg.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
-          const isLeft = leg.position.toLowerCase().includes("left");
-          const doMirror = mirrorMode && isLeft;
-          const effectiveT = doMirror
-            ? (perPanelTransforms[rightLeg?.position || ""] || t)
-            : t;
+          const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+          const doMirror =
+            mirrorMode &&
+            isLeftLegPanelPosition(slot.position) &&
+            !!rightLegPos;
+          const effectiveT = doMirror ? (perPanelTransforms[rightLegPos] || t) : t;
 
           drawArtworkInSlot(ctx, img, sx, sy, sw, sh, effectiveT, doMirror);
           ctx.restore();
 
-          drawActiveBorder(ctx, sx, sy, sw, sh, leg.position === activePanel);
-          if (leg.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
+          if (hasSvg) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(25,25,25,0.88)";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
+            drawSewSafeDashed(ctx, sx, sy, sw, sh);
+            ctx.restore();
+          } else {
+            drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+          }
+          drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
+          if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
       }
     },
-    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode]
+    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, bgColor],
   );
+
+  const renderPatternMaskedPreview = useCallback(
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number) => {
+      const pad = 20;
+      const drawSlots = (slots: PanelSlot[], compositeW: number, compositeH: number) => {
+        if (compositeW === 0) return;
+        const scl = Math.min((px - pad) / compositeW, (px - pad) / compositeH, 1);
+        const offX = (px - compositeW * scl) / 2;
+        const offY = (px - compositeH * scl) / 2;
+
+        for (const slot of slots) {
+          const sx = offX + slot.x * scl;
+          const sy = offY + slot.y * scl;
+          const sw = slot.w * scl;
+          const sh = slot.h * scl;
+          const hasSvg = !!getSvgImageForPosition(svgImages, slot.position);
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(sx, sy, sw, sh);
+          ctx.clip();
+          if (hasSvg) {
+            tryDrawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
+          } else {
+            ctx.fillStyle = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+            ctx.fillRect(sx, sy, sw, sh);
+          }
+          drawTiledMotifInRect(ctx, img, sx, sy, sw, sh, scale, patternType);
+          ctx.restore();
+
+          if (hasSvg) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(25,25,25,0.88)";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
+            drawSewSafeDashed(ctx, sx, sy, sw, sh);
+            ctx.restore();
+          } else {
+            drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+          }
+        }
+      };
+
+      if (productKind === "hoodie") {
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+        drawSlots(slots, compositeW, compositeH);
+      } else {
+        const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
+        drawSlots(slots, compositeW, compositeH);
+      }
+    },
+    [productKind, panelPositions, activeView, svgImages, bgColor, scale, patternType],
+  );
+
+  // ── Preview canvas render (after paint callbacks exist) ─────────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !motifImage) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const px = previewPx;
+    canvas.width = px;
+    canvas.height = px;
+
+    ctx.clearRect(0, 0, px, px);
+    if (bgColor && bgColor !== "transparent") {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, px, px);
+    }
+
+    if (mode === "pattern" && panelPositions.length > 0) {
+      renderPatternMaskedPreview(ctx, motifImage, px);
+    } else if (mode === "pattern") {
+      const tileSize = (PREVIEW_INCHES * 96) / scale;
+      for (let row = -1; row < Math.ceil(px / tileSize) + 1; row++) {
+        for (let col = -1; col < Math.ceil(px / tileSize) + 1; col++) {
+          ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
+        }
+      }
+    } else if (mode === "place" && panelPositions.length > 0) {
+      renderPanelPreview(ctx, motifImage, px);
+    }
+  }, [
+    mode,
+    scale,
+    patternType,
+    bgColor,
+    motifImage,
+    panelPositions,
+    perPanelTransforms,
+    activePanel,
+    mirrorMode,
+    svgImages,
+    activeView,
+    previewPx,
+    renderPanelPreview,
+    renderPatternMaskedPreview,
+  ]);
 
   // ── Mirror helpers ─────────────────────────────────────────────────────────
 
@@ -649,6 +965,16 @@ export function PatternCustomizer({
     onPlacementChange({ perPanelTransforms, activePanel, mirrorMode, seamBleedPx });
   }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep embed / parent in sync with pattern controls (tiles, type, background)
+  useEffect(() => {
+    if (!onSettingsChange) return;
+    onSettingsChange({
+      patternType,
+      tilesAcross: scale,
+      bgColor: bgColor || undefined,
+    });
+  }, [scale, patternType, bgColor, onSettingsChange]);
+
   // ── Full-res panel export ──────────────────────────────────────────────────
 
   /**
@@ -672,22 +998,21 @@ export function PatternCustomizer({
 
     const t = perPanelTransforms[pos.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
 
-    // Compute upscale factor: preview slot width → print width
-    let previewSlotW = PREVIEW_PX;
+    const px = previewPx;
+    let previewSlotW = px;
     if (productKind === "hoodie") {
       const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
       if (layout.compositeW > 0) {
-        const scl = Math.min((PREVIEW_PX - 20) / layout.compositeW, (PREVIEW_PX - 20) / layout.compositeH, 1);
+        const scl = Math.min((px - 20) / layout.compositeW, (px - 20) / layout.compositeH, 1);
         const found = layout.slots.find(s => s.position === pos.position);
         if (found) previewSlotW = found.w * scl;
       }
     } else {
-      const { leftLeg, rightLeg, gap } = buildLeggingsLayout(panelPositions);
-      const totalW = (leftLeg?.w || 0) + gap + (rightLeg?.w || 0);
-      const totalH = Math.max(leftLeg?.h || 0, rightLeg?.h || 0);
-      if (totalW > 0) {
-        const scl = Math.min((PREVIEW_PX - 20) / totalW, (PREVIEW_PX - 20) / totalH, 1);
-        previewSlotW = pos.width * scl;
+      const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
+      if (compositeW > 0) {
+        const scl = Math.min((px - 20) / compositeW, (px - 20) / compositeH, 1);
+        const found = slots.find(s => s.position === pos.position);
+        if (found) previewSlotW = found.w * scl;
       }
     }
     const upscale = pos.width / (previewSlotW || pos.width);
@@ -698,9 +1023,7 @@ export function PatternCustomizer({
       scalePct: t.scalePct,
     };
 
-    // Draw SVG background if available
-    const svgName = mapPositionToSvgName(pos.position);
-    const svgImg  = svgImages[svgName] || svgImages[pos.position];
+    const svgImg = getSvgImageForPosition(svgImages, pos.position);
     if (svgImg) ctx.drawImage(svgImg, 0, 0, pos.width, pos.height);
 
     drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
@@ -715,9 +1038,11 @@ export function PatternCustomizer({
     setApplyLoading(true);
     try {
       if (mode !== "place" || panelPositions.length === 0) {
-        // Pattern mode — generate a tiled raster image at reasonable resolution
-        // and pass it as the patternUrl so all AOP panels use the tiled version.
-        const TILE_OUT = 1200;
+        const maxDim =
+          panelPositions.length > 0
+            ? Math.max(1500, ...panelPositions.flatMap(p => [p.width, p.height]))
+            : 4096;
+        const TILE_OUT = Math.min(8192, Math.max(4096, Math.ceil(maxDim * 1.5)));
         const canvas = document.createElement("canvas");
         canvas.width  = TILE_OUT;
         canvas.height = TILE_OUT;
@@ -726,12 +1051,7 @@ export function PatternCustomizer({
           ctx.fillStyle = bgColor;
           ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
         }
-        const tileSize = Math.round(TILE_OUT / scale);
-        for (let row = -1; row < Math.ceil(TILE_OUT / tileSize) + 1; row++) {
-          for (let col = -1; col < Math.ceil(TILE_OUT / tileSize) + 1; col++) {
-            ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
-          }
-        }
+        drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, scale, patternType);
         const tiledDataUrl = canvas.toDataURL("image/png");
         await onApply(tiledDataUrl, {
           mode,
@@ -764,7 +1084,7 @@ export function PatternCustomizer({
         const view = getPanelGroup(rightPos);
         const layout = buildCompositeLayout(view, panelPositions);
         const layoutScl = layout.compositeW > 0
-          ? Math.min((PREVIEW_PX - 20) / layout.compositeW, (PREVIEW_PX - 20) / layout.compositeH, 1)
+          ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
           : 1;
         const rightPreviewSlotW = rightDef.width * layoutScl;
         const upscale = rightDef.width / (rightPreviewSlotW || rightDef.width);
@@ -890,7 +1210,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, scale, bgColor,
-      perPanelTransforms, mirrorMode, seamBleedPx, svgImages, productKind, onApply]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, mirrorMode, seamBleedPx, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -906,35 +1226,22 @@ export function PatternCustomizer({
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  return (
-    <div className="w-full h-full flex flex-col">
-      {/* Mode tabs */}
-      <div className="flex gap-1 px-4 pt-3 pb-1 border-b">
-        {(["pattern", "place"] as EditorMode[]).map(m => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`px-3 py-1 text-xs rounded font-medium transition-colors ${
-              mode === m
-                ? "bg-foreground text-background"
-                : "bg-muted text-muted-foreground hover:bg-muted/80"
-            }`}
-          >
-            {m === "pattern" ? "Pattern" : "Place on Item"}
-          </button>
-        ))}
-      </div>
+  /** Radix Slider: Root > Track (span) > Range; Thumb is sibling span — no data-slot. */
+  const sliderTrackClass =
+    "mt-1 [&>span:first-child]:rounded-full [&>span:first-child]:ring-2 [&>span:first-child]:ring-foreground/35 [&>span:first-child]:bg-muted-foreground/25 dark:[&>span:first-child]:bg-muted-foreground/40 [&>span:first-child>span]:bg-foreground [&>span:last-child]:border-2 [&>span:last-child]:border-foreground [&>span:last-child]:bg-background";
 
-      <div className="grid grid-cols-[1fr_200px] gap-4 p-4 flex-1 min-h-0">
-        {/* Left: preview canvas */}
-        <div className="flex flex-col gap-2">
+  return (
+    <div className="w-full h-full min-h-0 flex flex-col">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)] gap-3 p-2 sm:p-3 flex-1 min-h-0">
+        {/* Preview — matches mockup column height when embedded */}
+        <div className="flex flex-col min-h-0 min-w-0">
           <div
-            className="relative border border-border rounded bg-muted flex items-center justify-center overflow-hidden"
-            style={{ aspectRatio: "1/1", width: "100%" }}
+            ref={previewWrapRef}
+            className="relative w-full flex-1 min-h-[min(520px,72vh)] max-h-[min(560px,80vh)] border-2 border-foreground/20 rounded-md bg-muted/50 flex items-center justify-center overflow-hidden"
           >
             <canvas
               ref={canvasRef}
-              className="max-w-full max-h-full touch-none"
+              className="max-w-full max-h-full w-full h-full object-contain touch-none"
               style={{
                 cursor: mode === "place" ? "grab" : "default",
                 display: "block",
@@ -943,22 +1250,22 @@ export function PatternCustomizer({
             />
           </div>
 
-          {/* Hoodie view tabs */}
           {mode === "place" && productKind === "hoodie" && (() => {
             const availableViews = (["front", "back", "hood"] as const).filter(v =>
               panelPositions.some(p => getPanelGroup(p.position) === v)
             );
             if (availableViews.length < 2) return null;
             return (
-              <div className="flex gap-1">
+              <div className="flex gap-1 mt-2">
                 {availableViews.map(v => (
                   <button
                     key={v}
+                    type="button"
                     onClick={() => setActiveView(v)}
-                    className={`px-2 py-0.5 text-xs rounded capitalize transition-colors ${
+                    className={`flex-1 px-2 py-1 text-xs rounded capitalize border transition-colors ${
                       activeView === v
-                        ? "bg-foreground text-background"
-                        : "bg-muted text-muted-foreground"
+                        ? "bg-foreground text-background border-foreground"
+                        : "bg-background border-border text-muted-foreground"
                     }`}
                   >
                     {v}
@@ -968,42 +1275,38 @@ export function PatternCustomizer({
             );
           })()}
 
-          {/* Panel selector for place mode */}
-          {/* SVG load diagnostic warning */}
           {mode === "place" && svgLoadErrors.length > 0 && (
-            <p className="text-[10px] text-amber-600 dark:text-amber-400 px-1">
-              Panel shapes unavailable: {svgLoadErrors.join(", ")}
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+              Panel shapes unavailable: {svgLoadErrors.join(", ")} — showing outline only.
             </p>
-          )}
-
-          {mode === "place" && panelPositions.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {panelPositions.map(p => (
-                <button
-                  key={p.position}
-                  onClick={() => setActivePanel(p.position)}
-                  className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${
-                    activePanel === p.position
-                      ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                      : "border-border text-muted-foreground hover:border-foreground"
-                  }`}
-                >
-                  {p.position.replace(/_/g, " ")}
-                </button>
-              ))}
-            </div>
           )}
         </div>
 
-        {/* Right: controls */}
-        <div className="flex flex-col gap-3 overflow-y-auto">
+        {/* Controls */}
+        <div className="flex flex-col gap-3 min-w-0 overflow-x-hidden overflow-y-visible">
+          <div className="flex gap-2">
+            {(["pattern", "place"] as EditorMode[]).map(m => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMode(m)}
+                className={`flex-1 py-2 text-xs font-medium rounded-md border transition-colors ${
+                  mode === m
+                    ? "bg-foreground text-background border-foreground"
+                    : "bg-background border-border text-muted-foreground hover:border-foreground/50"
+                }`}
+              >
+                {m === "pattern" ? "Pattern" : "Place on Item"}
+              </button>
+            ))}
+          </div>
 
           {mode === "pattern" && (
             <>
               <div>
-                <Label className="text-xs">Pattern</Label>
+                <Label className="text-xs">Pattern type</Label>
                 <Select value={patternType} onValueChange={v => setPatternType(v as PatternType)}>
-                  <SelectTrigger className="h-8 text-xs">
+                  <SelectTrigger className="h-9 text-xs mt-1 border-foreground/20">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1016,8 +1319,14 @@ export function PatternCustomizer({
                 </Select>
               </div>
               <div>
-                <Label className="text-xs">Scale: {scale}</Label>
-                <Slider value={[scale]} onValueChange={v => setScale(v[0])} min={1} max={10} className="mt-1" />
+                <Label className="text-xs">Scale (tiles across): {scale}</Label>
+                <Slider
+                  value={[scale]}
+                  onValueChange={v => setScale(v[0])}
+                  min={1}
+                  max={10}
+                  className={sliderTrackClass}
+                />
               </div>
             </>
           )}
@@ -1026,33 +1335,38 @@ export function PatternCustomizer({
             <>
               {activePanelT && activePanel && (
                 <div>
-                  <Label className="text-xs">Scale: {activePanelT.scalePct}%</Label>
+                  <Label className="text-xs">Artwork scale: {activePanelT.scalePct}%</Label>
                   <Slider
                     value={[activePanelT.scalePct]}
                     onValueChange={v => updatePanelTransform(activePanel, { scalePct: v[0] })}
-                    min={20} max={200} step={5}
-                    className="mt-1"
+                    min={20}
+                    max={200}
+                    step={5}
+                    className={sliderTrackClass}
                   />
                 </div>
               )}
 
               {activePanelT && activePanel && (
                 <button
+                  type="button"
                   onClick={() => updatePanelTransform(activePanel, { dxPx: 0, dyPx: 0, scalePct: 100 })}
-                  className="text-xs underline text-muted-foreground text-left"
+                  className="text-xs text-muted-foreground underline text-left"
                 >
                   Reset panel
                 </button>
               )}
 
-              <div className="flex items-center gap-2">
-                <Label className="text-xs flex-1">Mirror panels</Label>
-                <button
-                  onClick={() => setMirrorMode(m => !m)}
-                  className={`relative w-9 h-5 rounded-full transition-colors ${mirrorMode ? "bg-foreground" : "bg-muted border border-border"}`}
-                >
-                  <span className={`absolute top-0.5 w-4 h-4 rounded-full transition-transform ${mirrorMode ? "bg-background translate-x-4" : "bg-muted-foreground translate-x-0.5"}`} />
-                </button>
+              <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                <Label htmlFor="aop-mirror" className="text-xs cursor-pointer">
+                  Mirror paired panel
+                </Label>
+                <Switch
+                  id="aop-mirror"
+                  checked={mirrorMode}
+                  onCheckedChange={setMirrorMode}
+                  className="shrink-0 border-2 border-foreground/35 data-[state=unchecked]:bg-muted/80"
+                />
               </div>
 
               {getSeamPairs(panelPositions).length > 0 && (
@@ -1061,51 +1375,81 @@ export function PatternCustomizer({
                   <Slider
                     value={[seamBleedPx]}
                     onValueChange={v => setSeamBleedPx(v[0])}
-                    min={0} max={200} step={5}
-                    className="mt-1"
+                    min={0}
+                    max={200}
+                    step={5}
+                    className={sliderTrackClass}
                   />
                 </div>
               )}
             </>
           )}
 
-          {/* Background */}
           <div>
             <Label className="text-xs">Background</Label>
-            <div className="flex gap-1 mt-1">
+            <div className="flex gap-2 mt-1 items-stretch">
               <Select
                 value={bgColor === "" ? "transparent" : bgColor}
                 onValueChange={v => setBgColor(v === "transparent" ? "" : v)}
               >
-                <SelectTrigger className="h-8 text-xs flex-1">
+                <SelectTrigger className="h-9 text-xs flex-1 border-foreground/20">
                   <SelectValue placeholder="Select" />
                 </SelectTrigger>
                 <SelectContent>
                   {BG_PRESETS.map(p => (
-                    <SelectItem key={p.value} value={p.value} className="text-xs">{p.label}</SelectItem>
+                    <SelectItem key={p.value} value={p.value} className="text-xs">
+                      {p.label}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <input
                 type="color"
+                aria-label="Custom background colour"
                 value={bgColor === "" ? "#ffffff" : bgColor}
                 onChange={e => setBgColor(e.target.value)}
-                className="w-8 h-8 rounded border border-border cursor-pointer"
-                title="Custom colour"
+                className="w-10 h-9 shrink-0 rounded border-2 border-foreground/25 cursor-pointer bg-background"
               />
             </div>
           </div>
 
-          {/* Actions */}
-          <div className="flex flex-col gap-2 mt-auto pt-2">
-            <Button onClick={handleApply} disabled={isLoading} size="sm" className="w-full">
+          {mode === "place" && panelPositions.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {panelPositions.map(p => (
+                <button
+                  key={p.position}
+                  type="button"
+                  onClick={() => setActivePanel(p.position)}
+                  className={`px-2.5 py-1 text-[11px] rounded-md border transition-colors ${
+                    activePanel === p.position
+                      ? "border-foreground bg-foreground text-background"
+                      : "border-border text-muted-foreground hover:border-foreground/40"
+                  }`}
+                >
+                  {p.position.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-2 pt-1">
+            <Button
+              type="button"
+              onClick={handleApply}
+              disabled={isLoading}
+              size="sm"
+              className="w-full shrink-0 overflow-hidden"
+            >
               {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Apply
             </Button>
             {onCancel && (
-              <Button onClick={onCancel} variant="outline" size="sm" className="w-full">
+              <Button type="button" onClick={onCancel} variant="outline" size="sm" className="w-full">
                 Cancel
               </Button>
+            )}
+            {footerSlot && (
+              <div className="flex flex-wrap gap-2 justify-center w-full min-w-0">{footerSlot}</div>
             )}
           </div>
         </div>

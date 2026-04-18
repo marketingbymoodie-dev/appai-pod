@@ -74,6 +74,20 @@ console.log("[AOP BUILD]", {
   timestamp: Date.now(),
 });
 
+/** When DB `panelFlatLayImages` is empty or partial — merged under client values. Matches `STATIC_FLAT_LAY_SVGS` in server/routes.ts. */
+const STATIC_FLAT_LAY_FALLBACK: Record<number, Record<string, string>> = {
+  256: {
+    left_leg: "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
+    right_leg: "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
+    front_waistband: "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
+    back_waistband: "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+  },
+  1050: {
+    left_leg: "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+    right_leg: "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+  },
+};
+
 /**
  * Parse JSON from a Response, with a guard against HTML responses.
  * Throws a descriptive error instead of cryptic "Unexpected token <".
@@ -3793,7 +3807,7 @@ export default function EmbedDesign() {
   );
 
   return (
-    <div className={`p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
+    <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       {/* Guide box shimmer + title shimmer animations */}
       <style>{`
         /* Single graceful left-to-right shimmer sweep on guide boxes */
@@ -3823,7 +3837,7 @@ export default function EmbedDesign() {
         }
 
       `}</style>
-      <div className="max-w-6xl mx-auto space-y-4">
+      <div className="max-w-6xl mx-auto space-y-3">
         {/* Free generation limit reached — prompt to create account */}
         {freeLimitReached && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
@@ -4988,43 +5002,86 @@ export default function EmbedDesign() {
                     })()}
                     panelPositions={productTypeConfig?.placeholderPositions || []}
                     panelFlatLayImages={(() => {
-                      // Prefer DB-persisted SVG shapes; fall back to known static URLs when DB value is empty
                       const dbImages = productTypeConfig?.panelFlatLayImages || {};
-                      if (Object.keys(dbImages).length > 0) return dbImages;
-                      // Static fallback for blueprint 1050 (Women's Crop-top Leggings AOP)
-                      if (productTypeConfig?.printifyBlueprintId === 1050) {
-                        return {
-                          "left_leg" : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
-                          "right_leg": "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
-                        };
-                      }
-                      return {};
+                      const bid = productTypeConfig?.printifyBlueprintId;
+                      const staticForBp =
+                        bid != null && STATIC_FLAT_LAY_FALLBACK[bid]
+                          ? STATIC_FLAT_LAY_FALLBACK[bid]
+                          : {};
+                      return { ...staticForBp, ...dbImages };
                     })()}
                     fetchFn={(url, options) => safeFetch(url, options, 60000)}
                     initialTilesAcross={aopPatternSettings.tilesAcross}
                     initialPattern={aopPatternSettings.pattern}
                     initialBgColor={aopPatternSettings.bgColor}
-                    onSettingsChange={(s) => setAopPatternSettings(s)}
+                    onSettingsChange={(s) => {
+                      setAopPatternSettings(prev => ({
+                        tilesAcross: s.tilesAcross ?? prev.tilesAcross,
+                        pattern: (s.patternType ?? prev.pattern) as "grid" | "brick" | "half",
+                        bgColor: s.bgColor ?? prev.bgColor,
+                      }));
+                    }}
                     initialPlacement={aopPlacementSettings}
                     onPlacementChange={(p) => setAopPlacementSettings(p)}
                     onApply={async (appliedPatternUrl: string, options) => {
                       setAopPatternUrl(appliedPatternUrl);
                       setShowPatternStep(false);
-                      if (productTypeConfig) {
-                        fetchPrintifyMockups(
-                          aopPendingMotifUrl,
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || 'default',
-                          defaultZoom,
-                          50,
-                          50,
-                          appliedPatternUrl,
-                          options.mirrorLegs,
-                          options.panelUrls
-                        );
-                      }
+                      if (!productTypeConfig || !generatedDesign?.imageUrl || !selectedSize) return;
+                      setMockupTriggered(true);
+                      setMockupError(null);
+                      setMockupFailed(false);
+                      setPrintifyMockups([]);
+                      setPrintifyMockupImages([]);
+                      setSelectedMockupIndex(0);
+                      mockupColorCacheRef.current = {};
+                      currentMockupColorRef.current = "";
+                      fetchPrintifyMockups(
+                        toAbsoluteImageUrl(generatedDesign.imageUrl),
+                        productTypeConfig.id,
+                        selectedSize,
+                        selectedFrameColor || "default",
+                        transform.scale,
+                        50,
+                        50,
+                        appliedPatternUrl,
+                        options.mirrorLegs,
+                        options.panelUrls
+                      );
                     }}
+                    footerSlot={
+                      (isStorefront || isShopify) ? (
+                        <div className="flex w-full gap-2 justify-stretch">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 min-w-0"
+                            onClick={() => setShowPatternStep(false)}
+                            title="Return to product preview without applying"
+                            data-testid="button-back-from-pattern"
+                          >
+                            <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
+                            <span className="text-xs truncate">Back</span>
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 min-w-0"
+                            onClick={handleShare}
+                            disabled={isSharing || !generatedDesign?.imageUrl}
+                            data-testid="button-share-aop-overlay"
+                          >
+                            {isSharing ? (
+                              <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                            ) : (
+                              <Share2 className="w-4 h-4 mr-1 shrink-0" />
+                            )}
+                            <span className="text-xs truncate">Share</span>
+                          </Button>
+                        </div>
+                      ) : undefined
+                    }
                     isLoading={mockupLoading}
                   />
                 </div>
@@ -5132,8 +5189,8 @@ export default function EmbedDesign() {
               />
             )}
 
-            {/* AOP-only bottom bar: Edit Pattern + Share (no zoom/refresh) */}
-            {generatedDesign?.imageUrl && productTypeConfig?.isAllOverPrint && (
+            {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply). */}
+            {generatedDesign?.imageUrl && productTypeConfig?.isAllOverPrint && !showPatternStep && (
               <div className="flex items-center justify-between pt-2 border-t gap-2">
                 <Button
                   variant="outline"
@@ -5174,14 +5231,19 @@ export default function EmbedDesign() {
                     onClick={() => {
                       if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
                         setMockupError(null);
+                        setMockupFailed(false);
+                        setMockupTriggered(true);
                         fetchPrintifyMockups(
                           toAbsoluteImageUrl(generatedDesign.imageUrl),
                           productTypeConfig.id,
                           selectedSize,
-                          selectedFrameColor || 'default',
+                          selectedFrameColor || "default",
                           transform.scale,
                           50,
-                          50
+                          50,
+                          productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                          aopPlacementSettings?.mirrorMode,
+                          undefined
                         );
                       }
                     }}
