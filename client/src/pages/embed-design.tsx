@@ -79,12 +79,16 @@ const STATIC_FLAT_LAY_FALLBACK: Record<number, Record<string, string>> = {
   256: {
     left_leg: "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
     right_leg: "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
+    left_side: "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
+    right_side: "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
     front_waistband: "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
     back_waistband: "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
   },
   1050: {
     left_leg: "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
     right_leg: "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+    left_side: "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+    right_side: "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
   },
 };
 
@@ -3937,9 +3941,9 @@ export default function EmbedDesign() {
           BUILD: cc5dfd6
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className={`grid grid-cols-1 gap-6 ${showPatternStep && aopPendingMotifUrl ? "lg:grid-cols-[minmax(0,1fr)_minmax(280px,400px)]" : "md:grid-cols-2"}`}>
           {/* Generator/form panel — right on desktop, first on mobile */}
-          <div className="space-y-4 order-1 md:order-2">
+          <div className={`space-y-4 order-1 ${showPatternStep && aopPendingMotifUrl ? "lg:order-2" : "md:order-2"}`}>
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
@@ -4857,7 +4861,115 @@ export default function EmbedDesign() {
           </div>
 
           {/* Artwork preview panel — left on desktop, second on mobile */}
-          <div ref={artworkColumnRef} className="space-y-3 order-2 md:order-1">
+          <div ref={artworkColumnRef} className={`order-2 ${showPatternStep && aopPendingMotifUrl ? "lg:order-1 flex flex-col min-h-[560px]" : "space-y-3 md:order-1"}`}>
+
+            {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
+            {showPatternStep && aopPendingMotifUrl ? (
+              <PatternCustomizer
+                motifUrl={aopPendingMotifUrl}
+                productWidth={(() => {
+                  const positions = productTypeConfig?.placeholderPositions || [];
+                  return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
+                })()}
+                productHeight={(() => {
+                  const positions = productTypeConfig?.placeholderPositions || [];
+                  return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
+                })()}
+                hasPairedPanels={(() => {
+                  const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
+                  return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
+                })()}
+                panelPositions={productTypeConfig?.placeholderPositions || []}
+                panelFlatLayImages={(() => {
+                  const dbImages = productTypeConfig?.panelFlatLayImages || {};
+                  const bid = productTypeConfig?.printifyBlueprintId;
+                  const staticForBp =
+                    bid != null && STATIC_FLAT_LAY_FALLBACK[bid]
+                      ? STATIC_FLAT_LAY_FALLBACK[bid]
+                      : {};
+                  const merged = { ...staticForBp, ...dbImages };
+                  // Alias left_side/right_side ↔ left_leg/right_leg so either naming works
+                  if (merged.left_leg && !merged.left_side) merged.left_side = merged.left_leg;
+                  if (merged.right_leg && !merged.right_side) merged.right_side = merged.right_leg;
+                  if (merged.left_side && !merged.left_leg) merged.left_leg = merged.left_side;
+                  if (merged.right_side && !merged.right_leg) merged.right_leg = merged.right_side;
+                  return merged;
+                })()}
+                fetchFn={(url, options) => safeFetch(url, options, 60000)}
+                initialTilesAcross={aopPatternSettings.tilesAcross}
+                initialPattern={aopPatternSettings.pattern}
+                initialBgColor={aopPatternSettings.bgColor}
+                onSettingsChange={(s) => {
+                  setAopPatternSettings(prev => ({
+                    tilesAcross: s.tilesAcross ?? prev.tilesAcross,
+                    pattern: (s.patternType ?? prev.pattern) as "grid" | "brick" | "half",
+                    bgColor: s.bgColor ?? prev.bgColor,
+                  }));
+                }}
+                initialPlacement={aopPlacementSettings}
+                onPlacementChange={(p) => setAopPlacementSettings(p)}
+                onApply={async (appliedPatternUrl: string, options) => {
+                  setAopPatternUrl(appliedPatternUrl);
+                  setShowPatternStep(false);
+                  if (!productTypeConfig || !generatedDesign?.imageUrl || !selectedSize) return;
+                  setMockupTriggered(true);
+                  setMockupError(null);
+                  setMockupFailed(false);
+                  setPrintifyMockups([]);
+                  setPrintifyMockupImages([]);
+                  setSelectedMockupIndex(0);
+                  mockupColorCacheRef.current = {};
+                  currentMockupColorRef.current = "";
+                  fetchPrintifyMockups(
+                    toAbsoluteImageUrl(generatedDesign.imageUrl),
+                    productTypeConfig.id,
+                    selectedSize,
+                    selectedFrameColor || "default",
+                    transform.scale,
+                    50,
+                    50,
+                    appliedPatternUrl,
+                    options.mirrorLegs,
+                    options.panelUrls
+                  );
+                }}
+                footerSlot={
+                  (isStorefront || isShopify) ? (
+                    <div className="flex w-full gap-2 justify-stretch">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={() => setShowPatternStep(false)}
+                        title="Return to product preview without applying"
+                        data-testid="button-back-from-pattern"
+                      >
+                        <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
+                        <span className="text-xs truncate">Back</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={handleShare}
+                        disabled={isSharing || !generatedDesign?.imageUrl}
+                        data-testid="button-share-aop-overlay"
+                      >
+                        {isSharing ? (
+                          <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                        ) : (
+                          <Share2 className="w-4 h-4 mr-1 shrink-0" />
+                        )}
+                        <span className="text-xs truncate">Share</span>
+                      </Button>
+                    </div>
+                  ) : undefined
+                }
+                isLoading={mockupLoading}
+              />
+            ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
               className="w-full rounded-md overflow-hidden relative"
@@ -4980,110 +5092,6 @@ export default function EmbedDesign() {
                   <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
                     Refresh your Mockups
                   </span>
-                </div>
-              )}
-
-              {/* AOP Pattern Step — solid overlay on top of the canvas, no bleed-through */}
-              {showPatternStep && aopPendingMotifUrl && (
-                <div className="absolute inset-0 z-30 bg-background rounded-md overflow-hidden">
-                  <PatternCustomizer
-                    motifUrl={aopPendingMotifUrl}
-                    productWidth={(() => {
-                      const positions = productTypeConfig?.placeholderPositions || [];
-                      return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
-                    })()}
-                    productHeight={(() => {
-                      const positions = productTypeConfig?.placeholderPositions || [];
-                      return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
-                    })()}
-                    hasPairedPanels={(() => {
-                      const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
-                      return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
-                    })()}
-                    panelPositions={productTypeConfig?.placeholderPositions || []}
-                    panelFlatLayImages={(() => {
-                      const dbImages = productTypeConfig?.panelFlatLayImages || {};
-                      const bid = productTypeConfig?.printifyBlueprintId;
-                      const staticForBp =
-                        bid != null && STATIC_FLAT_LAY_FALLBACK[bid]
-                          ? STATIC_FLAT_LAY_FALLBACK[bid]
-                          : {};
-                      return { ...staticForBp, ...dbImages };
-                    })()}
-                    fetchFn={(url, options) => safeFetch(url, options, 60000)}
-                    initialTilesAcross={aopPatternSettings.tilesAcross}
-                    initialPattern={aopPatternSettings.pattern}
-                    initialBgColor={aopPatternSettings.bgColor}
-                    onSettingsChange={(s) => {
-                      setAopPatternSettings(prev => ({
-                        tilesAcross: s.tilesAcross ?? prev.tilesAcross,
-                        pattern: (s.patternType ?? prev.pattern) as "grid" | "brick" | "half",
-                        bgColor: s.bgColor ?? prev.bgColor,
-                      }));
-                    }}
-                    initialPlacement={aopPlacementSettings}
-                    onPlacementChange={(p) => setAopPlacementSettings(p)}
-                    onApply={async (appliedPatternUrl: string, options) => {
-                      setAopPatternUrl(appliedPatternUrl);
-                      setShowPatternStep(false);
-                      if (!productTypeConfig || !generatedDesign?.imageUrl || !selectedSize) return;
-                      setMockupTriggered(true);
-                      setMockupError(null);
-                      setMockupFailed(false);
-                      setPrintifyMockups([]);
-                      setPrintifyMockupImages([]);
-                      setSelectedMockupIndex(0);
-                      mockupColorCacheRef.current = {};
-                      currentMockupColorRef.current = "";
-                      fetchPrintifyMockups(
-                        toAbsoluteImageUrl(generatedDesign.imageUrl),
-                        productTypeConfig.id,
-                        selectedSize,
-                        selectedFrameColor || "default",
-                        transform.scale,
-                        50,
-                        50,
-                        appliedPatternUrl,
-                        options.mirrorLegs,
-                        options.panelUrls
-                      );
-                    }}
-                    footerSlot={
-                      (isStorefront || isShopify) ? (
-                        <div className="flex w-full gap-2 justify-stretch">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="flex-1 min-w-0"
-                            onClick={() => setShowPatternStep(false)}
-                            title="Return to product preview without applying"
-                            data-testid="button-back-from-pattern"
-                          >
-                            <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
-                            <span className="text-xs truncate">Back</span>
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="flex-1 min-w-0"
-                            onClick={handleShare}
-                            disabled={isSharing || !generatedDesign?.imageUrl}
-                            data-testid="button-share-aop-overlay"
-                          >
-                            {isSharing ? (
-                              <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
-                            ) : (
-                              <Share2 className="w-4 h-4 mr-1 shrink-0" />
-                            )}
-                            <span className="text-xs truncate">Share</span>
-                          </Button>
-                        </div>
-                      ) : undefined
-                    }
-                    isLoading={mockupLoading}
-                  />
                 </div>
               )}
             </div>
@@ -5282,6 +5290,7 @@ export default function EmbedDesign() {
                 />
               </div>
             )}
+          </>)}
           </div>
         </div>
         </>

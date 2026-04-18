@@ -182,15 +182,40 @@ function buildLeggingsLayout(
 
 const LEGGINGS_GAP = 40;
 
-/** All leggings / multi-panel AOP in one row (API order) — legs + waistbands. */
+/** All leggings / multi-panel AOP in one row — legs + waistbands.
+ * Leg panels are sorted for front-facing viewer perspective: wearer's right leg
+ * appears on the viewer's left side (screen left) and wearer's left leg on the
+ * viewer's right side (screen right), matching how you'd look at the garment
+ * laid out flat in front of you. */
 function buildLinearPanelsLayout(
   panels: Array<{ position: string; width: number; height: number }>,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   if (panels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
+
+  const isLegPanel = (pos: string) => {
+    const l = pos.toLowerCase();
+    return l.includes("_leg") || l.includes("_side");
+  };
+
+  // Stable sort: leg panels → right before left; non-leg panels keep original order.
+  const sorted = panels
+    .map((p, i) => ({ ...p, _idx: i }))
+    .sort((a, b) => {
+      const al = a.position.toLowerCase();
+      const bl = b.position.toLowerCase();
+      if (isLegPanel(al) && isLegPanel(bl)) {
+        const aRight = al.includes("right");
+        const bRight = bl.includes("right");
+        if (aRight && !bRight) return -1;
+        if (!aRight && bRight) return 1;
+      }
+      return a._idx - b._idx;
+    });
+
   let x = 0;
   const slots: PanelSlot[] = [];
   let maxH = 0;
-  for (const p of panels) {
+  for (const p of sorted) {
     slots.push({ position: p.position, x, y: 0, w: p.width, h: p.height });
     x += p.width + LEGGINGS_GAP;
     maxH = Math.max(maxH, p.height);
@@ -355,6 +380,63 @@ function drawFallbackPanelOutline(
   ctx.lineWidth = 2;
   ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
   drawSewSafeDashed(ctx, sx, sy, sw, sh);
+  ctx.restore();
+}
+
+/**
+ * Draw panel content (fill + artwork) masked to the SVG silhouette using
+ * offscreen canvas compositing (destination-in).  The SVG's opaque areas
+ * define the garment shape; transparent areas outside are clipped away so
+ * the preview shows the actual panel silhouette instead of a rectangle.
+ * When svgImg is null the function falls back to a rectangular clip.
+ *
+ * @param drawContent  Callback that draws fill + artwork onto the offscreen
+ *                     canvas.  Coords are in offscreen space (origin = 0,0).
+ */
+function drawMaskedSlot(
+  ctx: CanvasRenderingContext2D,
+  svgImg: HTMLImageElement | null,
+  sx: number, sy: number, sw: number, sh: number,
+  drawContent: (offCtx: CanvasRenderingContext2D) => void,
+): void {
+  const iw = Math.max(1, Math.round(sw));
+  const ih = Math.max(1, Math.round(sh));
+
+  if (!svgImg) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sx, sy, sw, sh);
+    ctx.clip();
+    drawContent(ctx);
+    ctx.restore();
+    drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+    return;
+  }
+
+  // Render fill + artwork into an offscreen canvas, then mask to SVG alpha.
+  const off = document.createElement("canvas");
+  off.width = iw;
+  off.height = ih;
+  const offCtx = off.getContext("2d")!;
+
+  // Content is drawn in offscreen space (slot origin = 0,0).
+  offCtx.save();
+  offCtx.translate(-sx, -sy);
+  drawContent(offCtx);
+  offCtx.restore();
+
+  // Clip to garment silhouette via SVG alpha.
+  offCtx.globalCompositeOperation = "destination-in";
+  offCtx.drawImage(svgImg, 0, 0, iw, ih);
+  offCtx.globalCompositeOperation = "source-over";
+
+  // Composite masked result onto main canvas.
+  ctx.drawImage(off, sx, sy, sw, sh);
+
+  // Overlay SVG detail lines at low opacity for visible panel edges.
+  ctx.save();
+  ctx.globalAlpha = 0.4;
+  ctx.drawImage(svgImg, sx, sy, sw, sh);
   ctx.restore();
 }
 
@@ -710,18 +792,7 @@ export function PatternCustomizer({
           const sy = offY + slot.y * scl;
           const sw = slot.w * scl;
           const sh = slot.h * scl;
-          const hasSvg = !!getSvgImageForPosition(svgImages, slot.position);
-
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(sx, sy, sw, sh);
-          ctx.clip();
-          if (hasSvg) {
-            tryDrawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
-          } else {
-            ctx.fillStyle = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-            ctx.fillRect(sx, sy, sw, sh);
-          }
+          const svgImg = getSvgImageForPosition(svgImages, slot.position);
 
           const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
           const doMirror =
@@ -730,19 +801,13 @@ export function PatternCustomizer({
             !!rightLegPos;
           const effectiveT = doMirror ? (perPanelTransforms[rightLegPos] || t) : t;
 
-          drawArtworkInSlot(ctx, img, sx, sy, sw, sh, effectiveT, doMirror);
-          ctx.restore();
+          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+            const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+            offCtx.fillStyle = fill;
+            offCtx.fillRect(sx, sy, sw, sh);
+            drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
+          });
 
-          if (hasSvg) {
-            ctx.save();
-            ctx.strokeStyle = "rgba(25,25,25,0.88)";
-            ctx.lineWidth = 1.5;
-            ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
-            drawSewSafeDashed(ctx, sx, sy, sw, sh);
-            ctx.restore();
-          } else {
-            drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
-          }
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -765,31 +830,14 @@ export function PatternCustomizer({
           const sy = offY + slot.y * scl;
           const sw = slot.w * scl;
           const sh = slot.h * scl;
-          const hasSvg = !!getSvgImageForPosition(svgImages, slot.position);
+          const svgImg = getSvgImageForPosition(svgImages, slot.position);
 
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(sx, sy, sw, sh);
-          ctx.clip();
-          if (hasSvg) {
-            tryDrawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
-          } else {
-            ctx.fillStyle = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-            ctx.fillRect(sx, sy, sw, sh);
-          }
-          drawTiledMotifInRect(ctx, img, sx, sy, sw, sh, scale, patternType);
-          ctx.restore();
-
-          if (hasSvg) {
-            ctx.save();
-            ctx.strokeStyle = "rgba(25,25,25,0.88)";
-            ctx.lineWidth = 1.5;
-            ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
-            drawSewSafeDashed(ctx, sx, sy, sw, sh);
-            ctx.restore();
-          } else {
-            drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
-          }
+          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+            const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+            offCtx.fillStyle = fill;
+            offCtx.fillRect(sx, sy, sw, sh);
+            drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, scale, patternType);
+          });
         }
       };
 
@@ -1233,7 +1281,7 @@ export function PatternCustomizer({
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)] gap-3 p-2 sm:p-3 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(240px,300px)] gap-4 p-2 sm:p-3 flex-1 min-h-0">
         {/* Preview — matches mockup column height when embedded */}
         <div className="flex flex-col min-h-0 min-w-0">
           <div
@@ -1284,7 +1332,7 @@ export function PatternCustomizer({
         </div>
 
         {/* Controls */}
-        <div className="flex flex-col gap-3 min-w-0 overflow-x-hidden overflow-y-visible">
+        <div className="flex flex-col gap-4 min-w-0 overflow-x-hidden overflow-y-visible">
           <div className="flex gap-2">
             {(["pattern", "place"] as EditorMode[]).map(m => (
               <button
@@ -1433,7 +1481,7 @@ export function PatternCustomizer({
             </div>
           )}
 
-          <div className="flex flex-col gap-2 pt-1">
+          <div className="flex flex-col gap-3 pt-3">
             <Button
               type="button"
               onClick={handleApply}

@@ -4785,6 +4785,11 @@ ${textEdgeRestrictions}
             const fallback = STATIC_FLAT_LAY_SVGS[productType.printifyBlueprintId];
             if (fallback) return fallback;
           }
+          // Alias left_side/right_side ↔ left_leg/right_leg so either naming works
+          if (stored.left_leg && !stored.left_side) stored.left_side = stored.left_leg;
+          if (stored.right_leg && !stored.right_side) stored.right_side = stored.right_leg;
+          if (stored.left_side && !stored.left_leg) stored.left_leg = stored.left_side;
+          if (stored.right_side && !stored.right_leg) stored.right_leg = stored.right_side;
           return stored;
         })(),
       };
@@ -5058,6 +5063,11 @@ ${textEdgeRestrictions}
           const fallback2 = STATIC_FLAT_LAY_SVGS2[productTypeToUse.printifyBlueprintId];
           if (fallback2) return fallback2;
         }
+        // Alias left_side/right_side ↔ left_leg/right_leg so either naming works
+        if (stored2.left_leg && !stored2.left_side) stored2.left_side = stored2.left_leg;
+        if (stored2.right_leg && !stored2.right_side) stored2.right_side = stored2.right_leg;
+        if (stored2.left_side && !stored2.left_leg) stored2.left_leg = stored2.left_side;
+        if (stored2.right_side && !stored2.right_leg) stored2.right_leg = stored2.right_side;
         return stored2;
       })(),
       sizes: sizes.map((s: any) => {
