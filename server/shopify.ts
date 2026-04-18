@@ -159,14 +159,10 @@ export async function shopifyApiCall(
     }
     
     if (response.status === 401) {
-      console.error(`[Shopify API] 401 Unauthorized for ${shop} - token needs refresh`);
-      // Mark installation as needing reinstall
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (installation) {
-        await storage.updateShopifyInstallation(installation.id, {
-          status: "token_invalid",
-        });
-      }
+      console.error(`[Shopify API] 401 Unauthorized for ${shop} - token may need refresh`);
+      // Do NOT automatically downgrade status here — a single 401 can be transient
+      // (e.g. a stale request in-flight right after an OAuth reinstall). Only mark
+      // token_invalid if the token fails a direct validation check.
       return { ok: false, error: "Access token is invalid - shop needs to reinstall the app", needsReinstall: true };
     }
     

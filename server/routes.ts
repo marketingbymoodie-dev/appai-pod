@@ -7399,6 +7399,8 @@ ${textEdgeRestrictions}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      const GALLERY_LIMIT = 20;
+      console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const rows = await db
         .select()
         .from(generationJobs)
