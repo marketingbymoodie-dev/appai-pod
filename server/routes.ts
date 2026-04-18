@@ -14,7 +14,7 @@ import { customizerDesigns, customizerPages, generationJobs, productTypes, publi
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
-import { registerShopifyRoutes, registerCartScript, shopifyApiCall } from "./shopify";
+import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
@@ -982,6 +982,37 @@ async function removeNavigationLink(
   } catch (err: any) {
     console.warn(`[nav] removeNavigationLink failed for ${shop}: ${err.message}`);
     return { removed: false, warning: err.message };
+  }
+}
+
+/**
+ * Returns the installation for `shop` if it is authorised, applying
+ * self-healing when the DB status is stale.
+ *
+ * Fast path  : status === "active"  → return immediately (no Shopify API call).
+ * Heal path  : status !== "active" but a non-empty accessToken is stored →
+ *              validate token against Shopify; if valid, reset status to "active"
+ *              and return the updated record; if invalid, return null.
+ * Reject path: no installation, or token missing/invalid → return null.
+ */
+async function getAuthorizedInstallation(shop: string) {
+  const inst = await storage.getShopifyInstallationByShop(shop);
+  if (!inst) return null;
+  if (inst.status === "active") return inst;
+
+  // Status is stale — try to self-heal if a token is present.
+  if (!inst.accessToken) return null;
+
+  try {
+    const check = await validateShopifyToken(shop, inst.accessToken);
+    if (!check.valid) return null;
+
+    // Token is valid; reset status so future fast-path hits work.
+    await storage.updateShopifyInstallation(inst.id, { status: "active" });
+    console.log(`[auth-heal] Reset installation status to active for ${shop}`);
+    return { ...inst, status: "active" as const };
+  } catch {
+    return null;
   }
 }
 
@@ -2371,7 +2402,7 @@ const result = await saveImageToStorage(base64Data, finalMimeType, {
 
       // Verify shop is installed first (this is the primary security check)
       // We check installation before referer since custom domains won't match myshopify.com patterns
-      let installation = await storage.getShopifyInstallationByShop(shop);
+      let installation = await getAuthorizedInstallation(shop);
       
       // If not found and it's not a myshopify domain, the frontend might be passing a custom domain
       // Log this for debugging and return a helpful error
@@ -2486,8 +2517,8 @@ console.log("[shopify/session] installation ok", {
       }
 
       // Verify shop is installed
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -5681,13 +5712,14 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid shop domain format", reqId, stage: "validation" });
       }
 
-      // Verify shop is installed
+      // Verify shop is installed — use self-healing lookup so a stale
+      // pending_reinstall status doesn't block generation when the token is valid.
       let t1 = Date.now();
       const installation = await withTimeout(
-        storage.getShopifyInstallationByShop(shop), 5000, "getShopifyInstallationByShop"
+        getAuthorizedInstallation(shop), 5000, "getAuthorizedInstallation"
       );
       console.log(P, reqId, `installation lookup ok in ${Date.now() - t1}ms`);
-      if (!installation || installation.status !== "active") {
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized", reqId, stage: "auth" });
       }
 
@@ -6307,8 +6339,8 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid shop domain format" });
       }
 
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -6339,8 +6371,8 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid shop domain format" });
       }
 
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -6379,8 +6411,8 @@ ${textEdgeRestrictions}
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const job = await storage.getGenerationJob(jobId);
@@ -6534,8 +6566,8 @@ ${textEdgeRestrictions}
       if (!shop || !jobId || !designState || typeof designState !== 'object') {
         return res.status(400).json({ error: "shop, jobId, and designState are required" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const job = await storage.getGenerationJob(jobId);
@@ -6561,8 +6593,8 @@ ${textEdgeRestrictions}
       if (!shop || !jobId) {
         return res.status(400).json({ error: "shop and jobId are required" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const job = await storage.getGenerationJob(jobId);
@@ -6594,8 +6626,8 @@ ${textEdgeRestrictions}
       if (!shop || !jobId) {
         return res.status(400).json({ error: "shop and id are required" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const job = await storage.getGenerationJob(jobId);
@@ -6637,8 +6669,8 @@ ${textEdgeRestrictions}
       }
 
       // Verify shop is installed
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -6875,7 +6907,7 @@ ${textEdgeRestrictions}
         return res.status(400).json({ success: false, error: "mockupUrl must be an absolute https URL" });
       }
 
-      const installation = await storage.getShopifyInstallationByShop(shop);
+      const installation = await getAuthorizedInstallation(shop);
       if (!installation || installation.status !== "active") {
         return res.status(403).json({ success: false, error: "Shop not authorized" });
       }
@@ -6953,7 +6985,7 @@ ${textEdgeRestrictions}
     try {
       const { shop, shadowProductId } = req.body;
       if (!shop || !shadowProductId) return res.status(400).json({ error: "shop and shadowProductId required" });
-      const installation = await storage.getShopifyInstallationByShop(shop);
+      const installation = await getAuthorizedInstallation(shop);
       if (!installation || installation.status !== "active") return res.status(403).json({ error: "Shop not authorized" });
       // Find the published product record by shopifyProductId
       const rows = await db
@@ -6987,8 +7019,8 @@ ${textEdgeRestrictions}
       if (!mockupUrl.startsWith("https://")) {
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ success: false, error: "Shop not authorized" });
       }
       const token = installation.accessToken!;
@@ -7113,8 +7145,8 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Valid shop domain required" });
       }
 
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -7277,8 +7309,8 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "baseVariantId is required" });
       }
 
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -7354,12 +7386,10 @@ ${textEdgeRestrictions}
       if (!shop || !customerId) {
         return res.status(400).json({ error: "shop and customerId are required" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const GALLERY_LIMIT = 20;
-      console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const rows = await db
         .select()
         .from(generationJobs)
@@ -7451,8 +7481,8 @@ ${textEdgeRestrictions}
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).json({ error: "Invalid shop domain" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -7566,8 +7596,8 @@ ${textEdgeRestrictions}
       if (!code || !customerId || !shop) {
         return res.status(400).json({ error: "Code, customerId, and shop are required" });
       }
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
       const customer = await storage.getCustomer(customerId);
@@ -7636,8 +7666,8 @@ ${textEdgeRestrictions}
         return res.status(400).json({ ok: false, error: "mockupUrl must be an absolute https URL" });
       }
 
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ ok: false, error: "Shop not authorized" });
       }
 
@@ -12753,8 +12783,8 @@ ${textEdgeRestrictions}
       }
 
       // Verify shop is installed
-      const installation = await storage.getShopifyInstallationByShop(shop);
-      if (!installation || installation.status !== "active") {
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
@@ -12883,25 +12913,27 @@ ${textEdgeRestrictions}
     // Normalize: strip any protocol prefix, lowercase
     const shopDomain = rawDomain.toLowerCase().replace(/^https?:\/\//, "");
 
-    const installation = await storage.getShopifyInstallationByShop(shopDomain);
+    // Use self-healing lookup: if status is stale but token is valid,
+    // auto-reset to "active" so admin operations aren't blocked after a stuck reinstall.
+    const installation = await getAuthorizedInstallation(shopDomain);
 
     if (!installation) {
-      console.log(`[resolver] SHOP_NOT_CONNECTED: ${shopDomain}`);
-      return { ok: false, status: 400, error: "SHOP_NOT_CONNECTED" };
-    }
-
-    if (installation.status === "token_invalid") {
-      console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain}`);
-      return {
-        ok: false,
-        status: 401,
-        error: "REAUTH_REQUIRED",
-        reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`,
-      };
-    }
-
-    if (installation.status !== "active") {
-      console.log(`[resolver] SHOP_NOT_ACTIVE: ${shopDomain} (status=${installation.status})`);
+      // Check if it exists at all (for better error messaging)
+      const raw = await storage.getShopifyInstallationByShop(shopDomain);
+      if (!raw) {
+        console.log(`[resolver] SHOP_NOT_CONNECTED: ${shopDomain}`);
+        return { ok: false, status: 400, error: "SHOP_NOT_CONNECTED" };
+      }
+      if (raw.status === "token_invalid") {
+        console.log(`[resolver] REAUTH_REQUIRED: ${shopDomain}`);
+        return {
+          ok: false,
+          status: 401,
+          error: "REAUTH_REQUIRED",
+          reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shopDomain)}`,
+        };
+      }
+      console.log(`[resolver] SHOP_NOT_ACTIVE: ${shopDomain} (status=${raw.status})`);
       return { ok: false, status: 403, error: "SHOP_NOT_ACTIVE" };
     }
 
