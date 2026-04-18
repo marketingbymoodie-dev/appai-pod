@@ -1001,7 +1001,10 @@ async function getAuthorizedInstallation(shop: string) {
   if (inst.status === "active") return inst;
 
   // Status is stale — try to self-heal if a token is present.
-  if (!inst.accessToken) return null;
+  if (!inst.accessToken) {
+    console.warn(`[auth-heal] ${shop} has status=${inst.status} with no token — OAuth reinstall required`);
+    return null;
+  }
 
   try {
     const check = await validateShopifyToken(shop, inst.accessToken);
@@ -5720,7 +5723,12 @@ ${textEdgeRestrictions}
       );
       console.log(P, reqId, `installation lookup ok in ${Date.now() - t1}ms`);
       if (!installation) {
-        return res.status(403).json({ error: "Shop not authorized", reqId, stage: "auth" });
+        return res.status(403).json({
+          error: "Shop not authorized",
+          reqId,
+          stage: "auth",
+          reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+        });
       }
 
       // Generation limit logic (10 free generations total per customer/session)

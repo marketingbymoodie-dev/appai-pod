@@ -2189,6 +2189,9 @@ export default function EmbedDesign() {
             setShowGalleryFullModal(true);
             throw new Error('GALLERY_FULL');
           }
+          if (jobData.error === 'Shop not authorized' && jobData.reinstallUrl) {
+            throw new Error(`SHOP_NEEDS_REINSTALL:${jobData.reinstallUrl}`);
+          }
           if (!isStorefront) {
             if (jobData.requiresLogin) setLoginError("Please log in to your account to create designs.");
             else if (jobData.requiresCredits) setLoginError("No credits remaining. Please purchase more credits to continue.");
@@ -2431,6 +2434,12 @@ export default function EmbedDesign() {
     },
     onError: (err: any) => {
       console.error('[EmbedDesign] Generation error:', err?.message ?? err);
+      const msg: string = err?.message ?? '';
+      if (msg.startsWith('SHOP_NEEDS_REINSTALL:')) {
+        const reinstallUrl = msg.replace('SHOP_NEEDS_REINSTALL:', '');
+        setLoginError(`The app needs to be reconnected to your store. <a href="${reinstallUrl}" target="_top" style="text-decoration:underline">Click here to reconnect</a>.`);
+        return;
+      }
       // React Query already sets isPending=false on rejection, stopping the spinner.
       // Clear any stale login error so it doesn't block the next attempt.
       setLoginError(null);
@@ -3857,9 +3866,9 @@ export default function EmbedDesign() {
         {loginError && (
           <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950">
             <CardContent className="py-3">
-              <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error">
-                {loginError}
-              </p>
+              <p className="text-amber-700 dark:text-amber-300 text-sm" data-testid="text-login-error"
+                dangerouslySetInnerHTML={{ __html: loginError }}
+              />
             </CardContent>
           </Card>
         )}
