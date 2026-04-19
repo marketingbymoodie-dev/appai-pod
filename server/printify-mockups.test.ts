@@ -365,9 +365,10 @@ describe("Generate endpoint storage fallback", () => {
 });
 
 describe("Mockup camera_label preference", () => {
-  it("normalizes plus and percent-encoding for matching", () => {
+  it("normalizes plus, percent-encoding, and underscores for matching", () => {
     expect(normalizeMockupCameraLabel("Front+Side")).toBe("front side");
     expect(normalizeMockupCameraLabel("Side%20Person")).toBe("side person");
+    expect(normalizeMockupCameraLabel("Side_Person")).toBe("side person");
   });
 
   it("orders views by PREFERRED_LABELS regardless of input order", () => {

@@ -14777,9 +14777,9 @@ ${textEdgeRestrictions}
     );
     const baseProduct = productResult.data?.product ?? {};
 
-    // Build mockup image list (up to 4, honouring chosenMockupIndex as first)
+    // Build mockup image list (cap for Shopify product images; keep in sync with mockup picker headroom)
     const allMockups: string[] = Array.isArray(design.mockupUrls)
-      ? (design.mockupUrls as string[]).slice(0, 4)
+      ? (design.mockupUrls as string[]).slice(0, 12)
       : design.mockupUrl
       ? [design.mockupUrl]
       : [];

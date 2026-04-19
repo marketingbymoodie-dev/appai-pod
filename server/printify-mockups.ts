@@ -4,7 +4,7 @@ import pRetry from "p-retry";
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
 /** Max mockups returned after preference ordering (leggings grid + fallbacks). */
-const MAX_MOCKUP_VIEWS = 9;
+const MAX_MOCKUP_VIEWS = 12;
 
 /** Order matches Printify `camera_label` tokens (case-insensitive after normalization). */
 // Printify UI often shows "Front Side" / "Side Person"; URL `camera_label` may be spaced or kebab-case.
@@ -19,6 +19,7 @@ const LEGGINGS_STYLE_PRIORITY = [
   "front-person",
   "side person",
   "side-person",
+  "on-person-side",
   "back person",
   "back-person",
   "lifestyle",
@@ -325,7 +326,7 @@ function extractCameraLabel(url: string): string {
 
 /** Normalize Printify camera_label for comparison (spaces, + / %20, case). */
 export function normalizeMockupCameraLabel(raw: string): string {
-  const s = raw.replace(/\+/g, " ").trim();
+  const s = raw.replace(/\+/g, " ").replace(/_/g, " ").trim();
   try {
     return decodeURIComponent(s).trim().toLowerCase();
   } catch {
