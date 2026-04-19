@@ -1238,13 +1238,9 @@ export function PatternCustomizer({
     canvas.height = pos.height;
     const ctx = canvas.getContext("2d")!;
 
-    if (bgColor && bgColor !== "transparent") {
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, pos.width, pos.height);
-    }
-
     const t = perPanelTransforms[pos.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
 
+    // Derive the upscale factor: preview slot px → native print px
     const px = previewPx;
     let previewSlotW = px;
     if (productKind === "hoodie") {
@@ -1271,9 +1267,16 @@ export function PatternCustomizer({
     };
 
     const svgImg = getSvgImageForPosition(svgImages, pos.position);
-    if (svgImg) ctx.drawImage(svgImg, 0, 0, pos.width, pos.height);
 
-    drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
+    // Use the same masking pipeline as the on-canvas preview so the exported
+    // raster matches exactly what the user saw (silhouette clip + bg + artwork).
+    drawMaskedSlot(ctx, svgImg, 0, 0, pos.width, pos.height, (offCtx) => {
+      if (bgColor && bgColor !== "transparent") {
+        offCtx.fillStyle = bgColor;
+        offCtx.fillRect(0, 0, pos.width, pos.height);
+      }
+      drawArtworkInSlot(offCtx, img, 0, 0, pos.width, pos.height, printT, false);
+    });
 
     return canvasToUploadDataUrl(canvas);
   }

@@ -780,6 +780,8 @@ export default function EmbedDesign() {
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
+  const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -1749,7 +1751,7 @@ export default function EmbedDesign() {
         : isShopify
           ? `${API_BASE}/api/shopify/mockup`
           : `${API_BASE}/api/mockup/generate`;
-      let payload: Record<string, unknown> = isStorefront ? {
+      const payload: Record<string, unknown> = isStorefront ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
         patternUrl: patternUrl || undefined,
@@ -1788,15 +1790,20 @@ export default function EmbedDesign() {
       };
 
       setMockupError(null);
+      // Track the most recent per-panel rasters so the Retry button can replay them.
+      if (panelUrls && panelUrls.length > 0) {
+        lastAopPanelUrlsRef.current = panelUrls;
+      }
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
-      let body = JSON.stringify(payload);
-      // App proxies / gateways often reject multi-megabyte JSON (413). Per-panel PNGs are huge at native DPI.
-      const MAX_MOCKUP_BODY = 900_000;
-      if (body.length > MAX_MOCKUP_BODY && Array.isArray(payload.panelUrls) && payload.panelUrls.length > 0) {
-        console.warn(`[EmbedDesign] Mockup payload ${body.length} bytes — omitting panelUrls (use patternUrl only)`);
-        const { panelUrls: _omit, ...rest } = payload;
-        payload = rest;
-        body = JSON.stringify(payload);
+      const body = JSON.stringify(payload);
+      // Server allows 50 MB JSON. Warn in dev if we approach that, but never silently strip
+      // panelUrls for AOP products — dropping them causes Printify to ignore placement/background/mirror.
+      const MAX_MOCKUP_BODY = 40_000_000; // 40 MB — safe headroom below the 50 MB server limit
+      if (body.length > MAX_MOCKUP_BODY) {
+        const msg = `Mockup payload is too large (${(body.length / 1_000_000).toFixed(1)} MB). Try reducing the pattern tile size.`;
+        console.error('[EmbedDesign] ' + msg);
+        toast({ title: 'Mockup failed', description: msg, variant: 'destructive' });
+        throw new Error(msg);
       }
 
       const response = await safeFetch(endpoint, {
@@ -4628,6 +4635,7 @@ export default function EmbedDesign() {
                         className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
                         onClick={() => {
                           setGeneratedDesign(null);
+                          lastAopPanelUrlsRef.current = null;
                           setDesignSource(null);
                           setAddedToCart(false);
                           loadDesignAppliedRef.current = false;
@@ -5324,7 +5332,7 @@ export default function EmbedDesign() {
                           50,
                           productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
                           aopPlacementSettings?.mirrorMode,
-                          undefined
+                          productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                         );
                       }
                     }}
