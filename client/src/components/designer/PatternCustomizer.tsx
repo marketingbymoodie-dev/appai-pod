@@ -1678,11 +1678,12 @@ export function PatternCustomizer({
 
           const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
 
-          // Shift the art so it's centered within the right panel (matches individual
-          // export) but drawn on the full composite — art wide enough to cross the seam
-          // will extend into the left panel region naturally.
-          const compositePrintT: PanelTransform = {
-            dxPx:     tRight.dxPx * upscaleX - compositeW / 2 + rightDef.width / 2,
+          // Use the same slot dimensions as individual exportPanelImage so scale matches.
+          // Drawing with slotW = rightDef.width (not compositeW) gives identical baseScale.
+          // The canvas is composite-wide, so art that overflows the right slot boundary
+          // naturally bleeds into the left panel region for seamless seam crossing.
+          const rightPrintT: PanelTransform = {
+            dxPx:     tRight.dxPx * upscaleX,
             dyPx:     tRight.dyPx * upscaleY,
             scalePct: tRight.scalePct,
           };
@@ -1695,7 +1696,7 @@ export function PatternCustomizer({
             cCtx.fillStyle = bgColor;
             cCtx.fillRect(0, 0, compositeW, compositeH);
           }
-          drawArtworkInSlot(cCtx, motifImage, 0, 0, compositeW, compositeH, compositePrintT, false);
+          drawArtworkInSlot(cCtx, motifImage, 0, 0, rightDef.width, compositeH, rightPrintT, false);
 
           // Crop right panel then flip (same as shouldFlipLeggingsLegSlot)
           const cropR = document.createElement("canvas");
@@ -1710,24 +1711,29 @@ export function PatternCustomizer({
           frCtx.drawImage(cropR, 0, 0);
           panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR) });
 
-          // Left panel: syncSidesMode → symmetric transform independently; otherwise
-          // crop the composite continuation so art is seamless across the front seam.
-          if (syncSidesMode) {
+          // Left panel: handle all three modes explicitly.
+          // Composite crop of [rightDef.width, compositeW] is empty (art was drawn
+          // only in the right slot), so we always produce the left panel independently.
+          if (mirrorMode) {
+            // Mirror the already-exported right panel horizontally
+            const mirrorCanvas = document.createElement("canvas");
+            mirrorCanvas.width  = leftDef.width;
+            mirrorCanvas.height = leftDef.height;
+            const mCtx = mirrorCanvas.getContext("2d")!;
+            mCtx.save();
+            mCtx.translate(leftDef.width, 0);
+            mCtx.scale(-1, 1);
+            mCtx.drawImage(flipR, 0, 0, leftDef.width, leftDef.height);
+            mCtx.restore();
+            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas) });
+          } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
             const dataUrl = await exportPanelImage(leftDef, motifImage, symT);
             panelUrls.push({ position: leftPos, dataUrl });
           } else {
-            const cropL = document.createElement("canvas");
-            cropL.width = leftDef.width; cropL.height = leftDef.height;
-            cropL.getContext("2d")!.drawImage(compositeCanvas,
-              rightDef.width, 0, leftDef.width, leftDef.height,
-              0,              0, leftDef.width, leftDef.height);
-            const flipL = document.createElement("canvas");
-            flipL.width = leftDef.width; flipL.height = leftDef.height;
-            const flCtx = flipL.getContext("2d")!;
-            flCtx.translate(leftDef.width, 0); flCtx.scale(-1, 1);
-            flCtx.drawImage(cropL, 0, 0);
-            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipL) });
+            // Independent: use left panel's own transform
+            const dataUrl = await exportPanelImage(leftDef, motifImage);
+            panelUrls.push({ position: leftPos, dataUrl });
           }
 
           compositeCovered.add(rightPos);
