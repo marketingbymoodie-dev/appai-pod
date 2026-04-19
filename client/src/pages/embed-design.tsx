@@ -787,6 +787,29 @@ export default function EmbedDesign() {
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
 
+  // Stable references for PatternCustomizer props — prevents the SVG-loading useEffect from
+  // re-firing on every parent render (e.g. polling intervals) due to new object/function refs.
+  const patternFetchFn = useCallback(
+    (url: string, options?: RequestInit) => safeFetch(url, options, 60000),
+    [], // safeFetch is module-level, never changes
+  );
+  const patternPanelPositions = useMemo(
+    () => productTypeConfig?.placeholderPositions || [],
+    [productTypeConfig],
+  );
+  const patternFlatLayImages = useMemo(() => {
+    const dbImages = productTypeConfig?.panelFlatLayImages || {};
+    const bid = productTypeConfig?.printifyBlueprintId;
+    const staticForBp =
+      bid != null && STATIC_FLAT_LAY_FALLBACK[bid] ? STATIC_FLAT_LAY_FALLBACK[bid] : {};
+    const merged: Record<string, string> = { ...staticForBp, ...dbImages };
+    if (merged.left_leg && !merged.left_side) merged.left_side = merged.left_leg;
+    if (merged.right_leg && !merged.right_side) merged.right_side = merged.right_leg;
+    if (merged.left_side && !merged.left_leg) merged.left_leg = merged.left_side;
+    if (merged.right_side && !merged.right_leg) merged.right_leg = merged.right_side;
+    return proxifyPrintifyPanelUrls(merged);
+  }, [productTypeConfig]);
+
   // Filter styles based on designerType
   // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
   // - apparel -> "apparel" category (centered graphics)
@@ -4927,35 +4950,15 @@ export default function EmbedDesign() {
             {showPatternStep && aopPendingMotifUrl ? (
               <PatternCustomizer
                 motifUrl={aopPendingMotifUrl}
-                productWidth={(() => {
-                  const positions = productTypeConfig?.placeholderPositions || [];
-                  return positions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000);
-                })()}
-                productHeight={(() => {
-                  const positions = productTypeConfig?.placeholderPositions || [];
-                  return positions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000);
-                })()}
-                hasPairedPanels={(() => {
-                  const positions = (productTypeConfig?.placeholderPositions || []).map((p: { position: string }) => p.position);
-                  return positions.some((p: string) => p.startsWith("left")) && positions.some((p: string) => p.startsWith("right"));
-                })()}
-                panelPositions={productTypeConfig?.placeholderPositions || []}
-                panelFlatLayImages={(() => {
-                  const dbImages = productTypeConfig?.panelFlatLayImages || {};
-                  const bid = productTypeConfig?.printifyBlueprintId;
-                  const staticForBp =
-                    bid != null && STATIC_FLAT_LAY_FALLBACK[bid]
-                      ? STATIC_FLAT_LAY_FALLBACK[bid]
-                      : {};
-                  const merged = { ...staticForBp, ...dbImages };
-                  // Alias left_side/right_side ↔ left_leg/right_leg so either naming works
-                  if (merged.left_leg && !merged.left_side) merged.left_side = merged.left_leg;
-                  if (merged.right_leg && !merged.right_side) merged.right_side = merged.right_leg;
-                  if (merged.left_side && !merged.left_leg) merged.left_leg = merged.left_side;
-                  if (merged.right_side && !merged.right_leg) merged.right_leg = merged.right_side;
-                  return proxifyPrintifyPanelUrls(merged);
-                })()}
-                fetchFn={(url, options) => safeFetch(url, options, 60000)}
+                productWidth={patternPanelPositions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000)}
+                productHeight={patternPanelPositions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000)}
+                hasPairedPanels={
+                  patternPanelPositions.some((p: { position: string }) => p.position.startsWith("left")) &&
+                  patternPanelPositions.some((p: { position: string }) => p.position.startsWith("right"))
+                }
+                panelPositions={patternPanelPositions}
+                panelFlatLayImages={patternFlatLayImages}
+                fetchFn={patternFetchFn}
                 initialTilesAcross={aopPatternSettings.tilesAcross}
                 initialPattern={aopPatternSettings.pattern}
                 initialBgColor={aopPatternSettings.bgColor}
