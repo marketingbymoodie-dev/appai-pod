@@ -4717,6 +4717,7 @@ ${textEdgeRestrictions}
           } catch { stored = {}; }
           // Apply static fallback for known blueprints where Printify API returns empty views
           if (Object.keys(stored).length === 0 && productType.printifyBlueprintId) {
+            const _rb = `${req.protocol}://${req.get("host")}`;
             const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
               // Women's Cut & Sew Racerback Dress
@@ -4724,12 +4725,14 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP)
+              // Women's Cut & Sew Casual Leggings (AOP) — self-hosted masks (Printify CDN URLs are 404)
               256: {
-                "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
-                "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
-                "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
-                "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+                "left_leg"        : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+                "right_leg"       : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+                "left_side"       : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+                "right_side"      : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+                "front_waistband" : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
+                "back_waistband"  : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
               },
               // Unisex Cut & Sew Tee
               281: {
@@ -4995,6 +4998,7 @@ ${textEdgeRestrictions}
             : (productTypeToUse.panelFlatLayImages as any) || {};
         } catch { stored2 = {}; }
         if (Object.keys(stored2).length === 0 && productTypeToUse.printifyBlueprintId) {
+          const _rb2 = `${req.protocol}://${req.get("host")}`;
           const STATIC_FLAT_LAY_SVGS2: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
               // Women's Cut & Sew Racerback Dress
@@ -5002,12 +5006,14 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP)
+              // Women's Cut & Sew Casual Leggings (AOP) — self-hosted masks (Printify CDN URLs are 404)
               256: {
-                "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
-                "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
-                "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
-                "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+                "left_leg"        : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+                "right_leg"       : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+                "left_side"       : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+                "right_side"      : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+                "front_waistband" : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
+                "back_waistband"  : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
               },
               // Unisex Cut & Sew Tee
               281: {
@@ -5695,6 +5701,52 @@ ${textEdgeRestrictions}
     }
     res.setHeader("Content-Type", ct);
     res.send(buf);
+  }));
+
+  // Serve self-hosted AOP panel mask PNGs (rasterized from static SVG files in public/aop-masks/).
+  // These are used when Printify CDN URLs for a blueprint are dead/404.
+  // URL: GET /api/storefront/aop-mask?blueprintId=256&position=left_leg
+  app.get("/api/storefront/aop-mask", asyncHandler(async (req: Request, res: Response) => {
+    const blueprintId = req.query.blueprintId as string;
+    const position    = req.query.position    as string;
+
+    if (!blueprintId || !position) {
+      return res.status(400).json({ error: "Missing blueprintId or position" });
+    }
+    // Sanitize to prevent path traversal
+    if (!/^\d+$/.test(blueprintId) || !/^[a-z0-9_]+$/.test(position)) {
+      return res.status(400).json({ error: "Invalid parameters" });
+    }
+
+    // Locate the SVG — production builds land in dist/public, dev in client/public
+    // Use the same candidate resolution logic as serveStatic.ts
+    declare const __dirname: string | undefined;
+    const _d = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+    const candidatePaths = [
+      path.join(_d, "public", "aop-masks", blueprintId, `${position}.svg`),
+      path.join(_d, "../public", "aop-masks", blueprintId, `${position}.svg`),
+      path.join(process.cwd(), "client", "public", "aop-masks", blueprintId, `${position}.svg`),
+    ];
+    const svgPath = candidatePaths.find(p => fs.existsSync(p));
+    if (!svgPath) {
+      return res.status(404).json({ error: "Mask not found", blueprintId, position });
+    }
+
+    const svgBuf = fs.readFileSync(svgPath);
+    let body: Buffer;
+    let ct: string;
+    try {
+      body = await sharp(svgBuf).png().toBuffer();
+      ct = "image/png";
+    } catch {
+      body = svgBuf;
+      ct = "image/svg+xml";
+    }
+
+    res.setHeader("Content-Type", ct);
+    res.setHeader("Cache-Control", "public, max-age=604800, immutable");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(body);
   }));
 
   // Storefront ping endpoint - quick health check for embed to verify connectivity
@@ -10671,6 +10723,7 @@ ${textEdgeRestrictions}
       // Static fallback: hard-coded SVG IDs for known blueprints where the Printify API
       // returns an empty `views` array. SVGs are served from the Printify public CDN.
       // Identified by loading the Printify editor and intercepting network requests.
+      const _rb3 = `${req.protocol}://${req.get("host")}`;
       const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
               // Women's Cut & Sew Racerback Dress
@@ -10678,12 +10731,14 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP)
+              // Women's Cut & Sew Casual Leggings (AOP) — self-hosted masks (Printify CDN URLs are 404)
               256: {
-                "left_leg"            : "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
-                "right_leg"           : "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
-                "front_waistband"     : "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
-                "back_waistband"      : "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+                "left_leg"        : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+                "right_leg"       : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+                "left_side"       : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+                "right_side"      : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+                "front_waistband" : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
+                "back_waistband"  : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
               },
               // Unisex Cut & Sew Tee
               281: {
@@ -11638,6 +11693,52 @@ ${textEdgeRestrictions}
     console.log(`[refresh-panel-svgs] Updated productType ${productTypeId} with ${Object.keys(newImages).length} views:`, Object.keys(newImages).join(", "));
 
     res.json({ success: true, panelFlatLayImages: newImages, count: Object.keys(newImages).length });
+  }));
+
+  // POST /api/admin/aop-masks/upload
+  // Store self-hosted AOP panel masks (SVG strings) for a blueprint.
+  // Body: JSON { blueprintId: "256", masks: { left_leg: "<svg...>", right_leg: "..." } }
+  // Written to dist/public/aop-masks/{blueprintId}/{position}.svg so they are immediately
+  // served by the aop-mask endpoint without a re-deploy.
+  // For bulk ingestion from template ZIPs, use the CLI script: scripts/import-aop-masks.js
+  app.post("/api/admin/aop-masks/upload", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const { blueprintId, masks } = req.body as { blueprintId: string; masks: Record<string, string> };
+    if (!blueprintId || !/^\d+$/.test(String(blueprintId))) {
+      return res.status(400).json({ error: "Missing or invalid blueprintId" });
+    }
+    if (!masks || typeof masks !== "object" || Object.keys(masks).length === 0) {
+      return res.status(400).json({ error: "masks must be a non-empty object of {position: svgString}" });
+    }
+
+    declare const __dirname: string | undefined;
+    const _d = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+    const candidates = [
+      path.join(_d, "public", "aop-masks", String(blueprintId)),
+      path.join(_d, "../public", "aop-masks", String(blueprintId)),
+      path.join(process.cwd(), "client", "public", "aop-masks", String(blueprintId)),
+    ];
+    const outDir = candidates.find(c => {
+      try { fs.mkdirSync(c, { recursive: true }); return true; } catch { return false; }
+    });
+    if (!outDir) return res.status(500).json({ error: "Could not create output directory" });
+
+    const written: string[] = [];
+    for (const [position, svgContent] of Object.entries(masks)) {
+      if (!/^[a-z0-9_]+$/.test(position)) {
+        console.warn(`[aop-masks/upload] Skipping invalid position name: ${position}`);
+        continue;
+      }
+      if (typeof svgContent !== "string" || !svgContent.trim().startsWith("<")) {
+        console.warn(`[aop-masks/upload] Skipping position ${position}: not valid SVG`);
+        continue;
+      }
+      const dest = path.join(outDir, `${position}.svg`);
+      fs.writeFileSync(dest, svgContent.trim(), "utf8");
+      written.push(position);
+      console.log(`[aop-masks/upload] Wrote ${dest}`);
+    }
+
+    res.json({ success: true, blueprintId, outDir, written });
   }));
 
   // POST /api/admin/product-types/:id/refresh-images - Refresh product images from Printify

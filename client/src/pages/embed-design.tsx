@@ -76,13 +76,14 @@ console.log("[AOP BUILD]", {
 
 /** When DB `panelFlatLayImages` is empty or partial — merged under client values. Matches `STATIC_FLAT_LAY_SVGS` in server/routes.ts. */
 const STATIC_FLAT_LAY_FALLBACK: Record<number, Record<string, string>> = {
+  // Women's Cut & Sew Casual Leggings — self-hosted masks (Printify CDN URLs are 404)
   256: {
-    left_leg: "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
-    right_leg: "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
-    left_side: "https://images.printify.com/api/catalog/65c017565313620007204445.svg",
-    right_side: "https://images.printify.com/api/catalog/65c017565313620007204446.svg",
-    front_waistband: "https://images.printify.com/api/catalog/65c017565313620007204447.svg",
-    back_waistband: "https://images.printify.com/api/catalog/65c017565313620007204448.svg",
+    left_leg:        `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+    right_leg:       `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+    left_side:       `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
+    right_side:      `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+    front_waistband: `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
+    back_waistband:  `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
   },
   1050: {
     left_leg: "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
