@@ -539,23 +539,15 @@ function drawMaskedSlot(
   }
 
   // Overlay SVG detail lines at low opacity for visible panel edges.
-  if (flipHorizontal) {
-    // For flipped leg panels: skip the full mirrored SVG overlay (it would render FRONT/BACK backwards).
-    // Draw only a tight unflipped bottom band so hem labels (FRONT/BACK) remain readable.
-    const textBand = Math.min(sh * 0.14, 36);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(sx, sy + sh - textBand, sw, textBand);
-    ctx.clip();
-    ctx.globalAlpha = 0.55;
-    ctx.drawImage(svgImg, sx, sy, sw, sh);
-    ctx.restore();
-  } else {
+  if (!flipHorizontal) {
     ctx.save();
     ctx.globalAlpha = 0.4;
     ctx.drawImage(svgImg, sx, sy, sw, sh);
     ctx.restore();
   }
+  // For flipped leg panels: skip the SVG overlay entirely — the hem SVG contains graphical
+  // elements (grey bars, mirrored text) that look wrong when unflipped. Text labels are
+  // drawn separately below each panel by the caller.
 }
 
 /** Return the _safe variant image for a panel position, or null if none loaded. */
@@ -594,7 +586,7 @@ function drawPanelSilhouetteOverlay(
   safeInsetPx: number,
   flipHorizontal = false,
   showBleedBand = false,
-  skipGuides = false,
+  skipSafeDash = false,
 ): void {
   if (!svgImg) {
     if (!flipHorizontal) {
@@ -685,10 +677,10 @@ function drawPanelSilhouetteOverlay(
   }
 
   // ── 2. Silhouette outline ────────────────────────────────────────────────
-  if (!skipGuides) blitSlot(makeRing(silCanvas, 1.5));
+  blitSlot(makeRing(silCanvas, 1.5));
 
   // ── 3. Safe-area dashed boundary ─────────────────────────────────────────
-  if (!skipGuides) {
+  if (!skipSafeDash) {
     const ring = makeRing(safeCanvas, 1.5);
     // Apply dashes: destination-in with a horizontal stripe pattern (5px on / 4px off)
     const ringCtx = ring.getContext("2d")!;
@@ -726,7 +718,33 @@ function drawSewSafeDashed(
 }
 
 /**
- * Tile motif in a rectangle with grid / brick / half-drop.
+ * Draw BACK / FRONT labels below a leggings leg panel.
+ * For a right-leg panel (flipped): left half = BACK, right half = FRONT.
+ * For a left-leg panel (flipped): left half = FRONT, right half = BACK.
+ */
+function drawLeggingLegLabels(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  isRightLeg: boolean,
+) {
+  const fontSize = Math.max(9, Math.min(14, sw * 0.09));
+  const y = sy + sh + fontSize + 3;
+  ctx.save();
+  ctx.font = `600 ${fontSize}px sans-serif`;
+  ctx.fillStyle = "rgba(40,40,40,0.75)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  const leftLabel  = isRightLeg ? "BACK"  : "FRONT";
+  const rightLabel = isRightLeg ? "FRONT" : "BACK";
+  ctx.fillText(leftLabel,  sx + sw * 0.27, y);
+  ctx.fillText(rightLabel, sx + sw * 0.73, y);
+  ctx.restore();
+}
+
+/**
  * `tileInches` = physical size of one tile in inches; `pxPerInch` converts that to canvas/print pixels.
  */
 function drawTiledMotifInRect(
@@ -1089,6 +1107,10 @@ export function PatternCustomizer({
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
+          if (flipSlot) {
+            const isRightLeg = !isLeftLegPanelPosition(slot.position);
+            drawLeggingLegLabels(ctx, sx, sy, sw, sh, isRightLeg);
+          }
         }
       }
     },
@@ -1123,6 +1145,10 @@ export function PatternCustomizer({
             drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
           }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
+          if (flipSlot) {
+            const isRightLeg = !isLeftLegPanelPosition(slot.position);
+            drawLeggingLegLabels(ctx, sx, sy, sw, sh, isRightLeg);
+          }
         }
       };
 
