@@ -268,6 +268,8 @@ export const productTypes = pgTable("product_types", {
    * Populated at product import time from the Printify blueprint variants `views` field.
    */
   panelFlatLayImages: text("panel_flat_lay_images").default("{}"),
+  /** Optional AOP layout template (e.g. leggings_v1) — overrides name-based layout inference in PatternCustomizer. */
+  aopTemplateId: text("aop_template_id"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

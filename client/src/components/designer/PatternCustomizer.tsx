@@ -30,6 +30,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { PanelTransform, AopPlacementSettings } from "./types";
+import { detectProductKind } from "./aopTemplates/detectLayoutKind";
+import { resolveAopLayoutKind } from "./aopTemplates/registry";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -131,16 +133,6 @@ const SNAP_THRESHOLD_PX = 10;
 // ── Panel geometry helpers ────────────────────────────────────────────────────
 
 interface PanelSlot { position: string; x: number; y: number; w: number; h: number }
-
-function detectProductKind(
-  panels: Array<{ position: string }>
-): "hoodie" | "leggings" | "generic" {
-  const p = panels.map(x => x.position.toLowerCase());
-  // Leggings first — avoid classifying back_waistband / front_waistband as "hoodie" via generic "back_" / "front_"
-  if (p.some(x => x.includes("_leg") || x.includes("_side") || x.includes("waistband"))) return "leggings";
-  if (p.some(x => x.includes("hood") || /^front_(left|right)/.test(x) || /^back_(left|right)/.test(x))) return "hoodie";
-  return "generic";
-}
 
 function getPanelGroup(position: string): "front" | "back" | "hood" {
   const l = position.toLowerCase();
@@ -831,6 +823,8 @@ interface PatternCustomizerProps {
   footerSlot?: ReactNode;
   isLoading?: boolean;
   productTypeConfig?: { placeholderPositions?: Array<{ position: string; width: number; height: number }> };
+  /** When set, overrides inferred hoodie/leggings/generic layout (see `aopTemplates/registry`). */
+  aopTemplateId?: string | null;
 }
 
 export function PatternCustomizer({
@@ -852,6 +846,7 @@ export function PatternCustomizer({
   footerSlot,
   isLoading: externalLoading,
   productTypeConfig,
+  aopTemplateId,
 }: PatternCustomizerProps) {
   // Resolve panel positions from either direct prop or productTypeConfig
   const panelPositions = panelPositionsProp || productTypeConfig?.placeholderPositions || [];
@@ -905,7 +900,8 @@ export function PatternCustomizer({
   // Active view for hoodie (front / back / hood)
   const [activeView, setActiveView] = useState<"front" | "back" | "hood">("front");
 
-  const productKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
+  const inferredLayoutKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
+  const productKind = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
 
   // ── Image loading ──────────────────────────────────────────────────────────
 
@@ -2005,7 +2001,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, aopTemplateId, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 

@@ -4704,6 +4704,7 @@ ${textEdgeRestrictions}
         },
         variantMap,
         isAllOverPrint: productType.isAllOverPrint || false,
+        aopTemplateId: productType.aopTemplateId || null,
         placeholderPositions: typeof productType.placeholderPositions === "string"
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
@@ -4985,6 +4986,7 @@ ${textEdgeRestrictions}
       primaryMockupIndex: productTypeToUse.primaryMockupIndex || 0,
       doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
       isAllOverPrint: productTypeToUse.isAllOverPrint || false,
+      aopTemplateId: productTypeToUse.aopTemplateId || null,
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],

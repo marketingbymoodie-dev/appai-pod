@@ -63,6 +63,7 @@ interface ProductDesignerConfig {
   designerType: string;
   hasPrintifyMockups: boolean;
   isAllOverPrint?: boolean;
+  aopTemplateId?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   baseMockupImages?: {
     front?: string;
@@ -1567,6 +1568,7 @@ export default function DesignPage() {
               {showPatternStep && aopPendingMotifUrl && designerConfig && (
                 <PatternCustomizer
                   motifUrl={aopPendingMotifUrl}
+                  aopTemplateId={designerConfig?.aopTemplateId ?? null}
                   productWidth={(() => {
                     const positions = designerConfig?.placeholderPositions || [];
                     return positions.reduce((max, p) => Math.max(max, p.width), 2000);

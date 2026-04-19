@@ -6,6 +6,7 @@
  * - Structured error responses with step info
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { normalizeMockupCameraLabel, pickPreferredMockupViews } from "./printify-mockups";
 
 // We test the module's exported function
 // Mock fetch for Printify API calls
@@ -360,5 +361,32 @@ describe("Generate endpoint storage fallback", () => {
     expect(isValidResponse("https://example.com/abc.png")).toBe(true);
     expect(isValidResponse("data:image/png;base64,abc")).toBe(true);
     expect(isValidResponse("")).toBe(false);
+  });
+});
+
+describe("Mockup camera_label preference", () => {
+  it("normalizes plus and percent-encoding for matching", () => {
+    expect(normalizeMockupCameraLabel("Front+Side")).toBe("front side");
+    expect(normalizeMockupCameraLabel("Side%20Person")).toBe("side person");
+  });
+
+  it("orders views by PREFERRED_LABELS regardless of input order", () => {
+    const images = [
+      { url: "https://x.example/1.png", label: "back" },
+      { url: "https://x.example/2.png", label: "Front Side" },
+      { url: "https://x.example/3.png", label: "front" },
+    ];
+    expect(pickPreferredMockupViews(images).map((p) => p.label)).toEqual(["front", "back", "Front Side"]);
+  });
+
+  it("dedupes by URL when the same asset appears under two labels", () => {
+    const u = "https://x.example/same.png";
+    const images = [
+      { url: u, label: "front" },
+      { url: u, label: "duplicate-label" },
+    ];
+    const picked = pickPreferredMockupViews(images);
+    expect(picked.length).toBe(1);
+    expect(picked[0].label).toBe("front");
   });
 });

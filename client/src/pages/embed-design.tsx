@@ -55,6 +55,7 @@ interface ProductTypeConfig {
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, string>;
   isAllOverPrint?: boolean;
+  aopTemplateId?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
@@ -1051,6 +1052,7 @@ export default function EmbedDesign() {
             hasPrintifyMockups: dc.hasPrintifyMockups || false,
             baseMockupImages: dc.baseMockupImages || undefined,
             isAllOverPrint: dc.isAllOverPrint || false,
+            aopTemplateId: dc.aopTemplateId ?? null,
             placeholderPositions: dc.placeholderPositions || [],
             panelFlatLayImages: dc.panelFlatLayImages || {},
             colorLabel: dc.colorLabel || "Color",
@@ -1181,6 +1183,7 @@ export default function EmbedDesign() {
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
+            aopTemplateId: designerConfig.aopTemplateId ?? null,
             placeholderPositions: designerConfig.placeholderPositions || [],
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
@@ -4966,6 +4969,7 @@ export default function EmbedDesign() {
             {showPatternStep && aopPendingMotifUrl ? (
               <PatternCustomizer
                 motifUrl={aopPendingMotifUrl}
+                aopTemplateId={productTypeConfig?.aopTemplateId ?? null}
                 productWidth={patternPanelPositions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000)}
                 productHeight={patternPanelPositions.reduce((max: number, p: { height: number }) => Math.max(max, p.height), 2000)}
                 hasPairedPanels={

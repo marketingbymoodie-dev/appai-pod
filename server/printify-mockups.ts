@@ -3,112 +3,27 @@ import pRetry from "p-retry";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
-const MAX_MOCKUP_VIEWS = 4;
-const PREFERRED_LABELS = [
+/** Max mockups returned after preference ordering (leggings grid + fallbacks). */
+const MAX_MOCKUP_VIEWS = 9;
+
+/** Order matches Printify `camera_label` tokens (case-insensitive after normalization). */
+const LEGGINGS_STYLE_PRIORITY = [
   "front",
   "back",
+  "front side",
+  "back side",
+  "front person",
+  "side person",
+  "back person",
   "lifestyle",
-  "on-person-1-front",
-  "on-person-2-front",
-  "on-person-3-front",
-  "on-person-4-front",
-  "on-person-5-front",
-  "on-person-6-front",
-  "on-person-7-front",
-  "on-person-8-front",
-  "on-person-9-front",
-  "on-person-10-front",
-  "on-person-11-front",
-  "on-person-12-front",
-  "on-person-13-front",
-  "on-person-14-front",
-  "on-person-15-front",
-  "on-person-16-front",
-  "on-person-17-front",
-  "on-person-18-front",
-  "on-person-19-front",
-  "on-person-20-front",
-  "on-person-21-front",
-  "on-person-22-front",
-  "on-person-23-front",
-  "on-person-24-front",
-  "on-person-25-front",
-  "on-person-26-front",
-  "on-person-27-front",
-  "on-person-28-front",
-  "on-person-29-front",
-  "on-person-30-front",
-  "on-person-31-front",
-  "on-person-32-front",
-  "on-person-33-front",
-  "on-person-34-front",
-  "on-person-35-front",
-  "on-person-36-front",
-  "on-person-37-front",
-  "on-person-38-front",
-  "on-person-39-front",
-  "on-person-40-front",
-  "on-person-41-front",
-  "on-person-42-front",
-  "on-person-43-front",
-  "on-person-44-front",
-  "on-person-45-front",
-  "on-person-46-front",
-  "on-person-47-front",
-  "on-person-48-front",
-  "on-person-49-front",
-  "on-person-50-front",
-  "on-person-51-front",
-  "on-person-52-front",
-  "on-person-53-front",
-  "on-person-54-front",
-  "on-person-55-front",
-  "on-person-56-front",
-  "on-person-57-front",
-  "on-person-58-front",
-  "on-person-59-front",
-  "on-person-60-front",
-  "on-person-61-front",
-  "on-person-62-front",
-  "on-person-63-front",
-  "on-person-64-front",
-  "on-person-65-front",
-  "on-person-66-front",
-  "on-person-67-front",
-  "on-person-68-front",
-  "on-person-69-front",
-  "on-person-70-front",
-  "on-person-71-front",
-  "on-person-72-front",
-  "on-person-73-front",
-  "on-person-74-front",
-  "on-person-75-front",
-  "on-person-76-front",
-  "on-person-77-front",
-  "on-person-78-front",
-  "on-person-79-front",
-  "on-person-80-front",
-  "on-person-81-front",
-  "on-person-82-front",
-  "on-person-83-front",
-  "on-person-84-front",
-  "on-person-85-front",
-  "on-person-86-front",
-  "on-person-87-front",
-  "on-person-88-front",
-  "on-person-89-front",
-  "on-person-90-front",
-  "on-person-91-front",
-  "on-person-92-front",
-  "on-person-93-front",
-  "on-person-94-front",
-  "on-person-95-front",
-  "on-person-96-front",
-  "on-person-97-front",
-  "on-person-98-front",
-  "on-person-99-front",
-  "on-person-100-front",
-];
+] as const;
+
+const ON_PERSON_FRONT_LABELS = Array.from(
+  { length: 100 },
+  (_, i) => `on-person-${i + 1}-front`,
+);
+
+const PREFERRED_LABELS: string[] = [...LEGGINGS_STYLE_PRIORITY, ...ON_PERSON_FRONT_LABELS];
 
 interface MockupRequest {
   blueprintId: number;
@@ -394,18 +309,38 @@ async function getProductMockups(
 
 function extractCameraLabel(url: string): string {
   const match = url.match(/camera_label=([^&]+)/);
-  return match ? match[1] : "front";
+  if (!match) return "front";
+  try {
+    return decodeURIComponent(match[1].replace(/\+/g, " "));
+  } catch {
+    return match[1].replace(/\+/g, " ");
+  }
+}
+
+/** Normalize Printify camera_label for comparison (spaces, + / %20, case). */
+export function normalizeMockupCameraLabel(raw: string): string {
+  const s = raw.replace(/\+/g, " ").trim();
+  try {
+    return decodeURIComponent(s).trim().toLowerCase();
+  } catch {
+    return s.trim().toLowerCase();
+  }
 }
 
 function selectPreferredViews(images: MockupImage[]): MockupImage[] {
   const selected: MockupImage[] = [];
-  const seenLabels = new Set<string>();
+  const seenUrls = new Set<string>();
+  const annotated = images.map((img) => ({
+    ...img,
+    norm: normalizeMockupCameraLabel(img.label),
+  }));
 
-  for (const label of PREFERRED_LABELS) {
-    const match = images.find((img) => img.label === label);
-    if (match && !seenLabels.has(label)) {
-      selected.push(match);
-      seenLabels.add(label);
+  for (const pref of PREFERRED_LABELS) {
+    const prefNorm = normalizeMockupCameraLabel(pref);
+    const match = annotated.find((img) => img.norm === prefNorm && !seenUrls.has(img.url));
+    if (match) {
+      selected.push({ url: match.url, label: match.label });
+      seenUrls.add(match.url);
       if (selected.length >= MAX_MOCKUP_VIEWS) break;
     }
   }
@@ -415,6 +350,11 @@ function selectPreferredViews(images: MockupImage[]): MockupImage[] {
   }
 
   return selected;
+}
+
+/** Test hook: same logic as internal mockup picker. */
+export function pickPreferredMockupViews(images: { url: string; label: string }[]): { url: string; label: string }[] {
+  return selectPreferredViews(images);
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {

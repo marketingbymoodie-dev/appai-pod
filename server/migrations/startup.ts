@@ -42,6 +42,16 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'generation_jobs',       column: 'shadow_variant_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
   { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
+  { table: "product_types",         column: "aop_template_id",             type: "TEXT" },
+];
+
+/** One-time data fixes (idempotent WHERE clauses). */
+const DATA_MIGRATIONS: string[] = [
+  // Pin reference leggings blueprints to the locked template when still unset.
+  `UPDATE product_types SET aop_template_id = 'leggings_v1'
+   WHERE is_all_over_print = true
+     AND printify_blueprint_id IN (256, 1050)
+     AND (aop_template_id IS NULL OR aop_template_id = '')`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
@@ -187,7 +197,22 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
-  const total = TABLE_MIGRATIONS.length + COLUMN_MIGRATIONS.length;
+  // 3) Data migrations (safe re-runs)
+  for (const sql of DATA_MIGRATIONS) {
+    try {
+      const r = await pool.query(sql);
+      applied++;
+      const n = (r as { rowCount?: number }).rowCount;
+      if (n && n > 0) {
+        console.log(`${tag} Data migration updated ${n} row(s)`);
+      }
+    } catch (err: any) {
+      errors++;
+      console.error(`${tag} FAILED data migration: ${err.message ?? err}`);
+    }
+  }
+
+  const total = TABLE_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length;
   console.log(`${tag} Done. total=${total} applied=${applied} errors=${errors}`);
   if (errors > 0) {
     console.error(`${tag} WARNING: ${errors} statement(s) failed — some routes may be degraded.`);

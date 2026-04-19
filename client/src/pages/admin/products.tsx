@@ -17,6 +17,7 @@ import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import type { ProductType, Merchant } from "@shared/schema";
+import { AOP_TEMPLATE_ADMIN_OPTIONS, AOP_TEMPLATE_SELECT_AUTO } from "@/components/designer/aopTemplates/registry";
 
 interface VariantOption {
   id: string;
@@ -92,6 +93,7 @@ export default function AdminProducts() {
   const [shopifyMutatingProductId, setShopifyMutatingProductId] = useState<number | null>(null);
   const [refreshVariantsMutatingId, setRefreshVariantsMutatingId] = useState<number | null>(null);
   const [refreshColorsMutatingId, setRefreshColorsMutatingId] = useState<number | null>(null);
+  const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -303,6 +305,24 @@ export default function AdminProducts() {
     onError: (error: Error) => {
       toast({ title: "Failed to update AOP flag", description: error.message, variant: "destructive" });
     },
+  });
+
+  const updateAopTemplateMutation = useMutation({
+    mutationFn: async (data: { id: number; aopTemplateId: string | null }) => {
+      setAopTemplateMutatingId(data.id);
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        aopTemplateId: data.aopTemplateId,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({ title: "AOP template updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update AOP template", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setAopTemplateMutatingId(null),
   });
 
   // Fetch connected Shopify shops
@@ -610,6 +630,32 @@ export default function AdminProducts() {
                         All-Over Print (AOP)
                       </Label>
                     </div>
+                    {pt.isAllOverPrint && (
+                      <div className="mt-3 space-y-1">
+                        <Label className="text-xs text-muted-foreground">AOP layout template</Label>
+                        <Select
+                          value={pt.aopTemplateId || AOP_TEMPLATE_SELECT_AUTO}
+                          onValueChange={(v) =>
+                            updateAopTemplateMutation.mutate({
+                              id: pt.id,
+                              aopTemplateId: v === AOP_TEMPLATE_SELECT_AUTO ? null : v,
+                            })
+                          }
+                          disabled={aopTemplateMutatingId === pt.id}
+                        >
+                          <SelectTrigger className="h-8 text-xs" data-testid={`select-aop-template-${pt.id}`}>
+                            <SelectValue placeholder="Template" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {AOP_TEMPLATE_ADMIN_OPTIONS.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
                     <div className="flex gap-2 mt-4 flex-wrap">
                       <Button 
                         variant="outline" 

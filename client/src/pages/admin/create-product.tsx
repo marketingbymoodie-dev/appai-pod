@@ -45,6 +45,7 @@ interface DesignerConfig {
   canvasConfig: { maxDimension: number; width: number; height: number; safeZoneMargin: number };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
   isAllOverPrint?: boolean;
+  aopTemplateId?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
 }
 
@@ -1127,6 +1128,7 @@ export default function AdminCreateProduct() {
               <div className="mt-2">
                 <PatternCustomizer
                   motifUrl={pendingMotifUrl}
+                  aopTemplateId={designerConfig?.aopTemplateId ?? null}
                   productWidth={(() => {
                     const positions = designerConfig?.placeholderPositions || [];
                     return positions.reduce((max, p) => Math.max(max, p.width), 2000);

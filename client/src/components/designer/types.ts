@@ -110,6 +110,8 @@ export interface ProductDesignerConfig {
   canvasConfig: CanvasConfig;
   doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;
+  /** When set, PatternCustomizer uses this template’s layout rules instead of inferring from panel names. */
+  aopTemplateId?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   /** Map of panel position name → SVG URL for the sew-pattern flat-lay viewer. */
   panelFlatLayImages?: Record<string, string>;
