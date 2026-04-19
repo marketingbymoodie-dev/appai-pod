@@ -6822,8 +6822,13 @@ ${textEdgeRestrictions}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
       }
-      await storage.updateGenerationJob(jobId, { designState } as any);
-      console.log(`[SaveState] jobId=${jobId} saved designState keys=${Object.keys(designState).join(',')}`);
+      const prevState =
+        job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
+          ? (job.designState as Record<string, unknown>)
+          : {};
+      const mergedDesignState = { ...prevState, ...designState };
+      await storage.updateGenerationJob(jobId, { designState: mergedDesignState } as any);
+      console.log(`[SaveState] jobId=${jobId} merged designState keys=${Object.keys(mergedDesignState).join(",")}`);
       return res.json({ saved: true });
     } catch (err: any) {
       console.error("[SaveState]", err);

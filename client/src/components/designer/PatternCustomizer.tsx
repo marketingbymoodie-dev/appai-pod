@@ -38,6 +38,8 @@ export type EditorMode = "pattern" | "single" | "place";
 
 export interface PatternApplyOptions {
   panelUrls?: { position: string; dataUrl: string }[];
+  /** High-res per-panel JPEGs for fulfillment (saved on job); mockup API uses `panelUrls` only. */
+  printPanelUrls?: { position: string; dataUrl: string }[];
   mirrorLegs?: boolean;
   seamOffset?: number;
   mode?: EditorMode;
@@ -98,11 +100,13 @@ const MIN_TILE_INCHES = 0.5;
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
 
-/** Max dimension for panel/raster uploads — keeps each panel JPEG under ~1 MB so Printify uploads complete quickly. */
-const MAX_PANEL_EXPORT_PX = 2048;
+/** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
+const MAX_PANEL_MOCKUP_PX = 2048;
+/** Max long-edge for persisted print assets (native template up to this cap). */
+const MAX_PANEL_PRINT_PX = 9000;
 
 /** Encode canvas as JPEG for smaller mockup API payloads; downscale if over max dimension. */
-function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_EXPORT_PX): string {
+function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOCKUP_PX): string {
   let w = canvas.width;
   let h = canvas.height;
   if (w <= 0 || h <= 0) return canvas.toDataURL("image/jpeg", 0.92);
@@ -1584,141 +1588,131 @@ export function PatternCustomizer({
     try {
       if (mode !== "place" || panelPositions.length === 0) {
         if (mode === "pattern" && panelPositions.length > 0) {
-          // Pattern mode WITH AOP panels: render each panel at its native print-pixel resolution.
-          // This ensures the mockup sees the same tile scale as the preview (both use PRINT_DPI).
-          const panelUrls: { position: string; dataUrl: string }[] = [];
-          const patternCompositeCovered = new Set<string>();
+          // Pattern mode WITH AOP panels: render twice — smaller rasters for Printify mockup API,
+          // higher cap for persisted print files (designState) used on fulfillment.
+          const buildPatternAopPanelUrls = async (pixelCap: number): Promise<{ position: string; dataUrl: string }[]> => {
+            const urls: { position: string; dataUrl: string }[] = [];
+            const patternCompositeCovered = new Set<string>();
 
-          // ── Leggings: composite tiling for sync sides / mirror ──────────────────
-          // Sync sides: tile both leg panels from a shared origin so the pattern is
-          // continuous at the front seam.  Mirror: right panel tiled normally; left
-          // panel is a horizontal flip of the right export.
-          if (productKind === "leggings" && (syncSidesMode || mirrorMode)) {
-            const rightDef = panelPositions.find(p =>
-              isLeggingsLegSlot(p.position) && p.position.toLowerCase().includes("right")
-            );
-            const leftDef = panelPositions.find(p => {
-              const l = p.position.toLowerCase();
-              return isLeggingsLegSlot(p.position) && l.includes("left") && !l.includes("right");
-            });
+            if (productKind === "leggings" && (syncSidesMode || mirrorMode)) {
+              const rightDef = panelPositions.find(p =>
+                isLeggingsLegSlot(p.position) && p.position.toLowerCase().includes("right")
+              );
+              const leftDef = panelPositions.find(p => {
+                const l = p.position.toLowerCase();
+                return isLeggingsLegSlot(p.position) && l.includes("left") && !l.includes("right");
+              });
 
-            if (rightDef && leftDef) {
-              const rightPos = rightDef.position;
-              const leftPos  = leftDef.position;
-              // Use a single scale ratio so tile sizes are identical on both panels
-              const scaleRatio = Math.min(1, MAX_PANEL_EXPORT_PX /
-                Math.max(rightDef.width, rightDef.height, leftDef.width, leftDef.height));
-              const outWR = Math.max(1, Math.round(rightDef.width  * scaleRatio));
-              const outHR = Math.max(1, Math.round(rightDef.height * scaleRatio));
-              const outWL = Math.max(1, Math.round(leftDef.width   * scaleRatio));
-              const outHL = Math.max(1, Math.round(leftDef.height  * scaleRatio));
+              if (rightDef && leftDef) {
+                const rightPos = rightDef.position;
+                const leftPos  = leftDef.position;
+                const scaleRatio = Math.min(1, pixelCap /
+                  Math.max(rightDef.width, rightDef.height, leftDef.width, leftDef.height));
+                const outWR = Math.max(1, Math.round(rightDef.width  * scaleRatio));
+                const outHR = Math.max(1, Math.round(rightDef.height * scaleRatio));
+                const outWL = Math.max(1, Math.round(leftDef.width   * scaleRatio));
+                const outHL = Math.max(1, Math.round(leftDef.height  * scaleRatio));
 
-              /** Tile a single panel canvas and optionally flip it. */
-              const renderPanel = (outW: number, outH: number, flipH: boolean) => {
-                const c = document.createElement("canvas");
-                c.width = outW; c.height = outH;
-                const cx = c.getContext("2d")!;
-                if (bgColor && bgColor !== "transparent") {
-                  cx.fillStyle = bgColor; cx.fillRect(0, 0, outW, outH);
+                const renderPanel = (outW: number, outH: number, flipH: boolean) => {
+                  const c = document.createElement("canvas");
+                  c.width = outW; c.height = outH;
+                  const cx = c.getContext("2d")!;
+                  if (bgColor && bgColor !== "transparent") {
+                    cx.fillStyle = bgColor; cx.fillRect(0, 0, outW, outH);
+                  }
+                  const tileWPrint = Math.max(4, tileInches * PRINT_DPI * scaleRatio);
+                  const offsetPrintPx = (patternOffsetX / 100) * tileWPrint;
+                  drawTiledMotifInRect(cx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * scaleRatio, offsetPrintPx, 0);
+                  if (!flipH) return c;
+                  const f = document.createElement("canvas");
+                  f.width = outW; f.height = outH;
+                  const fx = f.getContext("2d")!;
+                  fx.translate(outW, 0); fx.scale(-1, 1); fx.drawImage(c, 0, 0);
+                  return f;
+                };
+
+                const flipCanvas = (src: HTMLCanvasElement, w: number, h: number) => {
+                  const f = document.createElement("canvas");
+                  f.width = w; f.height = h;
+                  const fx = f.getContext("2d")!;
+                  fx.translate(w, 0); fx.scale(-1, 1); fx.drawImage(src, 0, 0, w, h);
+                  return f;
+                };
+
+                if (syncSidesMode) {
+                  const compositeW = outWR + outWL;
+                  const compositeH = Math.max(outHR, outHL);
+                  const comp = document.createElement("canvas");
+                  comp.width = compositeW; comp.height = compositeH;
+                  const cCtx = comp.getContext("2d")!;
+                  if (bgColor && bgColor !== "transparent") {
+                    cCtx.fillStyle = bgColor; cCtx.fillRect(0, 0, compositeW, compositeH);
+                  }
+                  const tileWPrint = Math.max(4, tileInches * PRINT_DPI * scaleRatio);
+                  const offsetPrintPx = (patternOffsetX / 100) * tileWPrint;
+                  drawTiledMotifInRect(cCtx, motifImage, 0, 0, compositeW, compositeH, tileInches, patternType, PRINT_DPI * scaleRatio, offsetPrintPx, 0);
+
+                  const cropR = document.createElement("canvas");
+                  cropR.width = outWR; cropR.height = outHR;
+                  cropR.getContext("2d")!.drawImage(comp, 0, 0, outWR, outHR, 0, 0, outWR, outHR);
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap) });
+
+                  const cropL = document.createElement("canvas");
+                  cropL.width = outWL; cropL.height = outHL;
+                  cropL.getContext("2d")!.drawImage(comp, outWR, 0, outWL, outHL, 0, 0, outWL, outHL);
+                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap) });
+                } else {
+                  const rightExport = renderPanel(outWR, outHR, true);
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap) });
+                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap) });
                 }
-                const tileWPrint = Math.max(4, tileInches * PRINT_DPI * scaleRatio);
-                const offsetPrintPx = (patternOffsetX / 100) * tileWPrint;
-                drawTiledMotifInRect(cx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * scaleRatio, offsetPrintPx, 0);
-                if (!flipH) return c;
-                const f = document.createElement("canvas");
-                f.width = outW; f.height = outH;
-                const fx = f.getContext("2d")!;
-                fx.translate(outW, 0); fx.scale(-1, 1); fx.drawImage(c, 0, 0);
-                return f;
-              };
 
-              /** Flip a canvas horizontally. */
-              const flipCanvas = (src: HTMLCanvasElement, w: number, h: number) => {
-                const f = document.createElement("canvas");
-                f.width = w; f.height = h;
-                const fx = f.getContext("2d")!;
-                fx.translate(w, 0); fx.scale(-1, 1); fx.drawImage(src, 0, 0, w, h);
-                return f;
-              };
-
-              if (syncSidesMode) {
-                // Single composite canvas: right panel [0, outWR], left panel [outWR, compositeW].
-                // Tiling from (0,0) means the pattern is continuous at x=outWR (front seam).
-                const compositeW = outWR + outWL;
-                const compositeH = Math.max(outHR, outHL);
-                const comp = document.createElement("canvas");
-                comp.width = compositeW; comp.height = compositeH;
-                const cCtx = comp.getContext("2d")!;
-                if (bgColor && bgColor !== "transparent") {
-                  cCtx.fillStyle = bgColor; cCtx.fillRect(0, 0, compositeW, compositeH);
-                }
-                // Apply patternOffsetX (% of tile width) to shift the composite anchor
-                const tileWPrint = Math.max(4, tileInches * PRINT_DPI * scaleRatio);
-                const offsetPrintPx = (patternOffsetX / 100) * tileWPrint;
-                drawTiledMotifInRect(cCtx, motifImage, 0, 0, compositeW, compositeH, tileInches, patternType, PRINT_DPI * scaleRatio, offsetPrintPx, 0);
-
-                // Crop right then flip
-                const cropR = document.createElement("canvas");
-                cropR.width = outWR; cropR.height = outHR;
-                cropR.getContext("2d")!.drawImage(comp, 0, 0, outWR, outHR, 0, 0, outWR, outHR);
-                panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR)) });
-
-                // Crop left then flip
-                const cropL = document.createElement("canvas");
-                cropL.width = outWL; cropL.height = outHL;
-                cropL.getContext("2d")!.drawImage(comp, outWR, 0, outWL, outHL, 0, 0, outWL, outHL);
-                panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL)) });
-              } else {
-                // mirrorMode: right panel tiled + flipped; left panel is horizontal mirror of right export
-                const rightExport = renderPanel(outWR, outHR, true);
-                panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport) });
-                panelUrls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL)) });
+                patternCompositeCovered.add(rightPos);
+                patternCompositeCovered.add(leftPos);
               }
+            }
 
-              patternCompositeCovered.add(rightPos);
-              patternCompositeCovered.add(leftPos);
+            for (const p of panelPositions) {
+              if (patternCompositeCovered.has(p.position)) continue;
+              const scaleRatio = Math.min(1, pixelCap / Math.max(p.width, p.height));
+              const outW = Math.max(1, Math.round(p.width  * scaleRatio));
+              const outH = Math.max(1, Math.round(p.height * scaleRatio));
+              const renderScale = scaleRatio;
+              const canvas = document.createElement("canvas");
+              canvas.width = outW;
+              canvas.height = outH;
+              const ctx = canvas.getContext("2d")!;
+              if (bgColor && bgColor !== "transparent") {
+                ctx.fillStyle = bgColor;
+                ctx.fillRect(0, 0, outW, outH);
+              }
+              drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale,
+                (patternOffsetX / 100) * Math.max(4, tileInches * PRINT_DPI * renderScale), 0);
+              let outForUpload: HTMLCanvasElement = canvas;
+              if (shouldFlipLeggingsLegSlot(productKind, p.position)) {
+                const flipped = document.createElement("canvas");
+                flipped.width = outW;
+                flipped.height = outH;
+                const fx = flipped.getContext("2d")!;
+                fx.translate(outW, 0);
+                fx.scale(-1, 1);
+                fx.drawImage(canvas, 0, 0);
+                outForUpload = flipped;
+              }
+              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap) });
             }
-          }
+            return urls;
+          };
 
-          // ── Remaining panels (non-leggings or waistbands etc.) ──────────────────
-          for (const p of panelPositions) {
-            if (patternCompositeCovered.has(p.position)) continue;
-            // Preserve aspect ratio when clamping so tile counts match the preview
-            // in both axes. Independent clamping would produce a square canvas for
-            // portrait panels, giving the wrong vertical tile count on export.
-            const scaleRatio = Math.min(1, MAX_PANEL_EXPORT_PX / Math.max(p.width, p.height));
-            const outW = Math.max(1, Math.round(p.width  * scaleRatio));
-            const outH = Math.max(1, Math.round(p.height * scaleRatio));
-            const renderScale = scaleRatio;
-            const canvas = document.createElement("canvas");
-            canvas.width = outW;
-            canvas.height = outH;
-            const ctx = canvas.getContext("2d")!;
-            if (bgColor && bgColor !== "transparent") {
-              ctx.fillStyle = bgColor;
-              ctx.fillRect(0, 0, outW, outH);
-            }
-            drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale,
-              (patternOffsetX / 100) * Math.max(4, tileInches * PRINT_DPI * renderScale), 0);
-            let outForUpload: HTMLCanvasElement = canvas;
-            if (shouldFlipLeggingsLegSlot(productKind, p.position)) {
-              const flipped = document.createElement("canvas");
-              flipped.width = outW;
-              flipped.height = outH;
-              const fx = flipped.getContext("2d")!;
-              fx.translate(outW, 0);
-              fx.scale(-1, 1);
-              fx.drawImage(canvas, 0, 0);
-              outForUpload = flipped;
-            }
-            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload) });
-          }
+          const panelUrls = await buildPatternAopPanelUrls(MAX_PANEL_MOCKUP_PX);
+          const printPanelUrls = await buildPatternAopPanelUrls(MAX_PANEL_PRINT_PX);
           await onApply(motifUrl, {
             mode,
             patternType,
             tileInches,
             bgColor,
             panelUrls,
+            printPanelUrls,
             perPanelTransforms,
           });
           return;

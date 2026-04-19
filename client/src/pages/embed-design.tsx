@@ -2162,6 +2162,9 @@ export default function EmbedDesign() {
       '_design_id': readableDesignId || rawId,
       'Artwork': 'Custom AI Design',
     };
+    if (savedJobIdRef.current) {
+      properties["_appai_job_id"] = savedJobIdRef.current;
+    }
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
@@ -3136,6 +3139,9 @@ export default function EmbedDesign() {
       '_design_id': _readableDesignId || _rawId,
       'Artwork': 'Custom AI Design',
     };
+    if (savedJobIdRef.current) {
+      properties["_appai_job_id"] = savedJobIdRef.current;
+    }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
     if (selectedSize) properties['Size'] = selectedSize;
@@ -5007,6 +5013,31 @@ export default function EmbedDesign() {
                     options.mirrorLegs,
                     options.panelUrls
                   );
+
+                  // Persist high-res per-panel assets on the generation job for fulfillment
+                  // (mockup path above uses options.panelUrls at lower cap only).
+                  const printPanels = options.printPanelUrls;
+                  if (isStorefront && printPanels?.length && savedJobIdRef.current && shopDomain) {
+                    try {
+                      const aopPrintPanelUrls: { position: string; url: string }[] = [];
+                      for (const { position, dataUrl } of printPanels) {
+                        const url = await ensureHostedUrl(dataUrl);
+                        aopPrintPanelUrls.push({ position, url });
+                      }
+                      await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          jobId: savedJobIdRef.current,
+                          shop: shopDomain,
+                          designState: { aopPrintPanelUrls },
+                        }),
+                      });
+                      console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
+                    } catch (e) {
+                      console.error("[AOP] Failed to persist print panel URLs:", e);
+                    }
+                  }
                 }}
                 footerSlot={
                   (isStorefront || isShopify) ? (
