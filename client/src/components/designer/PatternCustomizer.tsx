@@ -753,6 +753,8 @@ function drawLeggingLegLabels(
 
 /**
  * `tileInches` = physical size of one tile in inches; `pxPerInch` converts that to canvas/print pixels.
+ * Optional `anchorX`/`anchorY` set the grid origin — tiles are placed at `anchor + n * tileSize` so
+ * multiple panels sharing the same anchor will have a continuous (phase-matched) pattern.
  */
 function drawTiledMotifInRect(
   ctx: CanvasRenderingContext2D,
@@ -764,19 +766,26 @@ function drawTiledMotifInRect(
   tileInches: number,
   patternType: PatternType,
   pxPerInch: number,
+  anchorX?: number,
+  anchorY?: number,
 ) {
+  const ax = anchorX ?? sx;
+  const ay = anchorY ?? sy;
   const ti = Math.max(MIN_TILE_INCHES, Math.min(6, tileInches));
   const tileW = Math.max(4, ti * pxPerInch);
   const tileH = tileW * (img.height / img.width);
-  const cols = Math.ceil(rw / tileW) + 2;
-  const rows = Math.ceil(rh / tileH) + 2;
-  for (let row = -1; row < rows; row++) {
-    for (let col = -1; col < cols; col++) {
-      let x = col * tileW;
-      let y = row * tileH;
+  // Compute column/row range that covers [sx, sx+rw] × [sy, sy+rh] from anchor (ax, ay).
+  const startCol = Math.floor((sx - ax) / tileW) - 1;
+  const endCol   = Math.ceil((sx + rw - ax) / tileW) + 1;
+  const startRow = Math.floor((sy - ay) / tileH) - 1;
+  const endRow   = Math.ceil((sy + rh - ay) / tileH) + 1;
+  for (let row = startRow; row < endRow; row++) {
+    for (let col = startCol; col < endCol; col++) {
+      let x = ax + col * tileW;
+      let y = ay + row * tileH;
       if (patternType === "brick" && (row & 1)) x += tileW * 0.5;
       if (patternType === "half" && (col & 1)) y += tileH * 0.5;
-      ctx.drawImage(img, sx + x, sy + y, tileW, tileH);
+      ctx.drawImage(img, x, y, tileW, tileH);
     }
   }
 }
@@ -1143,6 +1152,36 @@ export function PatternCustomizer({
         const offY = (canvasH - compositeH * scl) / 2;
         const pxPerInch = scl * PRINT_DPI;
         const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
+        const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+
+        // Find right leg slot for sync/mirror calculations (leggings only)
+        const rightLegSlot = (syncSidesMode || mirrorMode)
+          ? slots.find(s => isLeggingsLegSlot(s.position) && !isLeftLegPanelPosition(s.position))
+          : undefined;
+        const rightSx = rightLegSlot ? offX + rightLegSlot.x * scl : 0;
+
+        // Pre-render right leg tile pattern to an offscreen buffer (mirror mode only).
+        // The left leg will draw this buffer flipped horizontally so the preview matches export.
+        let rightLegTileBuffer: HTMLCanvasElement | null = null;
+        if (mirrorMode && rightLegSlot) {
+          const rsx = offX + rightLegSlot.x * scl;
+          const rsy = offY + rightLegSlot.y * scl;
+          const rsw = rightLegSlot.w * scl;
+          const rsh = rightLegSlot.h * scl;
+          const riw = Math.max(1, Math.round(rsw));
+          const rih = Math.max(1, Math.round(rsh));
+          const buf = document.createElement("canvas");
+          buf.width = riw;
+          buf.height = rih;
+          const bCtx = buf.getContext("2d")!;
+          bCtx.fillStyle = fill;
+          bCtx.fillRect(0, 0, riw, rih);
+          bCtx.save();
+          bCtx.translate(-rsx, -rsy);
+          drawTiledMotifInRect(bCtx, img, rsx, rsy, rsw, rsh, tileInches, patternType, pxPerInch);
+          bCtx.restore();
+          rightLegTileBuffer = buf;
+        }
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
@@ -1152,13 +1191,42 @@ export function PatternCustomizer({
           const svgImg  = getSvgImageForPosition(svgImages, slot.position);
           const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
-          const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+          const flipSlot  = shouldFlipLeggingsLegSlot(productKind, slot.position);
+          const isLeftLeg = isLeftLegPanelPosition(slot.position);
+          const isLegSlot = isLeggingsLegSlot(slot.position);
+
+          // Decide whether to use a shared tile anchor (sync) or mirror flip (mirror)
+          let tileAnchorX: number | undefined;
+          let tileAnchorY: number | undefined;
+          const useMirrorLeft = mirrorMode  && isLeftLeg && isLegSlot && !!rightLegTileBuffer;
+          const useSyncLeft   = syncSidesMode && isLeftLeg && isLegSlot && !!rightLegSlot;
+
+          if (!isLeftLeg && isLegSlot && (syncSidesMode || mirrorMode) && rightLegSlot) {
+            // Right leg: anchor at its own left edge so phase is deterministic
+            tileAnchorX = rightSx;
+            tileAnchorY = offY;
+          } else if (useSyncLeft) {
+            // Left leg sync: the right leg's inner seam is at rightSx + rightSw in screen space.
+            // The preview gap (LEGGINGS_GAP * scl) is present between slots but absent in export.
+            // Shifting the anchor back by the gap makes the tile phase at the front seam match.
+            tileAnchorX = rightSx - LEGGINGS_GAP * scl;
+            tileAnchorY = offY;
+          }
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = fill;
             offCtx.fillRect(sx, sy, sw, sh);
-            drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
+            if (useMirrorLeft && rightLegTileBuffer) {
+              // Draw rightLegTileBuffer flipped horizontally into this left leg off-canvas.
+              // offCtx has translate(-sx,-sy); translate(sx+sw, sy) → net (sw,0); scale(-1,1) mirrors.
+              offCtx.save();
+              offCtx.translate(sx + sw, sy);
+              offCtx.scale(-1, 1);
+              offCtx.drawImage(rightLegTileBuffer, 0, 0, sw, sh);
+              offCtx.restore();
+            } else {
+              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch, tileAnchorX, tileAnchorY);
+            }
           }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
           if (flipSlot) {
@@ -1176,7 +1244,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType],
+    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, mirrorMode, syncSidesMode],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────

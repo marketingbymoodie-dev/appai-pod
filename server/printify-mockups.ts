@@ -520,13 +520,13 @@ export async function generatePrintifyMockup(
     const panelImageIds = new Map<string, string>();
 
     if (isAop && request.panelUrls && request.panelUrls.length > 0) {
-      console.log(`[Printify AOP] Uploading ${request.panelUrls.length} per-panel images`);
-      await Promise.all(request.panelUrls.map(async ({ position, dataUrl }) => {
+      console.log(`[Printify AOP] Uploading ${request.panelUrls.length} per-panel images (sequential)`);
+      for (const { position, dataUrl } of request.panelUrls) {
         try {
           const b64 = extractBase64FromDataUrl(dataUrl);
           if (!b64) {
             console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data`);
-            return;
+            continue;
           }
           let buf = Buffer.from(b64, "base64");
           buf = await sharp(buf).png().toBuffer();
@@ -540,7 +540,7 @@ export async function generatePrintifyMockup(
         } catch (panelErr: any) {
           console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message}`);
         }
-      }));
+      }
     }
 
     let uploadedImage: { id: string } | null = null;
@@ -589,15 +589,21 @@ export async function generatePrintifyMockup(
 
     productId = createResult.productId;
     const mockupData = await pRetry(
-      async () => {
+      async (attemptNumber) => {
         const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
-        if (!data || data.urls.length === 0) throw new Error("Mockups not ready yet");
+        if (!data || data.urls.length === 0) {
+          console.log(`[Printify Mockup] Poll attempt ${attemptNumber}: images not ready yet`);
+          throw new Error("Mockups not ready yet");
+        }
         return data;
       },
       {
-        retries: 5,
+        retries: 14,
         minTimeout: 2000,
-        maxTimeout: 5000,
+        maxTimeout: 9000,
+        onFailedAttempt: (err) => {
+          console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
+        },
       }
     );
 

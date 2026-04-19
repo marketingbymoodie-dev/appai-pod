@@ -1810,7 +1810,7 @@ export default function EmbedDesign() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-      }, 60000);
+      }, 120000);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
