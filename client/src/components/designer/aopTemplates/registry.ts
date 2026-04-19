@@ -1,5 +1,12 @@
 import type { AopLayoutKind } from "./detectLayoutKind";
 
+/**
+ * Template ids only select **which layout rules** apply in `PatternCustomizer` (paired with DB config).
+ * Improving leggings behavior = change `PatternCustomizer` (and related helpers); products already set to
+ * `leggings_v1` pick up those code changes automatically — no second “template version” column required
+ * unless you intentionally fork (e.g. `leggings_v2`).
+ */
+
 /** Known AOP template ids (DB `aop_template_id` / API `aopTemplateId`). */
 export const AOP_TEMPLATE_IDS = ["leggings_v1", "hoodie_v1", "generic_aop_v1"] as const;
 export type AopTemplateId = (typeof AOP_TEMPLATE_IDS)[number];

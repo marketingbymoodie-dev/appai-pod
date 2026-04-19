@@ -16,7 +16,7 @@
  * Hood and back panels are rendered in separate "view" tabs.
  */
 
-import { useState, useCallback, useRef, useEffect, type ReactNode } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -219,15 +219,21 @@ const LEGGINGS_GAP = 40;
  * appears on the viewer's left side (screen left) and wearer's left leg on the
  * viewer's right side (screen right), matching how you'd look at the garment
  * laid out flat in front of you. */
+function isLinearLegPanelPosition(pos: string): boolean {
+  const l = pos.toLowerCase();
+  return l.includes("_leg") || l.includes("_side");
+}
+
+/**
+ * Linear row layout for leggings-style AOP (and generic multi-panel rows).
+ * @param extraLegPairGapPx — added to {@link LEGGINGS_GAP} only between consecutive **leg** slots
+ *   (e.g. seam allowance preview); export paths pass `0` so print math stays unchanged.
+ */
 function buildLinearPanelsLayout(
   panels: Array<{ position: string; width: number; height: number }>,
+  extraLegPairGapPx = 0,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   if (panels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
-
-  const isLegPanel = (pos: string) => {
-    const l = pos.toLowerCase();
-    return l.includes("_leg") || l.includes("_side");
-  };
 
   // Stable sort: leg panels → right before left; non-leg panels keep original order.
   const sorted = panels
@@ -235,7 +241,7 @@ function buildLinearPanelsLayout(
     .sort((a, b) => {
       const al = a.position.toLowerCase();
       const bl = b.position.toLowerCase();
-      if (isLegPanel(al) && isLegPanel(bl)) {
+      if (isLinearLegPanelPosition(a.position) && isLinearLegPanelPosition(b.position)) {
         const aRight = al.includes("right");
         const bRight = bl.includes("right");
         if (aRight && !bRight) return -1;
@@ -247,12 +253,22 @@ function buildLinearPanelsLayout(
   let x = 0;
   const slots: PanelSlot[] = [];
   let maxH = 0;
-  for (const p of sorted) {
+  for (let i = 0; i < sorted.length; i++) {
+    const p = sorted[i];
     slots.push({ position: p.position, x, y: 0, w: p.width, h: p.height });
-    x += p.width + LEGGINGS_GAP;
+    if (i < sorted.length - 1) {
+      const next = sorted[i + 1];
+      const gap =
+        isLinearLegPanelPosition(p.position) && isLinearLegPanelPosition(next.position)
+          ? LEGGINGS_GAP + extraLegPairGapPx
+          : LEGGINGS_GAP;
+      x += p.width + gap;
+    } else {
+      x += p.width;
+    }
     maxH = Math.max(maxH, p.height);
   }
-  return { compositeW: x - LEGGINGS_GAP, compositeH: maxH, slots };
+  return { compositeW: x, compositeH: maxH, slots };
 }
 
 /** Leg flat shapes (_leg / _side); excludes waistbands. Used for Printify-style horizontal flip. */
@@ -362,6 +378,80 @@ function getSvgImageForPosition(
 function isLeftLegPanelPosition(position: string): boolean {
   const l = position.toLowerCase();
   return l.includes("left") && !l.includes("right") && (l.includes("leg") || l.includes("side"));
+}
+
+/** Which panel stores the canonical transform when Sync Sides is on (right leg holds scale/drag for both). */
+function canonicalLeggingsTransformPanelId(
+  active: string | null,
+  syncSides: boolean,
+  panels: Array<{ position: string }>,
+): string | null {
+  if (!active || !syncSides) return active;
+  if (!isLeggingsLegSlot(active)) return active;
+  if (isLeftLegPanelPosition(active)) {
+    return pairedLeggingLegPosition(panels, active) || active;
+  }
+  return active;
+}
+
+function hitTestLinearPlacePanel(
+  clientX: number,
+  clientY: number,
+  canvas: HTMLCanvasElement,
+  panelPositions: Array<{ position: string; width: number; height: number }>,
+  seamBleedExtraPx: number,
+): string | null {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / Math.max(rect.width, 1);
+  const scaleY = canvas.height / Math.max(rect.height, 1);
+  const cx = (clientX - rect.left) * scaleX;
+  const cy = (clientY - rect.top) * scaleY;
+  const pad = 20;
+  const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions, seamBleedExtraPx);
+  if (compositeW === 0) return null;
+  const canvasW = canvas.width;
+  const canvasH = canvas.height;
+  const scl = Math.min((canvasW - pad) / compositeW, (canvasH - pad) / compositeH, 1);
+  const offX = (canvasW - compositeW * scl) / 2;
+  const offY = (canvasH - compositeH * scl) / 2;
+  for (const slot of slots) {
+    const sx = offX + slot.x * scl;
+    const sy = offY + slot.y * scl;
+    const sw = slot.w * scl;
+    const sh = slot.h * scl;
+    if (cx >= sx && cx <= sx + sw && cy >= sy && cy <= sy + sh) return slot.position;
+  }
+  return null;
+}
+
+function hitTestHoodiePlacePanel(
+  clientX: number,
+  clientY: number,
+  canvas: HTMLCanvasElement,
+  activeView: "front" | "back" | "hood",
+  panelPositions: Array<{ position: string; width: number; height: number }>,
+): string | null {
+  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+  if (compositeW === 0) return null;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / Math.max(rect.width, 1);
+  const scaleY = canvas.height / Math.max(rect.height, 1);
+  const cx = (clientX - rect.left) * scaleX;
+  const cy = (clientY - rect.top) * scaleY;
+  const pad = 20;
+  const canvasW = canvas.width;
+  const canvasH = canvas.height;
+  const scl = Math.min((canvasW - pad) / compositeW, (canvasH - pad) / compositeH, 1);
+  const offX = (canvasW - compositeW * scl) / 2;
+  const offY = (canvasH - compositeH * scl) / 2;
+  for (const slot of slots) {
+    const sx = offX + slot.x * scl;
+    const sy = offY + slot.y * scl;
+    const sw = slot.w * scl;
+    const sh = slot.h * scl;
+    if (cx >= sx && cx <= sx + sw && cy >= sy && cy <= sy + sh) return slot.position;
+  }
+  return null;
 }
 
 /** Draw center snap guides (dashed cross) for the active panel slot. */
@@ -1088,7 +1178,8 @@ export function PatternCustomizer({
           ctx.restore();
         }
       } else {
-        const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
+        const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
+        const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions, linearGapExtra);
         if (compositeW === 0) return;
         const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
@@ -1140,7 +1231,7 @@ export function PatternCustomizer({
         }
       }
     },
-    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, syncSidesMode, bgColor],
+    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, syncSidesMode, bgColor, seamBleedPx],
   );
 
   const renderPatternMaskedPreview = useCallback(
@@ -1211,11 +1302,16 @@ export function PatternCustomizer({
             // Right leg: anchor at its own left edge so phase is deterministic
             tileAnchorX = rightSx + offsetScreenPx;
             tileAnchorY = offY;
-          } else if (useSyncLeft) {
-            // Left leg sync: the right leg's inner seam is at rightSx + rightSw in screen space.
-            // The preview gap (LEGGINGS_GAP * scl) is present between slots but absent in export.
-            // Shifting the anchor back by the gap makes the tile phase at the front seam match.
-            tileAnchorX = rightSx - LEGGINGS_GAP * scl + offsetScreenPx;
+          } else if (useSyncLeft && rightLegSlot) {
+            // Left leg sync: offset tile anchor by the **layout** gap between right and left leg slots
+            // (includes seam allowance when `seamBleedPx` widens the preview-only leg pair gap).
+            const leftLegSlot = slots.find(
+              s => isLeggingsLegSlot(s.position) && isLeftLegPanelPosition(s.position),
+            );
+            const seamLayoutGapPx = leftLegSlot
+              ? leftLegSlot.x - rightLegSlot.x - rightLegSlot.w
+              : LEGGINGS_GAP;
+            tileAnchorX = rightSx - seamLayoutGapPx * scl + offsetScreenPx;
             tileAnchorY = offY;
           }
 
@@ -1248,11 +1344,12 @@ export function PatternCustomizer({
         const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
         drawSlots(slots, compositeW, compositeH);
       } else {
-        const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
+        const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
+        const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions, linearGapExtra);
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, mirrorMode, syncSidesMode, patternOffsetX],
+    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, mirrorMode, syncSidesMode, patternOffsetX, seamBleedPx],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -1271,7 +1368,7 @@ export function PatternCustomizer({
       const layout =
         productKind === "hoodie"
           ? buildCompositeLayout(activeView, panelPositions)
-          : buildLinearPanelsLayout(panelPositions);
+          : buildLinearPanelsLayout(panelPositions, productKind === "leggings" ? seamBleedPx : 0);
       if (layout.compositeW > 0 && layout.compositeH > 0) {
         const ratio = layout.compositeH / layout.compositeW;
         // Constrain canvas height: never smaller than 30% of width or larger than 200%
@@ -1331,6 +1428,7 @@ export function PatternCustomizer({
     previewPx,
     renderPanelPreview,
     renderPatternMaskedPreview,
+    seamBleedPx,
   ]);
 
   // ── Mirror helpers ─────────────────────────────────────────────────────────
@@ -1384,7 +1482,7 @@ export function PatternCustomizer({
         const { slots } =
           productKind === "hoodie"
             ? buildCompositeLayout(activeView, panelPositions)
-            : buildLinearPanelsLayout(panelPositions);
+            : buildLinearPanelsLayout(panelPositions, 0);
         const source = getMirrorSource(panel, slots);
         return source || panel;
       }
@@ -1392,8 +1490,20 @@ export function PatternCustomizer({
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      if (!activePanel || mode !== "place") return;
-      const editPanel = getEditablePanelForDrag(activePanel);
+      if (mode !== "place") return;
+      const hit =
+        productKind === "hoodie"
+          ? hitTestHoodiePlacePanel(e.clientX, e.clientY, canvas, activeView, panelPositions)
+          : hitTestLinearPlacePanel(
+              e.clientX,
+              e.clientY,
+              canvas,
+              panelPositions,
+              productKind === "leggings" ? seamBleedPx : 0,
+            );
+      if (!hit) return;
+      setActivePanel(hit);
+      const editPanel = getEditablePanelForDrag(hit);
       const t = perPanelTransforms[editPanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
       dragRef.current = {
         active: true,
@@ -1418,10 +1528,22 @@ export function PatternCustomizer({
     const onMouseUp = () => { dragRef.current.active = false; };
 
     const onTouchStart = (e: TouchEvent) => {
-      if (!activePanel || mode !== "place" || e.touches.length !== 1) return;
-      const editPanel = getEditablePanelForDrag(activePanel);
-      const t = perPanelTransforms[editPanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+      if (mode !== "place" || e.touches.length !== 1) return;
       const touch = e.touches[0];
+      const hit =
+        productKind === "hoodie"
+          ? hitTestHoodiePlacePanel(touch.clientX, touch.clientY, canvas, activeView, panelPositions)
+          : hitTestLinearPlacePanel(
+              touch.clientX,
+              touch.clientY,
+              canvas,
+              panelPositions,
+              productKind === "leggings" ? seamBleedPx : 0,
+            );
+      if (!hit) return;
+      setActivePanel(hit);
+      const editPanel = getEditablePanelForDrag(hit);
+      const t = perPanelTransforms[editPanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
       dragRef.current = {
         active: true,
         startClientX: touch.clientX,
@@ -1458,7 +1580,7 @@ export function PatternCustomizer({
       canvas.removeEventListener("touchmove",  onTouchMove);
       window.removeEventListener("touchend",   onMouseUp);
     };
-  }, [activePanel, mode, perPanelTransforms, mirrorMode, syncSidesMode, productKind, activeView, panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activePanel, mode, perPanelTransforms, mirrorMode, syncSidesMode, productKind, activeView, panelPositions, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updatePanelTransform = useCallback(
     (position: string, partial: Partial<PanelTransform>) => {
@@ -1530,7 +1652,7 @@ export function PatternCustomizer({
         }
       }
     } else {
-      const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
+      const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions, 0);
       if (compositeW > 0) {
         const scl = Math.min((px - 20) / compositeW, (px - 20) / compositeH, 1);
         const found = slots.find(s => s.position === pos.position);
@@ -1851,7 +1973,7 @@ export function PatternCustomizer({
           const compositeH = Math.max(rightDef.height, leftDef.height);
 
           // Upscale from preview slot px → print px
-          const layout = buildLinearPanelsLayout(panelPositions);
+          const layout = buildLinearPanelsLayout(panelPositions, 0);
           const layoutScl = layout.compositeW > 0
             ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
             : 1;
@@ -2013,7 +2135,14 @@ export function PatternCustomizer({
   }
 
   const isLoading = applyLoading || !!externalLoading;
-  const activePanelT = activePanel ? (perPanelTransforms[activePanel] || { dxPx: 0, dyPx: 0, scalePct: 100 }) : null;
+  /** Under Sync Sides, scale/reset edit the right-leg transform (canonical) so the slider works from either leg. */
+  const transformEditPanelId = useMemo(
+    () => canonicalLeggingsTransformPanelId(activePanel, syncSidesMode, panelPositions),
+    [activePanel, syncSidesMode, panelPositions],
+  );
+  const activePanelT = transformEditPanelId
+    ? (perPanelTransforms[transformEditPanelId] || { dxPx: 0, dyPx: 0, scalePct: 100 })
+    : null;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -2182,12 +2311,12 @@ export function PatternCustomizer({
 
           {mode === "place" && (
             <>
-              {activePanelT && activePanel && (
+              {activePanelT && transformEditPanelId && activePanel && (
                 <div>
                   <Label className="text-xs">Artwork scale: {activePanelT.scalePct}%</Label>
                   <Slider
                     value={[activePanelT.scalePct]}
-                    onValueChange={v => updatePanelTransform(activePanel, { scalePct: v[0] })}
+                    onValueChange={v => updatePanelTransform(transformEditPanelId, { scalePct: v[0] })}
                     min={20}
                     max={200}
                     step={5}
@@ -2196,10 +2325,10 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {activePanelT && activePanel && (
+              {activePanelT && transformEditPanelId && activePanel && (
                 <button
                   type="button"
-                  onClick={() => updatePanelTransform(activePanel, { dxPx: 0, dyPx: 0, scalePct: 100 })}
+                  onClick={() => updatePanelTransform(transformEditPanelId, { dxPx: 0, dyPx: 0, scalePct: 100 })}
                   className="text-xs text-muted-foreground underline text-left"
                 >
                   Reset panel
