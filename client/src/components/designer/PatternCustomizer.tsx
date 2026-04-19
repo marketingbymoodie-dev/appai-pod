@@ -866,6 +866,7 @@ export function PatternCustomizer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const previewWrapRef = useRef<HTMLDivElement>(null);
   const [previewPx, setPreviewPx] = useState(PREVIEW_PX_DEFAULT);
+  const [canvasDims, setCanvasDims] = useState({ w: PREVIEW_PX_DEFAULT, h: PREVIEW_PX_DEFAULT });
   const [motifImage, setMotifImage] = useState<HTMLImageElement | null>(null);
   const [svgImages, setSvgImages]   = useState<Record<string, HTMLImageElement>>({});
 
@@ -904,8 +905,7 @@ export function PatternCustomizer({
     if (!el || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       const w = el.clientWidth;
-      const h = el.clientHeight;
-      const s = Math.floor(Math.min(Math.max(w, 160), Math.max(h, 160), 1100));
+      const s = Math.floor(Math.min(Math.max(w, 160), 1100));
       if (s >= 160) setPreviewPx(s);
     };
     measure();
@@ -1204,6 +1204,7 @@ export function PatternCustomizer({
 
     canvas.width = px;
     canvas.height = canvasH;
+    setCanvasDims({ w: px, h: canvasH });
 
     ctx.clearRect(0, 0, px, canvasH);
     // Use neutral muted fill for the canvas gutter; bgColor is applied per-panel inside drawMaskedSlot.
@@ -1644,6 +1645,96 @@ export function PatternCustomizer({
         compositeCovered.add(leftPos);
       }
 
+      // ── Leggings leg composite export (seam crossing when seamBleedPx > 0) ────
+      // Draws both leg panels from a single composite canvas so artwork naturally
+      // crosses the front seam. The right panel export matches the individual path
+      // exactly; the left panel gets the continuation (or symT for syncSidesMode).
+      if (productKind === "leggings" && seamBleedPx > 0) {
+        const rightDef = panelPositions.find(p =>
+          isLeggingsLegSlot(p.position) && p.position.toLowerCase().includes("right")
+        );
+        const leftDef = panelPositions.find(p => {
+          const l = p.position.toLowerCase();
+          return isLeggingsLegSlot(p.position) && l.includes("left") && !l.includes("right");
+        });
+
+        if (rightDef && leftDef) {
+          const rightPos = rightDef.position;
+          const leftPos  = leftDef.position;
+
+          const compositeW = rightDef.width + leftDef.width;
+          const compositeH = Math.max(rightDef.height, leftDef.height);
+
+          // Upscale from preview slot px → print px
+          const layout = buildLinearPanelsLayout(panelPositions);
+          const layoutScl = layout.compositeW > 0
+            ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
+            : 1;
+          const rightSlot = layout.slots.find(s => s.position === rightPos);
+          const previewSlotW = rightSlot ? rightSlot.w * layoutScl : previewPx;
+          const previewSlotH = rightSlot ? rightSlot.h * layoutScl : previewPx;
+          const upscaleX = rightDef.width  / (previewSlotW || rightDef.width);
+          const upscaleY = rightDef.height / (previewSlotH || rightDef.height);
+
+          const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+
+          // Shift the art so it's centered within the right panel (matches individual
+          // export) but drawn on the full composite — art wide enough to cross the seam
+          // will extend into the left panel region naturally.
+          const compositePrintT: PanelTransform = {
+            dxPx:     tRight.dxPx * upscaleX - compositeW / 2 + rightDef.width / 2,
+            dyPx:     tRight.dyPx * upscaleY,
+            scalePct: tRight.scalePct,
+          };
+
+          const compositeCanvas = document.createElement("canvas");
+          compositeCanvas.width  = compositeW;
+          compositeCanvas.height = compositeH;
+          const cCtx = compositeCanvas.getContext("2d")!;
+          if (bgColor && bgColor !== "transparent") {
+            cCtx.fillStyle = bgColor;
+            cCtx.fillRect(0, 0, compositeW, compositeH);
+          }
+          drawArtworkInSlot(cCtx, motifImage, 0, 0, compositeW, compositeH, compositePrintT, false);
+
+          // Crop right panel then flip (same as shouldFlipLeggingsLegSlot)
+          const cropR = document.createElement("canvas");
+          cropR.width = rightDef.width; cropR.height = rightDef.height;
+          cropR.getContext("2d")!.drawImage(compositeCanvas,
+            0, 0, rightDef.width, rightDef.height,
+            0, 0, rightDef.width, rightDef.height);
+          const flipR = document.createElement("canvas");
+          flipR.width = rightDef.width; flipR.height = rightDef.height;
+          const frCtx = flipR.getContext("2d")!;
+          frCtx.translate(rightDef.width, 0); frCtx.scale(-1, 1);
+          frCtx.drawImage(cropR, 0, 0);
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR) });
+
+          // Left panel: syncSidesMode → symmetric transform independently; otherwise
+          // crop the composite continuation so art is seamless across the front seam.
+          if (syncSidesMode) {
+            const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
+            const dataUrl = await exportPanelImage(leftDef, motifImage, symT);
+            panelUrls.push({ position: leftPos, dataUrl });
+          } else {
+            const cropL = document.createElement("canvas");
+            cropL.width = leftDef.width; cropL.height = leftDef.height;
+            cropL.getContext("2d")!.drawImage(compositeCanvas,
+              rightDef.width, 0, leftDef.width, leftDef.height,
+              0,              0, leftDef.width, leftDef.height);
+            const flipL = document.createElement("canvas");
+            flipL.width = leftDef.width; flipL.height = leftDef.height;
+            const flCtx = flipL.getContext("2d")!;
+            flCtx.translate(leftDef.width, 0); flCtx.scale(-1, 1);
+            flCtx.drawImage(cropL, 0, 0);
+            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipL) });
+          }
+
+          compositeCovered.add(rightPos);
+          compositeCovered.add(leftPos);
+        }
+      }
+
       // Remaining panels: independent per-panel export
       // For leggings mirror mode: left leg mirrors the right leg's artwork
       for (const p of panelPositions) {
@@ -1747,11 +1838,11 @@ export function PatternCustomizer({
           <div
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
-            style={{ aspectRatio: "1 / 1" }}
+            style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
           >
             <canvas
               ref={canvasRef}
-              className="absolute inset-0 w-full h-full object-contain touch-none"
+              className="absolute inset-0 w-full h-full touch-none"
               style={{
                 cursor: mode === "place" ? "grab" : "default",
                 display: "block",
@@ -1906,14 +1997,19 @@ export function PatternCustomizer({
                 Dashed inner line is a <strong className="font-medium">guide</strong> only. Mockups use the full panel image; art placed near the edge can still show on the product. 3D previews may not match the flat template pixel-for-pixel.
               </p>
 
-              {getSeamPairs(panelPositions).length > 0 && (
+              {(getSeamPairs(panelPositions).length > 0 ||
+                (productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)))) && (
                 <div>
-                  <Label className="text-xs">Seam bleed: {seamBleedPx}px</Label>
+                  <Label className="text-xs">
+                    {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position))
+                      ? `Front seam allowance: ${seamBleedPx}px`
+                      : `Seam bleed: ${seamBleedPx}px`}
+                  </Label>
                   <Slider
                     value={[seamBleedPx]}
                     onValueChange={v => setSeamBleedPx(v[0])}
                     min={0}
-                    max={200}
+                    max={100}
                     step={5}
                     className={sliderTrackClass}
                   />
