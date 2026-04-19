@@ -92,8 +92,8 @@ const MIN_TILE_INCHES = 0.5;
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
 
-/** Max dimension for panel/raster uploads — native print pixels (7–12k) exceed proxy body limits (413). */
-const MAX_PANEL_EXPORT_PX = 4000;
+/** Max dimension for panel/raster uploads — keeps each panel JPEG under ~1 MB so Printify uploads complete quickly. */
+const MAX_PANEL_EXPORT_PX = 2048;
 
 /** Encode canvas as JPEG for smaller mockup API payloads; downscale if over max dimension. */
 function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_EXPORT_PX): string {
@@ -1266,17 +1266,14 @@ export function PatternCustomizer({
       scalePct: t.scalePct,
     };
 
-    const svgImg = getSvgImageForPosition(svgImages, pos.position);
-
-    // Use the same masking pipeline as the on-canvas preview so the exported
-    // raster matches exactly what the user saw (silhouette clip + bg + artwork).
-    drawMaskedSlot(ctx, svgImg, 0, 0, pos.width, pos.height, (offCtx) => {
-      if (bgColor && bgColor !== "transparent") {
-        offCtx.fillStyle = bgColor;
-        offCtx.fillRect(0, 0, pos.width, pos.height);
-      }
-      drawArtworkInSlot(offCtx, img, 0, 0, pos.width, pos.height, printT, false);
-    });
+    // Fill the full printable rectangle with the background colour — no silhouette clipping.
+    // Printify stretches this image over the panel placeholder (including bleed), so the
+    // entire rectangle must be covered. drawMaskedSlot is only used for the on-screen preview.
+    if (bgColor && bgColor !== "transparent") {
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, pos.width, pos.height);
+    }
+    drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
 
     return canvasToUploadDataUrl(canvas);
   }

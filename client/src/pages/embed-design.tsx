@@ -1877,7 +1877,7 @@ export default function EmbedDesign() {
           }
         }
       } else if (!result.success) {
-        throw new Error(result.message || "Mockup generation returned unsuccessful");
+        throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
       }
     } catch (error) {
       console.error("Failed to generate Printify mockups:", error);

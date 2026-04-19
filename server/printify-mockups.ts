@@ -214,17 +214,25 @@ async function uploadImageToPrintify(
     try {
       console.log(`[Printify Upload] Attempt ${attempt}/${MAX_RETRIES} via ${uploadMethod}`);
 
-      const response = await fetch(
-        `${PRINTIFY_API_BASE}/uploads/images.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
+      const controller = new AbortController();
+      const uploadTimeout = setTimeout(() => controller.abort(), 30_000); // 30 s per upload
+      let response: Response;
+      try {
+        response = await fetch(
+          `${PRINTIFY_API_BASE}/uploads/images.json`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          }
+        );
+      } finally {
+        clearTimeout(uploadTimeout);
+      }
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`[Printify Upload] Attempt ${attempt} failed (${response.status}):`, errorText.substring(0, 500));
