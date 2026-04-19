@@ -7,14 +7,20 @@ const MAX_RETRIES = 3;
 const MAX_MOCKUP_VIEWS = 9;
 
 /** Order matches Printify `camera_label` tokens (case-insensitive after normalization). */
+// Printify UI often shows "Front Side" / "Side Person"; URL `camera_label` may be spaced or kebab-case.
 const LEGGINGS_STYLE_PRIORITY = [
   "front",
   "back",
   "front side",
+  "front-side",
   "back side",
+  "back-side",
   "front person",
+  "front-person",
   "side person",
+  "side-person",
   "back person",
+  "back-person",
   "lifestyle",
 ] as const;
 
