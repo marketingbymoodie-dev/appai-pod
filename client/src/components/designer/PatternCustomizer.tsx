@@ -43,6 +43,7 @@ export interface PatternApplyOptions {
   mode?: EditorMode;
   patternType?: PatternType;
   tilesAcross?: number;
+  tileInches?: number;
   bgColor?: string;
   perPanelTransforms?: Record<string, PanelTransform>;
 }
@@ -76,6 +77,9 @@ const PREVIEW_INCHES = 6;
 
 /** Printify DPI for AOP panels */
 const PRINT_DPI = 150;
+
+/** Safe-print margin in inches (Printify standard sew allowance). */
+const SAFE_AREA_INCHES = 0.25;
 
 /**
  * Default seam bleed in print pixels (~1 cm at 150 DPI).
@@ -463,6 +467,132 @@ function drawMaskedSlot(
   ctx.restore();
 }
 
+/** Return the _safe variant image for a panel position, or null if none loaded. */
+function getSafeAreaImageForPosition(
+  svgImages: Record<string, HTMLImageElement>,
+  position: string,
+): HTMLImageElement | null {
+  for (const key of flatLayLookupKeys(position)) {
+    const safe = svgImages[`${key}_safe`];
+    if (safe) return safe;
+  }
+  return null;
+}
+
+/**
+ * Overlay silhouette outline + safe-area dashes + bleed-band stripes on top of a panel slot.
+ * Call this AFTER drawMaskedSlot so the guides sit above the artwork.
+ *
+ *  • Silhouette outline   – thin dark ring tracing the actual garment edge.
+ *  • Bleed band           – diagonal hatching between silhouette and safe-area edges,
+ *                           indicating the print area that will be cut / sewn.
+ *  • Safe-area boundary   – dashed inner ring at safeInsetPx, inside which artwork
+ *                           is guaranteed to remain visible after sewing.
+ *
+ * If safeImg is provided (a dedicated *_safe.svg mask), it is used as-is for the
+ * safe boundary; otherwise the silhouette is scaled inward by safeInsetPx.
+ */
+function drawPanelSilhouetteOverlay(
+  ctx: CanvasRenderingContext2D,
+  svgImg: HTMLImageElement | null,
+  safeImg: HTMLImageElement | null,
+  sx: number,
+  sy: number,
+  sw: number,
+  sh: number,
+  safeInsetPx: number,
+): void {
+  if (!svgImg) {
+    drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+    return;
+  }
+
+  const iw = Math.max(1, Math.round(sw));
+  const ih = Math.max(1, Math.round(sh));
+  const inset = Math.max(3, safeInsetPx);
+
+  /** Offscreen canvas with the given img drawn, optionally inset. */
+  function makeSilhouette(img: HTMLImageElement, px: number): HTMLCanvasElement {
+    const off = document.createElement("canvas");
+    off.width = iw; off.height = ih;
+    const c = off.getContext("2d")!;
+    if (px === 0) {
+      c.drawImage(img, 0, 0, iw, ih);
+    } else {
+      c.drawImage(img, px, px, iw - 2 * px, ih - 2 * px);
+    }
+    return off;
+  }
+
+  /**
+   * Build a thin dark ring from a silhouette canvas: fill its alpha dark, then
+   * destination-out an inset copy so only a `ringW`-wide border remains.
+   */
+  function makeRing(source: HTMLCanvasElement, ringW: number): HTMLCanvasElement {
+    const off = document.createElement("canvas");
+    off.width = iw; off.height = ih;
+    const c = off.getContext("2d")!;
+    c.drawImage(source, 0, 0);
+    c.globalCompositeOperation = "source-in";
+    c.fillStyle = "rgba(15,15,15,1)";
+    c.fillRect(0, 0, iw, ih);
+    c.globalCompositeOperation = "destination-out";
+    c.drawImage(source, ringW, ringW, iw - 2 * ringW, ih - 2 * ringW);
+    return off;
+  }
+
+  const silCanvas  = makeSilhouette(svgImg, 0);
+  const safeCanvas = safeImg ? makeSilhouette(safeImg, 0) : makeSilhouette(svgImg, inset);
+
+  // ── 1. Bleed band (silhouette minus safe area, filled with diagonal hatching) ──
+  {
+    const bleedOff = document.createElement("canvas");
+    bleedOff.width = iw; bleedOff.height = ih;
+    const bc = bleedOff.getContext("2d")!;
+    bc.drawImage(silCanvas, 0, 0);
+    bc.globalCompositeOperation = "destination-out";
+    bc.drawImage(safeCanvas, 0, 0);
+    // Fill the remaining (bleed ring) pixels with diagonal stripes
+    bc.globalCompositeOperation = "source-in";
+    const sp = document.createElement("canvas");
+    sp.width = 8; sp.height = 8;
+    const sc = sp.getContext("2d")!;
+    sc.strokeStyle = "rgba(60,60,60,0.9)";
+    sc.lineWidth = 1.5;
+    sc.beginPath(); sc.moveTo(-2, 10); sc.lineTo(10, -2); sc.stroke();
+    sc.beginPath(); sc.moveTo(-2, 2);  sc.lineTo(2,  -2); sc.stroke();
+    sc.beginPath(); sc.moveTo(6,  10); sc.lineTo(10,  6); sc.stroke();
+    bc.fillStyle = bc.createPattern(sp, "repeat")!;
+    bc.fillRect(0, 0, iw, ih);
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.drawImage(bleedOff, sx, sy, sw, sh);
+    ctx.restore();
+  }
+
+  // ── 2. Silhouette outline ────────────────────────────────────────────────
+  ctx.drawImage(makeRing(silCanvas, 1.5), sx, sy, sw, sh);
+
+  // ── 3. Safe-area dashed boundary ─────────────────────────────────────────
+  {
+    const ring = makeRing(safeCanvas, 1.5);
+    // Apply dashes: destination-in with a horizontal stripe pattern (5px on / 4px off)
+    const ringCtx = ring.getContext("2d")!;
+    const dashPat = document.createElement("canvas");
+    dashPat.width = 9; dashPat.height = 1;
+    const dp = dashPat.getContext("2d")!;
+    dp.fillStyle = "#fff";
+    dp.fillRect(0, 0, 5, 1); // 5px opaque, 4px transparent
+    ringCtx.globalCompositeOperation = "destination-in";
+    ringCtx.fillStyle = ringCtx.createPattern(dashPat, "repeat")!;
+    ringCtx.fillRect(0, 0, iw, ih);
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.drawImage(ring, sx, sy, sw, sh);
+    ctx.restore();
+  }
+}
+
 /** Inner dashed “safe / sew” line — drawn on top of SVG or flat fills. */
 function drawSewSafeDashed(
   ctx: CanvasRenderingContext2D,
@@ -482,7 +612,8 @@ function drawSewSafeDashed(
 }
 
 /**
- * Tile motif in a rectangle with grid / brick / half-drop. `tilesAcross` = tiles across the rect width.
+ * Tile motif in a rectangle with grid / brick / half-drop.
+ * `tileInches` = physical size of one tile in inches; `pxPerInch` converts that to canvas/print pixels.
  */
 function drawTiledMotifInRect(
   ctx: CanvasRenderingContext2D,
@@ -491,10 +622,11 @@ function drawTiledMotifInRect(
   sy: number,
   rw: number,
   rh: number,
-  tilesAcross: number,
+  tileInches: number,
   patternType: PatternType,
+  pxPerInch: number,
 ) {
-  const tileW = Math.max(4, rw / Math.max(1, tilesAcross));
+  const tileW = Math.max(4, tileInches * pxPerInch);
   const tileH = tileW * (img.height / img.width);
   const cols = Math.ceil(rw / tileW) + 2;
   const rows = Math.ceil(rh / tileH) + 2;
@@ -533,6 +665,7 @@ interface PatternCustomizerProps {
   panelFlatLayImages?: Record<string, string>;
   fetchFn?: (url: string, options?: RequestInit) => Promise<Response>;
   initialTilesAcross?: number;
+  initialTileInches?: number;
   initialPattern?: PatternType;
   initialBgColor?: string;
   onSettingsChange?: (settings: PatternApplyOptions) => void;
@@ -553,6 +686,7 @@ export function PatternCustomizer({
   panelFlatLayImages,
   fetchFn,
   initialTilesAcross,
+  initialTileInches,
   initialPattern,
   initialBgColor,
   onSettingsChange,
@@ -571,7 +705,15 @@ export function PatternCustomizer({
 
   const [mode, setMode] = useState<EditorMode>("pattern");
   const [patternType, setPatternType] = useState<PatternType>(initialPattern || "grid");
-  const [scale, setScale] = useState(initialTilesAcross || 5);
+  // tileInches: real-world size of one tile in inches (replaces abstract tilesAcross).
+  // Back-compat: if only initialTilesAcross was stored, convert via a nominal 6" panel width.
+  const [tileInches, setTileInches] = useState<number>(() => {
+    if (typeof initialTileInches === "number" && initialTileInches > 0) return initialTileInches;
+    if (typeof initialTilesAcross === "number" && initialTilesAcross > 0) {
+      return Math.max(0.25, Math.min(6, 6 / initialTilesAcross));
+    }
+    return 1.5;
+  });
   const [bgColor, setBgColor] = useState(initialBgColor || "");
   const [applyLoading, setApplyLoading] = useState(false);
 
@@ -742,43 +884,28 @@ export function PatternCustomizer({
         const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
         const offY = (canvasH - compositeH * scl) / 2;
+        const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
           const sy = offY + slot.y * scl;
           const sw = slot.w * scl;
           const sh = slot.h * scl;
-          const hasSvg = !!getSvgImageForPosition(svgImages, slot.position);
-
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(sx, sy, sw, sh);
-          ctx.clip();
-          if (hasSvg) {
-            tryDrawSvgBackground(ctx, svgImages, slot.position, sx, sy, sw, sh);
-          } else {
-            ctx.fillStyle = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-            ctx.fillRect(sx, sy, sw, sh);
-          }
+          const svgImg  = getSvgImageForPosition(svgImages, slot.position);
+          const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
           const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
           const mirrorTarget = mirrorMode && isMirrorTarget(slot.position, slots);
           const sourcePos = mirrorTarget ? getMirrorSource(slot.position, slots) : null;
           const effectiveT = sourcePos ? (perPanelTransforms[sourcePos] || t) : t;
 
-          drawArtworkInSlot(ctx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
-          ctx.restore();
-
-          if (hasSvg) {
-            ctx.save();
-            ctx.strokeStyle = "rgba(25,25,25,0.88)";
-            ctx.lineWidth = 1.5;
-            ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
-            drawSewSafeDashed(ctx, sx, sy, sw, sh);
-            ctx.restore();
-          } else {
-            drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
-          }
+          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+            const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+            offCtx.fillStyle = fill;
+            offCtx.fillRect(sx, sy, sw, sh);
+            drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
+          });
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -804,6 +931,7 @@ export function PatternCustomizer({
         const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
         const offY = (canvasH - compositeH * scl) / 2;
+        const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
 
         const rightLegPos = panelPositions.find(p => {
           const l = p.position.toLowerCase();
@@ -815,7 +943,8 @@ export function PatternCustomizer({
           const sy = offY + slot.y * scl;
           const sw = slot.w * scl;
           const sh = slot.h * scl;
-          const svgImg = getSvgImageForPosition(svgImages, slot.position);
+          const svgImg  = getSvgImageForPosition(svgImages, slot.position);
+          const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
           const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
           const doMirror =
@@ -830,7 +959,7 @@ export function PatternCustomizer({
             offCtx.fillRect(sx, sy, sw, sh);
             drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
           });
-
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -847,20 +976,24 @@ export function PatternCustomizer({
         const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
         const offY = (canvasH - compositeH * scl) / 2;
+        const pxPerInch = scl * PRINT_DPI;
+        const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
           const sy = offY + slot.y * scl;
           const sw = slot.w * scl;
           const sh = slot.h * scl;
-          const svgImg = getSvgImageForPosition(svgImages, slot.position);
+          const svgImg  = getSvgImageForPosition(svgImages, slot.position);
+          const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
             offCtx.fillStyle = fill;
             offCtx.fillRect(sx, sy, sw, sh);
-            drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, scale, patternType);
+            drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
           });
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset);
         }
       };
 
@@ -872,7 +1005,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, scale, patternType],
+    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -912,18 +1045,16 @@ export function PatternCustomizer({
     if (mode === "pattern" && panelPositions.length > 0) {
       renderPatternMaskedPreview(ctx, motifImage, px, canvasH);
     } else if (mode === "pattern") {
-      const tileSize = (PREVIEW_INCHES * 96) / scale;
-      for (let row = -1; row < Math.ceil(canvasH / tileSize) + 1; row++) {
-        for (let col = -1; col < Math.ceil(px / tileSize) + 1; col++) {
-          ctx.drawImage(motifImage, col * tileSize, row * tileSize, tileSize, tileSize);
-        }
-      }
+      // No panel data: tile across the full canvas at the real-inch scale.
+      // Use 96 CSS px/inch as the screen reference DPI for a no-panel preview.
+      const screenPxPerInch = 96;
+      drawTiledMotifInRect(ctx, motifImage, 0, 0, px, canvasH, tileInches, patternType, screenPxPerInch);
     } else if (mode === "place" && panelPositions.length > 0) {
       renderPanelPreview(ctx, motifImage, px, canvasH);
     }
   }, [
     mode,
-    scale,
+    tileInches,
     patternType,
     bgColor,
     motifImage,
@@ -1079,10 +1210,11 @@ export function PatternCustomizer({
     if (!onSettingsChange) return;
     onSettingsChange({
       patternType,
-      tilesAcross: scale,
+      tilesAcross: 0,
+      tileInches,
       bgColor: bgColor || undefined,
     });
-  }, [scale, patternType, bgColor, onSettingsChange]);
+  }, [tileInches, patternType, bgColor, onSettingsChange]);
 
   // ── Full-res panel export ──────────────────────────────────────────────────
 
@@ -1147,6 +1279,37 @@ export function PatternCustomizer({
     setApplyLoading(true);
     try {
       if (mode !== "place" || panelPositions.length === 0) {
+        if (mode === "pattern" && panelPositions.length > 0) {
+          // Pattern mode WITH AOP panels: render each panel at its native print-pixel resolution.
+          // This ensures the mockup sees the same tile scale as the preview (both use PRINT_DPI).
+          const panelUrls: { position: string; dataUrl: string }[] = [];
+          for (const p of panelPositions) {
+            const outW = Math.min(p.width, MAX_PANEL_EXPORT_PX);
+            const outH = Math.min(p.height, MAX_PANEL_EXPORT_PX);
+            const renderScale = outW / p.width; // ≤1 when clamped
+            const canvas = document.createElement("canvas");
+            canvas.width = outW;
+            canvas.height = outH;
+            const ctx = canvas.getContext("2d")!;
+            if (bgColor && bgColor !== "transparent") {
+              ctx.fillStyle = bgColor;
+              ctx.fillRect(0, 0, outW, outH);
+            }
+            drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale);
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(canvas) });
+          }
+          await onApply(motifUrl, {
+            mode,
+            patternType,
+            tileInches,
+            bgColor,
+            panelUrls,
+            perPanelTransforms,
+          });
+          return;
+        }
+
+        // Single mode or no panel data: one large tiled canvas (legacy / non-AOP path).
         const maxDim =
           panelPositions.length > 0
             ? Math.max(1500, ...panelPositions.flatMap(p => [p.width, p.height]))
@@ -1160,12 +1323,12 @@ export function PatternCustomizer({
           ctx.fillStyle = bgColor;
           ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
         }
-        drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, scale, patternType);
+        drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, tileInches, patternType, PRINT_DPI);
         const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096);
         await onApply(tiledDataUrl, {
           mode,
           patternType,
-          tilesAcross: scale,
+          tileInches,
           bgColor,
           perPanelTransforms,
         });
@@ -1318,7 +1481,7 @@ export function PatternCustomizer({
     } finally {
       setApplyLoading(false);
     }
-  }, [mode, motifImage, motifUrl, panelPositions, patternType, scale, bgColor,
+  }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
       perPanelTransforms, mirrorMode, seamBleedPx, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
@@ -1428,12 +1591,13 @@ export function PatternCustomizer({
                 </Select>
               </div>
               <div>
-                <Label className="text-xs">Scale (tiles across): {scale}</Label>
+                <Label className="text-xs">Tile size: {tileInches.toFixed(2)}"</Label>
                 <Slider
-                  value={[scale]}
-                  onValueChange={v => setScale(v[0])}
-                  min={1}
-                  max={10}
+                  value={[tileInches]}
+                  onValueChange={v => setTileInches(v[0])}
+                  min={0.25}
+                  max={6}
+                  step={0.25}
                   className={sliderTrackClass}
                 />
               </div>

@@ -765,9 +765,10 @@ export default function EmbedDesign() {
   // Persisted PatternCustomizer settings — survive close/reopen of the overlay
   const [aopPatternSettings, setAopPatternSettings] = useState<{
     tilesAcross: number;
+    tileInches: number;
     pattern: "grid" | "brick" | "half";
     bgColor: string;
-  }>({ tilesAcross: 4, pattern: "grid", bgColor: "#ffffff" });
+  }>({ tilesAcross: 4, tileInches: 1.5, pattern: "grid", bgColor: "#ffffff" });
   // Persisted Place on Item placement — survive close/reopen
   const [aopPlacementSettings, setAopPlacementSettings] = useState<AopPlacementSettings | undefined>(undefined);
 
@@ -4960,11 +4961,13 @@ export default function EmbedDesign() {
                 panelFlatLayImages={patternFlatLayImages}
                 fetchFn={patternFetchFn}
                 initialTilesAcross={aopPatternSettings.tilesAcross}
+                initialTileInches={aopPatternSettings.tileInches}
                 initialPattern={aopPatternSettings.pattern}
                 initialBgColor={aopPatternSettings.bgColor}
                 onSettingsChange={(s) => {
                   setAopPatternSettings(prev => ({
                     tilesAcross: s.tilesAcross ?? prev.tilesAcross,
+                    tileInches: s.tileInches ?? prev.tileInches,
                     pattern: (s.patternType ?? prev.pattern) as "grid" | "brick" | "half",
                     bgColor: s.bgColor ?? prev.bgColor,
                   }));
