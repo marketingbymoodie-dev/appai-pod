@@ -1196,9 +1196,21 @@ export function PatternCustomizer({
         // Constrain canvas height: never smaller than 30% of width or larger than 200%
         const clampedRatio = Math.min(2.0, Math.max(0.3, ratio));
         canvasH = Math.round(px * clampedRatio);
-        // Extra room below panels for BACK/FRONT + leg name labels on leggings
+        // Extra room below panels for BACK/FRONT + leg name labels on leggings.
+        // Compute the actual label height from the rendering scale rather than a
+        // fixed fraction of px, because centering the panels inside the taller
+        // canvas shifts them down by labelExtra/2 — so we need ≥4× lineH of room.
         const hasLegSlots = panelPositions.some(p => shouldFlipLeggingsLegSlot(productKind, p.position));
-        if (hasLegSlots) canvasH += Math.round(px * 0.07);
+        if (hasLegSlots && layout.compositeW > 0) {
+          const baseH   = Math.round(px * clampedRatio);
+          const sclEst  = Math.min((px - 20) / layout.compositeW,
+                                   (baseH - 20) / layout.compositeH, 1);
+          const legSlot = layout.slots.find(s => isLeggingsLegSlot(s.position));
+          const swEst   = (legSlot?.w ?? layout.compositeW / 2) * sclEst;
+          const fontEst  = Math.max(9, Math.min(13, swEst * 0.085));
+          const lineHEst = fontEst + 3;
+          canvasH += Math.ceil(lineHEst * 4 + 8);
+        }
       }
     }
 
@@ -1493,9 +1505,13 @@ export function PatternCustomizer({
           // This ensures the mockup sees the same tile scale as the preview (both use PRINT_DPI).
           const panelUrls: { position: string; dataUrl: string }[] = [];
           for (const p of panelPositions) {
-            const outW = Math.min(p.width, MAX_PANEL_EXPORT_PX);
-            const outH = Math.min(p.height, MAX_PANEL_EXPORT_PX);
-            const renderScale = outW / p.width; // ≤1 when clamped
+            // Preserve aspect ratio when clamping so tile counts match the preview
+            // in both axes. Independent clamping would produce a square canvas for
+            // portrait panels, giving the wrong vertical tile count on export.
+            const scaleRatio = Math.min(1, MAX_PANEL_EXPORT_PX / Math.max(p.width, p.height));
+            const outW = Math.max(1, Math.round(p.width  * scaleRatio));
+            const outH = Math.max(1, Math.round(p.height * scaleRatio));
+            const renderScale = scaleRatio;
             const canvas = document.createElement("canvas");
             canvas.width = outW;
             canvas.height = outH;
