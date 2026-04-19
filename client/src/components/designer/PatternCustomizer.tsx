@@ -81,6 +81,9 @@ const PRINT_DPI = 150;
 /** Safe-print margin in inches (Printify standard sew allowance). */
 const SAFE_AREA_INCHES = 0.25;
 
+/** Smallest tile size shown on the slider (smaller values are unusable in preview / print). */
+const MIN_TILE_INCHES = 0.5;
+
 /**
  * Default seam bleed in print pixels (~1 cm at 150 DPI).
  * Each split panel (front_right, front_left, right_hood, left_hood) gets this many
@@ -626,7 +629,8 @@ function drawTiledMotifInRect(
   patternType: PatternType,
   pxPerInch: number,
 ) {
-  const tileW = Math.max(4, tileInches * pxPerInch);
+  const ti = Math.max(MIN_TILE_INCHES, Math.min(6, tileInches));
+  const tileW = Math.max(4, ti * pxPerInch);
   const tileH = tileW * (img.height / img.width);
   const cols = Math.ceil(rw / tileW) + 2;
   const rows = Math.ceil(rh / tileH) + 2;
@@ -708,9 +712,11 @@ export function PatternCustomizer({
   // tileInches: real-world size of one tile in inches (replaces abstract tilesAcross).
   // Back-compat: if only initialTilesAcross was stored, convert via a nominal 6" panel width.
   const [tileInches, setTileInches] = useState<number>(() => {
-    if (typeof initialTileInches === "number" && initialTileInches > 0) return initialTileInches;
+    if (typeof initialTileInches === "number" && initialTileInches > 0) {
+      return Math.max(MIN_TILE_INCHES, Math.min(6, initialTileInches));
+    }
     if (typeof initialTilesAcross === "number" && initialTilesAcross > 0) {
-      return Math.max(0.25, Math.min(6, 6 / initialTilesAcross));
+      return Math.max(MIN_TILE_INCHES, Math.min(6, 6 / initialTilesAcross));
     }
     return 1.5;
   });
@@ -1594,8 +1600,8 @@ export function PatternCustomizer({
                 <Label className="text-xs">Tile size: {tileInches.toFixed(2)}"</Label>
                 <Slider
                   value={[tileInches]}
-                  onValueChange={v => setTileInches(v[0])}
-                  min={0.25}
+                  onValueChange={v => setTileInches(Math.max(MIN_TILE_INCHES, Math.min(6, v[0])))}
+                  min={MIN_TILE_INCHES}
                   max={6}
                   step={0.25}
                   className={sliderTrackClass}

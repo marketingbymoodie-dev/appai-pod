@@ -76,12 +76,13 @@ console.log("[AOP BUILD]", {
 
 /** When DB `panelFlatLayImages` is empty or partial — merged under client values. Matches `STATIC_FLAT_LAY_SVGS` in server/routes.ts. */
 const STATIC_FLAT_LAY_FALLBACK: Record<number, Record<string, string>> = {
-  // Women's Cut & Sew Casual Leggings — self-hosted masks (Printify CDN URLs are 404)
+  // Women's Cut & Sew Casual Leggings (AOP) — official Printify catalog leg SVGs (proxied below).
+  // Same leg asset IDs as blueprint 1050 in server/routes.ts; waistbands stay self-hosted until we have catalog URLs.
   256: {
-    left_leg:        `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-    right_leg:       `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-    left_side:       `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-    right_side:      `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
+    left_leg:        "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+    right_leg:       "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+    left_side:       "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+    right_side:      "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
     front_waistband: `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
     back_waistband:  `${API_BASE}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
   },
@@ -5268,7 +5269,14 @@ export default function EmbedDesign() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowPatternStep(true)}
+                  onClick={() => {
+                    // Saved designs already have mockups — aopPendingMotifUrl is never set by the
+                    // auto-open effect in that case, so PatternCustomizer would not mount without this.
+                    if (generatedDesign?.imageUrl) {
+                      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                    }
+                    setShowPatternStep(true);
+                  }}
                   className="shrink-0"
                   data-testid="button-edit-pattern"
                 >

@@ -4724,9 +4724,15 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP) — omitted here; self-hosted masks
-              // are served via /api/storefront/aop-mask and injected client-side via
-              // STATIC_FLAT_LAY_FALLBACK in embed-design.tsx (avoids req-not-defined crash).
+              // Women's Cut & Sew Casual Leggings (AOP) — official Printify leg panel SVGs
+              // (same catalog asset IDs as blueprint 1050). Waistband masks still come from
+              // client STATIC_FLAT_LAY_FALLBACK + /api/storefront/aop-mask when DB is empty.
+              256: {
+                "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+                "left_side"           : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_side"          : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+              },
               // Unisex Cut & Sew Tee
               281: {
                 "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
@@ -4998,8 +5004,13 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP) — omitted; handled client-side
-              // via STATIC_FLAT_LAY_FALLBACK in embed-design.tsx using /api/storefront/aop-mask
+              // Women's Cut & Sew Casual Leggings (AOP) — Printify catalog leg SVGs
+              256: {
+                "left_leg"            : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_leg"           : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+                "left_side"           : "https://images.printify.com/api/catalog/627268e348bb29a669061ca2.svg",
+                "right_side"          : "https://images.printify.com/api/catalog/627268d3ae9e71e7850a0ff1.svg",
+              },
               // Unisex Cut & Sew Tee
               281: {
                 "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
