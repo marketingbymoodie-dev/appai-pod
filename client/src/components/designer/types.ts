@@ -61,6 +61,8 @@ export interface AopPlacementSettings {
   activePanel: string | null;
   mirrorMode: boolean;
   seamBleedPx: number;
+  /** When true, leg panels show full placeholder rect (no silhouette mask) to match export/mockup visibility. */
+  showFullBleedPreview?: boolean;
   activeLeg?: string; // legacy compat
   dragOffset?: { x: number; y: number }; // legacy compat
 }

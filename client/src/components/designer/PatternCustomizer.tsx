@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -80,6 +81,12 @@ const PRINT_DPI = 150;
 
 /** Safe-print margin in inches (Printify standard sew allowance). */
 const SAFE_AREA_INCHES = 0.25;
+
+/**
+ * Extra vertical offset applied in export only (print pixels), for blueprint tuning.
+ * Keep at 0 unless Printify mockups show a consistent systematic Y shift vs editor.
+ */
+const LEGGINGS_EXPORT_DY_OFFSET_PX = 0;
 
 /** Smallest tile size shown on the slider (smaller values are unusable in preview / print). */
 const MIN_TILE_INCHES = 0.5;
@@ -265,6 +272,30 @@ function shouldFlipLeggingsLegSlot(
   position: string,
 ): boolean {
   return productKind === "leggings" && isLeggingsLegSlot(position);
+}
+
+/** Opposite `left_*` / `right_*` leg panel for leggings sync UI. */
+function pairedLeggingLegPosition(
+  panels: Array<{ position: string }>,
+  active: string,
+): string | null {
+  if (!isLeggingsLegSlot(active)) return null;
+  const al = active.toLowerCase();
+  if (al.includes("left") && !al.includes("right")) {
+    const r = panels.find(p => {
+      const pl = p.position.toLowerCase();
+      return pl.includes("right") && isLeggingsLegSlot(p.position);
+    });
+    return r?.position ?? null;
+  }
+  if (al.includes("right")) {
+    const left = panels.find(p => {
+      const pl = p.position.toLowerCase();
+      return pl.includes("left") && !pl.includes("right") && isLeggingsLegSlot(p.position);
+    });
+    return left?.position ?? null;
+  }
+  return null;
 }
 
 // ── Canvas draw helpers ───────────────────────────────────────────────────────
@@ -509,16 +540,23 @@ function drawMaskedSlot(
   }
 
   // Overlay SVG detail lines at low opacity for visible panel edges.
-  ctx.save();
-  ctx.globalAlpha = 0.4;
-  if (!flipHorizontal) {
+  if (flipHorizontal) {
+    // A full flip mirrors FRONT/BACK text in Printify catalog SVGs. Redraw only the
+    // bottom band unflipped so hem labels stay readable; garment outline there is mostly symmetric.
+    const band = Math.max(40, Math.min(sh * 0.32, sh * 0.4));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(sx, sy + sh - band, sw, band);
+    ctx.clip();
+    ctx.globalAlpha = 0.42;
     ctx.drawImage(svgImg, sx, sy, sw, sh);
+    ctx.restore();
   } else {
-    ctx.translate(sx + sw, sy);
-    ctx.scale(-1, 1);
-    ctx.drawImage(svgImg, 0, 0, sw, sh);
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.drawImage(svgImg, sx, sy, sw, sh);
+    ctx.restore();
   }
-  ctx.restore();
 }
 
 /** Return the _safe variant image for a panel position, or null if none loaded. */
@@ -812,6 +850,11 @@ export function PatternCustomizer({
   const [seamBleedPx, setSeamBleedPx] = useState(
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
   );
+  const [showFullBleedPreview, setShowFullBleedPreview] = useState(
+    initialPlacement?.showFullBleedPreview ?? false,
+  );
+  /** When syncing placement to the opposite leg, negate dx for lateral symmetry. */
+  const [syncOppositeNegateDx, setSyncOppositeNegateDx] = useState(true);
 
   // Active view for hoodie (front / back / hood)
   const [activeView, setActiveView] = useState<"front" | "back" | "hood">("front");
@@ -1032,19 +1075,45 @@ export function PatternCustomizer({
           const effectiveT = doMirror ? (perPanelTransforms[rightLegPos] || t) : t;
 
           const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
-            const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-            offCtx.fillStyle = fill;
-            offCtx.fillRect(sx, sy, sw, sh);
-            drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
-          }, flipSlot);
+          const useFullBleed =
+            showFullBleedPreview &&
+            productKind === "leggings" &&
+            isLeggingsLegSlot(slot.position);
+          const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+
+          if (useFullBleed) {
+            const tw = Math.max(1, Math.round(sw));
+            const th = Math.max(1, Math.round(sh));
+            const tmp = document.createElement("canvas");
+            tmp.width = tw;
+            tmp.height = th;
+            const tctx = tmp.getContext("2d")!;
+            tctx.fillStyle = fill;
+            tctx.fillRect(0, 0, tw, th);
+            drawArtworkInSlot(tctx, img, 0, 0, tw, th, effectiveT, doMirror);
+            if (flipSlot) {
+              ctx.save();
+              ctx.translate(sx + sw, sy);
+              ctx.scale(-1, 1);
+              ctx.drawImage(tmp, 0, 0, sw, sh);
+              ctx.restore();
+            } else {
+              ctx.drawImage(tmp, sx, sy, sw, sh);
+            }
+          } else {
+            drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+              offCtx.fillStyle = fill;
+              offCtx.fillRect(sx, sy, sw, sh);
+              drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
+            }, flipSlot);
+          }
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
       }
     },
-    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, bgColor],
+    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, bgColor, showFullBleedPreview],
   );
 
   const renderPatternMaskedPreview = useCallback(
@@ -1067,12 +1136,38 @@ export function PatternCustomizer({
           const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
           const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
-            const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-            offCtx.fillStyle = fill;
-            offCtx.fillRect(sx, sy, sw, sh);
-            drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
-          }, flipSlot);
+          const useFullBleed =
+            showFullBleedPreview &&
+            productKind === "leggings" &&
+            isLeggingsLegSlot(slot.position);
+          const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+
+          if (useFullBleed) {
+            const tw = Math.max(1, Math.round(sw));
+            const th = Math.max(1, Math.round(sh));
+            const tmp = document.createElement("canvas");
+            tmp.width = tw;
+            tmp.height = th;
+            const tctx = tmp.getContext("2d")!;
+            tctx.fillStyle = fill;
+            tctx.fillRect(0, 0, tw, th);
+            drawTiledMotifInRect(tctx, img, 0, 0, tw, th, tileInches, patternType, pxPerInch);
+            if (flipSlot) {
+              ctx.save();
+              ctx.translate(sx + sw, sy);
+              ctx.scale(-1, 1);
+              ctx.drawImage(tmp, 0, 0, sw, sh);
+              ctx.restore();
+            } else {
+              ctx.drawImage(tmp, sx, sy, sw, sh);
+            }
+          } else {
+            drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+              offCtx.fillStyle = fill;
+              offCtx.fillRect(sx, sy, sw, sh);
+              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
+            }, flipSlot);
+          }
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
         }
       };
@@ -1085,7 +1180,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType],
+    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, showFullBleedPreview],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -1145,6 +1240,7 @@ export function PatternCustomizer({
     svgImages,
     activeView,
     previewPx,
+    showFullBleedPreview,
     renderPanelPreview,
     renderPatternMaskedPreview,
   ]);
@@ -1286,8 +1382,14 @@ export function PatternCustomizer({
   // Notify parent of placement changes
   useEffect(() => {
     if (!onPlacementChange) return;
-    onPlacementChange({ perPanelTransforms, activePanel, mirrorMode, seamBleedPx });
-  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
+    onPlacementChange({
+      perPanelTransforms,
+      activePanel,
+      mirrorMode,
+      seamBleedPx,
+      showFullBleedPreview,
+    });
+  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, showFullBleedPreview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -1318,29 +1420,41 @@ export function PatternCustomizer({
 
     const t = perPanelTransforms[pos.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
 
-    // Derive the upscale factor: preview slot px → native print px
+    // Derive upscale preview slot px → native print px (separate X/Y in case of rounding / aspect drift).
     const px = previewPx;
     let previewSlotW = px;
+    let previewSlotH = px;
     if (productKind === "hoodie") {
       const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
       if (layout.compositeW > 0) {
         const scl = Math.min((px - 20) / layout.compositeW, (px - 20) / layout.compositeH, 1);
         const found = layout.slots.find(s => s.position === pos.position);
-        if (found) previewSlotW = found.w * scl;
+        if (found) {
+          previewSlotW = found.w * scl;
+          previewSlotH = found.h * scl;
+        }
       }
     } else {
       const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions);
       if (compositeW > 0) {
         const scl = Math.min((px - 20) / compositeW, (px - 20) / compositeH, 1);
         const found = slots.find(s => s.position === pos.position);
-        if (found) previewSlotW = found.w * scl;
+        if (found) {
+          previewSlotW = found.w * scl;
+          previewSlotH = found.h * scl;
+        }
       }
     }
-    const upscale = pos.width / (previewSlotW || pos.width);
+    const upscaleX = pos.width / (previewSlotW || pos.width);
+    const upscaleY = pos.height / (previewSlotH || pos.height);
+    const yExportNudge =
+      productKind === "leggings" && isLeggingsLegSlot(pos.position)
+        ? LEGGINGS_EXPORT_DY_OFFSET_PX
+        : 0;
 
     const printT: PanelTransform = {
-      dxPx:     t.dxPx * upscale,
-      dyPx:     t.dyPx * upscale,
+      dxPx:     t.dxPx * upscaleX,
+      dyPx:     t.dyPx * upscaleY + yExportNudge,
       scalePct: t.scalePct,
     };
 
@@ -1747,6 +1861,74 @@ export function PatternCustomizer({
                   className="shrink-0 border-2 border-foreground/35 data-[state=unchecked]:bg-muted/80"
                 />
               </div>
+
+              {productKind === "leggings" &&
+                panelPositions.some(p => isLeggingsLegSlot(p.position)) &&
+                (mode === "place" || mode === "pattern") && (
+                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                    <Label htmlFor="aop-full-bleed" className="text-xs cursor-pointer leading-snug">
+                      Full print area preview
+                      <span className="block text-[10px] text-muted-foreground font-normal mt-0.5">
+                        Match export (no silhouette mask on leg panels)
+                      </span>
+                    </Label>
+                    <Switch
+                      id="aop-full-bleed"
+                      checked={showFullBleedPreview}
+                      onCheckedChange={setShowFullBleedPreview}
+                      className="shrink-0 border-2 border-foreground/35 data-[state=unchecked]:bg-muted/80"
+                    />
+                  </div>
+                )}
+
+              {mode === "place" &&
+                productKind === "leggings" &&
+                activePanel &&
+                pairedLeggingLegPosition(panelPositions, activePanel) && (
+                  <div className="rounded-md border-2 border-foreground/30 px-2 py-2 bg-background space-y-2">
+                    <p className="text-[10px] text-muted-foreground leading-snug">
+                      Copy scale and position from the selected leg to the opposite leg. Turn on “negate horizontal” to mirror left/right offset.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="sync-negate-dx"
+                        checked={syncOppositeNegateDx}
+                        onCheckedChange={v => setSyncOppositeNegateDx(v === true)}
+                      />
+                      <Label htmlFor="sync-negate-dx" className="text-xs cursor-pointer">
+                        Negate horizontal offset
+                      </Label>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="w-full text-xs h-8"
+                      onClick={() => {
+                        const other = pairedLeggingLegPosition(panelPositions, activePanel);
+                        if (!other || !activePanel) return;
+                        const src = perPanelTransforms[activePanel] || {
+                          dxPx: 0,
+                          dyPx: 0,
+                          scalePct: 100,
+                        };
+                        const nextDx = syncOppositeNegateDx ? -src.dxPx : src.dxPx;
+                        setPerPanelTransforms(prev => ({
+                          ...prev,
+                          [other]: { dxPx: nextDx, dyPx: src.dyPx, scalePct: src.scalePct },
+                        }));
+                      }}
+                    >
+                      Sync to opposite leg
+                    </Button>
+                  </div>
+                )}
+
+              <p className="text-[10px] text-muted-foreground leading-snug px-0.5">
+                Dashed inner line and grey band are <strong className="font-medium">guides</strong> only. Mockups use the
+                full panel image you export; art inside the bleed can still appear on the product. 3D previews may not
+                match the flat template pixel-for-pixel.
+              </p>
 
               {getSeamPairs(panelPositions).length > 0 && (
                 <div>
