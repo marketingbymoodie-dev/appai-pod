@@ -4717,7 +4717,6 @@ ${textEdgeRestrictions}
           } catch { stored = {}; }
           // Apply static fallback for known blueprints where Printify API returns empty views
           if (Object.keys(stored).length === 0 && productType.printifyBlueprintId) {
-            const _rb = `${req.protocol}://${req.get("host")}`;
             const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
               // Women's Cut & Sew Racerback Dress
@@ -4725,15 +4724,9 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP) — self-hosted masks (Printify CDN URLs are 404)
-              256: {
-                "left_leg"        : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-                "right_leg"       : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-                "left_side"       : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-                "right_side"      : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-                "front_waistband" : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
-                "back_waistband"  : `${_rb}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
-              },
+              // Women's Cut & Sew Casual Leggings (AOP) — omitted here; self-hosted masks
+              // are served via /api/storefront/aop-mask and injected client-side via
+              // STATIC_FLAT_LAY_FALLBACK in embed-design.tsx (avoids req-not-defined crash).
               // Unisex Cut & Sew Tee
               281: {
                 "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
@@ -4998,7 +4991,6 @@ ${textEdgeRestrictions}
             : (productTypeToUse.panelFlatLayImages as any) || {};
         } catch { stored2 = {}; }
         if (Object.keys(stored2).length === 0 && productTypeToUse.printifyBlueprintId) {
-          const _rb2 = `${req.protocol}://${req.get("host")}`;
           const STATIC_FLAT_LAY_SVGS2: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
               // Women's Cut & Sew Racerback Dress
@@ -5006,15 +4998,8 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP) — self-hosted masks (Printify CDN URLs are 404)
-              256: {
-                "left_leg"        : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-                "right_leg"       : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-                "left_side"       : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-                "right_side"      : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-                "front_waistband" : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
-                "back_waistband"  : `${_rb2}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
-              },
+              // Women's Cut & Sew Casual Leggings (AOP) — omitted; handled client-side
+              // via STATIC_FLAT_LAY_FALLBACK in embed-design.tsx using /api/storefront/aop-mask
               // Unisex Cut & Sew Tee
               281: {
                 "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
@@ -10723,7 +10708,6 @@ ${textEdgeRestrictions}
       // Static fallback: hard-coded SVG IDs for known blueprints where the Printify API
       // returns an empty `views` array. SVGs are served from the Printify public CDN.
       // Identified by loading the Printify editor and intercepting network requests.
-      const _rb3 = `${req.protocol}://${req.get("host")}`;
       const STATIC_FLAT_LAY_SVGS: Record<number, Record<string, string>> = {
               // Complete Printify panel SVG mapping (auto-generated from Printify catalog)
               // Women's Cut & Sew Racerback Dress
@@ -10731,15 +10715,8 @@ ${textEdgeRestrictions}
                 "back"                : "https://images.printify.com/api/catalog/59fc4d34b8e7e30175347441.svg",
                 "front"               : "https://images.printify.com/api/catalog/59fc4d2bb8e7e301856c6fa9.svg",
               },
-              // Women's Cut & Sew Casual Leggings (AOP) — self-hosted masks (Printify CDN URLs are 404)
-              256: {
-                "left_leg"        : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-                "right_leg"       : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-                "left_side"       : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=left_leg`,
-                "right_side"      : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=right_leg`,
-                "front_waistband" : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=front_waistband`,
-                "back_waistband"  : `${_rb3}/api/storefront/aop-mask?blueprintId=256&position=back_waistband`,
-              },
+              // Women's Cut & Sew Casual Leggings (AOP) — omitted; handled client-side
+              // via STATIC_FLAT_LAY_FALLBACK in embed-design.tsx using /api/storefront/aop-mask
               // Unisex Cut & Sew Tee
               281: {
                 "back"                : "https://images.printify.com/api/catalog/5a01d4b4b8e7e32813350528.svg",
