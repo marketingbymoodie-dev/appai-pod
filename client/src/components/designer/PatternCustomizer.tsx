@@ -22,7 +22,6 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Loader2 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -541,14 +540,21 @@ function drawMaskedSlot(
 
   // Overlay SVG detail lines at low opacity for visible panel edges.
   if (flipHorizontal) {
-    // A full flip mirrors FRONT/BACK text in Printify catalog SVGs. Redraw only the
-    // bottom band unflipped so hem labels stay readable; garment outline there is mostly symmetric.
-    const band = Math.max(40, Math.min(sh * 0.32, sh * 0.4));
+    // Draw the full overlay horizontally flipped so the silhouette outline matches the mirrored panel.
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.translate(sx + sw, sy);
+    ctx.scale(-1, 1);
+    ctx.drawImage(svgImg, 0, 0, sw, sh);
+    ctx.restore();
+    // Redraw a tight bottom strip UNFLIPPED so FRONT/BACK text labels remain legible.
+    // 12% of height is enough to capture just the hem label without distorting the silhouette.
+    const textBand = Math.min(sh * 0.12, 32);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(sx, sy + sh - band, sw, band);
+    ctx.rect(sx, sy + sh - textBand, sw, textBand);
     ctx.clip();
-    ctx.globalAlpha = 0.42;
+    ctx.globalAlpha = 0.55;
     ctx.drawImage(svgImg, sx, sy, sw, sh);
     ctx.restore();
   } else {
@@ -594,6 +600,7 @@ function drawPanelSilhouetteOverlay(
   sh: number,
   safeInsetPx: number,
   flipHorizontal = false,
+  showBleedBand = false,
 ): void {
   if (!svgImg) {
     if (!flipHorizontal) {
@@ -658,7 +665,7 @@ function drawPanelSilhouetteOverlay(
   const safeCanvas = safeImg ? makeSilhouette(safeImg, 0) : makeSilhouette(svgImg, inset);
 
   // ── 1. Bleed band (silhouette minus safe area, filled with diagonal hatching) ──
-  {
+  if (showBleedBand) {
     const bleedOff = document.createElement("canvas");
     bleedOff.width = iw; bleedOff.height = ih;
     const bc = bleedOff.getContext("2d")!;
@@ -847,14 +854,10 @@ export function PatternCustomizer({
     initialPlacement?.activePanel || null
   );
   const [mirrorMode, setMirrorMode] = useState(initialPlacement?.mirrorMode ?? false);
+  const [syncSidesMode, setSyncSidesMode] = useState(initialPlacement?.syncSidesMode ?? false);
   const [seamBleedPx, setSeamBleedPx] = useState(
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
   );
-  const [showFullBleedPreview, setShowFullBleedPreview] = useState(
-    initialPlacement?.showFullBleedPreview ?? false,
-  );
-  /** When syncing placement to the opposite leg, negate dx for lateral symmetry. */
-  const [syncOppositeNegateDx, setSyncOppositeNegateDx] = useState(true);
 
   // Active view for hoodie (front / back / hood)
   const [activeView, setActiveView] = useState<"front" | "back" | "hood">("front");
@@ -1072,48 +1075,27 @@ export function PatternCustomizer({
             mirrorMode &&
             isLeftLegPanelPosition(slot.position) &&
             !!rightLegPos;
-          const effectiveT = doMirror ? (perPanelTransforms[rightLegPos] || t) : t;
+          const useSyncSides =
+            syncSidesMode &&
+            isLeftLegPanelPosition(slot.position) &&
+            !!rightLegPos;
+          const effectiveT = (doMirror || useSyncSides) ? (perPanelTransforms[rightLegPos] || t) : t;
 
           const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          const useFullBleed =
-            showFullBleedPreview &&
-            productKind === "leggings" &&
-            isLeggingsLegSlot(slot.position);
           const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
 
-          if (useFullBleed) {
-            const tw = Math.max(1, Math.round(sw));
-            const th = Math.max(1, Math.round(sh));
-            const tmp = document.createElement("canvas");
-            tmp.width = tw;
-            tmp.height = th;
-            const tctx = tmp.getContext("2d")!;
-            tctx.fillStyle = fill;
-            tctx.fillRect(0, 0, tw, th);
-            drawArtworkInSlot(tctx, img, 0, 0, tw, th, effectiveT, doMirror);
-            if (flipSlot) {
-              ctx.save();
-              ctx.translate(sx + sw, sy);
-              ctx.scale(-1, 1);
-              ctx.drawImage(tmp, 0, 0, sw, sh);
-              ctx.restore();
-            } else {
-              ctx.drawImage(tmp, sx, sy, sw, sh);
-            }
-          } else {
-            drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
-              offCtx.fillStyle = fill;
-              offCtx.fillRect(sx, sy, sw, sh);
-              drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
-            }, flipSlot);
-          }
+          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+            offCtx.fillStyle = fill;
+            offCtx.fillRect(sx, sy, sw, sh);
+            drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
+          }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
       }
     },
-    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, bgColor, showFullBleedPreview],
+    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, syncSidesMode, bgColor],
   );
 
   const renderPatternMaskedPreview = useCallback(
@@ -1136,38 +1118,13 @@ export function PatternCustomizer({
           const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
           const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          const useFullBleed =
-            showFullBleedPreview &&
-            productKind === "leggings" &&
-            isLeggingsLegSlot(slot.position);
           const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
 
-          if (useFullBleed) {
-            const tw = Math.max(1, Math.round(sw));
-            const th = Math.max(1, Math.round(sh));
-            const tmp = document.createElement("canvas");
-            tmp.width = tw;
-            tmp.height = th;
-            const tctx = tmp.getContext("2d")!;
-            tctx.fillStyle = fill;
-            tctx.fillRect(0, 0, tw, th);
-            drawTiledMotifInRect(tctx, img, 0, 0, tw, th, tileInches, patternType, pxPerInch);
-            if (flipSlot) {
-              ctx.save();
-              ctx.translate(sx + sw, sy);
-              ctx.scale(-1, 1);
-              ctx.drawImage(tmp, 0, 0, sw, sh);
-              ctx.restore();
-            } else {
-              ctx.drawImage(tmp, sx, sy, sw, sh);
-            }
-          } else {
-            drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
-              offCtx.fillStyle = fill;
-              offCtx.fillRect(sx, sy, sw, sh);
-              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
-            }, flipSlot);
-          }
+          drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
+            offCtx.fillStyle = fill;
+            offCtx.fillRect(sx, sy, sw, sh);
+            drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
+          }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
         }
       };
@@ -1180,7 +1137,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, showFullBleedPreview],
+    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -1212,10 +1169,9 @@ export function PatternCustomizer({
     canvas.height = canvasH;
 
     ctx.clearRect(0, 0, px, canvasH);
-    if (bgColor && bgColor !== "transparent") {
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, px, canvasH);
-    }
+    // Use neutral muted fill for the canvas gutter; bgColor is applied per-panel inside drawMaskedSlot.
+    ctx.fillStyle = "#f4f4f5";
+    ctx.fillRect(0, 0, px, canvasH);
 
     if (mode === "pattern" && panelPositions.length > 0) {
       renderPatternMaskedPreview(ctx, motifImage, px, canvasH);
@@ -1237,10 +1193,10 @@ export function PatternCustomizer({
     perPanelTransforms,
     activePanel,
     mirrorMode,
+    syncSidesMode,
     svgImages,
     activeView,
     previewPx,
-    showFullBleedPreview,
     renderPanelPreview,
     renderPatternMaskedPreview,
   ]);
@@ -1291,13 +1247,16 @@ export function PatternCustomizer({
     if (!canvas) return;
 
     const getEditablePanelForDrag = (panel: string): string => {
-      if (!mirrorMode || !panel) return panel;
-      const { slots } =
-        productKind === "hoodie"
-          ? buildCompositeLayout(activeView, panelPositions)
-          : buildLinearPanelsLayout(panelPositions);
-      const source = getMirrorSource(panel, slots);
-      return source || panel;
+      if (!panel) return panel;
+      if (mirrorMode || syncSidesMode) {
+        const { slots } =
+          productKind === "hoodie"
+            ? buildCompositeLayout(activeView, panelPositions)
+            : buildLinearPanelsLayout(panelPositions);
+        const source = getMirrorSource(panel, slots);
+        return source || panel;
+      }
+      return panel;
     };
 
     const onMouseDown = (e: MouseEvent) => {
@@ -1367,7 +1326,7 @@ export function PatternCustomizer({
       canvas.removeEventListener("touchmove",  onTouchMove);
       window.removeEventListener("touchend",   onMouseUp);
     };
-  }, [activePanel, mode, perPanelTransforms, mirrorMode, productKind, activeView, panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activePanel, mode, perPanelTransforms, mirrorMode, syncSidesMode, productKind, activeView, panelPositions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updatePanelTransform = useCallback(
     (position: string, partial: Partial<PanelTransform>) => {
@@ -1387,9 +1346,9 @@ export function PatternCustomizer({
       activePanel,
       mirrorMode,
       seamBleedPx,
-      showFullBleedPreview,
+      syncSidesMode,
     });
-  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, showFullBleedPreview]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, syncSidesMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -1408,17 +1367,19 @@ export function PatternCustomizer({
    * Render a single panel to a full-resolution canvas and return its dataUrl.
    * Used for non-seam panels (back, hood, leggings).
    * dxPx/dyPx are stored in preview-canvas pixel space; upscaled to print-pixel space here.
+   * @param transformOverride - optional transform to use instead of perPanelTransforms[pos.position]
    */
   async function exportPanelImage(
     pos: { position: string; width: number; height: number },
     img: HTMLImageElement,
+    transformOverride?: PanelTransform,
   ): Promise<string> {
     const canvas = document.createElement("canvas");
     canvas.width  = pos.width;
     canvas.height = pos.height;
     const ctx = canvas.getContext("2d")!;
 
-    const t = perPanelTransforms[pos.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+    const t = transformOverride ?? perPanelTransforms[pos.position] ?? { dxPx: 0, dyPx: 0, scalePct: 100 };
 
     // Derive upscale preview slot px → native print px (separate X/Y in case of rounding / aspect drift).
     const px = previewPx;
@@ -1653,6 +1614,7 @@ export function PatternCustomizer({
         const isLeft = p.position.toLowerCase().includes("left");
         const isLeggings = productKind === "leggings";
         const doMirror = mirrorMode && isLeggings && isLeft;
+        const doSyncSides = syncSidesMode && isLeggings && isLeft;
 
         if (doMirror) {
           // Find the paired right panel
@@ -1685,6 +1647,22 @@ export function PatternCustomizer({
           }
         }
 
+        if (doSyncSides) {
+          // Sync sides: left leg uses the same transform as the right leg (no artwork flip).
+          const rightPanel = panelPositions.find(q => {
+            const ql = q.position.toLowerCase();
+            return ql.includes("right") &&
+              (ql.includes("side") || ql.includes("leg")) &&
+              !compositeCovered.has(q.position);
+          });
+          if (rightPanel) {
+            const rightT = perPanelTransforms[rightPanel.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+            const dataUrl = await exportPanelImage(p, motifImage, rightT);
+            panelUrls.push({ position: p.position, dataUrl });
+            continue;
+          }
+        }
+
         const dataUrl = await exportPanelImage(p, motifImage);
         panelUrls.push({ position: p.position, dataUrl });
       }
@@ -1702,7 +1680,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, mirrorMode, seamBleedPx, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, mirrorMode, syncSidesMode, seamBleedPx, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -1857,77 +1835,35 @@ export function PatternCustomizer({
                 <Switch
                   id="aop-mirror"
                   checked={mirrorMode}
-                  onCheckedChange={setMirrorMode}
-                  className="shrink-0 border-2 border-foreground/35 data-[state=unchecked]:bg-muted/80"
+                  onCheckedChange={v => {
+                    setMirrorMode(v);
+                    if (v) setSyncSidesMode(false);
+                  }}
+                  className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
                 />
               </div>
 
               {productKind === "leggings" &&
-                panelPositions.some(p => isLeggingsLegSlot(p.position)) &&
-                (mode === "place" || mode === "pattern") && (
+                panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
                   <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
-                    <Label htmlFor="aop-full-bleed" className="text-xs cursor-pointer leading-snug">
-                      Full print area preview
-                      <span className="block text-[10px] text-muted-foreground font-normal mt-0.5">
-                        Match export (no silhouette mask on leg panels)
-                      </span>
+                    <Label htmlFor="aop-sync-sides" className="text-xs cursor-pointer">
+                      Sync sides
                     </Label>
                     <Switch
-                      id="aop-full-bleed"
-                      checked={showFullBleedPreview}
-                      onCheckedChange={setShowFullBleedPreview}
-                      className="shrink-0 border-2 border-foreground/35 data-[state=unchecked]:bg-muted/80"
+                      id="aop-sync-sides"
+                      checked={syncSidesMode}
+                      onCheckedChange={v => {
+                        setSyncSidesMode(v);
+                        if (v) setMirrorMode(false);
+                      }}
+                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
                     />
                   </div>
                 )}
 
-              {mode === "place" &&
-                productKind === "leggings" &&
-                activePanel &&
-                pairedLeggingLegPosition(panelPositions, activePanel) && (
-                  <div className="rounded-md border-2 border-foreground/30 px-2 py-2 bg-background space-y-2">
-                    <p className="text-[10px] text-muted-foreground leading-snug">
-                      Copy scale and position from the selected leg to the opposite leg. Turn on “negate horizontal” to mirror left/right offset.
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id="sync-negate-dx"
-                        checked={syncOppositeNegateDx}
-                        onCheckedChange={v => setSyncOppositeNegateDx(v === true)}
-                      />
-                      <Label htmlFor="sync-negate-dx" className="text-xs cursor-pointer">
-                        Negate horizontal offset
-                      </Label>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="w-full text-xs h-8"
-                      onClick={() => {
-                        const other = pairedLeggingLegPosition(panelPositions, activePanel);
-                        if (!other || !activePanel) return;
-                        const src = perPanelTransforms[activePanel] || {
-                          dxPx: 0,
-                          dyPx: 0,
-                          scalePct: 100,
-                        };
-                        const nextDx = syncOppositeNegateDx ? -src.dxPx : src.dxPx;
-                        setPerPanelTransforms(prev => ({
-                          ...prev,
-                          [other]: { dxPx: nextDx, dyPx: src.dyPx, scalePct: src.scalePct },
-                        }));
-                      }}
-                    >
-                      Sync to opposite leg
-                    </Button>
-                  </div>
-                )}
 
               <p className="text-[10px] text-muted-foreground leading-snug px-0.5">
-                Dashed inner line and grey band are <strong className="font-medium">guides</strong> only. Mockups use the
-                full panel image you export; art inside the bleed can still appear on the product. 3D previews may not
-                match the flat template pixel-for-pixel.
+                Dashed inner line is a <strong className="font-medium">guide</strong> only. Mockups use the full panel image; art placed near the edge can still show on the product. 3D previews may not match the flat template pixel-for-pixel.
               </p>
 
               {getSeamPairs(panelPositions).length > 0 && (
