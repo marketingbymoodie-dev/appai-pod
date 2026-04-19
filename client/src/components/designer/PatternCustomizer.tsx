@@ -253,6 +253,20 @@ function buildLinearPanelsLayout(
   return { compositeW: x - LEGGINGS_GAP, compositeH: maxH, slots };
 }
 
+/** Leg flat shapes (_leg / _side); excludes waistbands. Used for Printify-style horizontal flip. */
+function isLeggingsLegSlot(position: string): boolean {
+  const l = position.toLowerCase();
+  if (l.includes("waistband")) return false;
+  return l.includes("_leg") || l.includes("_side");
+}
+
+function shouldFlipLeggingsLegSlot(
+  productKind: "hoodie" | "leggings" | "generic",
+  position: string,
+): boolean {
+  return productKind === "leggings" && isLeggingsLegSlot(position);
+}
+
 // ── Canvas draw helpers ───────────────────────────────────────────────────────
 
 /**
@@ -422,24 +436,47 @@ function drawFallbackPanelOutline(
  *
  * @param drawContent  Callback that draws fill + artwork onto the offscreen
  *                     canvas.  Coords are in offscreen space (origin = 0,0).
+ * @param flipHorizontal  Mirror the slot horizontally so FRONT halves meet at the centre seam (leggings).
  */
 function drawMaskedSlot(
   ctx: CanvasRenderingContext2D,
   svgImg: HTMLImageElement | null,
   sx: number, sy: number, sw: number, sh: number,
   drawContent: (offCtx: CanvasRenderingContext2D) => void,
+  flipHorizontal = false,
 ): void {
   const iw = Math.max(1, Math.round(sw));
   const ih = Math.max(1, Math.round(sh));
 
   if (!svgImg) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(sx, sy, sw, sh);
-    ctx.clip();
-    drawContent(ctx);
-    ctx.restore();
-    drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+    if (!flipHorizontal) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(sx, sy, sw, sh);
+      ctx.clip();
+      drawContent(ctx);
+      ctx.restore();
+      drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+    } else {
+      const tmp = document.createElement("canvas");
+      tmp.width = iw;
+      tmp.height = ih;
+      const tctx = tmp.getContext("2d")!;
+      tctx.save();
+      tctx.translate(-sx, -sy);
+      drawContent(tctx);
+      tctx.restore();
+      ctx.save();
+      ctx.translate(sx + sw, sy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(tmp, 0, 0, sw, sh);
+      ctx.restore();
+      ctx.save();
+      ctx.translate(sx + sw, sy);
+      ctx.scale(-1, 1);
+      drawFallbackPanelOutline(ctx, 0, 0, sw, sh);
+      ctx.restore();
+    }
     return;
   }
 
@@ -461,12 +498,26 @@ function drawMaskedSlot(
   offCtx.globalCompositeOperation = "source-over";
 
   // Composite masked result onto main canvas.
-  ctx.drawImage(off, sx, sy, sw, sh);
+  if (!flipHorizontal) {
+    ctx.drawImage(off, sx, sy, sw, sh);
+  } else {
+    ctx.save();
+    ctx.translate(sx + sw, sy);
+    ctx.scale(-1, 1);
+    ctx.drawImage(off, 0, 0, sw, sh);
+    ctx.restore();
+  }
 
   // Overlay SVG detail lines at low opacity for visible panel edges.
   ctx.save();
   ctx.globalAlpha = 0.4;
-  ctx.drawImage(svgImg, sx, sy, sw, sh);
+  if (!flipHorizontal) {
+    ctx.drawImage(svgImg, sx, sy, sw, sh);
+  } else {
+    ctx.translate(sx + sw, sy);
+    ctx.scale(-1, 1);
+    ctx.drawImage(svgImg, 0, 0, sw, sh);
+  }
   ctx.restore();
 }
 
@@ -504,15 +555,36 @@ function drawPanelSilhouetteOverlay(
   sw: number,
   sh: number,
   safeInsetPx: number,
+  flipHorizontal = false,
 ): void {
   if (!svgImg) {
-    drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+    if (!flipHorizontal) {
+      drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
+    } else {
+      ctx.save();
+      ctx.translate(sx + sw, sy);
+      ctx.scale(-1, 1);
+      drawFallbackPanelOutline(ctx, 0, 0, sw, sh);
+      ctx.restore();
+    }
     return;
   }
 
   const iw = Math.max(1, Math.round(sw));
   const ih = Math.max(1, Math.round(sh));
   const inset = Math.max(3, safeInsetPx);
+
+  const blitSlot = (c: HTMLCanvasElement) => {
+    if (!flipHorizontal) {
+      ctx.drawImage(c, sx, sy, sw, sh);
+    } else {
+      ctx.save();
+      ctx.translate(sx + sw, sy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(c, 0, 0, sw, sh);
+      ctx.restore();
+    }
+  };
 
   /** Offscreen canvas with the given img drawn, optionally inset. */
   function makeSilhouette(img: HTMLImageElement, px: number): HTMLCanvasElement {
@@ -569,12 +641,12 @@ function drawPanelSilhouetteOverlay(
     bc.fillRect(0, 0, iw, ih);
     ctx.save();
     ctx.globalAlpha = 0.45;
-    ctx.drawImage(bleedOff, sx, sy, sw, sh);
+    blitSlot(bleedOff);
     ctx.restore();
   }
 
   // ── 2. Silhouette outline ────────────────────────────────────────────────
-  ctx.drawImage(makeRing(silCanvas, 1.5), sx, sy, sw, sh);
+  blitSlot(makeRing(silCanvas, 1.5));
 
   // ── 3. Safe-area dashed boundary ─────────────────────────────────────────
   {
@@ -591,7 +663,7 @@ function drawPanelSilhouetteOverlay(
     ringCtx.fillRect(0, 0, iw, ih);
     ctx.save();
     ctx.globalAlpha = 0.85;
-    ctx.drawImage(ring, sx, sy, sw, sh);
+    blitSlot(ring);
     ctx.restore();
   }
 }
@@ -910,8 +982,8 @@ export function PatternCustomizer({
             offCtx.fillStyle = fill;
             offCtx.fillRect(sx, sy, sw, sh);
             drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
-          });
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset);
+          }, false);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, false);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -959,13 +1031,14 @@ export function PatternCustomizer({
             !!rightLegPos;
           const effectiveT = doMirror ? (perPanelTransforms[rightLegPos] || t) : t;
 
+          const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
             offCtx.fillStyle = fill;
             offCtx.fillRect(sx, sy, sw, sh);
             drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
-          });
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset);
+          }, flipSlot);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -993,13 +1066,14 @@ export function PatternCustomizer({
           const svgImg  = getSvgImageForPosition(svgImages, slot.position);
           const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
+          const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
             offCtx.fillStyle = fill;
             offCtx.fillRect(sx, sy, sw, sh);
             drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
-          });
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset);
+          }, flipSlot);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
         }
       };
 
@@ -1146,7 +1220,9 @@ export function PatternCustomizer({
 
     const onMouseMove = (e: MouseEvent) => {
       if (!dragRef.current.active) return;
-      const rawDx = dragRef.current.startDx + (e.clientX - dragRef.current.startClientX);
+      const invertX = shouldFlipLeggingsLegSlot(productKind, dragRef.current.panel);
+      const clientDx = e.clientX - dragRef.current.startClientX;
+      const rawDx = dragRef.current.startDx + (invertX ? -clientDx : clientDx);
       const rawDy = dragRef.current.startDy + (e.clientY - dragRef.current.startClientY);
       const { dxPx, dyPx } = applySnap(rawDx, rawDy);
       updatePanelTransform(dragRef.current.panel, { dxPx, dyPx });
@@ -1172,7 +1248,9 @@ export function PatternCustomizer({
     const onTouchMove = (e: TouchEvent) => {
       if (!dragRef.current.active || e.touches.length !== 1) return;
       const touch = e.touches[0];
-      const rawDx = dragRef.current.startDx + (touch.clientX - dragRef.current.startClientX);
+      const invertX = shouldFlipLeggingsLegSlot(productKind, dragRef.current.panel);
+      const clientDx = touch.clientX - dragRef.current.startClientX;
+      const rawDx = dragRef.current.startDx + (invertX ? -clientDx : clientDx);
       const rawDy = dragRef.current.startDy + (touch.clientY - dragRef.current.startClientY);
       const { dxPx, dyPx } = applySnap(rawDx, rawDy);
       updatePanelTransform(dragRef.current.panel, { dxPx, dyPx });
@@ -1275,6 +1353,17 @@ export function PatternCustomizer({
     }
     drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
 
+    if (shouldFlipLeggingsLegSlot(productKind, pos.position)) {
+      const flipped = document.createElement("canvas");
+      flipped.width = pos.width;
+      flipped.height = pos.height;
+      const fx = flipped.getContext("2d")!;
+      fx.translate(pos.width, 0);
+      fx.scale(-1, 1);
+      fx.drawImage(canvas, 0, 0);
+      return canvasToUploadDataUrl(flipped);
+    }
+
     return canvasToUploadDataUrl(canvas);
   }
 
@@ -1302,7 +1391,18 @@ export function PatternCustomizer({
               ctx.fillRect(0, 0, outW, outH);
             }
             drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale);
-            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(canvas) });
+            let outForUpload: HTMLCanvasElement = canvas;
+            if (shouldFlipLeggingsLegSlot(productKind, p.position)) {
+              const flipped = document.createElement("canvas");
+              flipped.width = outW;
+              flipped.height = outH;
+              const fx = flipped.getContext("2d")!;
+              fx.translate(outW, 0);
+              fx.scale(-1, 1);
+              fx.drawImage(canvas, 0, 0);
+              outForUpload = flipped;
+            }
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload) });
           }
           await onApply(motifUrl, {
             mode,
