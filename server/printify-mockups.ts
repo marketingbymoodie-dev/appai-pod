@@ -215,7 +215,7 @@ async function uploadImageToPrintify(
       console.log(`[Printify Upload] Attempt ${attempt}/${MAX_RETRIES} via ${uploadMethod}`);
 
       const controller = new AbortController();
-      const uploadTimeout = setTimeout(() => controller.abort(), 30_000); // 30 s per upload
+      const uploadTimeout = setTimeout(() => controller.abort(), 60_000); // 60 s per upload
       let response: Response;
       try {
         response = await fetch(

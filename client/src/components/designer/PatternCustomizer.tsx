@@ -878,7 +878,12 @@ export function PatternCustomizer({
     initialPlacement?.activePanel || null
   );
   const [mirrorMode, setMirrorMode] = useState(initialPlacement?.mirrorMode ?? false);
-  const [syncSidesMode, setSyncSidesMode] = useState(initialPlacement?.syncSidesMode ?? false);
+  const [syncSidesMode, setSyncSidesMode] = useState(() => {
+    if (initialPlacement?.syncSidesMode !== undefined) return initialPlacement.syncSidesMode;
+    // Default sync sides on for leggings to help front-seam pattern alignment
+    const kind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
+    return kind === "leggings";
+  });
   const [seamBleedPx, setSeamBleedPx] = useState(
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
   );
@@ -1504,7 +1509,97 @@ export function PatternCustomizer({
           // Pattern mode WITH AOP panels: render each panel at its native print-pixel resolution.
           // This ensures the mockup sees the same tile scale as the preview (both use PRINT_DPI).
           const panelUrls: { position: string; dataUrl: string }[] = [];
+          const patternCompositeCovered = new Set<string>();
+
+          // ── Leggings: composite tiling for sync sides / mirror ──────────────────
+          // Sync sides: tile both leg panels from a shared origin so the pattern is
+          // continuous at the front seam.  Mirror: right panel tiled normally; left
+          // panel is a horizontal flip of the right export.
+          if (productKind === "leggings" && (syncSidesMode || mirrorMode)) {
+            const rightDef = panelPositions.find(p =>
+              isLeggingsLegSlot(p.position) && p.position.toLowerCase().includes("right")
+            );
+            const leftDef = panelPositions.find(p => {
+              const l = p.position.toLowerCase();
+              return isLeggingsLegSlot(p.position) && l.includes("left") && !l.includes("right");
+            });
+
+            if (rightDef && leftDef) {
+              const rightPos = rightDef.position;
+              const leftPos  = leftDef.position;
+              // Use a single scale ratio so tile sizes are identical on both panels
+              const scaleRatio = Math.min(1, MAX_PANEL_EXPORT_PX /
+                Math.max(rightDef.width, rightDef.height, leftDef.width, leftDef.height));
+              const outWR = Math.max(1, Math.round(rightDef.width  * scaleRatio));
+              const outHR = Math.max(1, Math.round(rightDef.height * scaleRatio));
+              const outWL = Math.max(1, Math.round(leftDef.width   * scaleRatio));
+              const outHL = Math.max(1, Math.round(leftDef.height  * scaleRatio));
+
+              /** Tile a single panel canvas and optionally flip it. */
+              const renderPanel = (outW: number, outH: number, flipH: boolean) => {
+                const c = document.createElement("canvas");
+                c.width = outW; c.height = outH;
+                const cx = c.getContext("2d")!;
+                if (bgColor && bgColor !== "transparent") {
+                  cx.fillStyle = bgColor; cx.fillRect(0, 0, outW, outH);
+                }
+                drawTiledMotifInRect(cx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * scaleRatio);
+                if (!flipH) return c;
+                const f = document.createElement("canvas");
+                f.width = outW; f.height = outH;
+                const fx = f.getContext("2d")!;
+                fx.translate(outW, 0); fx.scale(-1, 1); fx.drawImage(c, 0, 0);
+                return f;
+              };
+
+              /** Flip a canvas horizontally. */
+              const flipCanvas = (src: HTMLCanvasElement, w: number, h: number) => {
+                const f = document.createElement("canvas");
+                f.width = w; f.height = h;
+                const fx = f.getContext("2d")!;
+                fx.translate(w, 0); fx.scale(-1, 1); fx.drawImage(src, 0, 0, w, h);
+                return f;
+              };
+
+              if (syncSidesMode) {
+                // Single composite canvas: right panel [0, outWR], left panel [outWR, compositeW].
+                // Tiling from (0,0) means the pattern is continuous at x=outWR (front seam).
+                const compositeW = outWR + outWL;
+                const compositeH = Math.max(outHR, outHL);
+                const comp = document.createElement("canvas");
+                comp.width = compositeW; comp.height = compositeH;
+                const cCtx = comp.getContext("2d")!;
+                if (bgColor && bgColor !== "transparent") {
+                  cCtx.fillStyle = bgColor; cCtx.fillRect(0, 0, compositeW, compositeH);
+                }
+                drawTiledMotifInRect(cCtx, motifImage, 0, 0, compositeW, compositeH, tileInches, patternType, PRINT_DPI * scaleRatio);
+
+                // Crop right then flip
+                const cropR = document.createElement("canvas");
+                cropR.width = outWR; cropR.height = outHR;
+                cropR.getContext("2d")!.drawImage(comp, 0, 0, outWR, outHR, 0, 0, outWR, outHR);
+                panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR)) });
+
+                // Crop left then flip
+                const cropL = document.createElement("canvas");
+                cropL.width = outWL; cropL.height = outHL;
+                cropL.getContext("2d")!.drawImage(comp, outWR, 0, outWL, outHL, 0, 0, outWL, outHL);
+                panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL)) });
+              } else {
+                // mirrorMode: right panel tiled + flipped; left panel is horizontal mirror of right export
+                const rightExport = renderPanel(outWR, outHR, true);
+                panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport) });
+                panelUrls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL)) });
+              }
+
+              patternCompositeCovered.add(rightPos);
+              patternCompositeCovered.add(leftPos);
+            }
+          }
+
+          // ── Remaining panels (non-leggings or waistbands etc.) ──────────────────
           for (const p of panelPositions) {
+            if (patternCompositeCovered.has(p.position)) continue;
             // Preserve aspect ratio when clamping so tile counts match the preview
             // in both axes. Independent clamping would produce a square canvas for
             // portrait panels, giving the wrong vertical tile count on export.
@@ -1952,6 +2047,34 @@ export function PatternCustomizer({
                   className={sliderTrackClass}
                 />
               </div>
+
+              {/* Mirror / Sync Sides for leggings pattern mode */}
+              {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
+                <>
+                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                    <Label htmlFor="pat-mirror" className="text-xs cursor-pointer">
+                      Mirror paired panel
+                    </Label>
+                    <Switch
+                      id="pat-mirror"
+                      checked={mirrorMode}
+                      onCheckedChange={v => { setMirrorMode(v); if (v) setSyncSidesMode(false); }}
+                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                    <Label htmlFor="pat-sync-sides" className="text-xs cursor-pointer">
+                      Sync sides
+                    </Label>
+                    <Switch
+                      id="pat-sync-sides"
+                      checked={syncSidesMode}
+                      onCheckedChange={v => { setSyncSidesMode(v); if (v) setMirrorMode(false); }}
+                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                    />
+                  </div>
+                </>
+              )}
             </>
           )}
 
