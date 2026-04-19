@@ -20,7 +20,7 @@ import { useState, useCallback, useRef, useEffect, type ReactNode } from "react"
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Loader2 } from "lucide-react";
+import { Loader2, Pipette } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -540,16 +540,9 @@ function drawMaskedSlot(
 
   // Overlay SVG detail lines at low opacity for visible panel edges.
   if (flipHorizontal) {
-    // Draw the full overlay horizontally flipped so the silhouette outline matches the mirrored panel.
-    ctx.save();
-    ctx.globalAlpha = 0.4;
-    ctx.translate(sx + sw, sy);
-    ctx.scale(-1, 1);
-    ctx.drawImage(svgImg, 0, 0, sw, sh);
-    ctx.restore();
-    // Redraw a tight bottom strip UNFLIPPED so FRONT/BACK text labels remain legible.
-    // 12% of height is enough to capture just the hem label without distorting the silhouette.
-    const textBand = Math.min(sh * 0.12, 32);
+    // For flipped leg panels: skip the full mirrored SVG overlay (it would render FRONT/BACK backwards).
+    // Draw only a tight unflipped bottom band so hem labels (FRONT/BACK) remain readable.
+    const textBand = Math.min(sh * 0.14, 36);
     ctx.save();
     ctx.beginPath();
     ctx.rect(sx, sy + sh - textBand, sw, textBand);
@@ -601,6 +594,7 @@ function drawPanelSilhouetteOverlay(
   safeInsetPx: number,
   flipHorizontal = false,
   showBleedBand = false,
+  skipGuides = false,
 ): void {
   if (!svgImg) {
     if (!flipHorizontal) {
@@ -691,10 +685,10 @@ function drawPanelSilhouetteOverlay(
   }
 
   // ── 2. Silhouette outline ────────────────────────────────────────────────
-  blitSlot(makeRing(silCanvas, 1.5));
+  if (!skipGuides) blitSlot(makeRing(silCanvas, 1.5));
 
   // ── 3. Safe-area dashed boundary ─────────────────────────────────────────
-  {
+  if (!skipGuides) {
     const ring = makeRing(safeCanvas, 1.5);
     // Apply dashes: destination-in with a horizontal stripe pattern (5px on / 4px off)
     const ringCtx = ring.getContext("2d")!;
@@ -1079,7 +1073,10 @@ export function PatternCustomizer({
             syncSidesMode &&
             isLeftLegPanelPosition(slot.position) &&
             !!rightLegPos;
-          const effectiveT = (doMirror || useSyncSides) ? (perPanelTransforms[rightLegPos] || t) : t;
+          const rightT = rightLegPos ? (perPanelTransforms[rightLegPos] || t) : t;
+          // Sync sides: left leg mirrors horizontal offset from slot center (no artwork flip)
+          const symT = useSyncSides ? { ...rightT, dxPx: -rightT.dxPx } : rightT;
+          const effectiveT = doMirror ? rightT : useSyncSides ? symT : t;
 
           const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
           const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
@@ -1089,7 +1086,7 @@ export function PatternCustomizer({
             offCtx.fillRect(sx, sy, sw, sh);
             drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
           }, flipSlot);
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -1125,7 +1122,7 @@ export function PatternCustomizer({
             offCtx.fillRect(sx, sy, sw, sh);
             drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch);
           }, flipSlot);
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
         }
       };
 
@@ -1647,8 +1644,8 @@ export function PatternCustomizer({
           }
         }
 
-        if (doSyncSides) {
-          // Sync sides: left leg uses the same transform as the right leg (no artwork flip).
+          if (doSyncSides) {
+          // Sync sides: left leg uses symmetric horizontal offset of the right leg (no artwork flip).
           const rightPanel = panelPositions.find(q => {
             const ql = q.position.toLowerCase();
             return ql.includes("right") &&
@@ -1657,7 +1654,8 @@ export function PatternCustomizer({
           });
           if (rightPanel) {
             const rightT = perPanelTransforms[rightPanel.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
-            const dataUrl = await exportPanelImage(p, motifImage, rightT);
+            const symT = { ...rightT, dxPx: -rightT.dxPx };
+            const dataUrl = await exportPanelImage(p, motifImage, symT);
             panelUrls.push({ position: p.position, dataUrl });
             continue;
           }
@@ -1884,12 +1882,12 @@ export function PatternCustomizer({
 
           <div>
             <Label className="text-xs">Background</Label>
-            <div className="flex gap-2 mt-1 items-stretch">
+            <div className="flex gap-1.5 mt-1 items-stretch">
               <Select
                 value={bgColor === "" ? "transparent" : bgColor}
                 onValueChange={v => setBgColor(v === "transparent" ? "" : v)}
               >
-                <SelectTrigger className="h-9 text-xs flex-1 border-foreground/20">
+                <SelectTrigger className="h-9 text-xs min-w-0 flex-1 border-foreground/20">
                   <SelectValue placeholder="Select" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1900,12 +1898,30 @@ export function PatternCustomizer({
                   ))}
                 </SelectContent>
               </Select>
+              <button
+                type="button"
+                title="Pick colour from screen"
+                aria-label="Pick colour from screen"
+                onClick={async () => {
+                  if (!("EyeDropper" in window)) return;
+                  try {
+                    // @ts-expect-error EyeDropper is not yet in TS lib
+                    const result = await new window.EyeDropper().open();
+                    setBgColor(result.sRGBHex);
+                  } catch {
+                    // cancelled or unsupported
+                  }
+                }}
+                className="h-9 w-9 shrink-0 flex items-center justify-center rounded border-2 border-foreground/25 bg-background hover:border-foreground/50 transition-colors"
+              >
+                <Pipette className="w-4 h-4 text-muted-foreground" />
+              </button>
               <input
                 type="color"
                 aria-label="Custom background colour"
                 value={bgColor === "" ? "#ffffff" : bgColor}
                 onChange={e => setBgColor(e.target.value)}
-                className="w-10 h-9 shrink-0 rounded border-2 border-foreground/25 cursor-pointer bg-background"
+                className="w-9 h-9 shrink-0 rounded border-2 border-foreground/25 cursor-pointer bg-background"
               />
             </div>
           </div>
