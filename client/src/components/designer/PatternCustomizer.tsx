@@ -721,6 +721,7 @@ function drawSewSafeDashed(
  * Draw BACK / FRONT labels below a leggings leg panel.
  * For a right-leg panel (flipped): left half = BACK, right half = FRONT.
  * For a left-leg panel (flipped): left half = FRONT, right half = BACK.
+ * A second line shows "Right Leg" or "Left Leg" centred under the panel.
  */
 function drawLeggingLegLabels(
   ctx: CanvasRenderingContext2D,
@@ -730,8 +731,10 @@ function drawLeggingLegLabels(
   sh: number,
   isRightLeg: boolean,
 ) {
-  const fontSize = Math.max(9, Math.min(14, sw * 0.09));
-  const y = sy + sh + fontSize + 3;
+  const fontSize = Math.max(9, Math.min(13, sw * 0.085));
+  const lineH = fontSize + 3;
+  const y1 = sy + sh + lineH;
+  const y2 = y1 + lineH;
   ctx.save();
   ctx.font = `600 ${fontSize}px sans-serif`;
   ctx.fillStyle = "rgba(40,40,40,0.75)";
@@ -739,8 +742,12 @@ function drawLeggingLegLabels(
   ctx.textBaseline = "alphabetic";
   const leftLabel  = isRightLeg ? "BACK"  : "FRONT";
   const rightLabel = isRightLeg ? "FRONT" : "BACK";
-  ctx.fillText(leftLabel,  sx + sw * 0.27, y);
-  ctx.fillText(rightLabel, sx + sw * 0.73, y);
+  ctx.fillText(leftLabel,  sx + sw * 0.27, y1);
+  ctx.fillText(rightLabel, sx + sw * 0.73, y1);
+  // Leg name
+  ctx.font = `400 ${Math.max(8, fontSize - 1)}px sans-serif`;
+  ctx.fillStyle = "rgba(80,80,80,0.65)";
+  ctx.fillText(isRightLeg ? "Right Leg" : "Left Leg", sx + sw * 0.5, y2);
   ctx.restore();
 }
 
@@ -803,6 +810,7 @@ interface PatternCustomizerProps {
   initialBgColor?: string;
   onSettingsChange?: (settings: PatternApplyOptions) => void;
   initialPlacement?: AopPlacementSettings;
+  initialMode?: "pattern" | "single" | "place";
   onPlacementChange?: (placement: AopPlacementSettings) => void;
   onApply: (patternUrl: string, options: PatternApplyOptions) => void | Promise<void>;
   onCancel?: () => void;
@@ -824,6 +832,7 @@ export function PatternCustomizer({
   initialBgColor,
   onSettingsChange,
   initialPlacement,
+  initialMode,
   onPlacementChange,
   onApply,
   onCancel,
@@ -836,7 +845,9 @@ export function PatternCustomizer({
 
   // ── Local state ────────────────────────────────────────────────────────────
 
-  const [mode, setMode] = useState<EditorMode>("pattern");
+  const [mode, setMode] = useState<EditorMode>(
+    initialMode ?? initialPlacement?.lastMode ?? "pattern"
+  );
   const [patternType, setPatternType] = useState<PatternType>(initialPattern || "grid");
   // tileInches: real-world size of one tile in inches (replaces abstract tilesAcross).
   // Back-compat: if only initialTilesAcross was stored, convert via a nominal 6" panel width.
@@ -1185,6 +1196,9 @@ export function PatternCustomizer({
         // Constrain canvas height: never smaller than 30% of width or larger than 200%
         const clampedRatio = Math.min(2.0, Math.max(0.3, ratio));
         canvasH = Math.round(px * clampedRatio);
+        // Extra room below panels for BACK/FRONT + leg name labels on leggings
+        const hasLegSlots = panelPositions.some(p => shouldFlipLeggingsLegSlot(productKind, p.position));
+        if (hasLegSlots) canvasH += Math.round(px * 0.07);
       }
     }
 
@@ -1370,8 +1384,9 @@ export function PatternCustomizer({
       mirrorMode,
       seamBleedPx,
       syncSidesMode,
+      lastMode: mode,
     });
-  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, syncSidesMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, syncSidesMode, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -1731,11 +1746,12 @@ export function PatternCustomizer({
         <div className="flex flex-col min-h-0 min-w-0">
           <div
             ref={previewWrapRef}
-            className="relative w-full flex-1 min-h-[min(480px,78vh)] max-h-[min(920px,88vh)] border-2 border-foreground/20 rounded-md bg-muted/50 flex items-center justify-center overflow-hidden"
+            className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
+            style={{ aspectRatio: "1 / 1" }}
           >
             <canvas
               ref={canvasRef}
-              className="max-w-full max-h-full w-full h-full object-contain touch-none"
+              className="absolute inset-0 w-full h-full object-contain touch-none"
               style={{
                 cursor: mode === "place" ? "grab" : "default",
                 display: "block",

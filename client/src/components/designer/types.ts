@@ -63,6 +63,8 @@ export interface AopPlacementSettings {
   seamBleedPx: number;
   /** When true, dragging either legging leg updates both legs from the same canonical transform (no artwork mirror). */
   syncSidesMode?: boolean;
+  /** Last active editor mode — restores the correct tab when re-editing. */
+  lastMode?: "pattern" | "single" | "place";
   activeLeg?: string; // legacy compat
   dragOffset?: { x: number; y: number }; // legacy compat
 }
