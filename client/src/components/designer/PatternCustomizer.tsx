@@ -893,6 +893,7 @@ export function PatternCustomizer({
     const kind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
     return kind === "leggings";
   });
+  const [patternOffsetX, setPatternOffsetX] = useState(initialPlacement?.patternOffsetX ?? 0);
   const [seamBleedPx, setSeamBleedPx] = useState(
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
   );
@@ -1153,6 +1154,9 @@ export function PatternCustomizer({
         const pxPerInch = scl * PRINT_DPI;
         const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
         const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+        // Convert patternOffsetX (% of tile width) to screen pixels
+        const tileWScreen = Math.max(4, tileInches * pxPerInch);
+        const offsetScreenPx = (patternOffsetX / 100) * tileWScreen;
 
         // Find right leg slot for sync/mirror calculations (leggings only)
         const rightLegSlot = (syncSidesMode || mirrorMode)
@@ -1178,7 +1182,9 @@ export function PatternCustomizer({
           bCtx.fillRect(0, 0, riw, rih);
           bCtx.save();
           bCtx.translate(-rsx, -rsy);
-          drawTiledMotifInRect(bCtx, img, rsx, rsy, rsw, rsh, tileInches, patternType, pxPerInch);
+          // Apply horizontal offset so the buffer matches the right leg's shifted anchor
+          const tileWBuf = Math.max(4, tileInches * pxPerInch);
+          drawTiledMotifInRect(bCtx, img, rsx, rsy, rsw, rsh, tileInches, patternType, pxPerInch, rsx + offsetScreenPx, offY);
           bCtx.restore();
           rightLegTileBuffer = buf;
         }
@@ -1203,13 +1209,13 @@ export function PatternCustomizer({
 
           if (!isLeftLeg && isLegSlot && (syncSidesMode || mirrorMode) && rightLegSlot) {
             // Right leg: anchor at its own left edge so phase is deterministic
-            tileAnchorX = rightSx;
+            tileAnchorX = rightSx + offsetScreenPx;
             tileAnchorY = offY;
           } else if (useSyncLeft) {
             // Left leg sync: the right leg's inner seam is at rightSx + rightSw in screen space.
             // The preview gap (LEGGINGS_GAP * scl) is present between slots but absent in export.
             // Shifting the anchor back by the gap makes the tile phase at the front seam match.
-            tileAnchorX = rightSx - LEGGINGS_GAP * scl;
+            tileAnchorX = rightSx - LEGGINGS_GAP * scl + offsetScreenPx;
             tileAnchorY = offY;
           }
 
@@ -1225,7 +1231,9 @@ export function PatternCustomizer({
               offCtx.drawImage(rightLegTileBuffer, 0, 0, sw, sh);
               offCtx.restore();
             } else {
-              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch, tileAnchorX, tileAnchorY);
+              // Apply offset to any panel that didn't get an explicit anchor above
+              const effectiveAnchorX = tileAnchorX ?? (sx + offsetScreenPx);
+              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch, effectiveAnchorX, tileAnchorY);
             }
           }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
@@ -1244,7 +1252,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, mirrorMode, syncSidesMode],
+    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, mirrorMode, syncSidesMode, patternOffsetX],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -1317,6 +1325,7 @@ export function PatternCustomizer({
     activePanel,
     mirrorMode,
     syncSidesMode,
+    patternOffsetX,
     svgImages,
     activeView,
     previewPx,
@@ -1470,9 +1479,10 @@ export function PatternCustomizer({
       mirrorMode,
       seamBleedPx,
       syncSidesMode,
+      patternOffsetX,
       lastMode: mode,
     });
-  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, syncSidesMode, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, syncSidesMode, patternOffsetX, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -1611,7 +1621,9 @@ export function PatternCustomizer({
                 if (bgColor && bgColor !== "transparent") {
                   cx.fillStyle = bgColor; cx.fillRect(0, 0, outW, outH);
                 }
-                drawTiledMotifInRect(cx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * scaleRatio);
+                const tileWPrint = Math.max(4, tileInches * PRINT_DPI * scaleRatio);
+                const offsetPrintPx = (patternOffsetX / 100) * tileWPrint;
+                drawTiledMotifInRect(cx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * scaleRatio, offsetPrintPx, 0);
                 if (!flipH) return c;
                 const f = document.createElement("canvas");
                 f.width = outW; f.height = outH;
@@ -1640,7 +1652,10 @@ export function PatternCustomizer({
                 if (bgColor && bgColor !== "transparent") {
                   cCtx.fillStyle = bgColor; cCtx.fillRect(0, 0, compositeW, compositeH);
                 }
-                drawTiledMotifInRect(cCtx, motifImage, 0, 0, compositeW, compositeH, tileInches, patternType, PRINT_DPI * scaleRatio);
+                // Apply patternOffsetX (% of tile width) to shift the composite anchor
+                const tileWPrint = Math.max(4, tileInches * PRINT_DPI * scaleRatio);
+                const offsetPrintPx = (patternOffsetX / 100) * tileWPrint;
+                drawTiledMotifInRect(cCtx, motifImage, 0, 0, compositeW, compositeH, tileInches, patternType, PRINT_DPI * scaleRatio, offsetPrintPx, 0);
 
                 // Crop right then flip
                 const cropR = document.createElement("canvas");
@@ -1683,7 +1698,8 @@ export function PatternCustomizer({
               ctx.fillStyle = bgColor;
               ctx.fillRect(0, 0, outW, outH);
             }
-            drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale);
+            drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale,
+              (patternOffsetX / 100) * Math.max(4, tileInches * PRINT_DPI * renderScale), 0);
             let outForUpload: HTMLCanvasElement = canvas;
             if (shouldFlipLeggingsLegSlot(productKind, p.position)) {
               const flipped = document.createElement("canvas");
@@ -1995,7 +2011,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, mirrorMode, syncSidesMode, seamBleedPx, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -2115,6 +2131,34 @@ export function PatternCustomizer({
                   className={sliderTrackClass}
                 />
               </div>
+
+              {panelPositions.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs">Pattern alignment</Label>
+                    {patternOffsetX !== 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setPatternOffsetX(0)}
+                        className="text-[10px] text-muted-foreground underline"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                  <Slider
+                    value={[patternOffsetX]}
+                    onValueChange={v => setPatternOffsetX(v[0])}
+                    min={-50}
+                    max={50}
+                    step={1}
+                    className={sliderTrackClass}
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {patternOffsetX === 0 ? "Centred" : patternOffsetX > 0 ? `+${patternOffsetX}% right` : `${patternOffsetX}% left`}
+                  </p>
+                </div>
+              )}
 
               {/* Mirror / Sync Sides for leggings pattern mode */}
               {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)) && (

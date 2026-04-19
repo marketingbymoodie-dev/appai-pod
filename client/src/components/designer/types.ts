@@ -63,6 +63,8 @@ export interface AopPlacementSettings {
   seamBleedPx: number;
   /** When true, dragging either legging leg updates both legs from the same canonical transform (no artwork mirror). */
   syncSidesMode?: boolean;
+  /** Horizontal grid shift as percent of tile width (−50 → +50). Nudges the tile anchor left/right. */
+  patternOffsetX?: number;
   /** Last active editor mode — restores the correct tab when re-editing. */
   lastMode?: "pattern" | "single" | "place";
   activeLeg?: string; // legacy compat
