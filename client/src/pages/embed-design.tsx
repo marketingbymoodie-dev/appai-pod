@@ -2035,7 +2035,8 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFrameColor]);
 
-  // Background prefetch: after primary mockups load, fetch other frame colors silently
+  // Background prefetch: after primary mockups load, fetch other frame colors silently.
+  // AOP products require per-panel data — skip prefetch unless we have saved panel refs.
   useEffect(() => {
     if (
       !generatedDesign?.imageUrl ||
@@ -2045,6 +2046,14 @@ export default function EmbedDesign() {
       mockupLoading ||
       !productTypeConfig?.frameColors?.length
     ) return;
+
+    // AOP: skip background prefetch if we have no panel data — sending without panels
+    // causes the server to use the raw design image on all positions, resulting in black
+    // or incorrectly-rendered mockups for secondary colours.
+    if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+      console.log('[Mockups] Background prefetch skipped — AOP product with no panel data cached');
+      return;
+    }
 
     const otherColors = productTypeConfig.frameColors.filter(
       (c: { id: string }) => c.id !== currentMockupColorRef.current && !mockupColorCacheRef.current[c.id]
@@ -2072,6 +2081,9 @@ export default function EmbedDesign() {
         if (mockupColorCacheRef.current[color.id]) continue;
 
         try {
+          const aopPanels = productTypeConfig?.isAllOverPrint
+            ? (lastAopPanelUrlsRef.current ?? undefined)
+            : undefined;
           const payload: Record<string, unknown> = {
             productTypeId: productTypeConfig!.id,
             designImageUrl: imageUrl,
@@ -2080,6 +2092,7 @@ export default function EmbedDesign() {
             scale: Math.max(10, Math.min(200, transform.scale)),
             x: Math.max(0, Math.min(100, transform.x)),
             y: Math.max(0, Math.min(100, transform.y)),
+            ...(aopPanels ? { panelUrls: aopPanels, patternUrl: aopPatternUrl || undefined } : {}),
           };
           if (isStorefront || isShopify) payload.shop = shopDomain;
           if (isShopify) payload.sessionToken = sessionToken;
@@ -4586,7 +4599,10 @@ export default function EmbedDesign() {
                                 selectedFrameColor || 'default',
                                 transform.scale,
                                 transform.x,
-                                transform.y
+                                transform.y,
+                                productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                                aopPlacementSettings?.mirrorMode,
+                                productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                               );
                             }
                           } else {
@@ -5299,7 +5315,10 @@ export default function EmbedDesign() {
                               selectedFrameColor || 'default',
                               transform.scale,
                               transform.x,
-                              transform.y
+                              transform.y,
+                              productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                              aopPlacementSettings?.mirrorMode,
+                              productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                             );
                           }
                         }}

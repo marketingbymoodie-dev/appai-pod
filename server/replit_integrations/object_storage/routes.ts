@@ -87,8 +87,16 @@ export function registerObjectStorageRoutes(app: Express): void {
   /**
    * Serve stored files.
    * GET /objects/:objectPath(*)
+   *
+   * CORS note: these files are loaded by PatternCustomizer canvas with crossOrigin="anonymous"
+   * from Shopify storefront origins and other cross-origin contexts. The wildcard ACAO header
+   * is safe here — all stored design images are already public-readable (no auth required).
    */
   app.get("/objects/:objectPath(*)", async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Max-Age", "86400");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
     try {
       // Path traversal protection
       const storageDir = getStorageDir();

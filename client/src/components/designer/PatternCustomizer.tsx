@@ -107,13 +107,19 @@ const MAX_PANEL_MOCKUP_PX = 2048;
 /** Max long-edge for persisted print assets (native template up to this cap). */
 const MAX_PANEL_PRINT_PX = 9000;
 
-/** Encode canvas as JPEG for smaller mockup API payloads; downscale if over max dimension. */
+/**
+ * Encode canvas as PNG for AOP panel export.
+ * PNG is required (not JPEG) because JPEG has no alpha channel — a transparent or
+ * empty canvas encodes as solid black in JPEG, which Printify then applies as a
+ * completely black print. PNG preserves transparency so Printify can fall back
+ * to the garment colour rather than flooding it black. Downscale if over max dimension.
+ */
 function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOCKUP_PX): string {
   let w = canvas.width;
   let h = canvas.height;
-  if (w <= 0 || h <= 0) return canvas.toDataURL("image/jpeg", 0.92);
+  if (w <= 0 || h <= 0) return canvas.toDataURL("image/png");
   if (Math.max(w, h) <= maxDim) {
-    return canvas.toDataURL("image/jpeg", 0.92);
+    return canvas.toDataURL("image/png");
   }
   const scale = maxDim / Math.max(w, h);
   const nw = Math.max(1, Math.round(w * scale));
@@ -122,9 +128,9 @@ function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOC
   out.width = nw;
   out.height = nh;
   const octx = out.getContext("2d");
-  if (!octx) return canvas.toDataURL("image/jpeg", 0.85);
+  if (!octx) return canvas.toDataURL("image/png");
   octx.drawImage(canvas, 0, 0, nw, nh);
-  return out.toDataURL("image/jpeg", 0.92);
+  return out.toDataURL("image/png");
 }
 
 /** Snap threshold in CSS pixels — snaps when artwork centre is within this distance. */
@@ -994,14 +1000,51 @@ export function PatternCustomizer({
   const productKind = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
 
   // ── Image loading ──────────────────────────────────────────────────────────
+  // Load motif via fetch → blob URL so the canvas is never tainted by cross-origin
+  // restrictions. Direct img.src with crossOrigin="anonymous" fails on iOS Safari when
+  // the image was previously cached without CORS headers (e.g. shown in a preview <img>),
+  // causing drawImage() to silently draw nothing and toDataURL() to throw SecurityError.
+  // A blob URL is always same-origin from the browser's perspective.
 
   useEffect(() => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload  = () => setMotifImage(img);
-    img.onerror = () => console.error("[PatternCustomizer] Failed to load motif image");
-    img.src = motifUrl;
-  }, [motifUrl]);
+    let cancelled = false;
+    let blobUrl: string | null = null;
+
+    const loadViaFetch = async () => {
+      try {
+        const fetchFn_ = fetchFn || fetch;
+        const res = await fetchFn_(motifUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        if (cancelled) return;
+        blobUrl = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          if (!cancelled) setMotifImage(img);
+        };
+        img.onerror = () => {
+          console.error("[PatternCustomizer] Blob img load failed:", motifUrl.substring(0, 80));
+        };
+        img.src = blobUrl;
+      } catch (fetchErr) {
+        if (cancelled) return;
+        // Fallback: direct load with crossOrigin (works on desktop / non-proxy contexts)
+        console.warn("[PatternCustomizer] fetch failed, falling back to direct img load:", fetchErr);
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload  = () => { if (!cancelled) setMotifImage(img); };
+        img.onerror = () => console.error("[PatternCustomizer] Failed to load motif image:", motifUrl.substring(0, 80));
+        img.src = motifUrl;
+      }
+    };
+
+    loadViaFetch();
+
+    return () => {
+      cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [motifUrl, fetchFn]);
 
   const [svgLoadErrors, setSvgLoadErrors] = useState<string[]>([]);
 
