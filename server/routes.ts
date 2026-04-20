@@ -261,6 +261,67 @@ async function removeChromaKeyBackground(buffer: Buffer, tolerance: number = 60)
 }
 
 /**
+ * Crop fully transparent margins after background removal so repeated tiles use
+ * the artwork bounds instead of the original empty canvas.
+ */
+async function trimTransparentBounds(
+  buffer: Buffer,
+  alphaThreshold: number = 8,
+  padding: number = 8,
+): Promise<Buffer> {
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height, channels } = info;
+  const pixels = new Uint8Array(data);
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * channels;
+      const alpha = pixels[idx + 3];
+      if (alpha > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    console.warn("[trimTransparentBounds] No opaque pixels found; leaving original image unchanged");
+    return buffer;
+  }
+
+  const left = Math.max(0, minX - padding);
+  const top = Math.max(0, minY - padding);
+  const right = Math.min(width - 1, maxX + padding);
+  const bottom = Math.min(height - 1, maxY + padding);
+  const cropWidth = Math.max(1, right - left + 1);
+  const cropHeight = Math.max(1, bottom - top + 1);
+
+  if (left === 0 && top === 0 && cropWidth === width && cropHeight === height) {
+    return buffer;
+  }
+
+  console.log(
+    `[trimTransparentBounds] Cropping ${width}x${height} -> ${cropWidth}x${cropHeight} (padding=${padding})`,
+  );
+
+  return sharp(buffer)
+    .extract({ left, top, width: cropWidth, height: cropHeight })
+    .png()
+    .toBuffer();
+}
+
+/**
  * Legacy pixel-based background removal for white/dark backgrounds.
  * Used as fallback when chroma key is not applicable.
  */
@@ -485,6 +546,8 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       extension = "png";
       actualMimeType = "image/png";
     }
+
+    buffer = await trimTransparentBounds(buffer);
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")

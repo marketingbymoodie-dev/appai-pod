@@ -140,7 +140,7 @@ const PROMPT_MAX_LENGTH = 900;
  * Strip the verbose canvas-requirements block injected by the route handler and
  * replace it with a compact version that fits the model's context window better.
  *
- * For AOP: strips the AOP block and prepends a compact white-background constraint.
+ * For AOP: strips the AOP block and prepends a compact chroma-key constraint.
  * For apparel: strips the verbose block and prepends a compact chroma-key constraint.
  * For non-apparel (wall art / decor): strips and prepends a compact full-bleed constraint.
  */
@@ -156,11 +156,12 @@ function compressPrompt(raw: string, isApparel: boolean, isAllOverPrint?: boolea
     compressed = compressed.replace(/=== ARTWORK DESCRIPTION ===\s*/g, "");
     compressed = compressed.trim();
 
-    // Compact AOP constraint: isolated motif on solid white background
+    // Compact AOP constraint: isolated motif on a chroma-key background so the
+    // server can reliably remove it before building AOP mockup tiles.
     const shortAopConstraints =
-      "Isolated centered motif on a SOLID WHITE (#FFFFFF) background. " +
-      "Every pixel not part of the design must be exactly #FFFFFF. " +
-      "Do NOT use pure white anywhere in the design itself. " +
+      "Isolated centered motif on a SOLID HOT PINK (#FF00FF) background. " +
+      "Every pixel not part of the design must be exactly #FF00FF. " +
+      "Do NOT use hot pink or magenta anywhere in the design itself. " +
       "Clean hard edges, no gradients into background, no rectangular frames. " +
       "Do NOT add any text, words, slogans, or labels unless the user explicitly requested them. ";
     compressed = shortAopConstraints + compressed;
