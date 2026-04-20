@@ -85,9 +85,31 @@ function isDataUrl(url: string): boolean {
   return url.startsWith("data:");
 }
 
-function extractBase64FromDataUrl(dataUrl: string): string | null {
-  const match = dataUrl.match(/^data:image\/\w+;base64,(.+)$/);
-  return match ? match[1] : null;
+/**
+ * Extract base64 payload from a data URL.
+ * Accepts common variants produced by mobile browsers (e.g. extra MIME params,
+ * "octet-stream" type, or charset tokens before the base64 marker):
+ *   data:image/jpeg;base64,...
+ *   data:image/png;charset=utf-8;base64,...
+ *   data:application/octet-stream;base64,...
+ *   data:image/jpeg;name=photo.jpg;base64,...
+ */
+export function extractBase64FromDataUrl(dataUrl: string): string | null {
+  const match = dataUrl.match(/^data:[^;]+(?:;[^;=]+=[^;]*)*;base64,(.+)$/s);
+  if (match) {
+    const payload = match[1].trim();
+    return payload.length > 0 ? payload : null;
+  }
+  return null;
+}
+
+/** Return a short, non-sensitive summary for a panel data URL suitable for logging. */
+function describeDataUrl(dataUrl: string): { mime: string; byteLen: number; valid: boolean } {
+  const mimeMatch = dataUrl.match(/^data:([^;,]+)/);
+  const mime = mimeMatch ? mimeMatch[1] : "unknown";
+  const b64 = extractBase64FromDataUrl(dataUrl);
+  const byteLen = b64 ? Math.round(b64.length * 0.75) : 0;
+  return { mime, byteLen, valid: b64 !== null && byteLen > 0 };
 }
 
 function normalizeImageUrl(url: string): string {
@@ -467,26 +489,64 @@ export async function generatePrintifyMockup(
     const panelImageIds = new Map<string, string>();
 
     if (isAop && request.panelUrls && request.panelUrls.length > 0) {
-      console.log(`[Printify AOP] Uploading ${request.panelUrls.length} per-panel images (sequential)`);
+      // Log per-panel stats so mobile vs desktop sessions can be compared in Railway logs.
+      const panelStats = request.panelUrls.map(({ position, dataUrl }) => {
+        const desc = describeDataUrl(dataUrl);
+        return { position, ...desc };
+      });
+      const invalidPanels = panelStats.filter((s) => !s.valid);
+      console.log(
+        `[Printify AOP] Uploading ${request.panelUrls.length} panel(s) (sequential):`,
+        panelStats.map((s) => `${s.position} ${s.mime} ~${(s.byteLen / 1024).toFixed(0)} KB valid=${s.valid}`).join(" | ")
+      );
+      if (invalidPanels.length > 0) {
+        console.warn(
+          `[Printify AOP] ${invalidPanels.length} panel(s) have invalid/empty base64 — will be skipped:`,
+          invalidPanels.map((s) => s.position).join(", ")
+        );
+      }
+
       for (const { position, dataUrl } of request.panelUrls) {
         try {
           const b64 = extractBase64FromDataUrl(dataUrl);
           if (!b64) {
-            console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data`);
+            console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
             continue;
           }
           let buf = Buffer.from(b64, "base64");
           buf = await sharp(buf).png().toBuffer();
+          console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes PNG`);
           const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
           if (uploaded) {
             panelImageIds.set(position, uploaded.id);
-            console.log(`[Printify AOP] Panel "${position}" uploaded: ${uploaded.id}`);
+            console.log(`[Printify AOP] Panel "${position}" uploaded OK: id=${uploaded.id} ${uploaded.width}x${uploaded.height}`);
           } else {
-            console.warn(`[Printify AOP] Panel "${position}" upload failed`);
+            console.warn(`[Printify AOP] Panel "${position}" upload returned null`);
           }
         } catch (panelErr: any) {
           console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message}`);
         }
+      }
+
+      console.log(
+        `[Printify AOP] Upload summary: ${panelImageIds.size}/${request.panelUrls.length} panels uploaded successfully.`
+      );
+
+      // If client supplied panels for an AOP product but every upload failed, return an
+      // explicit error rather than silently falling back to a generic (black/undecorated)
+      // image which produces visually wrong mockups.
+      if (panelImageIds.size === 0) {
+        return {
+          success: false,
+          mockupUrls: [],
+          mockupImages: [],
+          source: "fallback",
+          step: "printify_upload",
+          error:
+            "AOP panel upload failed: all per-panel images could not be uploaded to Printify. " +
+            `Received ${request.panelUrls.length} panel(s); panel stats: ` +
+            panelStats.map((s) => `${s.position}(${s.mime},${(s.byteLen / 1024).toFixed(0)}KB,valid=${s.valid})`).join(", "),
+        };
       }
     }
 

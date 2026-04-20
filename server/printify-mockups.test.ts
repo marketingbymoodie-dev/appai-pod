@@ -6,7 +6,7 @@
  * - Structured error responses with step info
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { normalizeMockupCameraLabel, pickPreferredMockupViews } from "./printify-mockups";
+import { normalizeMockupCameraLabel, pickPreferredMockupViews, extractBase64FromDataUrl } from "./printify-mockups";
 
 // We test the module's exported function
 // Mock fetch for Printify API calls
@@ -389,5 +389,43 @@ describe("Mockup camera_label preference", () => {
     const picked = pickPreferredMockupViews(images);
     expect(picked.length).toBe(1);
     expect(picked[0].label).toBe("front");
+  });
+});
+
+describe("extractBase64FromDataUrl", () => {
+  it("parses standard image/jpeg data URL", () => {
+    const b64 = "iVBORw0KGgo=";
+    expect(extractBase64FromDataUrl(`data:image/jpeg;base64,${b64}`)).toBe(b64);
+  });
+
+  it("parses image/png data URL", () => {
+    const b64 = "abc123==";
+    expect(extractBase64FromDataUrl(`data:image/png;base64,${b64}`)).toBe(b64);
+  });
+
+  it("parses data URL with extra MIME parameters (mobile Safari pattern)", () => {
+    // Safari and some mobile WebViews include extra semicolon-separated tokens
+    const b64 = "iVBORw0KGgo=";
+    expect(extractBase64FromDataUrl(`data:image/jpeg;name=photo.jpg;base64,${b64}`)).toBe(b64);
+    expect(extractBase64FromDataUrl(`data:image/png;charset=utf-8;base64,${b64}`)).toBe(b64);
+  });
+
+  it("parses octet-stream data URL (produced by some canvas polyfills)", () => {
+    const b64 = "abc+xyz/==";
+    expect(extractBase64FromDataUrl(`data:application/octet-stream;base64,${b64}`)).toBe(b64);
+  });
+
+  it("returns null for empty payload after base64 marker", () => {
+    expect(extractBase64FromDataUrl("data:image/png;base64,")).toBeNull();
+    expect(extractBase64FromDataUrl("data:image/png;base64,   ")).toBeNull();
+  });
+
+  it("returns null for data URL with no base64 marker", () => {
+    expect(extractBase64FromDataUrl("data:image/png,rawbytes")).toBeNull();
+  });
+
+  it("returns null for non-data-URL strings", () => {
+    expect(extractBase64FromDataUrl("https://example.com/img.png")).toBeNull();
+    expect(extractBase64FromDataUrl("")).toBeNull();
   });
 });

@@ -1730,6 +1730,36 @@ export default function EmbedDesign() {
       return;
     }
 
+    // AOP preflight: validate per-panel data URLs before sending to the server.
+    // Mobile browsers (iOS Safari in particular) can produce truncated or non-base64
+    // data URLs when canvas.toDataURL() is called under memory pressure. Catching this
+    // client-side lets us show a clear error instead of silently getting black mockups.
+    if (panelUrls && panelUrls.length > 0) {
+      const invalidPanels = panelUrls.filter(({ dataUrl }) => {
+        if (!dataUrl || typeof dataUrl !== 'string') return true;
+        if (!dataUrl.startsWith('data:')) return true;
+        // Must have a base64 marker and at least a few hundred chars of payload.
+        const b64Idx = dataUrl.indexOf(';base64,');
+        if (b64Idx === -1) return true;
+        const payload = dataUrl.slice(b64Idx + 8);
+        return payload.length < 100;
+      });
+      if (invalidPanels.length > 0) {
+        const positions = invalidPanels.map(p => p.position).join(', ');
+        const msg = `Could not generate mockup: ${invalidPanels.length} panel image(s) (${positions}) are empty or invalid. Please try again.`;
+        console.error('[EmbedDesign] AOP panel preflight failed:', positions, invalidPanels.map(p => `${p.position}:${p.dataUrl?.substring(0, 40)}`));
+        toast({ title: 'Mockup failed', description: msg, variant: 'destructive' });
+        setMockupLoading(false);
+        setMockupError(msg);
+        setMockupFailed(true);
+        if (runtimeMode !== 'standalone') {
+          window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
+        }
+        return;
+      }
+      console.log(`[EmbedDesign] AOP preflight OK: ${panelUrls.length} panel(s) — sizes: ${panelUrls.map(p => `${p.position}:${(p.dataUrl.length / 1024).toFixed(0)}KB`).join(', ')}`);
+    }
+
     setMockupLoading(true);
     setMockupsStale(false);
     // Notify parent page so it can show the "Artwork Generating" overlay
