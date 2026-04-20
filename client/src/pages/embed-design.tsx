@@ -5064,29 +5064,38 @@ export default function EmbedDesign() {
                     options.panelUrls
                   );
 
-                  // Persist high-res per-panel assets on the generation job for fulfillment
-                  // (mockup path above uses options.panelUrls at lower cap only).
-                  const printPanels = options.printPanelUrls;
-                  if (isStorefront && printPanels?.length && savedJobIdRef.current && shopDomain) {
-                    try {
-                      const aopPrintPanelUrls: { position: string; url: string }[] = [];
-                      for (const { position, dataUrl } of printPanels) {
-                        const url = await ensureHostedUrl(dataUrl);
-                        aopPrintPanelUrls.push({ position, url });
+                  // Persist high-res per-panel assets on the job in the background so the
+                  // user is not blocked on a second 9000px render or sequential uploads
+                  // before the preview mockup request even starts.
+                  if (isStorefront && savedJobIdRef.current && shopDomain) {
+                    void (async () => {
+                      try {
+                        const printPanels = options.getPrintPanelUrls
+                          ? await options.getPrintPanelUrls()
+                          : options.printPanelUrls;
+                        if (!printPanels?.length) return;
+
+                        const aopPrintPanelUrls = await Promise.all(
+                          printPanels.map(async ({ position, dataUrl }) => ({
+                            position,
+                            url: await ensureHostedUrl(dataUrl),
+                          }))
+                        );
+
+                        await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            jobId: savedJobIdRef.current,
+                            shop: shopDomain,
+                            designState: { aopPrintPanelUrls },
+                          }),
+                        });
+                        console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
+                      } catch (e) {
+                        console.error("[AOP] Failed to persist print panel URLs:", e);
                       }
-                      await safeFetch(`${API_BASE}/api/storefront/save-state`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          jobId: savedJobIdRef.current,
-                          shop: shopDomain,
-                          designState: { aopPrintPanelUrls },
-                        }),
-                      });
-                      console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
-                    } catch (e) {
-                      console.error("[AOP] Failed to persist print panel URLs:", e);
-                    }
+                    })();
                   }
                 }}
                 footerSlot={

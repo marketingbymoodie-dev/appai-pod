@@ -40,8 +40,10 @@ export type EditorMode = "pattern" | "single" | "place";
 
 export interface PatternApplyOptions {
   panelUrls?: { position: string; dataUrl: string }[];
-  /** High-res per-panel JPEGs for fulfillment (saved on job); mockup API uses `panelUrls` only. */
+  /** High-res per-panel images for fulfillment (saved on job); mockup API uses `panelUrls` only. */
   printPanelUrls?: { position: string; dataUrl: string }[];
+  /** Lazily build fulfillment assets after the preview request is already in flight. */
+  getPrintPanelUrls?: () => Promise<{ position: string; dataUrl: string }[]>;
   mirrorLegs?: boolean;
   seamOffset?: number;
   mode?: EditorMode;
@@ -104,8 +106,27 @@ const DEFAULT_SEAM_BLEED_PX = 70;
 
 /** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
 const MAX_PANEL_MOCKUP_PX = 2048;
+/** Mobile-friendly preview cap: smaller payloads, still sharp enough for mockups. */
+const MOBILE_MOCKUP_PANEL_PX = 1400;
 /** Max long-edge for persisted print assets (native template up to this cap). */
 const MAX_PANEL_PRINT_PX = 9000;
+
+function getAdaptiveMockupPanelPx(): number {
+  if (typeof window === "undefined" || typeof navigator === "undefined") {
+    return MAX_PANEL_MOCKUP_PX;
+  }
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  const ua = nav.userAgent || "";
+  const coarsePointer =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)").matches
+      : false;
+  const narrowViewport = window.innerWidth <= 1024;
+  const lowMemory = typeof nav.deviceMemory === "number" && nav.deviceMemory <= 4;
+  const likelyMobile =
+    /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (coarsePointer && narrowViewport);
+  return likelyMobile || lowMemory ? MOBILE_MOCKUP_PANEL_PX : MAX_PANEL_MOCKUP_PX;
+}
 
 /**
  * Encode canvas as PNG for AOP panel export.
@@ -1672,6 +1693,7 @@ export function PatternCustomizer({
     pos: { position: string; width: number; height: number },
     img: HTMLImageElement,
     transformOverride?: PanelTransform,
+    pixelCap = MAX_PANEL_MOCKUP_PX,
   ): Promise<string> {
     const canvas = document.createElement("canvas");
     canvas.width  = pos.width;
@@ -1735,10 +1757,10 @@ export function PatternCustomizer({
       fx.translate(pos.width, 0);
       fx.scale(-1, 1);
       fx.drawImage(canvas, 0, 0);
-      return canvasToUploadDataUrl(flipped);
+      return canvasToUploadDataUrl(flipped, pixelCap);
     }
 
-    return canvasToUploadDataUrl(canvas);
+    return canvasToUploadDataUrl(canvas, pixelCap);
   }
 
   // ── Apply handler ──────────────────────────────────────────────────────────
@@ -1747,6 +1769,8 @@ export function PatternCustomizer({
     if (!motifImage) return;
     setApplyLoading(true);
     try {
+      const mockupPixelCap = getAdaptiveMockupPanelPx();
+
       if (mode !== "place" || panelPositions.length === 0) {
         if (mode === "pattern" && panelPositions.length > 0) {
           // Pattern mode WITH AOP panels: render twice — smaller rasters for Printify mockup API,
@@ -1865,15 +1889,14 @@ export function PatternCustomizer({
             return urls;
           };
 
-          const panelUrls = await buildPatternAopPanelUrls(MAX_PANEL_MOCKUP_PX);
-          const printPanelUrls = await buildPatternAopPanelUrls(MAX_PANEL_PRINT_PX);
+          const panelUrls = await buildPatternAopPanelUrls(mockupPixelCap);
           await onApply(motifUrl, {
             mode,
             patternType,
             tileInches,
             bgColor,
             panelUrls,
-            printPanelUrls,
+            getPrintPanelUrls: () => buildPatternAopPanelUrls(MAX_PANEL_PRINT_PX),
             perPanelTransforms,
           });
           return;
@@ -1905,16 +1928,16 @@ export function PatternCustomizer({
         return;
       }
 
-      // Place on Item mode — generate full-res per-panel images
-      const panelUrls: { position: string; dataUrl: string }[] = [];
-      const seamPairs = getSeamPairs(panelPositions);
+      const buildPlaceModePanelUrls = async (pixelCap: number): Promise<{ position: string; dataUrl: string }[]> => {
+        const panelUrls: { position: string; dataUrl: string }[] = [];
+        const seamPairs = getSeamPairs(panelPositions);
 
-      // Track which positions are handled by composite export
-      const compositeCovered = new Set<string>();
+        // Track which positions are handled by composite export
+        const compositeCovered = new Set<string>();
 
-      // Seam-pair panels: render as a single composite then crop each side.
-      // This guarantees artwork continuity across the seam with no pixel offset.
-      for (const [leftPos, rightPos] of seamPairs) {
+        // Seam-pair panels: render as a single composite then crop each side.
+        // This guarantees artwork continuity across the seam with no pixel offset.
+        for (const [leftPos, rightPos] of seamPairs) {
         const rightDef = panelPositions.find(p => p.position === rightPos);
         const leftDef  = panelPositions.find(p => p.position === leftPos);
         if (!rightDef || !leftDef) continue;
@@ -1966,7 +1989,7 @@ export function PatternCustomizer({
           0, 0, rightDef.width, rightDef.height,
           0, 0, rightDef.width, rightDef.height
         );
-        panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight) });
+        panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap) });
 
         // Crop left panel canvas (or mirror-flipped if mirrorMode is on)
         const cropLeft = document.createElement("canvas");
@@ -1989,7 +2012,7 @@ export function PatternCustomizer({
             0,              0, leftDef.width, leftDef.height
           );
         }
-        panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft) });
+        panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap) });
 
         compositeCovered.add(rightPos);
         compositeCovered.add(leftPos);
@@ -1999,7 +2022,7 @@ export function PatternCustomizer({
       // Draws both leg panels from a single composite canvas so artwork naturally
       // crosses the front seam. The right panel export matches the individual path
       // exactly; the left panel gets the continuation (or symT for syncSidesMode).
-      if (productKind === "leggings" && seamBleedPx > 0) {
+        if (productKind === "leggings" && seamBleedPx > 0) {
         const rightDef = panelPositions.find(p =>
           isLeggingsLegSlot(p.position) && p.position.toLowerCase().includes("right")
         );
@@ -2059,7 +2082,7 @@ export function PatternCustomizer({
           const frCtx = flipR.getContext("2d")!;
           frCtx.translate(rightDef.width, 0); frCtx.scale(-1, 1);
           frCtx.drawImage(cropR, 0, 0);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap) });
 
           // Left panel: handle all three modes explicitly.
           // Composite crop of [rightDef.width, compositeW] is empty (art was drawn
@@ -2075,14 +2098,14 @@ export function PatternCustomizer({
             mCtx.scale(-1, 1);
             mCtx.drawImage(flipR, 0, 0, leftDef.width, leftDef.height);
             mCtx.restore();
-            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas) });
+            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
           } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
-            const dataUrl = await exportPanelImage(leftDef, motifImage, symT);
+            const dataUrl = await exportPanelImage(leftDef, motifImage, symT, pixelCap);
             panelUrls.push({ position: leftPos, dataUrl });
           } else {
             // Independent: use left panel's own transform
-            const dataUrl = await exportPanelImage(leftDef, motifImage);
+            const dataUrl = await exportPanelImage(leftDef, motifImage, undefined, pixelCap);
             panelUrls.push({ position: leftPos, dataUrl });
           }
 
@@ -2093,7 +2116,7 @@ export function PatternCustomizer({
 
       // Remaining panels: independent per-panel export
       // For leggings mirror mode: left leg mirrors the right leg's artwork
-      for (const p of panelPositions) {
+        for (const p of panelPositions) {
         if (compositeCovered.has(p.position)) continue;
 
         const isLeft = p.position.toLowerCase().includes("left");
@@ -2111,7 +2134,7 @@ export function PatternCustomizer({
           });
           if (rightPanel) {
             // Render the right panel normally
-            const rightDataUrl = await exportPanelImage(rightPanel, motifImage);
+            const rightDataUrl = await exportPanelImage(rightPanel, motifImage, undefined, pixelCap);
             // Mirror it for the left panel
             const mirrorCanvas = document.createElement("canvas");
             mirrorCanvas.width  = p.width;
@@ -2127,7 +2150,7 @@ export function PatternCustomizer({
             mCtx.scale(-1, 1);
             mCtx.drawImage(srcImg, 0, 0, p.width, p.height);
             mCtx.restore();
-            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas) });
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
             continue;
           }
         }
@@ -2143,19 +2166,26 @@ export function PatternCustomizer({
           if (rightPanel) {
             const rightT = perPanelTransforms[rightPanel.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
             const symT = { ...rightT, dxPx: -rightT.dxPx };
-            const dataUrl = await exportPanelImage(p, motifImage, symT);
+            const dataUrl = await exportPanelImage(p, motifImage, symT, pixelCap);
             panelUrls.push({ position: p.position, dataUrl });
             continue;
           }
         }
 
-        const dataUrl = await exportPanelImage(p, motifImage);
+        const dataUrl = await exportPanelImage(p, motifImage, undefined, pixelCap);
         panelUrls.push({ position: p.position, dataUrl });
       }
 
+        return panelUrls;
+      };
+
+      // Place mode now follows the same split pipeline as pattern mode:
+      // low-res preview assets first, high-res fulfillment assets only when needed.
+      const panelUrls = await buildPlaceModePanelUrls(mockupPixelCap);
       await onApply(motifUrl, {
         mode,
         panelUrls,
+        getPrintPanelUrls: () => buildPlaceModePanelUrls(MAX_PANEL_PRINT_PX),
         mirrorLegs: mirrorMode,
         seamOffset: seamBleedPx,
         perPanelTransforms,

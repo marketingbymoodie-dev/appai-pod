@@ -3,6 +3,7 @@ import pRetry from "p-retry";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
+const MAX_PANEL_UPLOAD_CONCURRENCY = 3;
 /** Max mockups returned after preference ordering (leggings grid + fallbacks). */
 const MAX_MOCKUP_VIEWS = 12;
 
@@ -112,6 +113,11 @@ function describeDataUrl(dataUrl: string): { mime: string; byteLen: number; vali
   return { mime, byteLen, valid: b64 !== null && byteLen > 0 };
 }
 
+function getDataUrlMime(dataUrl: string): string {
+  const mimeMatch = dataUrl.match(/^data:([^;,]+)/);
+  return mimeMatch ? mimeMatch[1].toLowerCase() : "application/octet-stream";
+}
+
 function normalizeImageUrl(url: string): string {
   if (typeof url !== "string") return url;
   const appUrl = process.env.APP_URL || "";
@@ -194,6 +200,27 @@ async function uploadImageToPrintify(
     }
   }
   return null;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const current = nextIndex++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current], current);
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results;
 }
 
 async function createTemporaryProduct(
@@ -496,7 +523,7 @@ export async function generatePrintifyMockup(
       });
       const invalidPanels = panelStats.filter((s) => !s.valid);
       console.log(
-        `[Printify AOP] Uploading ${request.panelUrls.length} panel(s) (sequential):`,
+        `[Printify AOP] Uploading ${request.panelUrls.length} panel(s) (concurrency=${MAX_PANEL_UPLOAD_CONCURRENCY}):`,
         panelStats.map((s) => `${s.position} ${s.mime} ~${(s.byteLen / 1024).toFixed(0)} KB valid=${s.valid}`).join(" | ")
       );
       if (invalidPanels.length > 0) {
@@ -506,25 +533,48 @@ export async function generatePrintifyMockup(
         );
       }
 
-      for (const { position, dataUrl } of request.panelUrls) {
-        try {
-          const b64 = extractBase64FromDataUrl(dataUrl);
-          if (!b64) {
-            console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
-            continue;
+      const uploadResults = await mapWithConcurrency(
+        request.panelUrls,
+        MAX_PANEL_UPLOAD_CONCURRENCY,
+        async ({ position, dataUrl }) => {
+          try {
+            const b64 = extractBase64FromDataUrl(dataUrl);
+            if (!b64) {
+              console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
+              return { position, uploadedId: null as string | null };
+            }
+
+            let buf = Buffer.from(b64, "base64");
+            const mime = getDataUrlMime(dataUrl);
+            // Validate that the payload is a real image. Avoid re-encoding already-PNG
+            // panels because the client now sends PNG mockup assets and re-encoding adds
+            // server CPU time without improving the preview.
+            await sharp(buf).metadata();
+            if (mime !== "image/png") {
+              buf = await sharp(buf).png().toBuffer();
+            }
+
+            console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes ${mime}`);
+            const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
+            if (!uploaded) {
+              console.warn(`[Printify AOP] Panel "${position}" upload returned null`);
+              return { position, uploadedId: null as string | null };
+            }
+
+            console.log(
+              `[Printify AOP] Panel "${position}" uploaded OK: id=${uploaded.id} ${uploaded.width}x${uploaded.height}`
+            );
+            return { position, uploadedId: uploaded.id };
+          } catch (panelErr: any) {
+            console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message}`);
+            return { position, uploadedId: null as string | null };
           }
-          let buf = Buffer.from(b64, "base64");
-          buf = await sharp(buf).png().toBuffer();
-          console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes PNG`);
-          const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
-          if (uploaded) {
-            panelImageIds.set(position, uploaded.id);
-            console.log(`[Printify AOP] Panel "${position}" uploaded OK: id=${uploaded.id} ${uploaded.width}x${uploaded.height}`);
-          } else {
-            console.warn(`[Printify AOP] Panel "${position}" upload returned null`);
-          }
-        } catch (panelErr: any) {
-          console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message}`);
+        }
+      );
+
+      for (const result of uploadResults) {
+        if (result.uploadedId) {
+          panelImageIds.set(result.position, result.uploadedId);
         }
       }
 
@@ -546,6 +596,21 @@ export async function generatePrintifyMockup(
             "AOP panel upload failed: all per-panel images could not be uploaded to Printify. " +
             `Received ${request.panelUrls.length} panel(s); panel stats: ` +
             panelStats.map((s) => `${s.position}(${s.mime},${(s.byteLen / 1024).toFixed(0)}KB,valid=${s.valid})`).join(", "),
+        };
+      }
+
+      const expectedPositions = new Set((request.aopPositions ?? []).map((pos) => pos.position));
+      const missingPositions = Array.from(expectedPositions).filter((position) => !panelImageIds.has(position));
+      if (expectedPositions.size > 0 && missingPositions.length > 0) {
+        return {
+          success: false,
+          mockupUrls: [],
+          mockupImages: [],
+          source: "fallback",
+          step: "printify_upload",
+          error:
+            "AOP panel upload incomplete: preview requires every panel image to upload successfully. " +
+            `Missing panels: ${missingPositions.join(", ")}`,
         };
       }
     }
