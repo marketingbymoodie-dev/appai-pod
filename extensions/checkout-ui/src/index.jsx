@@ -123,6 +123,34 @@ function AppAIDesignPreview() {
   );
 }
 
+/**
+ * Parent `attributes` plus any `lineComponents[].attributes` (bundle / AOP lines).
+ */
+function collectCartLineAttributes(cartLine) {
+  if (!cartLine) return [];
+  var out = [];
+  if (Array.isArray(cartLine.attributes)) {
+    out = out.concat(cartLine.attributes);
+  }
+  var comps = cartLine.lineComponents;
+  if (Array.isArray(comps)) {
+    for (var i = 0; i < comps.length; i++) {
+      var c = comps[i];
+      if (c && Array.isArray(c.attributes)) {
+        out = out.concat(c.attributes);
+      }
+    }
+  }
+  return out;
+}
+
+function debugCartLineShape(cartLine) {
+  if (!cartLine) return 'no cartLine';
+  var n = Array.isArray(cartLine.attributes) ? cartLine.attributes.length : 0;
+  var m = Array.isArray(cartLine.lineComponents) ? cartLine.lineComponents.length : 0;
+  return 'parentAttrs=' + n + ', lineComponents=' + m;
+}
+
 /** Safe attribute lookup */
 function getAttr(attrs, key) {
   if (!Array.isArray(attrs)) return null;
@@ -131,7 +159,9 @@ function getAttr(attrs, key) {
     var k = a.key != null ? a.key : a.name;
     return k === key;
   });
-  return entry ? (entry.value != null ? entry.value : entry.val) : null;
+  if (!entry) return null;
+  var raw = entry.value != null ? entry.value : entry.val;
+  return raw == null ? null : String(raw);
 }
 
 /**
