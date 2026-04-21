@@ -7374,27 +7374,36 @@ ${textEdgeRestrictions}
       }
       console.log(`[ShadowProduct] Using canonical productId=${productId} resolved from variantId=${variantId}`);
 
-      // 3. Fetch the base variant's product to copy title/weight metadata
-      const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
-      if (!productRes.ok) {
-        const t = await productRes.text();
-        console.error(`[ShadowProduct] Failed to fetch base product ${productId}:`, t.substring(0, 200));
-        return res.status(productRes.status).json({ success: false, error: "Failed to fetch base product" });
-      }
-      const { product: baseProduct } = await productRes.json();
-      const baseVariant = baseProduct.variants.find((v: any) => String(v.id) === String(variantId));
-      if (!baseVariant) {
-        console.warn(`[ShadowProduct] Base variant ${variantId} not found on product ${productId}`);
+      // 3. Use variant payload as canonical metadata for shadow variant creation.
+      //    This avoids hard-failing on /products/{id}.json when productId is stale/unavailable.
+      const baseVariant = baseVariantRecord;
+      if (!baseVariant || String(baseVariant.id) !== String(variantId)) {
+        console.warn(`[ShadowProduct] Base variant ${variantId} not found in variant lookup payload`);
         return res.json({ success: false, error: "Base variant not found", fallback: true, variantId: String(variantId) });
       }
 
-      // 3. Build a clean human-readable title from the base variant options
+      // Best-effort product title lookup for a nicer shadow title (non-fatal).
+      let baseProductTitle = "Custom Design";
+      try {
+        const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
+        if (productRes.ok) {
+          const { product: baseProduct } = await productRes.json();
+          if (baseProduct?.title) baseProductTitle = String(baseProduct.title);
+        } else {
+          const t = await productRes.text();
+          console.warn(`[ShadowProduct] Product title lookup failed for ${productId}:`, t.substring(0, 160));
+        }
+      } catch (e: any) {
+        console.warn(`[ShadowProduct] Product title lookup error for ${productId}:`, e?.message || e);
+      }
+
+      // 4. Build a clean human-readable title from variant options
       const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
         .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
         .join(' / ');
-      const shadowTitle = `${baseProduct.title}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
+      const shadowTitle = `${baseProductTitle}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
 
-      // 4. Create the shadow product in Shopify
+      // 5. Create the shadow product in Shopify
       // Must be status=active + published=true so the storefront cart API can add it.
       // It stays hidden from customers because it is not added to any collection and
       // is not linked from navigation — Shopify only surfaces products in collections.
@@ -7432,11 +7441,11 @@ ${textEdgeRestrictions}
       const shadowVariant = shadowProduct.variants[0];
       console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId}`);
 
-      // 5. Ensure the shadow product is published to the Online Store sales channel
+      // 6. Ensure the shadow product is published to the Online Store sales channel
       //    (required for unlisted products to be accessible via the storefront cart API)
       try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
 
-      // 6. Assign the mockup image to the variant
+      // 7. Assign the mockup image to the variant
       if (shadowProduct.images && shadowProduct.images.length > 0) {
         const imgId = shadowProduct.images[0].id;
         await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
@@ -7446,7 +7455,7 @@ ${textEdgeRestrictions}
         }).catch(() => { /* non-fatal */ });
       }
 
-      // 6. Persist the shadow product record in our DB
+      // 8. Persist the shadow product record in our DB
       await storage.createPublishedProduct({
         shop,
         designId,
