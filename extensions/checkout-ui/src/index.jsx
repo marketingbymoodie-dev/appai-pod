@@ -48,9 +48,11 @@ function AppAIDesignPreview() {
   // is rendering for (one instance per cart line in the order summary).
   const cartLine = useCartLineTarget();
 
-  // Line item properties set via /cart/add.js map to `attributes` in the
-  // Checkout UI Extension API (they appear as customAttributes in GraphQL).
-  const attrs = (cartLine && cartLine.attributes) ? cartLine.attributes : [];
+  // Line item properties map to `attributes` on the cart line. For bundle / AOP
+  // lines, Shopify may surface the same keys in checkout UI but store values on
+  // `lineComponents[].attributes` instead of the parent — merge so we still find
+  // mockup_url / _mockup_url.
+  const attrs = collectCartLineAttributes(cartLine);
 
   const mockupUrl = pickPreviewImageUrl(attrs);
   const designId  = getAttr(attrs, '_design_id') || getAttr(attrs, 'design_id');
@@ -61,7 +63,8 @@ function AppAIDesignPreview() {
     return (
       <BlockStack spacing="extraTight" padding={['tight', 'none', 'none', 'none']}>
         <Text size="extraSmall" appearance="subdued">
-          [AppAI debug] No preview URL — attrs: {summarizeAttrsForDebug(attrs)}
+          [AppAI debug] No preview URL — {debugCartLineShape(cartLine)} — attrs:{' '}
+          {summarizeAttrsForDebug(attrs)}
         </Text>
       </BlockStack>
     );
@@ -153,9 +156,10 @@ function pickPreviewImageUrl(attrs) {
     if (!a) continue;
     var k = String(a.key != null ? a.key : a.name || '').toLowerCase();
     var v = a.value != null ? a.value : a.val;
-    if (!v || typeof v !== 'string') continue;
-    if (v.indexOf('https://') !== 0) continue;
-    if (k.indexOf('mockup') !== -1) return v;
+    if (v == null) continue;
+    var vs = String(v);
+    if (vs.indexOf('https://') !== 0) continue;
+    if (k.indexOf('mockup') !== -1) return vs;
   }
   return null;
 }
