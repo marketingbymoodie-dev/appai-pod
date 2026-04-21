@@ -3181,15 +3181,15 @@ export default function EmbedDesign() {
       // else: data URL too large for Shopify cart property (255 char limit) — omit
     }
 
-    // Guard: only use the mockup URL if it belongs to the currently selected color.
-    // Without this, changing frame color and adding to cart before mockups refresh
-    // would send the previous color's mockup to the cart.
-    // Treat an empty color ref as "unknown" — don't suppress a valid mockup URL in that case.
-    // This prevents a race window around AOP apply where the ref is cleared then set on success.
-    const colorMatches = !selectedFrameColor || !currentMockupColorRef.current || currentMockupColorRef.current === selectedFrameColor;
-    const mockupFullUrl = colorMatches ? getPreferredMockupUrl() : '';
+    // Use the best available mockup URL whenever we have one. Do not gate on
+    // currentMockupColorRef vs selectedFrameColor — that comparison is brittle
+    // (format/casing mismatches, customizer pages, saved-design reloads) and was
+    // stripping _mockup_url from cart entirely while mockups were still on-screen.
+    // Wrong-color risk is bounded: mockupsStale already blocks add when transforms
+    // are stale, and color-change triggers refresh or cache swap elsewhere.
+    const mockupFullUrl = getPreferredMockupUrl();
     if (!mockupFullUrl) {
-      console.warn('[Design Studio] No mockup URL available for cart. colorMatches:', colorMatches,
+      console.warn('[Design Studio] No mockup URL available for cart.',
         'currentColor:', currentMockupColorRef.current, 'selected:', selectedFrameColor,
         'printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
     } else {
