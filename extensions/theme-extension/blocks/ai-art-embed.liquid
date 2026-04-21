@@ -476,6 +476,23 @@
   }
   
   function createDesignStudio(config) {
+    // Shopify.installations + our DB use *.myshopify.com; window.Shopify.shop is often only the handle.
+    function normaliseMyshopifyShopForApi(raw) {
+      var s = String(raw || '').trim();
+      if (!s) {
+        try {
+          var root = document.getElementById('appai-root');
+          var ds = root && root.getAttribute('data-shop');
+          if (ds) s = String(ds).trim();
+        } catch (e) {}
+      }
+      if (!s) return '';
+      var lower = s.toLowerCase();
+      if (lower.indexOf('.myshopify.com') !== -1) return lower;
+      if (/^[a-z0-9][a-z0-9-]*$/i.test(s)) return lower + '.myshopify.com';
+      return lower;
+    }
+
     // ── Single-mount logic ──────────────────────────────────────────────
     // If the merchant added the "AI Art Design Studio" app block to this
     // page template, its container already exists in the DOM.  Mount the
@@ -512,7 +529,7 @@
     }
     
     const params = new URLSearchParams();
-    params.set('shop', config.shopDomain);
+    params.set('shop', normaliseMyshopifyShopForApi(config.shopDomain));
     params.set('productTypeId', config.productTypeId);
     params.set('productId', config.productId);
     params.set('productHandle', config.productHandle);
@@ -733,7 +750,7 @@
     function resolveDesignSku(sourceVariantId, designId, mockupUrl) {
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
-      var shopDomain = config.shopDomain || (window.Shopify && window.Shopify.shop) || '';
+      var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
       // Convert relative proxy URLs (e.g. /apps/appai/objects/designs/...) to absolute https:// URLs
       // so the backend can fetch the mockup image from Shopify's CDN.
       if (mockupUrl && mockupUrl.startsWith('/')) {
@@ -1113,7 +1130,7 @@
           return;
         }
 
-        var atcMockupUrl = (data.properties && data.properties['_mockup_url']) || '';
+        var atcMockupUrl = (data.properties && (data.properties['_mockup_url'] || data.properties['mockup_url'])) || '';
         var atcDesignId = (data.properties && data.properties['_design_id']) || '';
         // Use baseVariantId (the original base product variant) for resolveDesignSku so the
         // server can look it up on the base product and create a fresh shadow product if needed.
@@ -1301,7 +1318,7 @@
         atcBtn.style.opacity = '0.7';
 
         // Store mockup for instant cart drawer replacement
-        var mockupUrl = payload.properties && payload.properties['_mockup_url'];
+        var mockupUrl = payload.properties && (payload.properties['_mockup_url'] || payload.properties['mockup_url']);
         if (mockupUrl) {
           window.__aiArtRecentMockup = { variantId: String(payload.variantId), url: mockupUrl, designId: (payload.properties && payload.properties['_design_id']) || '' };
           try {
@@ -1703,7 +1720,15 @@
         productTitle: productTitle,
         displayName: displayName || productTitle.replace('Custom ', ''),
         description: description,
-        shopDomain: window.Shopify?.shop || window.location.hostname,
+        shopDomain: (function () {
+          var el = document.getElementById('appai-root');
+          var ds = el && el.getAttribute('data-shop');
+          var raw = (ds && String(ds).trim()) || (window.Shopify && window.Shopify.shop) || window.location.hostname || '';
+          var s = String(raw).trim().toLowerCase();
+          if (s.indexOf('.myshopify.com') !== -1) return s;
+          if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
+          return s;
+        })(),
         selectedVariant: variantId,
         shopifyVariants: productVariants
       };
@@ -1827,7 +1852,15 @@
             pageH1.classList.remove('appai-page-title-shimmer');
           }, { once: true });
         }
-        var shopDomain = (window.Shopify && window.Shopify.shop) || '';
+        var shopDomain = (function () {
+          var el = document.getElementById('appai-root');
+          var ds = el && el.getAttribute('data-shop');
+          var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
+          var s = String(raw).trim().toLowerCase();
+          if (s.indexOf('.myshopify.com') !== -1) return s;
+          if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
+          return s;
+        })();
         var studioEl = createDesignStudio({
           appUrl:               config.appUrl,
           shopDomain:           shopDomain,

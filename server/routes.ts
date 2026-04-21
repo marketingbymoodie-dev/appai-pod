@@ -1049,6 +1049,20 @@ async function removeNavigationLink(
 }
 
 /**
+ * Storefront scripts often send `window.Shopify.shop` as a short handle (`my-store`).
+ * Installations and Admin URLs require `my-store.myshopify.com`.
+ */
+function normalizeMyshopifyShopDomain(shop: string): string {
+  const s = String(shop || "")
+    .trim()
+    .toLowerCase();
+  if (!s) return "";
+  if (s.endsWith(".myshopify.com")) return s;
+  if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return `${s}.myshopify.com`;
+  return s;
+}
+
+/**
  * Returns the installation for `shop` if it is authorised, applying
  * self-healing when the DB status is stale.
  *
@@ -7301,7 +7315,8 @@ ${textEdgeRestrictions}
   // so we can extend its expiry from 6h to 7d.
   app.post("/api/storefront/shadow-product/cart-added", async (req: Request, res: Response) => {
     try {
-      const { shop, shadowProductId } = req.body;
+      const { shop: shopRaw, shadowProductId } = req.body;
+      const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !shadowProductId) return res.status(400).json({ error: "shop and shadowProductId required" });
       const installation = await getAuthorizedInstallation(shop);
       if (!installation || installation.status !== "active") return res.status(403).json({ error: "Shop not authorized" });
@@ -7330,7 +7345,8 @@ ${textEdgeRestrictions}
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
-      const { shop, variantId, designId, mockupUrl } = req.body;
+      const { shop: shopRaw, variantId, designId, mockupUrl } = req.body;
+      const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }

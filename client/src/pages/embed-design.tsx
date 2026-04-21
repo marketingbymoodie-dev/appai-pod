@@ -650,27 +650,29 @@ export default function EmbedDesign() {
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
   const resolveShopDomain = (): string => {
-    // First try the URL param (set by theme extension via window.Shopify.shop)
-    const shopParam = searchParams.get("shop") || "";
-    if (shopParam && shopParam.endsWith(".myshopify.com")) {
-      return shopParam;
+    // URL param is set by the theme embed (?shop=…). It is often the short handle only
+    // (same as window.Shopify.shop), but /api/storefront/* must use *.myshopify.com
+    // to match OAuth rows in the database.
+    const shopParam = (searchParams.get("shop") || "").trim();
+    if (shopParam && shopParam.toLowerCase().endsWith(".myshopify.com")) {
+      return shopParam.toLowerCase();
     }
-    
-    // Try to get myshopify.com domain from referrer
+    if (shopParam && /^[a-z0-9][a-z0-9-]*$/i.test(shopParam)) {
+      return `${shopParam.toLowerCase()}.myshopify.com`;
+    }
+
     try {
       const referrer = document.referrer;
       if (referrer) {
         const referrerUrl = new URL(referrer);
         if (referrerUrl.hostname.endsWith(".myshopify.com")) {
-          return referrerUrl.hostname;
+          return referrerUrl.hostname.toLowerCase();
         }
       }
     } catch (e) {
       console.warn("Failed to parse referrer for shop domain:", e);
     }
-    
-    // Return shopParam even if it's a custom domain - server will validate
-    // Custom domains are supported for session/auth but not for variant fetching
+
     return shopParam;
   };
   
