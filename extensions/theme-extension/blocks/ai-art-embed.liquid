@@ -1630,7 +1630,7 @@
     
     const productHandle = window.location.pathname.split('/products/')[1]?.split('?')[0]?.split('#')[0] || '';
     const productTitle = document.querySelector('h1')?.textContent?.trim() || 'Product';
-    const productId = window.ShopifyAnalytics?.meta?.product?.id || '';
+    let productId = window.ShopifyAnalytics?.meta?.product?.id || '';
     
     // Get the currently selected variant from Shopify using multiple detection methods
     let selectedVariant = window.ShopifyAnalytics?.meta?.selectedVariantId || 
@@ -1645,6 +1645,10 @@
     if (productJson) {
       try {
         const product = JSON.parse(productJson.textContent);
+        // Fallback: use product.id from the JSON blob if ShopifyAnalytics didn't provide it
+        if (!productId && product.id) {
+          productId = String(product.id);
+        }
         if (product.variants && product.variants.length > 0) {
           if (!selectedVariant) {
             selectedVariant = product.variants[0].id?.toString() || '';

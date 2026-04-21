@@ -1398,6 +1398,11 @@ export default function EmbedDesign() {
       // incorrectly block the mockup URL when a saved design is loaded.
       // topLevel.frameColor is the restored frame color for this design.
       currentMockupColorRef.current = topLevel.frameColor || '';
+      // Restore aopPatternUrl so the ATC button is not blocked by the
+      // "productTypeConfig.isAllOverPrint && !aopPatternUrl" guard for saved AOP
+      // designs. The design URL is the same value set by onApply when applying fresh.
+      // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
+      if (absUrl) setAopPatternUrl(absUrl);
       sendMockupsToParent(absMockups);
     }
   };
