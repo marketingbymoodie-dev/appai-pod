@@ -7331,7 +7331,6 @@ ${textEdgeRestrictions}
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
       const { shop, variantId, designId, mockupUrl } = req.body;
-      let { productId } = req.body;
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }
@@ -7359,37 +7358,24 @@ ${textEdgeRestrictions}
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
 
-      // 2. Resolve productId from variant when missing.
-      //    Also used as a fallback when a provided productId is wrong for this shop.
-      const resolveProductIdFromVariant = async (): Promise<string> => {
-        const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
-        if (variantLookupRes.ok) {
-          const { variant } = await variantLookupRes.json();
-          if (variant?.product_id) return String(variant.product_id);
-        }
-        return "";
-      };
-
+      // 2. Canonical source of truth: resolve productId from variantId.
+      //    Ignore inbound productId because storefront/theme sources can be stale or wrong.
+      const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      if (!variantLookupRes.ok) {
+        const t = await variantLookupRes.text();
+        console.error(`[ShadowProduct] Failed to fetch variant ${variantId}:`, t.substring(0, 200));
+        return res.status(variantLookupRes.status).json({ success: false, error: "Failed to fetch variant", fallback: true, variantId: String(variantId) });
+      }
+      const { variant: baseVariantRecord } = await variantLookupRes.json();
+      const productId = baseVariantRecord?.product_id ? String(baseVariantRecord.product_id) : "";
       if (!productId) {
-        productId = await resolveProductIdFromVariant();
-        if (!productId) {
-          console.warn(`[ShadowProduct] Could not resolve productId for variant ${variantId}`);
-          return res.json({ success: false, error: "Could not resolve productId from variantId", fallback: true, variantId: String(variantId) });
-        }
-        console.log(`[ShadowProduct] Resolved productId=${productId} from variantId=${variantId}`);
+        console.warn(`[ShadowProduct] Variant ${variantId} missing product_id`);
+        return res.json({ success: false, error: "Could not resolve productId from variantId", fallback: true, variantId: String(variantId) });
       }
+      console.log(`[ShadowProduct] Using canonical productId=${productId} resolved from variantId=${variantId}`);
 
-      // 3. Fetch the base variant to copy price/title/weight
-      let productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
-      // If productId was provided but invalid/stale, retry with variant->product lookup.
-      if (!productRes.ok) {
-        const fallbackProductId = await resolveProductIdFromVariant();
-        if (fallbackProductId && String(fallbackProductId) !== String(productId)) {
-          console.warn(`[ShadowProduct] Provided productId ${productId} failed; retrying with variant-resolved productId ${fallbackProductId}`);
-          productId = fallbackProductId;
-          productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
-        }
-      }
+      // 3. Fetch the base variant's product to copy title/weight metadata
+      const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
       if (!productRes.ok) {
         const t = await productRes.text();
         console.error(`[ShadowProduct] Failed to fetch base product ${productId}:`, t.substring(0, 200));
