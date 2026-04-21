@@ -14,3 +14,9 @@ handle = "appai-checkout-design-preview"
   [[extensions.targeting]]
     module = "./src/index.jsx"
     target = "purchase.checkout.cart-line-item.render-after"
+
+# Required so <Image source="https://…"> can load mockups hosted off-Shopify (e.g. Supabase).
+# After deploy, enable “Allow network access in checkout UI extensions” for this app in
+# Partners → App → API access (Shopify may require approval).
+[extensions.capabilities]
+network_access = true
