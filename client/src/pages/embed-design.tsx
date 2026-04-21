@@ -777,6 +777,9 @@ export default function EmbedDesign() {
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
+  // Always-current base variant ID for shadow product pre-creation.
+  // Updated by a useEffect so fetchPrintifyMockups (which has limited deps) can read it.
+  const baseVariantForShadowRef = useRef<string>('');
   // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
@@ -1869,7 +1872,9 @@ export default function EmbedDesign() {
         // Also pass base product/variant info so the server can pre-create the shadow product
         // in the background — enabling instant Add to Cart.
         if (isStorefront && savedJobIdRef.current && shopDomain) {
-          const baseVariantForShadow = selectedVariantParam || overrideVariantId || '';
+          // Use the always-current ref so we get the resolved variant even when
+          // selectedVariantParam and overrideVariantId are both absent from the closure.
+          const baseVariantForShadow = baseVariantForShadowRef.current;
           console.log('[Mockups] Saving permanent mockup URLs to job:', savedJobIdRef.current);
           safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
             method: 'POST',
@@ -1904,9 +1909,8 @@ export default function EmbedDesign() {
 
           // Poll for the pre-created shadow variant (server creates it in background ~5-15s)
           // Once ready, store it so Add to Cart can use it instantly.
-          if (productId && baseVariantForShadow) {
-            const jobIdForPoll = savedJobIdRef.current;
-            startShadowVariantPoll(jobIdForPoll, shopDomain, 5000);
+          if (productId && baseVariantForShadow && savedJobIdRef.current) {
+            startShadowVariantPoll(savedJobIdRef.current, shopDomain, 5000);
           }
         }
       } else if (!result.success) {
@@ -2983,6 +2987,18 @@ export default function EmbedDesign() {
     return null;
   };
 
+  // Keep baseVariantForShadowRef current so fetchPrintifyMockups (with limited deps) can
+  // read the latest resolved variant for shadow-product pre-creation without closure staleness.
+  useEffect(() => {
+    const vid = selectedVariantParam || overrideVariantId || null;
+    if (vid) {
+      baseVariantForShadowRef.current = normalizeVariantId(vid);
+    } else {
+      const matched = findVariantId();
+      baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : '';
+    }
+  }); // run after every render so it's always in sync with variant state
+
   /**
    * Send add-to-cart via postMessage to the parent Shopify storefront page.
    * The parent's theme extension script handles the actual /cart/add.js fetch.
@@ -3158,7 +3174,9 @@ export default function EmbedDesign() {
     // Guard: only use the mockup URL if it belongs to the currently selected color.
     // Without this, changing frame color and adding to cart before mockups refresh
     // would send the previous color's mockup to the cart.
-    const colorMatches = !selectedFrameColor || currentMockupColorRef.current === selectedFrameColor;
+    // Treat an empty color ref as "unknown" — don't suppress a valid mockup URL in that case.
+    // This prevents a race window around AOP apply where the ref is cleared then set on success.
+    const colorMatches = !selectedFrameColor || !currentMockupColorRef.current || currentMockupColorRef.current === selectedFrameColor;
     const mockupFullUrl = colorMatches ? getPreferredMockupUrl() : '';
     if (!mockupFullUrl) {
       console.warn('[Design Studio] No mockup URL available for cart. colorMatches:', colorMatches,

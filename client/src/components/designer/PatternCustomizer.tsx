@@ -1695,14 +1695,22 @@ export function PatternCustomizer({
     transformOverride?: PanelTransform,
     pixelCap = MAX_PANEL_MOCKUP_PX,
   ): Promise<string> {
+    // Render directly at pixelCap-capped dimensions to avoid silent iOS Safari canvas
+    // memory failures.  Full-print-resolution intermediates (e.g. 3600×4800 = 17 MP)
+    // silently exceed the ~16.7 MP iOS canvas area limit and produce blank white exports,
+    // whereas pattern mode already creates capped canvases and works fine.
+    const scaleRatio = Math.min(1, pixelCap / Math.max(pos.width, pos.height));
+    const outW = Math.max(1, Math.round(pos.width  * scaleRatio));
+    const outH = Math.max(1, Math.round(pos.height * scaleRatio));
+
     const canvas = document.createElement("canvas");
-    canvas.width  = pos.width;
-    canvas.height = pos.height;
+    canvas.width  = outW;
+    canvas.height = outH;
     const ctx = canvas.getContext("2d")!;
 
     const t = transformOverride ?? perPanelTransforms[pos.position] ?? { dxPx: 0, dyPx: 0, scalePct: 100 };
 
-    // Derive upscale preview slot px → native print px (separate X/Y in case of rounding / aspect drift).
+    // Derive upscale: preview slot px → output canvas px (= print px × scaleRatio).
     const px = previewPx;
     let previewSlotW = px;
     let previewSlotH = px;
@@ -1727,11 +1735,12 @@ export function PatternCustomizer({
         }
       }
     }
-    const upscaleX = pos.width / (previewSlotW || pos.width);
-    const upscaleY = pos.height / (previewSlotH || pos.height);
+    // upscaleX/Y: preview → output canvas (scaleRatio is already baked into outW/H).
+    const upscaleX = outW / (previewSlotW || outW);
+    const upscaleY = outH / (previewSlotH || outH);
     const yExportNudge =
       productKind === "leggings" && isLeggingsLegSlot(pos.position)
-        ? LEGGINGS_EXPORT_DY_OFFSET_PX
+        ? LEGGINGS_EXPORT_DY_OFFSET_PX * scaleRatio
         : 0;
 
     const printT: PanelTransform = {
@@ -1740,21 +1749,18 @@ export function PatternCustomizer({
       scalePct: t.scalePct,
     };
 
-    // Fill the full printable rectangle with the background colour — no silhouette clipping.
-    // Printify stretches this image over the panel placeholder (including bleed), so the
-    // entire rectangle must be covered. drawMaskedSlot is only used for the on-screen preview.
     if (bgColor && bgColor !== "transparent") {
       ctx.fillStyle = bgColor;
-      ctx.fillRect(0, 0, pos.width, pos.height);
+      ctx.fillRect(0, 0, outW, outH);
     }
-    drawArtworkInSlot(ctx, img, 0, 0, pos.width, pos.height, printT, false);
+    drawArtworkInSlot(ctx, img, 0, 0, outW, outH, printT, false);
 
     if (shouldFlipLeggingsLegSlot(productKind, pos.position)) {
       const flipped = document.createElement("canvas");
-      flipped.width = pos.width;
-      flipped.height = pos.height;
+      flipped.width = outW;
+      flipped.height = outH;
       const fx = flipped.getContext("2d")!;
-      fx.translate(pos.width, 0);
+      fx.translate(outW, 0);
       fx.scale(-1, 1);
       fx.drawImage(canvas, 0, 0);
       return canvasToUploadDataUrl(flipped, pixelCap);
@@ -1938,91 +1944,84 @@ export function PatternCustomizer({
         // Seam-pair panels: render as a single composite then crop each side.
         // This guarantees artwork continuity across the seam with no pixel offset.
         for (const [leftPos, rightPos] of seamPairs) {
-        const rightDef = panelPositions.find(p => p.position === rightPos);
-        const leftDef  = panelPositions.find(p => p.position === leftPos);
-        if (!rightDef || !leftDef) continue;
+          const rightDef = panelPositions.find(p => p.position === rightPos);
+          const leftDef  = panelPositions.find(p => p.position === leftPos);
+          if (!rightDef || !leftDef) continue;
 
-        const compositeW = rightDef.width + leftDef.width;
-        const compositeH = Math.max(rightDef.height, leftDef.height);
+          // Cap to pixelCap per-panel to avoid iOS canvas memory limits.
+          const cScaleRatio = Math.min(1, pixelCap / Math.max(rightDef.width, rightDef.height));
+          const cRW = Math.max(1, Math.round(rightDef.width  * cScaleRatio));
+          const cLW = Math.max(1, Math.round(leftDef.width   * cScaleRatio));
+          const cH  = Math.max(1, Math.round(Math.max(rightDef.height, leftDef.height) * cScaleRatio));
+          const cTotalW = cRW + cLW;
 
-        // Compute upscale from preview-canvas pixels to print pixels
-        const view = getPanelGroup(rightPos);
-        const layout = buildCompositeLayout(view, panelPositions);
-        const layoutScl = layout.compositeW > 0
-          ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
-          : 1;
-        const rightPreviewSlotW = rightDef.width * layoutScl;
-        const upscale = rightDef.width / (rightPreviewSlotW || rightDef.width);
+          // Compute upscale: preview → output canvas px (= print px × cScaleRatio).
+          const view = getPanelGroup(rightPos);
+          const layout = buildCompositeLayout(view, panelPositions);
+          const layoutScl = layout.compositeW > 0
+            ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
+            : 1;
+          const rightPreviewSlotW = rightDef.width * layoutScl;
+          const upscale = cRW / (rightPreviewSlotW || cRW);
 
-        // Use the right panel transform scaled to print space
-        const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
-        const printT: PanelTransform = {
-          dxPx: tRight.dxPx * upscale,
-          dyPx: tRight.dyPx * upscale,
-          scalePct: tRight.scalePct,
-        };
+          const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+          const printT: PanelTransform = {
+            dxPx: tRight.dxPx * upscale,
+            dyPx: tRight.dyPx * upscale,
+            scalePct: tRight.scalePct,
+          };
 
-        // Render composite canvas
-        const compositeCanvas = document.createElement("canvas");
-        compositeCanvas.width  = compositeW;
-        compositeCanvas.height = compositeH;
-        const ctx = compositeCanvas.getContext("2d")!;
-        if (bgColor && bgColor !== "transparent") {
-          ctx.fillStyle = bgColor;
-          ctx.fillRect(0, 0, compositeW, compositeH);
+          // Render composite canvas at capped dimensions
+          const compositeCanvas = document.createElement("canvas");
+          compositeCanvas.width  = cTotalW;
+          compositeCanvas.height = cH;
+          const ctx = compositeCanvas.getContext("2d")!;
+          if (bgColor && bgColor !== "transparent") {
+            ctx.fillStyle = bgColor;
+            ctx.fillRect(0, 0, cTotalW, cH);
+          }
+
+          // Draw SVG sew-pattern backgrounds
+          const rightSvgImg = svgImages[rightPos] || svgImages[mapPositionToSvgName(rightPos)];
+          const leftSvgImg  = svgImages[leftPos]  || svgImages[mapPositionToSvgName(leftPos)];
+          if (rightSvgImg) ctx.drawImage(rightSvgImg, 0,    0, cRW, cH);
+          if (leftSvgImg)  ctx.drawImage(leftSvgImg,  cRW,  0, cLW, cH);
+
+          // Draw artwork across the full composite (seam continuity)
+          drawArtworkInSlot(ctx, motifImage, 0, 0, cTotalW, cH, printT, false);
+
+          // Crop right panel
+          const cropRight = document.createElement("canvas");
+          cropRight.width  = cRW;
+          cropRight.height = cH;
+          cropRight.getContext("2d")!.drawImage(compositeCanvas, 0, 0, cRW, cH, 0, 0, cRW, cH);
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap) });
+
+          // Crop left panel (or mirror-flip if mirrorMode)
+          const cropLeft = document.createElement("canvas");
+          cropLeft.width  = cLW;
+          cropLeft.height = cH;
+          const ctxL = cropLeft.getContext("2d")!;
+          if (mirrorMode) {
+            ctxL.save();
+            ctxL.translate(cLW, 0);
+            ctxL.scale(-1, 1);
+            ctxL.drawImage(compositeCanvas, 0, 0, cLW, cH, 0, 0, cLW, cH);
+            ctxL.restore();
+          } else {
+            ctxL.drawImage(compositeCanvas, cRW, 0, cLW, cH, 0, 0, cLW, cH);
+          }
+          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap) });
+
+          compositeCovered.add(rightPos);
+          compositeCovered.add(leftPos);
         }
-
-        // Draw SVG sew-pattern backgrounds
-        const rightSvgImg = svgImages[rightPos] || svgImages[mapPositionToSvgName(rightPos)];
-        const leftSvgImg  = svgImages[leftPos]  || svgImages[mapPositionToSvgName(leftPos)];
-        if (rightSvgImg) ctx.drawImage(rightSvgImg, 0,              0, rightDef.width, rightDef.height);
-        if (leftSvgImg)  ctx.drawImage(leftSvgImg,  rightDef.width, 0, leftDef.width,  leftDef.height);
-
-        // Draw artwork in the full composite (ensures seam-edge continuity)
-        drawArtworkInSlot(ctx, motifImage, 0, 0, compositeW, compositeH, printT, false);
-
-        // Crop right panel canvas
-        const cropRight = document.createElement("canvas");
-        cropRight.width  = rightDef.width;
-        cropRight.height = rightDef.height;
-        cropRight.getContext("2d")!.drawImage(compositeCanvas,
-          0, 0, rightDef.width, rightDef.height,
-          0, 0, rightDef.width, rightDef.height
-        );
-        panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap) });
-
-        // Crop left panel canvas (or mirror-flipped if mirrorMode is on)
-        const cropLeft = document.createElement("canvas");
-        cropLeft.width  = leftDef.width;
-        cropLeft.height = leftDef.height;
-        const ctxL = cropLeft.getContext("2d")!;
-        if (mirrorMode) {
-          // Mirror left from the composite right-panel crop
-          ctxL.save();
-          ctxL.translate(leftDef.width, 0);
-          ctxL.scale(-1, 1);
-          ctxL.drawImage(compositeCanvas,
-            0, 0, leftDef.width, leftDef.height,
-            0, 0, leftDef.width, leftDef.height
-          );
-          ctxL.restore();
-        } else {
-          ctxL.drawImage(compositeCanvas,
-            rightDef.width, 0, leftDef.width, leftDef.height,
-            0,              0, leftDef.width, leftDef.height
-          );
-        }
-        panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap) });
-
-        compositeCovered.add(rightPos);
-        compositeCovered.add(leftPos);
-      }
 
       // ── Leggings leg composite export (seam crossing when seamBleedPx > 0) ────
       // Draws both leg panels from a single composite canvas so artwork naturally
       // crosses the front seam. The right panel export matches the individual path
       // exactly; the left panel gets the continuation (or symT for syncSidesMode).
-        if (productKind === "leggings" && seamBleedPx > 0) {
+      if (productKind === "leggings" && seamBleedPx > 0) {
         const rightDef = panelPositions.find(p =>
           isLeggingsLegSlot(p.position) && p.position.toLowerCase().includes("right")
         );
@@ -2035,10 +2034,14 @@ export function PatternCustomizer({
           const rightPos = rightDef.position;
           const leftPos  = leftDef.position;
 
-          const compositeW = rightDef.width + leftDef.width;
-          const compositeH = Math.max(rightDef.height, leftDef.height);
+          // Cap to pixelCap per-panel to avoid iOS canvas memory limits.
+          const cScaleRatio = Math.min(1, pixelCap / Math.max(rightDef.width, rightDef.height));
+          const cRW = Math.max(1, Math.round(rightDef.width  * cScaleRatio));
+          const cLW = Math.max(1, Math.round(leftDef.width   * cScaleRatio));
+          const cH  = Math.max(1, Math.round(Math.max(rightDef.height, leftDef.height) * cScaleRatio));
+          const cTotalW = cRW + cLW;
 
-          // Upscale from preview slot px → print px
+          // Upscale: preview slot px → output canvas px (= print px × cScaleRatio).
           const layout = buildLinearPanelsLayout(panelPositions, 0);
           const layoutScl = layout.compositeW > 0
             ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
@@ -2046,15 +2049,13 @@ export function PatternCustomizer({
           const rightSlot = layout.slots.find(s => s.position === rightPos);
           const previewSlotW = rightSlot ? rightSlot.w * layoutScl : previewPx;
           const previewSlotH = rightSlot ? rightSlot.h * layoutScl : previewPx;
-          const upscaleX = rightDef.width  / (previewSlotW || rightDef.width);
-          const upscaleY = rightDef.height / (previewSlotH || rightDef.height);
+          const upscaleX = cRW / (previewSlotW || cRW);
+          const upscaleY = cH  / (previewSlotH || cH);
 
           const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
 
-          // Use the same slot dimensions as individual exportPanelImage so scale matches.
-          // Drawing with slotW = rightDef.width (not compositeW) gives identical baseScale.
-          // The canvas is composite-wide, so art that overflows the right slot boundary
-          // naturally bleeds into the left panel region for seamless seam crossing.
+          // Drawing with slotW = cRW (not cTotalW) gives identical baseScale to exportPanelImage.
+          // The canvas is composite-wide so art that overflows cRW bleeds into the left region.
           const rightPrintT: PanelTransform = {
             dxPx:     tRight.dxPx * upscaleX,
             dyPx:     tRight.dyPx * upscaleY,
@@ -2062,49 +2063,48 @@ export function PatternCustomizer({
           };
 
           const compositeCanvas = document.createElement("canvas");
-          compositeCanvas.width  = compositeW;
-          compositeCanvas.height = compositeH;
+          compositeCanvas.width  = cTotalW;
+          compositeCanvas.height = cH;
           const cCtx = compositeCanvas.getContext("2d")!;
           if (bgColor && bgColor !== "transparent") {
             cCtx.fillStyle = bgColor;
-            cCtx.fillRect(0, 0, compositeW, compositeH);
+            cCtx.fillRect(0, 0, cTotalW, cH);
           }
-          drawArtworkInSlot(cCtx, motifImage, 0, 0, rightDef.width, compositeH, rightPrintT, false);
+          drawArtworkInSlot(cCtx, motifImage, 0, 0, cRW, cH, rightPrintT, false);
 
           // Crop right panel then flip (same as shouldFlipLeggingsLegSlot)
           const cropR = document.createElement("canvas");
-          cropR.width = rightDef.width; cropR.height = rightDef.height;
-          cropR.getContext("2d")!.drawImage(compositeCanvas,
-            0, 0, rightDef.width, rightDef.height,
-            0, 0, rightDef.width, rightDef.height);
+          cropR.width = cRW; cropR.height = cH;
+          cropR.getContext("2d")!.drawImage(compositeCanvas, 0, 0, cRW, cH, 0, 0, cRW, cH);
           const flipR = document.createElement("canvas");
-          flipR.width = rightDef.width; flipR.height = rightDef.height;
+          flipR.width = cRW; flipR.height = cH;
           const frCtx = flipR.getContext("2d")!;
-          frCtx.translate(rightDef.width, 0); frCtx.scale(-1, 1);
+          frCtx.translate(cRW, 0); frCtx.scale(-1, 1);
           frCtx.drawImage(cropR, 0, 0);
           panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap) });
 
           // Left panel: handle all three modes explicitly.
-          // Composite crop of [rightDef.width, compositeW] is empty (art was drawn
-          // only in the right slot), so we always produce the left panel independently.
           if (mirrorMode) {
-            // Mirror the already-exported right panel horizontally
+            // Mirror: render right panel artwork directly without the Printify leg-flip.
+            // Equivalent to the previous double-flip (right export → flip again) without
+            // the WebKit new Image(dataUrl) round-trip that silently fails on iOS.
             const mirrorCanvas = document.createElement("canvas");
-            mirrorCanvas.width  = leftDef.width;
-            mirrorCanvas.height = leftDef.height;
+            mirrorCanvas.width  = cLW;
+            mirrorCanvas.height = cH;
             const mCtx = mirrorCanvas.getContext("2d")!;
-            mCtx.save();
-            mCtx.translate(leftDef.width, 0);
-            mCtx.scale(-1, 1);
-            mCtx.drawImage(flipR, 0, 0, leftDef.width, leftDef.height);
-            mCtx.restore();
+            if (bgColor && bgColor !== "transparent") {
+              mCtx.fillStyle = bgColor;
+              mCtx.fillRect(0, 0, cLW, cH);
+            }
+            // Draw from motifImage at the right panel transform (unflipped) — this produces
+            // the same visual result as (right flipped) flipped again = unflipped.
+            mCtx.drawImage(flipR, 0, 0, cLW, cH);
             panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
           } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
             const dataUrl = await exportPanelImage(leftDef, motifImage, symT, pixelCap);
             panelUrls.push({ position: leftPos, dataUrl });
           } else {
-            // Independent: use left panel's own transform
             const dataUrl = await exportPanelImage(leftDef, motifImage, undefined, pixelCap);
             panelUrls.push({ position: leftPos, dataUrl });
           }
@@ -2133,23 +2133,38 @@ export function PatternCustomizer({
               !compositeCovered.has(q.position);
           });
           if (rightPanel) {
-            // Render the right panel normally
-            const rightDataUrl = await exportPanelImage(rightPanel, motifImage, undefined, pixelCap);
-            // Mirror it for the left panel
+            // Render the right panel's artwork directly on the left panel canvas without
+            // the Printify leg-slot flip.  This matches the old behaviour of
+            // (right panel export → flip again) = double-flip = unflipped, but eliminates
+            // the WebKit new Image(dataUrl) round-trip that stalls / fails silently on iOS.
+            const scaleRatio = Math.min(1, pixelCap / Math.max(p.width, p.height));
+            const outW = Math.max(1, Math.round(p.width  * scaleRatio));
+            const outH = Math.max(1, Math.round(p.height * scaleRatio));
+
+            const { compositeW: lW, compositeH: lH, slots: lSlots } = buildLinearPanelsLayout(panelPositions, 0);
+            const lScl = lW > 0 ? Math.min((previewPx - 20) / lW, (previewPx - 20) / lH, 1) : 1;
+            const rSlot = lSlots.find(s => s.position === rightPanel.position);
+            const rPreviewW = rSlot ? rSlot.w * lScl : previewPx;
+            const rPreviewH = rSlot ? rSlot.h * lScl : previewPx;
+            const upX = outW / (rPreviewW || outW);
+            const upY = outH / (rPreviewH || outH);
+
+            const rightT = perPanelTransforms[rightPanel.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+            const mirrorDrawT: PanelTransform = {
+              dxPx:     rightT.dxPx * upX,
+              dyPx:     rightT.dyPx * upY + LEGGINGS_EXPORT_DY_OFFSET_PX * scaleRatio,
+              scalePct: rightT.scalePct,
+            };
+
             const mirrorCanvas = document.createElement("canvas");
-            mirrorCanvas.width  = p.width;
-            mirrorCanvas.height = p.height;
+            mirrorCanvas.width  = outW;
+            mirrorCanvas.height = outH;
             const mCtx = mirrorCanvas.getContext("2d")!;
-            const srcImg = new Image();
-            await new Promise<void>(resolve => {
-              srcImg.onload = () => resolve();
-              srcImg.src = rightDataUrl;
-            });
-            mCtx.save();
-            mCtx.translate(p.width, 0);
-            mCtx.scale(-1, 1);
-            mCtx.drawImage(srcImg, 0, 0, p.width, p.height);
-            mCtx.restore();
+            if (bgColor && bgColor !== "transparent") {
+              mCtx.fillStyle = bgColor;
+              mCtx.fillRect(0, 0, outW, outH);
+            }
+            drawArtworkInSlot(mCtx, motifImage, 0, 0, outW, outH, mirrorDrawT, false);
             panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
             continue;
           }
