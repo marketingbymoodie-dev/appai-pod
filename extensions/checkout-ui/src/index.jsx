@@ -32,6 +32,12 @@ import {
   Badge,
 } from '@shopify/ui-extensions-react/checkout';
 
+/**
+ * TEMPORARY — set to `false` before you consider this checkout extension “done” for all merchants.
+ * When true: if no mockup URL is resolved, a small line shows cart line attribute keys (checkout debugging).
+ */
+const APPAI_CHECKOUT_DEBUG_PREVIEW = true;
+
 export default reactExtension(
   'purchase.checkout.cart-line-item.render-after',
   () => <AppAIDesignPreview />,
@@ -50,10 +56,28 @@ function AppAIDesignPreview() {
   const designId  = getAttr(attrs, '_design_id') || getAttr(attrs, 'design_id');
 
   // Nothing to render if there's no usable preview URL
-  if (!mockupUrl) return null;
+  if (!mockupUrl) {
+    if (!APPAI_CHECKOUT_DEBUG_PREVIEW) return null;
+    return (
+      <BlockStack spacing="extraTight" padding={['tight', 'none', 'none', 'none']}>
+        <Text size="extraSmall" appearance="subdued">
+          [AppAI debug] No preview URL — attrs: {summarizeAttrsForDebug(attrs)}
+        </Text>
+      </BlockStack>
+    );
+  }
 
   // Validate it's a real HTTPS URL (never render data: or blob: URIs)
-  if (!mockupUrl.startsWith('https://')) return null;
+  if (!mockupUrl.startsWith('https://')) {
+    if (!APPAI_CHECKOUT_DEBUG_PREVIEW) return null;
+    return (
+      <BlockStack spacing="extraTight" padding={['tight', 'none', 'none', 'none']}>
+        <Text size="extraSmall" appearance="subdued">
+          [AppAI debug] URL rejected (need https://): {String(mockupUrl).slice(0, 80)}
+        </Text>
+      </BlockStack>
+    );
+  }
 
   return (
     <BlockStack spacing="tight" padding={['base', 'none', 'none', 'none']}>
@@ -134,4 +158,20 @@ function pickPreviewImageUrl(attrs) {
     if (k.indexOf('mockup') !== -1) return v;
   }
   return null;
+}
+
+/** One-line summary for checkout debug (truncated; no full secrets). */
+function summarizeAttrsForDebug(attrs) {
+  if (!Array.isArray(attrs) || attrs.length === 0) return '(none)';
+  return attrs
+    .map(function (a) {
+      if (!a) return '';
+      var k = a.key != null ? a.key : a.name;
+      var v = a.value != null ? a.value : a.val;
+      var vs = v == null ? '' : String(v);
+      var tail = vs.length > 48 ? vs.slice(0, 45) + '…' : vs;
+      return String(k) + '=' + tail;
+    })
+    .filter(Boolean)
+    .join(' · ');
 }
