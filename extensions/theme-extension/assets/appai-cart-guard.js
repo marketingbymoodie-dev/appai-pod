@@ -14,7 +14,7 @@
   NS.latest = NS.latest || null;
 
   var LOG_PREFIX = "[AppAI Cart Guard]";
-  var CART_GUARD_VERSION = '1.2';
+  var CART_GUARD_VERSION = '1.3';
   /* DEBUG MARKERS (search these in DevTools console to diagnose issues):
      [AppAI Cart Guard] Loaded                        → script running (set ENABLE_DEBUG=true to see all logs)
      [AppAI Cart Guard] Ignored setLatestDesign       → payload missing _mockup_url; check embed-design.tsx handleAddToCart
@@ -114,13 +114,8 @@
   function mergePropsOnto(target, latest) {
     if (latest && latest._mockup_url) {
       if (!target._mockup_url) target._mockup_url = latest._mockup_url;
-      // Public duplicate — some cart.js / theme paths surface this more reliably than `_mockup_url`.
-      if (!target.mockup_url) target.mockup_url = latest._mockup_url;
       if (!target._artwork_url && latest._artwork_url) target._artwork_url = latest._artwork_url;
       if (!target._design_id && latest._design_id) target._design_id = latest._design_id;
-
-      if (!target._image) target._image = latest._mockup_url;
-      if (!target.image) target.image = latest._mockup_url;
     }
   }
 
@@ -171,7 +166,6 @@
       if (!body.has("properties[_mockup_url]")) {
         body.set("properties[_design_id]", latest._design_id || "");
         body.set("properties[_mockup_url]", latest._mockup_url || "");
-        body.set("properties[mockup_url]", latest._mockup_url || "");
         body.set("properties[_artwork_url]", latest._artwork_url || "");
       }
       nextInit.body = body;
@@ -185,7 +179,6 @@
       if (!p.has("properties[_mockup_url]")) {
         p.set("properties[_design_id]", latest._design_id || "");
         p.set("properties[_mockup_url]", latest._mockup_url || "");
-        p.set("properties[mockup_url]", latest._mockup_url || "");
         p.set("properties[_artwork_url]", latest._artwork_url || "");
         nextInit.body = p.toString();
         if (!contentType) headers.set("content-type", "application/x-www-form-urlencoded; charset=UTF-8");
@@ -241,7 +234,6 @@
       if (!params.has("properties[_mockup_url]")) {
         params.set("properties[_design_id]", latest._design_id || "");
         params.set("properties[_mockup_url]", latest._mockup_url || "");
-        params.set("properties[mockup_url]", latest._mockup_url || "");
         params.set("properties[_artwork_url]", latest._artwork_url || "");
         return params.toString();
       }
@@ -252,7 +244,6 @@
       if (!body.has("properties[_mockup_url]")) {
         body.set("properties[_design_id]", latest._design_id || "");
         body.set("properties[_mockup_url]", latest._mockup_url || "");
-        body.set("properties[mockup_url]", latest._mockup_url || "");
         body.set("properties[_artwork_url]", latest._artwork_url || "");
       }
       return body;
@@ -262,7 +253,6 @@
       if (!body.has("properties[_mockup_url]")) {
         body.set("properties[_design_id]", latest._design_id || "");
         body.set("properties[_mockup_url]", latest._mockup_url || "");
-        body.set("properties[mockup_url]", latest._mockup_url || "");
         body.set("properties[_artwork_url]", latest._artwork_url || "");
       }
       return body;
@@ -281,7 +271,6 @@
       if (!latest || !latest._mockup_url) return;
       upsertPropInput(form, "_design_id", latest._design_id);
       upsertPropInput(form, "_mockup_url", latest._mockup_url);
-      upsertPropInput(form, "mockup_url", latest._mockup_url);
       upsertPropInput(form, "_artwork_url", latest._artwork_url);
     } catch (_) {}
   }, true);

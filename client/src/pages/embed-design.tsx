@@ -64,17 +64,6 @@ interface ProductTypeConfig {
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
 
-// Build stamp for deployment verification
-const BUILD_TIMESTAMP = new Date().toISOString();
-const BUILD_COMMIT = "cc5dfd6"; // Latest commit with printifyBlueprintId fix
-
-console.log("[AOP BUILD]", {
-  build: BUILD_TIMESTAMP,
-  commit: BUILD_COMMIT,
-  file: "embed-design.tsx",
-  timestamp: Date.now(),
-});
-
 /** When DB `panelFlatLayImages` is empty or partial — merged under client values. Matches `STATIC_FLAT_LAY_SVGS` in server/routes.ts. */
 const STATIC_FLAT_LAY_FALLBACK: Record<number, Record<string, string>> = {
   // Women's Cut & Sew Casual Leggings (AOP) — official Printify catalog leg SVGs (proxied below).
@@ -2228,11 +2217,10 @@ export default function EmbedDesign() {
     }
 
     const mockupFullUrl = mockupsStale ? '' : getPreferredMockupUrl();
-    // Public duplicate key: some storefront/cart contexts surface non-underscore
-    // line properties more reliably than private `_mockup_url` for cart.js + themes.
+    // Use `_mockup_url` only — Shopify hides underscore-prefixed line properties from
+    // buyer-facing cart/checkout; a public `mockup_url` showed the full Supabase URL as text.
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
-      properties['mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
@@ -3221,7 +3209,6 @@ export default function EmbedDesign() {
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
-      properties['mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
@@ -4127,25 +4114,6 @@ export default function EmbedDesign() {
             </CardContent>
           </Card>
         )}
-
-        {/* Build Badge for Deployment Verification */}
-        <div
-          style={{
-            position: "fixed",
-            bottom: 8,
-            right: 8,
-            zIndex: 999999,
-            background: "#ff6b6b",
-            color: "white",
-            padding: "4px 8px",
-            fontSize: "10px",
-            borderRadius: "3px",
-            fontFamily: "monospace",
-            whiteSpace: "nowrap",
-          }}
-        >
-          BUILD: cc5dfd6
-        </div>
 
         <div
           className={`grid grid-cols-1 gap-4 sm:gap-6 ${
