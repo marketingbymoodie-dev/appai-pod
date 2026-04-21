@@ -27,7 +27,7 @@
 /* AppAI Cart Image Replacer — inline v2.1 (avoids CDN caching) */
 /* DEBUG MARKERS (search these in DevTools console to diagnose issues):
    [AppAI Cart Image] v2 inline installed.          → script loaded OK
-   [AppAI Cart Image] No _mockup_url in cart.       → cart items have no _mockup_url property; check add-to-cart flow
+   [AppAI Cart Image] No _mockup_url in cart.       → cart items have no mockup URL property (_mockup_url / mockup_url); check add-to-cart flow
    [AppAI Cart Image] Applied mockups. Replaced:X   → X=0 means DOM matching failed; check S2 node logs
    [AppAI Cart Image] S2 node N ok=false            → isLikelyProductImg rejected img; check width/height attrs
    [AppAI Cart Guard] (in appai-cart-guard.js)      → fetch/XHR interceptor for /cart/add.js
@@ -35,7 +35,7 @@
 */
 ;(function () {
   'use strict';
-  var CART_IMG_VERSION = '2.1';
+  var CART_IMG_VERSION = '2.2';
   // Always run the inline v2 — supersedes the old external appai-cart-images.js
   if (window.__APPAI_CART_IMG_REPLACER_V2__) return;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -61,6 +61,24 @@
   ensureNoFlash();
 
   function getCart(){return fetch('/cart.js',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('cart.js '+r.status);return r.json();});}
+
+  /** Normalize line item properties — cart.js may return an object or {name,value}[] */
+  function mockupUrlFromLineProperties(props){
+    if(!props)return null;
+    if(Array.isArray(props)){
+      for(var i=0;i<props.length;i++){
+        var e=props[i];if(!e)continue;
+        var n=String(e.name||e.key||'');
+        if(n==='_mockup_url'||n==='mockup_url'){
+          var v=e.value;if(v&&String(v).indexOf('https://')===0)return String(v);
+        }
+      }
+      return null;
+    }
+    var u=props._mockup_url||props.mockup_url;
+    if(u&&String(u).indexOf('https://')===0)return String(u);
+    return null;
+  }
 
   function isLikelyProductImg(img){
     var src=img.getAttribute('src')||img.getAttribute('data-src')||'';
@@ -95,7 +113,7 @@
       var items=cart.items||[];
       var keyMap=new Map(),varMap=new Map(),indexed=[];
       for(var i=0;i<items.length;i++){
-        var it=items[i],url=it&&it.properties&&it.properties._mockup_url;
+        var it=items[i],url=mockupUrlFromLineProperties(it&&it.properties);
         if(!url)continue;
         keyMap.set(it.key,url);
         varMap.set(String(it.variant_id),url);

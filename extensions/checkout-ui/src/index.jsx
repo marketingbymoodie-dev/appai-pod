@@ -47,8 +47,8 @@ function AppAIDesignPreview() {
   // Checkout UI Extension API (they appear as customAttributes in GraphQL).
   const attrs = (cartLine && cartLine.attributes) ? cartLine.attributes : [];
 
-  const mockupUrl = getAttr(attrs, '_mockup_url');
-  const designId  = getAttr(attrs, '_design_id');
+  const mockupUrl = getAttr(attrs, '_mockup_url') || getAttr(attrs, 'mockup_url');
+  const designId  = getAttr(attrs, '_design_id') || getAttr(attrs, 'design_id');
 
   // Nothing to render if there's no mockup
   if (!mockupUrl) return null;
@@ -100,6 +100,10 @@ function AppAIDesignPreview() {
 /** Safe attribute lookup */
 function getAttr(attrs, key) {
   if (!Array.isArray(attrs)) return null;
-  var entry = attrs.find(function (a) { return a && a.key === key; });
-  return entry ? entry.value : null;
+  var entry = attrs.find(function (a) {
+    if (!a) return false;
+    var k = a.key != null ? a.key : a.name;
+    return k === key;
+  });
+  return entry ? (entry.value != null ? entry.value : entry.val) : null;
 }

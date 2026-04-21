@@ -2226,7 +2226,12 @@ export default function EmbedDesign() {
     }
 
     const mockupFullUrl = mockupsStale ? '' : getPreferredMockupUrl();
-    if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
+    // Public duplicate key: some storefront/cart contexts surface non-underscore
+    // line properties more reliably than private `_mockup_url` for cart.js + themes.
+    if (mockupFullUrl) {
+      properties['_mockup_url'] = mockupFullUrl;
+      properties['mockup_url'] = mockupFullUrl;
+    }
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
 
@@ -3212,7 +3217,10 @@ export default function EmbedDesign() {
       properties["_appai_job_id"] = savedJobIdRef.current;
     }
     if (artworkFullUrl) properties['_artwork_url'] = artworkFullUrl;
-    if (mockupFullUrl) properties['_mockup_url'] = mockupFullUrl;
+    if (mockupFullUrl) {
+      properties['_mockup_url'] = mockupFullUrl;
+      properties['mockup_url'] = mockupFullUrl;
+    }
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
 
