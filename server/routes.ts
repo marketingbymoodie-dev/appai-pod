@@ -7359,14 +7359,19 @@ ${textEdgeRestrictions}
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
 
-      // 2. If productId was not provided (or is invalid), look it up from the variant.
-      //    This handles cases where ShopifyAnalytics is absent on the storefront page.
-      if (!productId) {
+      // 2. Resolve productId from variant when missing.
+      //    Also used as a fallback when a provided productId is wrong for this shop.
+      const resolveProductIdFromVariant = async (): Promise<string> => {
         const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
         if (variantLookupRes.ok) {
           const { variant } = await variantLookupRes.json();
-          if (variant?.product_id) productId = String(variant.product_id);
+          if (variant?.product_id) return String(variant.product_id);
         }
+        return "";
+      };
+
+      if (!productId) {
+        productId = await resolveProductIdFromVariant();
         if (!productId) {
           console.warn(`[ShadowProduct] Could not resolve productId for variant ${variantId}`);
           return res.json({ success: false, error: "Could not resolve productId from variantId", fallback: true, variantId: String(variantId) });
@@ -7375,7 +7380,16 @@ ${textEdgeRestrictions}
       }
 
       // 3. Fetch the base variant to copy price/title/weight
-      const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
+      let productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
+      // If productId was provided but invalid/stale, retry with variant->product lookup.
+      if (!productRes.ok) {
+        const fallbackProductId = await resolveProductIdFromVariant();
+        if (fallbackProductId && String(fallbackProductId) !== String(productId)) {
+          console.warn(`[ShadowProduct] Provided productId ${productId} failed; retrying with variant-resolved productId ${fallbackProductId}`);
+          productId = fallbackProductId;
+          productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
+        }
+      }
       if (!productRes.ok) {
         const t = await productRes.text();
         console.error(`[ShadowProduct] Failed to fetch base product ${productId}:`, t.substring(0, 200));
