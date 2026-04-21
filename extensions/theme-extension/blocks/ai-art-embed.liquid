@@ -1201,6 +1201,13 @@
         } catch(e) {}
         return;
       }
+      // ===== TOUCH SCROLL FORWARDING (mobile) =====
+      // The iframe forwards touchmove deltas so the parent page scrolls when
+      // the user swipes vertically on the iframe on mobile.
+      if (data.type === 'ai-art-studio:touchscroll') {
+        try { window.scrollBy({ top: data.deltaY || 0, behavior: 'auto' }); } catch(e) {}
+        return;
+      }
 
       // ===== CART STATE (parent button sync) =====
       if (data.type === 'AI_ART_STUDIO_CART_STATE') {

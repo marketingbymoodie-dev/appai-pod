@@ -3232,7 +3232,7 @@ export default function EmbedDesign() {
           body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
         }).catch(() => {});
       }
-    } else if (mockupFullUrl && mockupFullUrl.startsWith('https://') && productId && shopDomain) {
+    } else if (mockupFullUrl && mockupFullUrl.startsWith('https://') && shopDomain) {
       try {
         console.log('[Design Studio] Resolving unique design variant before cart add (on demand)...');
         const controller = new AbortController();
@@ -3242,7 +3242,7 @@ export default function EmbedDesign() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             shop: shopDomain,
-            productId,
+            ...(productId ? { productId } : {}), // server will look it up from variantId if missing
             variantId: normalizedVariant,
             designId: properties['_design_id'],
             mockupUrl: mockupFullUrl,
@@ -3742,6 +3742,55 @@ export default function EmbedDesign() {
     window.addEventListener('wheel', handleWheel, { passive: true });
     return () => window.removeEventListener('wheel', handleWheel);
   }, [isEmbedded, isStorefront]);
+
+  // Forward touch-scroll from iframe to parent page on mobile.
+  // On mobile, touch events on an iframe do not automatically propagate to the
+  // parent page's scroll handler. We replicate the wheel-forwarding pattern:
+  // track vertical touch delta and postMessage it so the parent can scrollBy().
+  // We skip forwarding when the touch target is inside a scrollable element
+  // (dropdown, saved-designs grid, etc.) so internal scroll still works.
+  useEffect(() => {
+    if (!isEmbedded && !isStorefront) return;
+    let touchStartY = 0;
+    let touchLastY = 0;
+
+    const isInsideScrollable = (el: Element | null): boolean => {
+      let node: Element | null = el;
+      while (node && node !== document.body) {
+        const style = window.getComputedStyle(node);
+        const ov = style.overflowY;
+        if ((ov === 'scroll' || ov === 'auto') && node.scrollHeight > node.clientHeight) {
+          return true;
+        }
+        node = node.parentElement;
+      }
+      return false;
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0]?.clientY ?? 0;
+      touchLastY = touchStartY;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (showPatternStep) return; // PatternCustomizer handles its own touch
+      const currentY = e.touches[0]?.clientY ?? 0;
+      const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
+      touchLastY = currentY;
+      if (Math.abs(deltaY) < 1) return;
+      // Don't forward if user is scrolling an internal scrollable element
+      const target = e.target as Element | null;
+      if (isInsideScrollable(target)) return;
+      window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
+    };
+
+    document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [isEmbedded, isStorefront, showPatternStep]);
 
   // Counteract Radix UI's body scroll lock in iframe context.
   // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when

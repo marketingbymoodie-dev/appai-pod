@@ -7330,9 +7330,10 @@ ${textEdgeRestrictions}
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
     try {
-      const { shop, productId, variantId, designId, mockupUrl } = req.body;
-      if (!shop || !productId || !variantId || !designId || !mockupUrl) {
-        return res.status(400).json({ success: false, error: "shop, productId, variantId, designId and mockupUrl are required" });
+      const { shop, variantId, designId, mockupUrl } = req.body;
+      let { productId } = req.body;
+      if (!shop || !variantId || !designId || !mockupUrl) {
+        return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
       }
       if (!mockupUrl.startsWith("https://")) {
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
@@ -7358,7 +7359,22 @@ ${textEdgeRestrictions}
         return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
       }
 
-      // 2. Fetch the base variant to copy price/title/weight
+      // 2. If productId was not provided (or is invalid), look it up from the variant.
+      //    This handles cases where ShopifyAnalytics is absent on the storefront page.
+      if (!productId) {
+        const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
+        if (variantLookupRes.ok) {
+          const { variant } = await variantLookupRes.json();
+          if (variant?.product_id) productId = String(variant.product_id);
+        }
+        if (!productId) {
+          console.warn(`[ShadowProduct] Could not resolve productId for variant ${variantId}`);
+          return res.json({ success: false, error: "Could not resolve productId from variantId", fallback: true, variantId: String(variantId) });
+        }
+        console.log(`[ShadowProduct] Resolved productId=${productId} from variantId=${variantId}`);
+      }
+
+      // 3. Fetch the base variant to copy price/title/weight
       const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
       if (!productRes.ok) {
         const t = await productRes.text();
