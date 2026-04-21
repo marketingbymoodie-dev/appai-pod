@@ -721,8 +721,9 @@
       if (mockupUrl && mockupUrl.startsWith('/')) {
         mockupUrl = window.location.origin + mockupUrl;
       }
-      if (!designId || !mockupUrl || !appUrl || !productId || !shopDomain) {
-        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'productId:', !!productId, '('+productId+')', 'shopDomain:', !!shopDomain, '— using base variantId', sourceVariantId);
+      // productId is optional — server resolves it from variantId when missing.
+      if (!designId || !mockupUrl || !appUrl || !shopDomain) {
+        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'shopDomain:', !!shopDomain, '— using base variantId', sourceVariantId);
         return Promise.resolve({ variantId: sourceVariantId });
       }
       if (!mockupUrl.startsWith('https://')) {
@@ -730,17 +731,18 @@
         return Promise.resolve({ variantId: sourceVariantId });
       }
       var endpoint = appUrl.replace(/\/$/, '') + '/api/storefront/resolve-design-variant';
-      console.log(B, '[resolveDesignSku] Calling endpoint for design', designId);
+      console.log(B, '[resolveDesignSku] Calling endpoint for design', designId, 'productId:', productId || '(none, server will resolve)');
+      var resolveBody = {
+        shop: shopDomain,
+        variantId: String(sourceVariantId),
+        designId: String(designId),
+        mockupUrl: mockupUrl
+      };
+      if (productId) resolveBody.productId = String(productId);
       return fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shop: shopDomain,
-          productId: String(productId),
-          variantId: String(sourceVariantId),
-          designId: String(designId),
-          mockupUrl: mockupUrl
-        })
+        body: JSON.stringify(resolveBody)
       })
       .then(function(r) { return r.json(); })
       .then(function(data) {
