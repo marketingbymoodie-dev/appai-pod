@@ -1096,6 +1096,27 @@ async function getAuthorizedInstallation(shop: string) {
   }
 }
 
+/**
+ * Called whenever a Shopify Admin API call returns 401 for a shop that was
+ * previously "active".  Marks the stored token invalid so the next call to
+ * getAuthorizedInstallation skips the fast-path and routes through the heal /
+ * reject flow instead of hammering Shopify with a known-bad token.
+ */
+async function markShopTokenInvalid(shop: string): Promise<void> {
+  try {
+    const inst = await storage.getShopifyInstallationByShop(shop);
+    if (inst && inst.status === "active") {
+      await storage.updateShopifyInstallation(inst.id, {
+        status: "token_invalid",
+        accessToken: "",
+      });
+      console.warn(`[auth-heal] Marked installation token_invalid for ${shop} — merchant must reconnect the app`);
+    }
+  } catch (e: any) {
+    console.error(`[auth-heal] Failed to mark token invalid for ${shop}:`, e?.message);
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -7380,6 +7401,16 @@ ${textEdgeRestrictions}
       if (!variantLookupRes.ok) {
         const t = await variantLookupRes.text();
         console.error(`[ShadowProduct] Failed to fetch variant ${variantId}:`, t.substring(0, 200));
+        if (variantLookupRes.status === 401 || variantLookupRes.status === 403) {
+          await markShopTokenInvalid(shop);
+          return res.status(403).json({
+            success: false,
+            error: "Shopify Admin API token invalid — reconnect the app in Shopify Admin",
+            reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+            fallback: true,
+            variantId: String(variantId),
+          });
+        }
         return res.status(variantLookupRes.status).json({ success: false, error: "Failed to fetch variant", fallback: true, variantId: String(variantId) });
       }
       const { variant: baseVariantRecord } = await variantLookupRes.json();
@@ -7451,6 +7482,16 @@ ${textEdgeRestrictions}
       if (!createProductRes.ok) {
         const errText = await createProductRes.text();
         console.error(`[ShadowProduct] Failed to create shadow product:`, createProductRes.status, errText.substring(0, 300));
+        if (createProductRes.status === 401 || createProductRes.status === 403) {
+          await markShopTokenInvalid(shop);
+          return res.status(403).json({
+            success: false,
+            error: "Shopify Admin API token invalid — reconnect the app in Shopify Admin",
+            reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+            fallback: true,
+            variantId: String(variantId),
+          });
+        }
         return res.json({ success: false, error: errText.substring(0, 200), fallback: true, variantId: String(variantId) });
       }
       const { product: shadowProduct } = await createProductRes.json();
