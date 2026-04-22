@@ -417,10 +417,23 @@ if (res.locals.shopify?.session?.shop) {
 
     const installation = await storage.getShopifyInstallationByShop(shop);
     if (installation) {
+      // Guard against a late-arriving uninstall webhook overwriting a fresh reinstall.
+      // Shopify can deliver the app/uninstalled webhook seconds to minutes after removal.
+      // If the installation was updated within the last 90 seconds, a new OAuth just
+      // completed — skip marking it uninstalled so the fresh token is preserved.
+      const ageMs = Date.now() - new Date(installation.installedAt).getTime();
+      if (ageMs < 90_000) {
+        console.warn(
+          `[uninstall-webhook] Skipping stale uninstall for ${shop} — ` +
+          `installation is only ${Math.round(ageMs / 1000)}s old (fresh reinstall detected)`
+        );
+        return res.status(200).send("OK");
+      }
       await storage.updateShopifyInstallation(installation.id, {
         status: "uninstalled",
         uninstalledAt: new Date(),
       });
+      console.log(`[uninstall-webhook] Marked ${shop} as uninstalled`);
     }
 
     res.status(200).send("OK");
