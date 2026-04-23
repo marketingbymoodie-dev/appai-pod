@@ -1,0 +1,29 @@
+---
+description: Protects the shadow-product / custom-mockup cart+checkout flow—do not break OAuth, resolve-design-variant, theme/cart, or shop domain normalization without reading docs.
+alwaysApply: true
+---
+
+# Shadow SKU + custom mockup (cart & checkout) — do not break
+
+## Why it exists
+
+Per-design images in **cart and checkout** use a **dedicated Shopify variant** whose product image is the mockup (shadow product). **Line item properties alone** do not replace the default line thumbnail.
+
+## Before changing any of these, read `docs/cart-checkout-custom-mockup-architecture.md` and re-test ATC → checkout
+
+- `server/routes.ts` — `POST /api/storefront/resolve-design-variant`, `normalizeMyshopifyShopDomain`, `getAuthorizedInstallation`, `markShopTokenInvalid` (Admin 401/403 handling)
+- `server/shopify.ts` — `/shopify/callback`, `POST /shopify/webhooks/uninstall` (stale-uninstall race vs fresh `installedAt`)
+- `extensions/theme-extension/blocks/ai-art-embed.liquid` — `resolveDesignSku`, shop normalization, add-to-cart / variant swap
+- `extensions/theme-extension/assets/appai-cart-guard.js` — only `_mockup_url` (no public `mockup_url` / `image` spam)
+- `client/src/pages/embed-design.tsx` — `resolveShopDomain`, ATC properties
+- `extensions/checkout-ui` — optional UI; if touched, keep bundle line attribute merging (`collectCartLineAttributes` pattern)
+
+## Invariants (regressions users notice immediately)
+
+- **Shop** sent to server APIs is **`{handle}.myshopify.com`**, not the bare handle.
+- **Valid OAuth** token for that shop; broken token → 401 on Admin API → no shadow variant → **generic** checkout image.
+- Uninstall **webhook** must not mark the shop uninstalled if OAuth **just** completed (see `shopify.ts` time guard).
+
+## Deploy note
+
+Code changes in these paths are **deploy-worthy** (Railway + often `shopify app deploy` for theme/extension). Docs-only updates may skip production deploy per project skill.
