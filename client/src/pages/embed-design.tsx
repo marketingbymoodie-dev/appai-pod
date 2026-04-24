@@ -3754,25 +3754,16 @@ export default function EmbedDesign() {
     return () => window.removeEventListener('wheel', handleWheel);
   }, [isEmbedded, isStorefront]);
 
-  // Touch-scroll forwarding for mobile.
-  //
-  // iOS Safari does NOT propagate iframe touch events to the parent page — the page
-  // simply can't scroll when the user's finger is over the iframe. We must forward
-  // manually via postMessage. Android Chrome DOES propagate natively, so forwarding
-  // on top of native scroll caused the original double-scroll jitter.
-  //
-  // Solution: use passive:false on touchmove and call e.preventDefault() when we
-  // decide to forward. This cancels the browser's native scroll so it doesn't run
-  // alongside our JS scroll — single scroll on both platforms.
-  //
-  // We do NOT preventDefault (and do NOT forward) when the touch is:
-  //   • Inside an overflow:auto/scroll container (Radix dropdown, saved-designs grid)
-  //   • Inside a drag target (touch-action:none — artwork drag, AOP canvas)
-  //   • Inside the PatternCustomizer canvas (showPatternStep)
+  // Forward touch-scroll from iframe to parent page on mobile.
+  // On mobile, touch events on an iframe do not automatically propagate to the
+  // parent page's scroll handler. We replicate the wheel-forwarding pattern:
+  // track vertical touch delta and postMessage it so the parent can scrollBy().
+  // We skip forwarding when the touch target is inside a scrollable element
+  // (dropdown, saved-designs grid, etc.) so internal scroll still works.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
+    let touchStartY = 0;
     let touchLastY = 0;
-    let shouldForward = false; // decided in touchstart, used in touchmove
 
     const isInsideScrollable = (el: Element | null): boolean => {
       let node: Element | null = el;
@@ -3787,42 +3778,25 @@ export default function EmbedDesign() {
       return false;
     };
 
-    const isInsideDragTarget = (el: Element | null): boolean => {
-      let node: Element | null = el;
-      while (node && node !== document.body) {
-        const ta = (node as HTMLElement).style?.touchAction ||
-                   window.getComputedStyle(node).touchAction;
-        if (ta === 'none') return true;
-        node = node.parentElement;
-      }
-      return false;
-    };
-
     const onTouchStart = (e: TouchEvent) => {
-      touchLastY = e.touches[0]?.clientY ?? 0;
-      const target = e.target as Element | null;
-      shouldForward = (
-        !showPatternStep &&
-        !isInsideScrollable(target) &&
-        !isInsideDragTarget(target)
-      );
+      touchStartY = e.touches[0]?.clientY ?? 0;
+      touchLastY = touchStartY;
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (!shouldForward) return;
+      if (showPatternStep) return; // PatternCustomizer handles its own touch
       const currentY = e.touches[0]?.clientY ?? 0;
       const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
       touchLastY = currentY;
       if (Math.abs(deltaY) < 1) return;
-      // Prevent native scroll so Android Chrome doesn't double-scroll on top of our forwarding.
-      // iOS Safari ignores touch events on iframes for page scroll, so this has no effect there.
-      e.preventDefault();
+      // Don't forward if user is scrolling an internal scrollable element
+      const target = e.target as Element | null;
+      if (isInsideScrollable(target)) return;
       window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
     };
 
     document.addEventListener('touchstart', onTouchStart, { passive: true });
-    // passive:false required so we can call preventDefault() in onTouchMove
-    document.addEventListener('touchmove', onTouchMove, { passive: false });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
     return () => {
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
