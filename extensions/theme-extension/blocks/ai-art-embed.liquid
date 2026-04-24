@@ -1239,10 +1239,11 @@
         return;
       }
       // ===== TOUCH SCROLL FORWARDING (mobile) =====
-      // Intentional no-op: native iframe→parent scroll handles mobile touch.
-      // JS forwarding (touchmove → postMessage → scrollBy) caused double-scroll
-      // (jitter / bounce-back). Handler kept for safe rollback without re-deploy.
+      // iOS Safari does not propagate iframe touch events to the parent for scroll.
+      // The iframe calls e.preventDefault() before forwarding so Android Chrome
+      // does not also scroll natively — preventing the original double-scroll.
       if (data.type === 'ai-art-studio:touchscroll') {
+        try { window.scrollBy({ top: data.deltaY || 0, behavior: 'auto' }); } catch(e) {}
         return;
       }
 

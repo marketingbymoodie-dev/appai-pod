@@ -363,15 +363,15 @@ body[data-scroll-locked] {
   z-index: 9999 !important;
 }
 
-/* ── Iframe embed: native-friendly touch scroll ──────────────────────────── */
+/* ── Iframe embed: touch scroll helpers ──────────────────────────────────── */
 /* Applied only inside the customizer iframe (html[data-appai-embed] set by  */
-/* embed-design.tsx). Allows native vertical page scroll, prevents           */
-/* overscroll-chaining to browser pull-to-refresh / Android glow.            */
-/* Inner elements with touchAction:"none" (drag handles, AOP canvas) are     */
-/* more specific and correctly override this rule — drag still works.         */
+/* embed-design.tsx). Prevents overscroll-chaining to pull-to-refresh / glow */
+/* while JS forwarding handles the actual parent scroll.                      */
+/* NOTE: touch-action is intentionally NOT set here — setting pan-y on the   */
+/* html element causes browsers to commit the gesture before our touchmove   */
+/* preventDefault() can run, breaking the scroll-forwarding logic.           */
 html[data-appai-embed],
 html[data-appai-embed] body {
-  touch-action: pan-y;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
 }
