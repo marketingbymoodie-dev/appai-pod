@@ -368,14 +368,13 @@ body[data-scroll-locked] {
 /* embed-design.tsx). Prevents overscroll-chaining to pull-to-refresh / glow */
 /* while JS forwarding handles the actual parent scroll.                      */
 /*                                                                            */
-/* touch-action: pan-y tells the browser this page wants vertical pan, so:   */
-/*  • touchmove events fire immediately (no click-vs-scroll dead zone delay)  */
-/*  • On Android Chrome, the browser may propagate the pan natively to the   */
-/*    parent when the iframe itself can't scroll — bonus native feel.         */
-/* Safe to re-enable because we use passive:true and NO preventDefault().     */
+/* NOTE: touch-action:pan-y is intentionally NOT on html/body. If set on the */
+/* iframe root, the browser commits the gesture as a pan on the iframe doc   */
+/* (which can't scroll natively) and may fight our JS forwarding, causing    */
+/* the "glitchy/bouncing" symptom. We leave the browser's default handling   */
+/* on the container and only tweak interactive elements below.               */
 html[data-appai-embed],
 html[data-appai-embed] body {
-  touch-action: pan-y;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
 }
