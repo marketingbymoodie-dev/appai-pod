@@ -464,6 +464,7 @@ export default function EmbedDesign() {
   const isEmbedded = searchParams.get("embedded") === "true";
   const isStorefront = runtimeMode === 'storefront';
   const isShopify = !isStorefront && searchParams.get("shopify") === "true";
+  const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
 
   // Key behavioral flags based on runtime mode
   const requiresSessionToken = runtimeMode === 'admin-embedded';
@@ -3686,12 +3687,19 @@ export default function EmbedDesign() {
     if (!isEmbedded && !isStorefront) return;
     // Mark the html element so CSS rules scoped to the embed context apply.
     document.documentElement.dataset.appaiEmbed = 'true';
-    return () => { delete document.documentElement.dataset.appaiEmbed; };
-  }, [isEmbedded, isStorefront]);
+    if (mobileNativeScroll) {
+      document.documentElement.dataset.appaiMobileNativeScroll = 'true';
+    }
+    return () => {
+      delete document.documentElement.dataset.appaiEmbed;
+      delete document.documentElement.dataset.appaiMobileNativeScroll;
+    };
+  }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     // Send resize messages so the parent container grows with our content (no scrollbar).
+    if (mobileNativeScroll) return;
     // Debounced to 120ms and filtered to ignore sub-threshold changes so the iframe
     // container does not jump while the mobile URL bar is auto-hiding/showing.
     let lastSent = 0;
@@ -3717,13 +3725,14 @@ export default function EmbedDesign() {
       observer.disconnect();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
     };
-  }, [isEmbedded, isStorefront]);
+  }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
   // This also fixes the initial scroll glitch where the first few scrolls are swallowed.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
+    if (mobileNativeScroll) return;
     const handleWheel = (e: WheelEvent) => {
       // Check if a Radix dropdown/popover is currently open
       const isRadixOpen = !!document.querySelector(
@@ -3752,7 +3761,7 @@ export default function EmbedDesign() {
     // preventDefault here — we want the iframe to also process the event
     window.addEventListener('wheel', handleWheel, { passive: true });
     return () => window.removeEventListener('wheel', handleWheel);
-  }, [isEmbedded, isStorefront]);
+  }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   // Forward touch-scroll from iframe to parent page on mobile.
   // Touches that start inside an iframe do not reliably scroll the parent page,
@@ -3772,6 +3781,13 @@ export default function EmbedDesign() {
     let rafId = 0;
     // Track last few deltas to estimate fling velocity on touchend
     const recentDeltas: number[] = [];
+
+    const canPageScrollInsideIframe = (deltaY: number): boolean => {
+      if (!mobileNativeScroll) return false;
+      const el = document.scrollingElement || document.documentElement;
+      const maxScrollTop = el.scrollHeight - el.clientHeight;
+      return deltaY > 0 ? el.scrollTop < maxScrollTop - 1 : el.scrollTop > 1;
+    };
 
     const canScrollNode = (node: Element, deltaY: number): boolean => {
       const style = window.getComputedStyle(node);
@@ -3848,6 +3864,10 @@ export default function EmbedDesign() {
           gestureBlocked = true;
           return;
         }
+        if (canPageScrollInsideIframe(deltaY)) {
+          gestureBlocked = true;
+          return;
+        }
         pageScrollGesture = true;
       }
 
@@ -3883,7 +3903,7 @@ export default function EmbedDesign() {
       document.removeEventListener('touchend', onTouchEnd);
       document.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [isEmbedded, isStorefront, showPatternStep]);
+  }, [isEmbedded, isStorefront, showPatternStep, mobileNativeScroll]);
 
   // Counteract Radix UI's body scroll lock in iframe context.
   // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when

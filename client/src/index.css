@@ -376,3 +376,11 @@ html[data-appai-embed] body {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
 }
+
+html[data-appai-embed][data-appai-mobile-native-scroll],
+html[data-appai-embed][data-appai-mobile-native-scroll] body {
+  min-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}

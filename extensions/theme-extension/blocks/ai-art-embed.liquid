@@ -502,6 +502,22 @@
       document.querySelector('[data-block-handle="ai-art-studio"] .ai-art-studio__container') ||
       document.querySelector('[data-block-handle="ai-art-studio"]');
     var container, studioContainer;
+    var mobileNativeScroll = false;
+    try {
+      mobileNativeScroll = window.matchMedia('(pointer: coarse), (max-width: 767px)').matches;
+    } catch (e) {
+      mobileNativeScroll = window.innerWidth <= 767;
+    }
+    function appaiMobileFrameHeight() {
+      var h = window.visualViewport && window.visualViewport.height ? window.visualViewport.height : window.innerHeight;
+      return Math.max(520, Math.floor(h - 24));
+    }
+    function applyMobileNativeScrollFrame() {
+      if (!mobileNativeScroll || !studioContainer) return;
+      studioContainer.style.height = appaiMobileFrameHeight() + 'px';
+      studioContainer.style.overflow = 'hidden';
+      studioContainer.style.webkitOverflowScrolling = 'touch';
+    }
 
     if (existingBlock) {
       console.log('[AI Art Embed] Found existing app block container, mounting into it.');
@@ -527,6 +543,12 @@
       `;
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
+    applyMobileNativeScrollFrame();
+    if (mobileNativeScroll) {
+      var resizeFrame = function() { applyMobileNativeScrollFrame(); };
+      window.addEventListener('resize', resizeFrame, { passive: true });
+      if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
+    }
     
     const params = new URLSearchParams();
     params.set('shop', normaliseMyshopifyShopForApi(config.shopDomain));
@@ -538,6 +560,9 @@
     params.set('showPresets', 'true');
     if (config.selectedVariant) {
       params.set('selectedVariant', config.selectedVariant);
+    }
+    if (mobileNativeScroll) {
+      params.set('mobileNativeScroll', '1');
     }
     // Inline designer config — when present, the iframe skips the /product-types/:id/designer call entirely.
     if (config.inlineDesignerConfig) {
@@ -568,7 +593,8 @@
     iframe.src = `/apps/appai/s/designer?${params.toString()}`;
     iframe.allow = 'clipboard-write';
     iframe.title = 'AI Art Design Studio';
-    iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';
+    iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: auto; display: block;';
+    if (mobileNativeScroll) iframe.setAttribute('scrolling', 'yes');
     
     iframe.onload = function() {
       // Loading screen is removed on BRIDGE_ACK (when React app is fully mounted),
@@ -1224,6 +1250,7 @@
 
       // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
+        if (mobileNativeScroll) return;
         var newH = Math.max(data.height || 0, 400);
         studioContainer.style.height = newH + 'px';
         return;
