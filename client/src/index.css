@@ -362,3 +362,16 @@ body[data-scroll-locked] {
 [data-radix-popper-content-wrapper] {
   z-index: 9999 !important;
 }
+
+/* ── Iframe embed: native-friendly touch scroll ──────────────────────────── */
+/* Applied only inside the customizer iframe (html[data-appai-embed] set by  */
+/* embed-design.tsx). Allows native vertical page scroll, prevents           */
+/* overscroll-chaining to browser pull-to-refresh / Android glow.            */
+/* Inner elements with touchAction:"none" (drag handles, AOP canvas) are     */
+/* more specific and correctly override this rule — drag still works.         */
+html[data-appai-embed],
+html[data-appai-embed] body {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}

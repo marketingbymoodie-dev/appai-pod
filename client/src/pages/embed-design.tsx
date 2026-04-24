@@ -3684,25 +3684,39 @@ export default function EmbedDesign() {
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
+    // Mark the html element so CSS rules scoped to the embed context apply.
+    document.documentElement.dataset.appaiEmbed = 'true';
+    return () => { delete document.documentElement.dataset.appaiEmbed; };
+  }, [isEmbedded, isStorefront]);
+
+  useEffect(() => {
+    if (!isEmbedded && !isStorefront) return;
     // Send resize messages so the parent container grows with our content (no scrollbar).
-    // Debounced to 60ms to prevent layout thrashing on rapid content changes (e.g. image load).
-    let rafId: number | null = null;
+    // Debounced to 120ms and filtered to ignore sub-threshold changes so the iframe
+    // container does not jump while the mobile URL bar is auto-hiding/showing.
+    let lastSent = 0;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const sendHeight = () => {
-      if (rafId !== null) return; // already scheduled
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
         const h = Math.max(
           document.documentElement.scrollHeight,
           document.body.scrollHeight,
           document.documentElement.offsetHeight
         );
+        if (Math.abs(h - lastSent) < 24) return; // ignore URL-bar-sized viewport jitter
+        lastSent = h;
         window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
-      });
+      }, 120);
     };
     const observer = new ResizeObserver(sendHeight);
     observer.observe(document.body);
     sendHeight(); // send immediately on mount
-    return () => { observer.disconnect(); if (rafId !== null) cancelAnimationFrame(rafId); };
+    return () => {
+      observer.disconnect();
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+    };
   }, [isEmbedded, isStorefront]);
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
@@ -3740,54 +3754,15 @@ export default function EmbedDesign() {
     return () => window.removeEventListener('wheel', handleWheel);
   }, [isEmbedded, isStorefront]);
 
-  // Forward touch-scroll from iframe to parent page on mobile.
-  // On mobile, touch events on an iframe do not automatically propagate to the
-  // parent page's scroll handler. We replicate the wheel-forwarding pattern:
-  // track vertical touch delta and postMessage it so the parent can scrollBy().
-  // We skip forwarding when the touch target is inside a scrollable element
-  // (dropdown, saved-designs grid, etc.) so internal scroll still works.
-  useEffect(() => {
-    if (!isEmbedded && !isStorefront) return;
-    let touchStartY = 0;
-    let touchLastY = 0;
-
-    const isInsideScrollable = (el: Element | null): boolean => {
-      let node: Element | null = el;
-      while (node && node !== document.body) {
-        const style = window.getComputedStyle(node);
-        const ov = style.overflowY;
-        if ((ov === 'scroll' || ov === 'auto') && node.scrollHeight > node.clientHeight) {
-          return true;
-        }
-        node = node.parentElement;
-      }
-      return false;
-    };
-
-    const onTouchStart = (e: TouchEvent) => {
-      touchStartY = e.touches[0]?.clientY ?? 0;
-      touchLastY = touchStartY;
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (showPatternStep) return; // PatternCustomizer handles its own touch
-      const currentY = e.touches[0]?.clientY ?? 0;
-      const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
-      touchLastY = currentY;
-      if (Math.abs(deltaY) < 1) return;
-      // Don't forward if user is scrolling an internal scrollable element
-      const target = e.target as Element | null;
-      if (isInsideScrollable(target)) return;
-      window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
-    };
-
-    document.addEventListener('touchstart', onTouchStart, { passive: true });
-    document.addEventListener('touchmove', onTouchMove, { passive: true });
-    return () => {
-      document.removeEventListener('touchstart', onTouchStart);
-      document.removeEventListener('touchmove', onTouchMove);
-    };
-  }, [isEmbedded, isStorefront, showPatternStep]);
+  // Touch-scroll forwarding: intentionally removed.
+  // Modern mobile browsers (iOS Safari, Chrome Android) natively propagate touch-scroll
+  // from a full-height iframe to the parent page. The old JS forwarding (touchmove →
+  // postMessage → parent.scrollBy) ran on top of native scroll causing double-scroll:
+  // jitter, bounce-back, and inconsistent behaviour. Native propagation is sufficient
+  // for page scroll. Internal scroll zones (Radix dropdowns, saved-designs grid) still
+  // work through their own overflow:auto containers. Artwork drag is handled separately
+  // via touchAction:"none" on the drag target (ProductMockup, PatternCustomizer).
+  // The parent still handles ai-art-studio:touchscroll messages as a no-op for safety.
 
   // Counteract Radix UI's body scroll lock in iframe context.
   // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when
