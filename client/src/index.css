@@ -367,11 +367,28 @@ body[data-scroll-locked] {
 /* Applied only inside the customizer iframe (html[data-appai-embed] set by  */
 /* embed-design.tsx). Prevents overscroll-chaining to pull-to-refresh / glow */
 /* while JS forwarding handles the actual parent scroll.                      */
-/* NOTE: touch-action is intentionally NOT set here — setting pan-y on the   */
-/* html element causes browsers to commit the gesture before our touchmove   */
-/* preventDefault() can run, breaking the scroll-forwarding logic.           */
+/*                                                                            */
+/* touch-action: pan-y tells the browser this page wants vertical pan, so:   */
+/*  • touchmove events fire immediately (no click-vs-scroll dead zone delay)  */
+/*  • On Android Chrome, the browser may propagate the pan natively to the   */
+/*    parent when the iframe itself can't scroll — bonus native feel.         */
+/* Safe to re-enable because we use passive:true and NO preventDefault().     */
 html[data-appai-embed],
 html[data-appai-embed] body {
+  touch-action: pan-y;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Ensure interactive elements inside the embed allow vertical pan-scroll    */
+/* without a click-disambiguation delay (buttons, selects, inputs).          */
+/* touch-action: manipulation = tap works, double-tap-zoom disabled,          */
+/* vertical pan allowed immediately. This prevents the "stickiness" on       */
+/* Select trigger buttons that makes scroll feel slow in those zones.        */
+html[data-appai-embed] button,
+html[data-appai-embed] [role="combobox"],
+html[data-appai-embed] select,
+html[data-appai-embed] textarea,
+html[data-appai-embed] input {
+  touch-action: manipulation;
 }

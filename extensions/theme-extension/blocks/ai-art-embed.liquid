@@ -669,6 +669,9 @@
     var B = '[AI Art Bridge]'; // log prefix
     console.log(B, 'Installing bridge', BRIDGE_VERSION, 'appUrl:', config.appUrl);
 
+    // Fling canceller: replaced each time a new fling starts so old ones self-stop.
+    var stopFling = function() {};
+
     // --- Compute iframe's effective origin ---
     // In App Proxy mode iframe.src is relative (/apps/appai/s/designer?...),
     // so new URL(iframe.src) resolves against page origin → Shopify domain.
@@ -1238,12 +1241,31 @@
         } catch(e) {}
         return;
       }
-      // ===== TOUCH SCROLL FORWARDING (mobile) =====
+      // ===== TOUCH SCROLL FORWARDING + FLING (mobile) =====
       // iOS Safari does not propagate iframe touch events to the parent for scroll.
-      // The iframe calls e.preventDefault() before forwarding so Android Chrome
-      // does not also scroll natively — preventing the original double-scroll.
+      // touchscroll: immediate scroll per touchmove frame.
+      // touchfling:  momentum animation after finger lifts (inertia).
+      // touchcancel: cancel any in-flight fling (new touch started).
       if (data.type === 'ai-art-studio:touchscroll') {
+        stopFling();
         try { window.scrollBy({ top: data.deltaY || 0, behavior: 'auto' }); } catch(e) {}
+        return;
+      }
+      if (data.type === 'ai-art-studio:touchcancel') {
+        stopFling();
+        return;
+      }
+      if (data.type === 'ai-art-studio:touchfling') {
+        stopFling();
+        var flingV = data.velocityY || 0;
+        var alive = true;
+        stopFling = function() { alive = false; };
+        (function step() {
+          if (!alive || Math.abs(flingV) < 0.5) return;
+          try { window.scrollBy({ top: flingV, behavior: 'auto' }); } catch(e) {}
+          flingV *= 0.95; // friction: decays to ~0 in ~55 rAF frames (~0.9 s)
+          requestAnimationFrame(step);
+        })();
         return;
       }
 

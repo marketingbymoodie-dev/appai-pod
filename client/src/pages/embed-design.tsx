@@ -3756,14 +3756,14 @@ export default function EmbedDesign() {
 
   // Forward touch-scroll from iframe to parent page on mobile.
   // On mobile, touch events on an iframe do not automatically propagate to the
-  // parent page's scroll handler. We replicate the wheel-forwarding pattern:
-  // track vertical touch delta and postMessage it so the parent can scrollBy().
-  // We skip forwarding when the touch target is inside a scrollable element
-  // (dropdown, saved-designs grid, etc.) so internal scroll still works.
+  // parent page's scroll handler. We forward each touchmove delta via postMessage
+  // and send a touchfling message on touchend so the parent can run a momentum
+  // animation — giving native-feeling inertia after the finger lifts.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    let touchStartY = 0;
     let touchLastY = 0;
+    // Track last few deltas to estimate fling velocity on touchend
+    const recentDeltas: number[] = [];
 
     const isInsideScrollable = (el: Element | null): boolean => {
       let node: Element | null = el;
@@ -3779,27 +3779,44 @@ export default function EmbedDesign() {
     };
 
     const onTouchStart = (e: TouchEvent) => {
-      touchStartY = e.touches[0]?.clientY ?? 0;
-      touchLastY = touchStartY;
+      touchLastY = e.touches[0]?.clientY ?? 0;
+      recentDeltas.length = 0;
+      // Cancel any ongoing fling when user touches again
+      window.parent.postMessage({ type: 'ai-art-studio:touchcancel' }, '*');
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (showPatternStep) return; // PatternCustomizer handles its own touch
+      if (showPatternStep) return;
       const currentY = e.touches[0]?.clientY ?? 0;
       const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
       touchLastY = currentY;
-      if (Math.abs(deltaY) < 1) return;
-      // Don't forward if user is scrolling an internal scrollable element
+      if (Math.abs(deltaY) < 0.5) return;
       const target = e.target as Element | null;
       if (isInsideScrollable(target)) return;
+      // Keep last 6 deltas for velocity estimation
+      recentDeltas.push(deltaY);
+      if (recentDeltas.length > 6) recentDeltas.shift();
       window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
+    };
+
+    const onTouchEnd = () => {
+      if (recentDeltas.length < 2) return;
+      // Average of last few deltas = estimated velocity (px per touchmove frame)
+      const velocity = recentDeltas.reduce((a, b) => a + b, 0) / recentDeltas.length;
+      if (Math.abs(velocity) > 1.5) {
+        window.parent.postMessage({ type: 'ai-art-studio:touchfling', velocityY: velocity }, '*');
+      }
     };
 
     document.addEventListener('touchstart', onTouchStart, { passive: true });
     document.addEventListener('touchmove', onTouchMove, { passive: true });
+    document.addEventListener('touchend', onTouchEnd, { passive: true });
+    document.addEventListener('touchcancel', onTouchEnd, { passive: true });
     return () => {
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', onTouchEnd);
+      document.removeEventListener('touchcancel', onTouchEnd);
     };
   }, [isEmbedded, isStorefront, showPatternStep]);
 
