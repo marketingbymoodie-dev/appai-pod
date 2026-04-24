@@ -368,26 +368,11 @@ body[data-scroll-locked] {
 /* embed-design.tsx). Prevents overscroll-chaining to pull-to-refresh / glow */
 /* while JS forwarding handles the actual parent scroll.                      */
 /*                                                                            */
-/* NOTE: touch-action:pan-y is intentionally NOT on html/body. If set on the */
-/* iframe root, the browser commits the gesture as a pan on the iframe doc   */
-/* (which can't scroll natively) and may fight our JS forwarding, causing    */
-/* the "glitchy/bouncing" symptom. We leave the browser's default handling   */
-/* on the container and only tweak interactive elements below.               */
+/* Do not set touch-action here. We detect vertical page-scroll gestures in  */
+/* JS and call preventDefault only after intent is clear; CSS touch-action   */
+/* hints made Chrome commit some gestures natively while JS also forwarded.  */
 html[data-appai-embed],
 html[data-appai-embed] body {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
-}
-
-/* Ensure interactive elements inside the embed allow vertical pan-scroll    */
-/* without a click-disambiguation delay (buttons, selects, inputs).          */
-/* touch-action: manipulation = tap works, double-tap-zoom disabled,          */
-/* vertical pan allowed immediately. This prevents the "stickiness" on       */
-/* Select trigger buttons that makes scroll feel slow in those zones.        */
-html[data-appai-embed] button,
-html[data-appai-embed] [role="combobox"],
-html[data-appai-embed] select,
-html[data-appai-embed] textarea,
-html[data-appai-embed] input {
-  touch-action: manipulation;
 }

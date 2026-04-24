@@ -3755,22 +3755,38 @@ export default function EmbedDesign() {
   }, [isEmbedded, isStorefront]);
 
   // Forward touch-scroll from iframe to parent page on mobile.
-  // On mobile, touch events on an iframe do not automatically propagate to the
-  // parent page's scroll handler. We forward each touchmove delta via postMessage
-  // and send a touchfling message on touchend so the parent can run a momentum
-  // animation — giving native-feeling inertia after the finger lifts.
+  // Touches that start inside an iframe do not reliably scroll the parent page,
+  // especially on iOS. Once the gesture clearly becomes a vertical page scroll,
+  // we take ownership of it, prevent the iframe/native handler from also acting,
+  // and forward at most one scroll update per animation frame.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
+    const PAGE_SCROLL_THRESHOLD_PX = 6;
+    const HORIZONTAL_GESTURE_RATIO = 1.25;
+    let touchStartX = 0;
+    let touchStartY = 0;
     let touchLastY = 0;
+    let pageScrollGesture = false;
+    let gestureBlocked = false;
+    let pendingDeltaY = 0;
+    let rafId = 0;
     // Track last few deltas to estimate fling velocity on touchend
     const recentDeltas: number[] = [];
 
-    const isInsideScrollable = (el: Element | null): boolean => {
+    const canScrollNode = (node: Element, deltaY: number): boolean => {
+      const style = window.getComputedStyle(node);
+      const ov = style.overflowY;
+      if (ov !== 'scroll' && ov !== 'auto') return false;
+      if (node.scrollHeight <= node.clientHeight + 1) return false;
+      const scrollTop = node.scrollTop;
+      const maxScrollTop = node.scrollHeight - node.clientHeight;
+      return deltaY > 0 ? scrollTop < maxScrollTop - 1 : scrollTop > 1;
+    };
+
+    const isInsideScrollable = (el: Element | null, deltaY: number): boolean => {
       let node: Element | null = el;
       while (node && node !== document.body) {
-        const style = window.getComputedStyle(node);
-        const ov = style.overflowY;
-        if ((ov === 'scroll' || ov === 'auto') && node.scrollHeight > node.clientHeight) {
+        if (canScrollNode(node, deltaY)) {
           return true;
         }
         node = node.parentElement;
@@ -3778,8 +3794,32 @@ export default function EmbedDesign() {
       return false;
     };
 
+    const flushScroll = () => {
+      rafId = 0;
+      const deltaY = pendingDeltaY;
+      pendingDeltaY = 0;
+      if (Math.abs(deltaY) > 0.1) {
+        window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
+      }
+    };
+
+    const queueScroll = (deltaY: number) => {
+      pendingDeltaY += deltaY;
+      if (!rafId) rafId = window.requestAnimationFrame(flushScroll);
+    };
+
     const onTouchStart = (e: TouchEvent) => {
-      touchLastY = e.touches[0]?.clientY ?? 0;
+      const touch = e.touches[0];
+      touchStartX = touch?.clientX ?? 0;
+      touchStartY = touch?.clientY ?? 0;
+      touchLastY = touchStartY;
+      pageScrollGesture = false;
+      gestureBlocked = false;
+      pendingDeltaY = 0;
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
       recentDeltas.length = 0;
       // Cancel any ongoing fling when user touches again
       window.parent.postMessage({ type: 'ai-art-studio:touchcancel' }, '*');
@@ -3788,31 +3828,56 @@ export default function EmbedDesign() {
     const onTouchMove = (e: TouchEvent) => {
       if (showPatternStep) return;
       const currentY = e.touches[0]?.clientY ?? 0;
+      const currentX = e.touches[0]?.clientX ?? touchStartX;
+      const totalX = currentX - touchStartX;
+      const totalY = currentY - touchStartY;
       const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
       touchLastY = currentY;
       if (Math.abs(deltaY) < 0.5) return;
       const target = e.target as Element | null;
-      if (isInsideScrollable(target)) return;
+
+      if (!pageScrollGesture && !gestureBlocked) {
+        const absX = Math.abs(totalX);
+        const absY = Math.abs(totalY);
+        if (absX > PAGE_SCROLL_THRESHOLD_PX && absX > absY * HORIZONTAL_GESTURE_RATIO) {
+          gestureBlocked = true;
+          return;
+        }
+        if (absY < PAGE_SCROLL_THRESHOLD_PX) return;
+        if (isInsideScrollable(target, deltaY)) {
+          gestureBlocked = true;
+          return;
+        }
+        pageScrollGesture = true;
+      }
+
+      if (!pageScrollGesture || gestureBlocked) return;
+      e.preventDefault();
       // Keep last 6 deltas for velocity estimation
       recentDeltas.push(deltaY);
       if (recentDeltas.length > 6) recentDeltas.shift();
-      window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
+      queueScroll(deltaY);
     };
 
     const onTouchEnd = () => {
-      if (recentDeltas.length < 2) return;
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+        flushScroll();
+      }
+      if (!pageScrollGesture || recentDeltas.length < 2) return;
       // Average of last few deltas = estimated velocity (px per touchmove frame)
       const velocity = recentDeltas.reduce((a, b) => a + b, 0) / recentDeltas.length;
-      if (Math.abs(velocity) > 1.5) {
+      if (Math.abs(velocity) > 2) {
         window.parent.postMessage({ type: 'ai-art-studio:touchfling', velocityY: velocity }, '*');
       }
     };
 
     document.addEventListener('touchstart', onTouchStart, { passive: true });
-    document.addEventListener('touchmove', onTouchMove, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: false });
     document.addEventListener('touchend', onTouchEnd, { passive: true });
     document.addEventListener('touchcancel', onTouchEnd, { passive: true });
     return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
       document.removeEventListener('touchend', onTouchEnd);
