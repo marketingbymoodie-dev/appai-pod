@@ -73,6 +73,7 @@ export async function getSizeChartByBlueprintId(
   blueprintId: number
 ): Promise<NormalizedSizeChart | null> {
   if (!blueprintId || Number.isNaN(blueprintId)) return null;
+  if (!supabase) return null;
 
   const { data, error } = await supabase
     .from("printify_size_charts")
