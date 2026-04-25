@@ -9,8 +9,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, Info, Plus } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import SizeChartTable from "@/components/SizeChartTable";
+import { getSizeChartByBlueprintId, type NormalizedSizeChart } from "@/lib/printifySizeCharts";
 import {
   ProductMockup,
   ZoomControls,
@@ -61,6 +64,14 @@ interface ProductTypeConfig {
   colorLabel?: string;
   printifyBlueprintId?: number;
 }
+
+type ProductInfoSectionsProps = {
+  description?: string | null;
+  sizeChart?: NormalizedSizeChart | null;
+  sizeChartLoading?: boolean;
+  blueprintId?: number;
+  className?: string;
+};
 
 // API_BASE and buildAppUrl imported from @/lib/urlBase
 
@@ -452,6 +463,73 @@ function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   return 'standalone';
 }
 
+function InfoCollapsible({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border-2 border-foreground bg-background">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm font-semibold"
+        >
+          <span>{title}</span>
+          <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="border-t px-3 py-3">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ProductInfoSections({
+  description,
+  sizeChart,
+  sizeChartLoading,
+  blueprintId,
+  className,
+}: ProductInfoSectionsProps) {
+  const hasDetails = !!description;
+  const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
+  if (!hasDetails && !hasSizeChartArea) return null;
+
+  return (
+    <div className={`space-y-2 ${className || ""}`} data-testid="container-product-info-sections">
+      {hasDetails && (
+        <InfoCollapsible title="Product Details">
+          <div
+            className="prose prose-sm max-w-none text-sm leading-relaxed text-muted-foreground"
+            dangerouslySetInnerHTML={{ __html: description || "" }}
+          />
+        </InfoCollapsible>
+      )}
+      {hasSizeChartArea && (
+        <InfoCollapsible title="Size Chart">
+          {sizeChartLoading ? (
+            <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
+          ) : (
+            <SizeChartTable chart={sizeChart} compact />
+          )}
+          {import.meta.env.DEV && (
+            <div className="mt-2 rounded-md bg-muted/50 p-2 text-[11px] text-muted-foreground">
+              <div>Current blueprint ID: {blueprintId ?? "missing"}</div>
+              <div>Chart loaded: {sizeChart ? "yes" : "no"}</div>
+              <div>Row count: {sizeChart?.rows.length ?? 0}</div>
+            </div>
+          )}
+        </InfoCollapsible>
+      )}
+    </div>
+  );
+}
+
 export default function EmbedDesign() {
   const searchParams = new URLSearchParams(window.location.search);
 
@@ -636,6 +714,8 @@ export default function EmbedDesign() {
   const [configLoading, setConfigLoading] = useState(true);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
+  const [sizeChart, setSizeChart] = useState<NormalizedSizeChart | null>(null);
+  const [sizeChartLoading, setSizeChartLoading] = useState(false);
 
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
@@ -834,6 +914,33 @@ export default function EmbedDesign() {
       s.category === targetCategory || s.category === "all" || !s.category
     );
   }, [stylePresets, productTypeConfig]);
+
+  useEffect(() => {
+    const blueprintId = productTypeConfig?.printifyBlueprintId;
+    if (!blueprintId) {
+      setSizeChart(null);
+      setSizeChartLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSizeChartLoading(true);
+    getSizeChartByBlueprintId(blueprintId)
+      .then((chart) => {
+        if (!cancelled) setSizeChart(chart);
+      })
+      .catch((error) => {
+        console.warn("[EmbedDesign] Failed to load size chart", error);
+        if (!cancelled) setSizeChart(null);
+      })
+      .finally(() => {
+        if (!cancelled) setSizeChartLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [productTypeConfig?.printifyBlueprintId]);
 
   // Reset selectedPreset if it's not in the filtered list (e.g., after product type loads)
   useEffect(() => {
@@ -5201,24 +5308,14 @@ export default function EmbedDesign() {
                 );
               })()}
 
-              {/* Product Details — desktop only, shown below prompt textarea in right panel */}
-              {(isStorefront || isShopify) && productTypeConfig?.description && (
-                <div className="hidden md:block space-y-1.5">
-                  <Label>Product Details</Label>
-                  <div
-                    className="rounded-md border-2 border-foreground bg-background px-3 py-2 text-sm leading-relaxed prose prose-sm max-w-none overflow-y-auto"
-                    style={{ maxHeight: '220px', color: 'inherit' }}
-                    onWheel={(e) => {
-                      const el = e.currentTarget;
-                      const atTop = el.scrollTop === 0 && e.deltaY < 0;
-                      const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 1 && e.deltaY > 0;
-                      if (!atTop && !atBottom) {
-                        e.stopPropagation();
-                      }
-                    }}
-                    dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
-                  />
-                </div>
+              {(isStorefront || isShopify) && (
+                <ProductInfoSections
+                  className="hidden md:block"
+                  description={productTypeConfig?.description}
+                  sizeChart={sizeChart}
+                  sizeChartLoading={sizeChartLoading}
+                  blueprintId={productTypeConfig?.printifyBlueprintId}
+                />
               )}
 
 
@@ -5680,15 +5777,14 @@ export default function EmbedDesign() {
               </div>
             )}
 
-            {/* Product Details — shown below gallery on mobile only (desktop version is in the right panel) */}
-            {(isStorefront || isShopify) && productTypeConfig?.description && (
-              <div className="md:hidden border-t pt-4 mt-2 space-y-2" data-testid="container-product-details">
-                <h3 className="text-sm font-semibold">Product Details</h3>
-                <div
-                  className="text-sm text-muted-foreground leading-relaxed prose prose-sm max-w-none"
-                  dangerouslySetInnerHTML={{ __html: productTypeConfig.description }}
-                />
-              </div>
+            {(isStorefront || isShopify) && (
+              <ProductInfoSections
+                className="md:hidden border-t pt-4 mt-2"
+                description={productTypeConfig?.description}
+                sizeChart={sizeChart}
+                sizeChartLoading={sizeChartLoading}
+                blueprintId={productTypeConfig?.printifyBlueprintId}
+              />
             )}
           </>)}
           </div>

@@ -16,6 +16,8 @@ import { Switch } from "@/components/ui/switch";
 import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
+import SizeChartTable from "@/components/SizeChartTable";
+import { getSizeChartByBlueprintId } from "@/lib/printifySizeCharts";
 import type { ProductType, Merchant } from "@shared/schema";
 import { AOP_TEMPLATE_ADMIN_OPTIONS, AOP_TEMPLATE_SELECT_AUTO } from "@/components/designer/aopTemplates/registry";
 
@@ -137,6 +139,12 @@ export default function AdminProducts() {
     },
     enabled: printifyImportOpen && !!merchant?.printifyApiToken,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: selectedBlueprintSizeChart, isLoading: selectedBlueprintSizeChartLoading } = useQuery({
+    queryKey: ["printify-size-chart", selectedBlueprint?.id],
+    queryFn: () => getSizeChartByBlueprintId(selectedBlueprint!.id),
+    enabled: !!selectedBlueprint,
   });
 
   const availableLocations = useMemo(() => {
@@ -806,6 +814,17 @@ export default function AdminProducts() {
                 <div className="p-3 bg-muted rounded-lg">
                   <p className="font-medium">{selectedBlueprint.title}</p>
                   <p className="text-sm text-muted-foreground">{selectedBlueprint.brand}</p>
+                </div>
+              )}
+
+              {selectedBlueprint && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Supabase size chart preview</Label>
+                  {selectedBlueprintSizeChartLoading ? (
+                    <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
+                  ) : (
+                    <SizeChartTable chart={selectedBlueprintSizeChart} compact />
+                  )}
                 </div>
               )}
 

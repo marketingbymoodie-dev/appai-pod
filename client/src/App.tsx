@@ -11,6 +11,7 @@ import DesignPage from "@/pages/design";
 import DesignsPage from "@/pages/designs";
 import OrdersPage from "@/pages/orders";
 import EmbedDesign from "@/pages/embed-design";
+import TestSizeChart from "@/pages/test-size-chart";
 import NotFound from "@/pages/not-found";
 
 import AdminDashboard from "@/pages/admin/dashboard";
@@ -38,6 +39,7 @@ function AppRouter() {
       <Route path="/my-designs" component={DesignsPage} />
       <Route path="/orders" component={OrdersPage} />
       <Route path="/embed/design" component={EmbedDesign} />
+      <Route path="/test-size-chart" component={TestSizeChart} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />
