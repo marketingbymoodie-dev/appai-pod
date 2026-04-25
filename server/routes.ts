@@ -1625,17 +1625,12 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/storefront/size-chart/:blueprintId", asyncHandler(async (req: Request, res: Response) => {
-    const blueprintId = Number.parseInt(req.params.blueprintId, 10);
-    if (!Number.isFinite(blueprintId)) {
-      return res.status(400).json({ chart: null, error: "Invalid blueprint ID" });
-    }
+  async function getNormalizedSizeChartByBlueprintId(blueprintId: number): Promise<Record<string, any> | null> {
+    if (!Number.isFinite(blueprintId)) return null;
 
     const supabaseUrl = process.env.SUPABASE_URL || "";
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-    if (!supabaseUrl || !supabaseKey) {
-      return res.json({ chart: null });
-    }
+    if (!supabaseUrl || !supabaseKey) return null;
 
     const supabase = createSupabaseClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -1649,7 +1644,7 @@ export async function registerRoutes(
 
     if (error || !data || !Array.isArray(data.measurements) || data.measurements.length < 2) {
       if (error) console.warn("[SizeChart] Failed to load size chart", { blueprintId, message: error.message });
-      return res.json({ chart: null });
+      return null;
     }
 
     const rows = data.measurements
@@ -1657,27 +1652,43 @@ export async function registerRoutes(
       .map((row: unknown[]) => row.map((value) => String(value ?? "").trim()))
       .filter((row: string[]) => row.some(Boolean));
 
-    if (rows.length < 2) return res.json({ chart: null });
+    if (rows.length < 2) return null;
 
     const [sizes, ...measurementRows] = rows;
     const normalizedRows = measurementRows
       .map((row: string[]) => ({ label: row[0] || "Measurement", values: row.slice(1) }))
       .filter((row: { values: string[] }) => row.values.length > 0);
 
+    return {
+      blueprintId: data.blueprint_id,
+      title: data.blueprint_title || `Blueprint ${data.blueprint_id}`,
+      brand: data.brand,
+      model: data.model,
+      unit: data.unit,
+      sourceUrl: data.source_url,
+      scrapedAt: data.scraped_at,
+      sizes,
+      rows: normalizedRows,
+    };
+  }
+
+  async function getNormalizedSizeChartWithTimeout(blueprintId: number, timeoutMs = 2500): Promise<Record<string, any> | null> {
+    return Promise.race([
+      getNormalizedSizeChartByBlueprintId(blueprintId),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+  }
+
+  app.get("/api/storefront/size-chart/:blueprintId", asyncHandler(async (req: Request, res: Response) => {
+    const blueprintId = Number.parseInt(req.params.blueprintId, 10);
+    if (!Number.isFinite(blueprintId)) {
+      return res.status(400).json({ chart: null, error: "Invalid blueprint ID" });
+    }
+
+    const chart = await getNormalizedSizeChartByBlueprintId(blueprintId);
+
     res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
-    res.json({
-      chart: {
-        blueprintId: data.blueprint_id,
-        title: data.blueprint_title || `Blueprint ${data.blueprint_id}`,
-        brand: data.brand,
-        model: data.model,
-        unit: data.unit,
-        sourceUrl: data.source_url,
-        scrapedAt: data.scraped_at,
-        sizes,
-        rows: normalizedRows,
-      },
-    });
+    res.json({ chart });
   }));
 
   // 🔒 Everything below may register /api auth middleware
@@ -4810,6 +4821,10 @@ ${textEdgeRestrictions}
         ? JSON.parse(productType.variantMap)
         : productType.variantMap || {};
 
+      const sizeChart = productType.printifyBlueprintId
+        ? await getNormalizedSizeChartWithTimeout(productType.printifyBlueprintId)
+        : null;
+
       console.log(`[Designer API] Building config for product type ${id}: ${productType.name}`);
       const designerConfig = {
         id: productType.id,
@@ -4851,6 +4866,7 @@ ${textEdgeRestrictions}
         })),
         // Determine the label for the color/option selector
         colorLabel: getColorOptionName(frameColors, productType.colorOptionName),
+        sizeChart,
         canvasConfig: {
           maxDimension,
           width: canvasWidth,
@@ -5064,7 +5080,8 @@ ${textEdgeRestrictions}
   function buildDesignerConfig(
     productTypeToUse: any,
     requestedId: number,
-    resolvedFrom?: string
+    resolvedFrom?: string,
+    sizeChart?: Record<string, any> | null
   ): Record<string, any> {
     const allSizes = typeof productTypeToUse.sizes === "string"
       ? JSON.parse(productTypeToUse.sizes)
@@ -5285,6 +5302,7 @@ ${textEdgeRestrictions}
       })),
       // Determine the label for the color/option selector
       colorLabel: getColorOptionName(frameColors, productTypeToUse.colorOptionName),
+      sizeChart: sizeChart || null,
       canvasConfig: {
         maxDimension,
         width: canvasWidth,
@@ -5427,7 +5445,10 @@ ${textEdgeRestrictions}
           res.set("Cache-Control", "no-cache, no-store, must-revalidate");
           res.set("Pragma", "no-cache");
           res.set("Expires", "0");
-          return res.json(buildDesignerConfig(fastPt, id));
+          const sizeChart = fastPt.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(fastPt.printifyBlueprintId)
+            : null;
+          return res.json(buildDesignerConfig(fastPt, id, undefined, sizeChart));
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
       }
@@ -5567,7 +5588,10 @@ ${textEdgeRestrictions}
       // 5️⃣ BUILD CONFIG using shared helper
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
-      const designerConfig = buildDesignerConfig(productTypeToUse, id, resolvedFrom);
+      const sizeChart = productTypeToUse.printifyBlueprintId
+        ? await getNormalizedSizeChartWithTimeout(productTypeToUse.printifyBlueprintId)
+        : null;
+      const designerConfig = buildDesignerConfig(productTypeToUse, id, resolvedFrom, sizeChart);
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
@@ -14657,7 +14681,10 @@ ${textEdgeRestrictions}
       try {
         const pt = await storage.getProductType(page.productTypeId);
         if (pt) {
-          designerConfig = buildDesignerConfig(pt, page.productTypeId);
+          const sizeChart = pt.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(pt.printifyBlueprintId)
+            : null;
+          designerConfig = buildDesignerConfig(pt, page.productTypeId, undefined, sizeChart);
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);

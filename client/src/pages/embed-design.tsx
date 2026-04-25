@@ -63,6 +63,7 @@ interface ProductTypeConfig {
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
   printifyBlueprintId?: number;
+  sizeChart?: NormalizedSizeChart | null;
 }
 
 type ProductInfoSectionsProps = {
@@ -917,6 +918,11 @@ export default function EmbedDesign() {
 
   useEffect(() => {
     const blueprintId = productTypeConfig?.printifyBlueprintId;
+    if (productTypeConfig?.sizeChart) {
+      setSizeChart(productTypeConfig.sizeChart);
+      setSizeChartLoading(false);
+      return;
+    }
     if (!blueprintId) {
       setSizeChart(null);
       setSizeChartLoading(false);
@@ -924,6 +930,14 @@ export default function EmbedDesign() {
     }
 
     let cancelled = false;
+    const loadingTimeout = globalThis.setTimeout(() => {
+      if (!cancelled) {
+        console.warn("[EmbedDesign] Size chart lookup timed out", { blueprintId });
+        setSizeChart(null);
+        setSizeChartLoading(false);
+      }
+    }, 10000);
+
     setSizeChartLoading(true);
     getSizeChartByBlueprintId(blueprintId)
       .then((chart) => {
@@ -934,13 +948,15 @@ export default function EmbedDesign() {
         if (!cancelled) setSizeChart(null);
       })
       .finally(() => {
+        globalThis.clearTimeout(loadingTimeout);
         if (!cancelled) setSizeChartLoading(false);
       });
 
     return () => {
       cancelled = true;
+      globalThis.clearTimeout(loadingTimeout);
     };
-  }, [productTypeConfig?.printifyBlueprintId]);
+  }, [productTypeConfig?.printifyBlueprintId, productTypeConfig?.sizeChart]);
 
   // Reset selectedPreset if it's not in the filtered list (e.g., after product type loads)
   useEffect(() => {
@@ -991,7 +1007,12 @@ export default function EmbedDesign() {
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
       printifyBlueprintId: dc.printifyBlueprintId,
+      sizeChart: dc.sizeChart || null,
     });
+    if (dc.sizeChart) {
+      setSizeChart(dc.sizeChart);
+      setSizeChartLoading(false);
+    }
     if (dc.frameColors?.length > 0) {
       setSelectedFrameColor(dc.frameColors[0].id);
     }
@@ -1303,8 +1324,13 @@ export default function EmbedDesign() {
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
             printifyBlueprintId: designerConfig.printifyBlueprintId,
+            sizeChart: designerConfig.sizeChart || null,
           });
 
+          if (designerConfig.sizeChart) {
+            setSizeChart(designerConfig.sizeChart);
+            setSizeChartLoading(false);
+          }
           if (designerConfig.frameColors?.length > 0) {
             setSelectedFrameColor(designerConfig.frameColors[0].id);
           }
