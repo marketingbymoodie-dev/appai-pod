@@ -87,10 +87,14 @@ export async function getSizeChartByBlueprintId(
 
   if (error) {
     console.error("Failed to load size chart", error);
-    return null;
+    return getSizeChartByBlueprintIdFromApi(blueprintId);
   }
 
-  return data ? normalizeSizeChart(data as PrintifySizeChartRecord) : null;
+  if (!data) {
+    return getSizeChartByBlueprintIdFromApi(blueprintId);
+  }
+
+  return normalizeSizeChart(data as PrintifySizeChartRecord);
 }
 
 async function getSizeChartByBlueprintIdFromApi(
