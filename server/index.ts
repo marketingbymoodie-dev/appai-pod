@@ -348,6 +348,14 @@ app.use((req, res, next) => {
       html = html.replace(/src="\.\/assets\//g, `src="${P}/s/assets/`);
       html = html.replace(/href="\.\/assets\//g, `href="${P}/s/assets/`);
 
+      // Make proxy context explicit before the Vite bundle executes. Relying
+      // only on window.location path detection is fragile inside Shopify app
+      // proxy if the iframe request is redirected or normalized by the theme.
+      html = html.replace(
+        /<head>/i,
+        `<head><script>window.__APPAI_API_BASE__="${P}";window.__APPAI_ROUTER_BASE__="${P}";</script>`
+      );
+
       res.setHeader("Content-Type", "text/html");
       return res.send(html);
     });
