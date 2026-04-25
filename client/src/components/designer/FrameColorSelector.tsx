@@ -16,6 +16,22 @@ interface FrameColorSelectorProps {
   colorLabel?: string;
 }
 
+const COLOR_HEX_BY_NAME: Record<string, string> = {
+  cardinal: "#8C1D40",
+  "heather green": "#6B8E6B",
+  "heather yellow gold": "#D9A441",
+  "soft pink": "#F7B6C8",
+  "heather sand dune": "#C8B99A",
+};
+
+function getDisplayHex(color: FrameColor): string {
+  const name = (color.name || "").trim().toLowerCase();
+  if (!color.hex || color.hex.toLowerCase() === "#888888") {
+    return COLOR_HEX_BY_NAME[name] || color.hex || "#888888";
+  }
+  return color.hex;
+}
+
 export function FrameColorSelector({
   frameColors,
   selectedFrameColor,
@@ -37,7 +53,7 @@ export function FrameColorSelector({
                 {isColorOption && (
                   <span
                     className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
-                    style={{ backgroundColor: selected.hex }}
+                    style={{ backgroundColor: getDisplayHex(selected) }}
                   />
                 )}
                 {selected.name}
@@ -56,7 +72,7 @@ export function FrameColorSelector({
                 {isColorOption && (
                   <span
                     className="inline-block w-3 h-3 rounded-full border border-border shrink-0"
-                    style={{ backgroundColor: color.hex }}
+                    style={{ backgroundColor: getDisplayHex(color) }}
                   />
                 )}
                 {color.name}

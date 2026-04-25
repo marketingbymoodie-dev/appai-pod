@@ -3,6 +3,7 @@ import { generatePattern, removeBackground, type PatternType } from "./picsart-c
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { createServer, type Server } from "http";
 import crypto from "crypto";
 import fs from "fs";
@@ -1622,6 +1623,61 @@ export async function registerRoutes(
       return res.json(fallbackPayload);
     }
   });
+
+  app.get("/api/storefront/size-chart/:blueprintId", asyncHandler(async (req: Request, res: Response) => {
+    const blueprintId = Number.parseInt(req.params.blueprintId, 10);
+    if (!Number.isFinite(blueprintId)) {
+      return res.status(400).json({ chart: null, error: "Invalid blueprint ID" });
+    }
+
+    const supabaseUrl = process.env.SUPABASE_URL || "";
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+    if (!supabaseUrl || !supabaseKey) {
+      return res.json({ chart: null });
+    }
+
+    const supabase = createSupabaseClient(supabaseUrl, supabaseKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    const { data, error } = await supabase
+      .from("printify_size_charts")
+      .select("*")
+      .eq("blueprint_id", blueprintId)
+      .eq("status", "extracted")
+      .maybeSingle();
+
+    if (error || !data || !Array.isArray(data.measurements) || data.measurements.length < 2) {
+      if (error) console.warn("[SizeChart] Failed to load size chart", { blueprintId, message: error.message });
+      return res.json({ chart: null });
+    }
+
+    const rows = data.measurements
+      .filter((row: unknown) => Array.isArray(row))
+      .map((row: unknown[]) => row.map((value) => String(value ?? "").trim()))
+      .filter((row: string[]) => row.some(Boolean));
+
+    if (rows.length < 2) return res.json({ chart: null });
+
+    const [sizes, ...measurementRows] = rows;
+    const normalizedRows = measurementRows
+      .map((row: string[]) => ({ label: row[0] || "Measurement", values: row.slice(1) }))
+      .filter((row: { values: string[] }) => row.values.length > 0);
+
+    res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
+    res.json({
+      chart: {
+        blueprintId: data.blueprint_id,
+        title: data.blueprint_title || `Blueprint ${data.blueprint_id}`,
+        brand: data.brand,
+        model: data.model,
+        unit: data.unit,
+        sourceUrl: data.source_url,
+        scrapedAt: data.scraped_at,
+        sizes,
+        rows: normalizedRows,
+      },
+    });
+  }));
 
   // 🔒 Everything below may register /api auth middleware
   await setupAuth(app);
@@ -10611,11 +10667,12 @@ ${textEdgeRestrictions}
             "heather grey": "#9CA3AF", "heather gray": "#9CA3AF", "dark heather": "#4B5563",
             "heather navy": "#374151", "heather blue": "#60A5FA", "heather red": "#F87171",
             "heather forest": "#166534", "heather purple": "#A855F7", "heather orange": "#FB923C",
+            "heather green": "#6B8E6B", "heather yellow gold": "#D9A441",
             // Common apparel colors
             "arctic white": "#F8FAFC", "jet black": "#0a0a0a", "charcoal": "#36454F",
-            "burgundy": "#800020", "maroon": "#800000", "cardinal red": "#C41E3A",
+            "burgundy": "#800020", "maroon": "#800000", "cardinal": "#8C1D40", "cardinal red": "#C41E3A",
             "fire red": "#FF3131", "scarlet": "#FF2400", "coral": "#FF7F50",
-            "hot pink": "#FF69B4", "baby pink": "#F4C2C2", "light pink": "#FFB6C1",
+            "hot pink": "#FF69B4", "baby pink": "#F4C2C2", "light pink": "#FFB6C1", "soft pink": "#F7B6C8",
             "magenta": "#FF00FF", "fuchsia": "#FF00FF", "rose": "#FF007F",
             "sky blue": "#87CEEB", "light blue": "#ADD8E6", "royal blue": "#4169E1",
             "navy blue": "#000080", "cobalt": "#0047AB", "steel blue": "#4682B4",
@@ -10632,7 +10689,7 @@ ${textEdgeRestrictions}
             "hot chocolate": "#4A2C2A", "chocolate": "#7B3F00", "coffee": "#6F4E37",
             "mocha": "#967969", "espresso": "#4E312D", "walnut": "#773F1A",
             "sand": "#C2B280", "khaki": "#C3B091", "taupe": "#483C32",
-            "camel": "#C19A6B", "nude": "#E3BC9A", "champagne": "#F7E7CE",
+            "camel": "#C19A6B", "nude": "#E3BC9A", "champagne": "#F7E7CE", "heather sand dune": "#C8B99A",
             "silver": "#C0C0C0", "ash": "#B2BEB5", "slate": "#708090",
             "steel grey": "#71797E", "gunmetal": "#2A3439", "anthracite": "#293133",
             "teal": "#008080", "cyan": "#00FFFF", "aqua": "#00FFFF",
@@ -11244,11 +11301,12 @@ ${textEdgeRestrictions}
               "heather grey": "#9CA3AF", "heather gray": "#9CA3AF", "dark heather": "#4B5563",
               "heather navy": "#374151", "heather blue": "#60A5FA", "heather red": "#F87171",
               "heather forest": "#166534", "heather purple": "#A855F7", "heather orange": "#FB923C",
+              "heather green": "#6B8E6B", "heather yellow gold": "#D9A441",
               // Common apparel colors
               "arctic white": "#F8FAFC", "jet black": "#0a0a0a", "charcoal": "#36454F",
-              "burgundy": "#800020", "maroon": "#800000", "cardinal red": "#C41E3A",
+              "burgundy": "#800020", "maroon": "#800000", "cardinal": "#8C1D40", "cardinal red": "#C41E3A",
               "fire red": "#FF3131", "scarlet": "#FF2400", "coral": "#FF7F50",
-              "hot pink": "#FF69B4", "baby pink": "#F4C2C2", "light pink": "#FFB6C1",
+              "hot pink": "#FF69B4", "baby pink": "#F4C2C2", "light pink": "#FFB6C1", "soft pink": "#F7B6C8",
               "magenta": "#FF00FF", "fuchsia": "#FF00FF", "rose": "#FF007F",
               "sky blue": "#87CEEB", "light blue": "#ADD8E6", "royal blue": "#4169E1",
               "royal": "#4169E1", "navy blue": "#000080", "cobalt": "#0047AB", "steel blue": "#4682B4",
@@ -11267,6 +11325,7 @@ ${textEdgeRestrictions}
               "mocha": "#967969", "dark chocolate": "#3D2314",
               "sand": "#C2B280", "khaki": "#C3B091", "taupe": "#483C32",
               "camel": "#C19A6B", "nude": "#E3BC9A", "champagne": "#F7E7CE", "desert pink": "#EDC9AF",
+              "heather sand dune": "#C8B99A",
               "ash": "#B2BEB5", "slate": "#708090",
               "steel grey": "#71797E", "gunmetal": "#2A3439", "anthracite": "#293133",
               "light grey": "#D3D3D3", "light gray": "#D3D3D3", "heavy metal": "#3D3D3D",

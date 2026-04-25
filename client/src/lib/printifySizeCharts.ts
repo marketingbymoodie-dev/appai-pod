@@ -1,4 +1,5 @@
 import { supabase } from "./supabaseClient";
+import { API_BASE } from "./urlBase";
 
 export type RawSizeChartRow = string[];
 
@@ -73,7 +74,9 @@ export async function getSizeChartByBlueprintId(
   blueprintId: number
 ): Promise<NormalizedSizeChart | null> {
   if (!blueprintId || Number.isNaN(blueprintId)) return null;
-  if (!supabase) return null;
+  if (!supabase) {
+    return getSizeChartByBlueprintIdFromApi(blueprintId);
+  }
 
   const { data, error } = await supabase
     .from("printify_size_charts")
@@ -88,4 +91,21 @@ export async function getSizeChartByBlueprintId(
   }
 
   return data ? normalizeSizeChart(data as PrintifySizeChartRecord) : null;
+}
+
+async function getSizeChartByBlueprintIdFromApi(
+  blueprintId: number
+): Promise<NormalizedSizeChart | null> {
+  try {
+    const response = await fetch(
+      `${API_BASE}/api/storefront/size-chart/${encodeURIComponent(String(blueprintId))}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload?.chart ?? null;
+  } catch (error) {
+    console.warn("Failed to load size chart through API fallback", error);
+    return null;
+  }
 }
