@@ -271,10 +271,6 @@ export const productTypes = pgTable("product_types", {
   /** Optional AOP layout template (e.g. leggings_v1) — overrides name-based layout inference in PatternCustomizer. */
   aopTemplateId: text("aop_template_id"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
-  /** Public URL of a size chart image (apparel); often from shared/size-charts.json or Supabase. */
-  sizeChartImageUrl: text("size_chart_image_url"),
-  /** Optional HTML override for size chart (rare; image URL is preferred). */
-  sizeChartHtml: text("size_chart_html"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

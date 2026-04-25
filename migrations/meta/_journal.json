@@ -8,13 +8,6 @@
       "when": 1774386954384,
       "tag": "0000_curly_felicia_hardy",
       "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1777089140584,
-      "tag": "0001_add_size_chart_to_product_types",
-      "breakpoints": true
     }
   ]
 }
