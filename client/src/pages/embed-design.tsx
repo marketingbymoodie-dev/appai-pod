@@ -3763,19 +3763,70 @@ export default function EmbedDesign() {
     return () => window.removeEventListener('wheel', handleWheel);
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
-  // Forward touch-scroll from iframe to parent page on mobile.
-  // Touches that start inside an iframe do not reliably scroll the parent page,
-  // especially on iOS. Once the gesture clearly becomes a vertical page scroll,
-  // we take ownership of it, prevent the iframe/native handler from also acting,
-  // and forward at most one scroll update per animation frame.
-  //
-  // In `mobileNativeScroll` mode the iframe itself is a fixed viewport-sized
-  // scroll container in the parent page, so the browser already scrolls the
-  // iframe content natively. Attaching a passive:false touchmove listener here
-  // would (a) add JS work to every touch frame and (b) at the iframe scroll
-  // boundary it would fall through to postMessage forwarding, which is the
-  // jittery path we are trying to retire. Skip the handler entirely on mobile
-  // native scroll so iOS / Android can handle the gesture themselves.
+  // Mobile native scroll mode: minimal, passive boundary-only touch handoff.
+  // The iframe scrolls its own content natively (no JS per frame). But iOS
+  // Safari does NOT propagate iframe touch-scroll to the parent — once the
+  // iframe hits its top/bottom boundary the user gets stuck and can't reach
+  // the footer (or the area above the iframe). This handler does nothing
+  // while the iframe is scrolling internally; only when scrollTop is at the
+  // boundary AND the finger keeps moving in the same direction does it
+  // forward deltaY to the parent. Listener is `passive: true` so it never
+  // blocks the native iframe scroll.
+  useEffect(() => {
+    if (!isEmbedded && !isStorefront) return;
+    if (!mobileNativeScroll) return;
+    let lastY = 0;
+    let pendingDeltaY = 0;
+    let rafId = 0;
+    const flush = () => {
+      rafId = 0;
+      const d = pendingDeltaY;
+      pendingDeltaY = 0;
+      if (Math.abs(d) > 0.5) {
+        window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY: d }, '*');
+      }
+    };
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      lastY = e.touches[0].clientY;
+      pendingDeltaY = 0;
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      window.parent.postMessage({ type: 'ai-art-studio:touchcancel' }, '*');
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      if (showPatternStep) return;
+      const y = e.touches[0].clientY;
+      const dy = lastY - y; // positive = finger moving up = scroll-down direction
+      lastY = y;
+      if (Math.abs(dy) < 0.5) return;
+      const el = document.scrollingElement || document.documentElement;
+      const maxScrollTop = el.scrollHeight - el.clientHeight;
+      const atBottom = el.scrollTop >= maxScrollTop - 1;
+      const atTop = el.scrollTop <= 1;
+      // Only hand off to parent when iframe scroll is fully pinned to the edge
+      // in the direction the finger is dragging.
+      if ((dy > 0 && atBottom) || (dy < 0 && atTop)) {
+        pendingDeltaY += dy;
+        if (!rafId) rafId = window.requestAnimationFrame(flush);
+      }
+    };
+    document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
+    return () => {
+      if (rafId) window.cancelAnimationFrame(rafId);
+      document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [isEmbedded, isStorefront, mobileNativeScroll, showPatternStep]);
+
+  // Legacy (non-mobile-native) touch-scroll forwarding effect. Only attaches
+  // when `mobileNativeScroll` is false — desktop or any context where the
+  // iframe is a full-content-height block in the parent page and we need to
+  // forward gestures so the parent scrolls.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     if (mobileNativeScroll) return;

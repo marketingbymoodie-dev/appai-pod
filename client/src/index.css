@@ -381,7 +381,11 @@ html[data-appai-embed][data-appai-mobile-native-scroll],
 html[data-appai-embed][data-appai-mobile-native-scroll] body {
   min-height: 100%;
   overflow-y: auto;
-  overscroll-behavior-y: contain;
+  /* `none` (not `contain`) suppresses the iOS rubber-band bounce at the
+     iframe scroll boundary. Without this, reaching the bottom of the iframe
+     content shows a soft bounce that visually fights the parent-page scroll
+     handoff fired by the boundary touch handler in embed-design.tsx. */
+  overscroll-behavior-y: none;
   -webkit-overflow-scrolling: touch;
 }
 
