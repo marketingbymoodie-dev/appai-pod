@@ -384,3 +384,28 @@ html[data-appai-embed][data-appai-mobile-native-scroll] body {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
 }
+
+/* Mobile native scroll only: tell iOS that taps on interactive controls are
+   strictly tap-or-vertical-pan (no double-tap zoom, no pinch-zoom delay), so
+   touchstart on a Select trigger / button / link does NOT trigger the
+   ~300ms click-vs-scroll disambiguation. Without this, dragging a finger
+   that lands on one of the Style/Size/Color dropdown buttons feels jittery
+   because the browser waits before committing to a scroll. */
+html[data-appai-embed][data-appai-mobile-native-scroll] button,
+html[data-appai-embed][data-appai-mobile-native-scroll] a,
+html[data-appai-embed][data-appai-mobile-native-scroll] [role="combobox"],
+html[data-appai-embed][data-appai-mobile-native-scroll] [role="button"],
+html[data-appai-embed][data-appai-mobile-native-scroll] select,
+html[data-appai-embed][data-appai-mobile-native-scroll] input,
+html[data-appai-embed][data-appai-mobile-native-scroll] textarea,
+html[data-appai-embed][data-appai-mobile-native-scroll] label {
+  touch-action: manipulation;
+}
+
+/* Don't apply touch-action: manipulation to the canvas / artwork drag surfaces
+   — they handle their own multi-touch (rotate / pinch). They opt back in to
+   default touch handling here. */
+html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-drag-surface],
+html[data-appai-embed][data-appai-mobile-native-scroll] canvas {
+  touch-action: none;
+}

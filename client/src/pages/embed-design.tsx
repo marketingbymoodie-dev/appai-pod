@@ -3768,8 +3768,17 @@ export default function EmbedDesign() {
   // especially on iOS. Once the gesture clearly becomes a vertical page scroll,
   // we take ownership of it, prevent the iframe/native handler from also acting,
   // and forward at most one scroll update per animation frame.
+  //
+  // In `mobileNativeScroll` mode the iframe itself is a fixed viewport-sized
+  // scroll container in the parent page, so the browser already scrolls the
+  // iframe content natively. Attaching a passive:false touchmove listener here
+  // would (a) add JS work to every touch frame and (b) at the iframe scroll
+  // boundary it would fall through to postMessage forwarding, which is the
+  // jittery path we are trying to retire. Skip the handler entirely on mobile
+  // native scroll so iOS / Android can handle the gesture themselves.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
+    if (mobileNativeScroll) return;
     const PAGE_SCROLL_THRESHOLD_PX = 6;
     const HORIZONTAL_GESTURE_RATIO = 1.25;
     let touchStartX = 0;
