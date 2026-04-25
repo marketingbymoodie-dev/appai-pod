@@ -6,6 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { resolveStoredColorHex } from "@shared/printifyColorResolver";
 import type { FrameColor } from "./types";
 
 interface FrameColorSelectorProps {
@@ -16,20 +17,8 @@ interface FrameColorSelectorProps {
   colorLabel?: string;
 }
 
-const COLOR_HEX_BY_NAME: Record<string, string> = {
-  cardinal: "#8C1D40",
-  "heather green": "#6B8E6B",
-  "heather yellow gold": "#D9A441",
-  "soft pink": "#F7B6C8",
-  "heather sand dune": "#C8B99A",
-};
-
 function getDisplayHex(color: FrameColor): string {
-  const name = (color.name || "").trim().toLowerCase();
-  if (!color.hex || color.hex.toLowerCase() === "#888888") {
-    return COLOR_HEX_BY_NAME[name] || color.hex || "#888888";
-  }
-  return color.hex;
+  return resolveStoredColorHex(color.name, color.hex).hex;
 }
 
 export function FrameColorSelector({

@@ -74,24 +74,35 @@ export async function getSizeChartByBlueprintId(
   blueprintId: number
 ): Promise<NormalizedSizeChart | null> {
   if (!blueprintId || Number.isNaN(blueprintId)) return null;
+
+  const apiChart = await getSizeChartByBlueprintIdFromApi(blueprintId);
+  if (apiChart) return apiChart;
+
   if (!supabase) {
-    return getSizeChartByBlueprintIdFromApi(blueprintId);
+    return null;
   }
 
-  const { data, error } = await supabase
-    .from("printify_size_charts")
-    .select("*")
-    .eq("blueprint_id", blueprintId)
-    .eq("status", "extracted")
-    .maybeSingle();
+  const result = await Promise.race([
+    supabase
+      .from("printify_size_charts")
+      .select("*")
+      .eq("blueprint_id", blueprintId)
+      .eq("status", "extracted")
+      .maybeSingle(),
+    new Promise<null>((resolve) => globalThis.setTimeout(() => resolve(null), 7000)),
+  ]);
+
+  if (!result) return null;
+
+  const { data, error } = result;
 
   if (error) {
     console.error("Failed to load size chart", error);
-    return getSizeChartByBlueprintIdFromApi(blueprintId);
+    return null;
   }
 
   if (!data) {
-    return getSizeChartByBlueprintIdFromApi(blueprintId);
+    return null;
   }
 
   return normalizeSizeChart(data as PrintifySizeChartRecord);
@@ -100,10 +111,13 @@ export async function getSizeChartByBlueprintId(
 async function getSizeChartByBlueprintIdFromApi(
   blueprintId: number
 ): Promise<NormalizedSizeChart | null> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), 7000);
+
   try {
     const response = await fetch(
       `${API_BASE}/api/storefront/size-chart/${encodeURIComponent(String(blueprintId))}`,
-      { headers: { Accept: "application/json" } }
+      { headers: { Accept: "application/json" }, signal: controller.signal }
     );
     if (!response.ok) return null;
     const payload = await response.json();
@@ -111,5 +125,7 @@ async function getSizeChartByBlueprintIdFromApi(
   } catch (error) {
     console.warn("Failed to load size chart through API fallback", error);
     return null;
+  } finally {
+    globalThis.clearTimeout(timeout);
   }
 }

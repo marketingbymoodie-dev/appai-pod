@@ -13,6 +13,7 @@ import { storage } from "./storage";
 import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
+import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
@@ -10702,19 +10703,7 @@ ${textEdgeRestrictions}
             "vintage black": "#2B2B2B", "vintage navy": "#2C3E50",
             "washed black": "#3D3D3D", "stonewash blue": "#5DADE2"
           };
-          // Try exact match first, then try partial matches
-          let hex = colorHexMap[colorName.toLowerCase()];
-          if (!hex) {
-            // Try to find a partial match (e.g., "Solid Cream" matches "cream")
-            const lowerName = colorName.toLowerCase();
-            for (const [key, value] of Object.entries(colorHexMap)) {
-              if (lowerName.includes(key) || key.includes(lowerName)) {
-                hex = value;
-                break;
-              }
-            }
-          }
-          hex = hex || "#888888";
+          const { hex } = resolvePrintifyColorHex(colorName);
           colorsMap.set(colorName.toLowerCase(), { id: colorId, name: colorName, hex });
         }
       }
@@ -11339,21 +11328,9 @@ ${textEdgeRestrictions}
               "washed black": "#3D3D3D", "stonewash blue": "#5DADE2"
             };
             
-            // Priority: 1) Blueprint API colors, 2) Fallback hex map (normalized), 3) Fallback hex map (full name), 4) Gray default
-            let hex = blueprintColors[colorName.toLowerCase()];
-            let source = "blueprint";
-            if (!hex) {
-              hex = colorHexMap[baseColorName];
-              source = "normalized";
-            }
-            if (!hex) {
-              hex = colorHexMap[colorName.toLowerCase()];
-              source = "full";
-            }
-            if (!hex) {
-              hex = "#888888";
-              source = "fallback";
-              console.log(`Color not found in map: "${colorName}" (normalized: "${baseColorName}")`);
+            const { hex, source } = resolvePrintifyColorHex(colorName, blueprintColors);
+            if (source === "fallback") {
+              console.log(`Color not found in resolver: "${colorName}" (normalized: "${baseColorName}")`);
             }
             colorsMap.set(colorName.toLowerCase(), { 
               id: extractedColorId, 
@@ -12315,7 +12292,7 @@ ${textEdgeRestrictions}
         if (colorName) {
           extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
           if (!colorsMap.has(colorName.toLowerCase())) {
-            const hex = colorHexMap[colorName.toLowerCase()] || "#808080";
+            const { hex } = resolvePrintifyColorHex(colorName);
             colorsMap.set(colorName.toLowerCase(), { id: extractedColorId, name: colorName, hex });
           }
         }
@@ -12483,24 +12460,7 @@ ${textEdgeRestrictions}
       // Update each color's hex value using the lookup map
       let updatedCount = 0;
       const updatedColors = existingColors.map(color => {
-        const colorName = color.name.toLowerCase();
-        const baseColorName = colorName
-          .replace(/^solid\s+/i, '')
-          .replace(/^heather\s+/i, 'heather ')
-          .trim();
-        
-        // Try to find a matching hex: 1) exact match, 2) normalized match, 3) partial match
-        let newHex = colorHexMap[colorName] || colorHexMap[baseColorName];
-        
-        // Partial matching if no exact match
-        if (!newHex) {
-          for (const [mapKey, mapHex] of Object.entries(colorHexMap)) {
-            if (baseColorName.includes(mapKey) || mapKey.includes(baseColorName)) {
-              newHex = mapHex;
-              break;
-            }
-          }
-        }
+        const { hex: newHex } = resolvePrintifyColorHex(color.name);
         
         if (newHex && newHex !== color.hex) {
           updatedCount++;
