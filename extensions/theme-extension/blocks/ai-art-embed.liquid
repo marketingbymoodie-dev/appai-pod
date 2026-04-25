@@ -359,13 +359,11 @@
     if (mobileNativeScroll) {
       params.set('mobileNativeScroll', '1');
     }
-    // Inline designer config — when present, the iframe skips the /product-types/:id/designer call entirely.
+    // Large Printify imports (for example Bella+Canvas 3001) can have hundreds
+    // of variants. Send designerConfig over postMessage instead of putting it
+    // in the iframe URL, which can exceed browser/proxy URL limits.
     if (config.inlineDesignerConfig) {
-      try {
-        params.set('inlineDesignerConfig', JSON.stringify(config.inlineDesignerConfig));
-      } catch (e) {
-        console.warn('[AI Art Embed] Could not serialise inlineDesignerConfig:', e);
-      }
+      params.set('deferDesignerConfig', '1');
     }
     
     if (customerId) {
@@ -799,9 +797,24 @@
       }
     }
 
+    function sendDesignerConfig() {
+      if (!config.inlineDesignerConfig) return;
+      try {
+        iframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_DESIGNER_CONFIG',
+          designerConfig: config.inlineDesignerConfig,
+          stylePresets: config.stylePresets || []
+        }, iframeOrigin || '*');
+        console.log(B, 'Sent DESIGNER_CONFIG to iframe:', config.inlineDesignerConfig.name || config.inlineDesignerConfig.id);
+      } catch(e) {
+        console.warn(B, 'Failed to send DESIGNER_CONFIG:', e.message);
+      }
+    }
+
     iframe.addEventListener('load', function() {
       console.log(B, 'Iframe loaded, starting BRIDGE_READY heartbeat');
       sendBridgeReady();
+      sendDesignerConfig();
       heartbeatTimer = setInterval(function() {
         if (bridgeAcked || heartbeatN >= MAX_HEARTBEATS) {
           clearInterval(heartbeatTimer);
@@ -909,6 +922,7 @@
       if (data.type === 'AI_ART_STUDIO_IFRAME_READY') {
         console.log(B, 'Iframe announced READY, sending BRIDGE_READY immediately');
         sendBridgeReady();
+        sendDesignerConfig();
         return;
       }
 

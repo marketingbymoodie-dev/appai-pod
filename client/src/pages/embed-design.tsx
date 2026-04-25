@@ -970,6 +970,34 @@ export default function EmbedDesign() {
     ],
   };
 
+  const applyDesignerConfig = useCallback((dc: any, source: string) => {
+    if (!dc) return;
+    console.log(`[EmbedDesign] ${source}: applying designer config. id=${dc.id} name="${dc.name}"`);
+    setProductTypeConfig({
+      id: dc.id,
+      name: dc.name,
+      description: dc.description || null,
+      aspectRatio: dc.aspectRatio,
+      designerType: dc.designerType,
+      printShape: dc.printShape,
+      canvasConfig: dc.canvasConfig,
+      sizes: dc.sizes || [],
+      frameColors: dc.frameColors || [],
+      hasPrintifyMockups: dc.hasPrintifyMockups || false,
+      baseMockupImages: dc.baseMockupImages || undefined,
+      isAllOverPrint: dc.isAllOverPrint || false,
+      aopTemplateId: dc.aopTemplateId ?? null,
+      placeholderPositions: dc.placeholderPositions || [],
+      panelFlatLayImages: dc.panelFlatLayImages || {},
+      colorLabel: dc.colorLabel || "Color",
+      printifyBlueprintId: dc.printifyBlueprintId,
+    });
+    if (dc.frameColors?.length > 0) {
+      setSelectedFrameColor(dc.frameColors[0].id);
+    }
+    setProductTypeError(null);
+  }, []);
+
   useEffect(() => {
     // Unique session ID for tracing this effect run
     const sessionId = Math.random().toString(36).substring(2, 8);
@@ -1140,30 +1168,7 @@ export default function EmbedDesign() {
       if (inlineParam) {
         try {
           const dc = JSON.parse(inlineParam);
-          console.log(`${logPrefix} INLINE CONFIG: using inlineDesignerConfig, skipping designer fetch. id=${dc.id} name="${dc.name}"`);
-          setProductTypeConfig({
-            id: dc.id,
-            name: dc.name,
-            description: dc.description || null,
-            aspectRatio: dc.aspectRatio,
-            designerType: dc.designerType,
-            printShape: dc.printShape,
-            canvasConfig: dc.canvasConfig,
-            sizes: dc.sizes || [],
-            frameColors: dc.frameColors || [],
-            hasPrintifyMockups: dc.hasPrintifyMockups || false,
-            baseMockupImages: dc.baseMockupImages || undefined,
-            isAllOverPrint: dc.isAllOverPrint || false,
-            aopTemplateId: dc.aopTemplateId ?? null,
-            placeholderPositions: dc.placeholderPositions || [],
-            panelFlatLayImages: dc.panelFlatLayImages || {},
-            colorLabel: dc.colorLabel || "Color",
-            printifyBlueprintId: dc.printifyBlueprintId,
-          });
-          if (dc.frameColors?.length > 0) {
-            setSelectedFrameColor(dc.frameColors[0].id);
-          }
-          setProductTypeError(null);
+          applyDesignerConfig(dc, 'INLINE CONFIG');
           // Still fetch style presets — lightweight, non-blocking
           fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`, 8000)
             .then(r => safeJson(r, '/api/config'))
@@ -1174,6 +1179,14 @@ export default function EmbedDesign() {
         } catch (e) {
           console.warn(`${logPrefix} Failed to parse inlineDesignerConfig, falling back to fetch:`, e);
         }
+      }
+
+      // Large imported products can exceed browser/proxy URL limits if the full
+      // designer config is sent as a query param. In that mode the parent sends
+      // the config over postMessage after the iframe announces it is ready.
+      if (searchParams.get('deferDesignerConfig') === '1') {
+        console.log(`${logPrefix} Waiting for designer config via postMessage`);
+        return;
       }
 
       const cacheBuster = `_t=${Date.now()}`;
@@ -1352,7 +1365,7 @@ export default function EmbedDesign() {
       isCancelled = true;
       masterAbort.abort();
     };
-  }, [productTypeId, productHandle]);
+  }, [productTypeId, productHandle, applyDesignerConfig]);
 
   // Fetch merchant's branding settings and apply to designer
   useEffect(() => {
@@ -3599,6 +3612,14 @@ export default function EmbedDesign() {
         // so the parent loading screen stays visible until the React UI is fully rendered.
       }
 
+      if (type === "AI_ART_STUDIO_DESIGNER_CONFIG" && event.data.designerConfig) {
+        applyDesignerConfig(event.data.designerConfig, "POSTMESSAGE CONFIG");
+        if (Array.isArray(event.data.stylePresets)) {
+          setStylePresets(event.data.stylePresets);
+        }
+        setConfigLoading(false);
+      }
+
       // Legacy PING from parent — respond with PONG (backwards compat)
       if (type === "AI_ART_STUDIO_PING") {
         console.log('[Design Studio] Received PING from parent, sending PONG');
@@ -3788,7 +3809,7 @@ export default function EmbedDesign() {
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge]);
+  }, [isStorefront, debugBridge, applyDesignerConfig]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
