@@ -16,6 +16,7 @@ import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
+import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import Stripe from "stripe";
@@ -11611,22 +11612,12 @@ ${textEdgeRestrictions}
       let printShape: string = "rectangle";
       let bleedMarginPercent = 5;
       
-      // Detect All-Over-Print (AOP) products: leggings, swimwear, all-over tees, etc.
-      // AOP products have multiple distinct print panels beyond just front/back.
-      const AOP_POSITION_NAMES = new Set([
-        "left_leg", "right_leg", "gusset",
-        "front_waistband", "back_waistband",
-        "left_panel", "right_panel",
-        "left_sleeve", "right_sleeve",
-        "left_side", "right_side",
-        "all_over", "full_body",
-      ]);
       const positionKeys = Object.keys(placeholderDimensions);
-      const hasAOPPositions = positionKeys.some(p => AOP_POSITION_NAMES.has(p));
-      // Also flag as AOP if there are 2+ positions and none of them are the standard front/back pair
-      const isStandardFrontBack = positionKeys.length <= 2 &&
-        positionKeys.every(p => p === "front" || p === "back" || p === "default");
-      const isAllOverPrint = hasAOPPositions || (positionKeys.length >= 2 && !isStandardFrontBack);
+      const isAllOverPrint = detectPrintifyAllOverPrint({
+        name,
+        description,
+        blueprintId: Number.parseInt(String(blueprintId), 10),
+      });
 
       // Detect apparel FIRST (before framed-print check)
       if (isApparelProduct) {
