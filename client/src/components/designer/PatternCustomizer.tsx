@@ -394,11 +394,13 @@ function computePanelCanvasHeight(
   const rawRatio = layout.compositeH / layout.compositeW;
 
   if (productKind === "hoodie") {
-    // Do not cap height to 2× width (old logic): zip front + hood L/R are often *taller* than 2:1.
-    // If canvas aspect ≠ layout aspect, `scaleHoodieCompositeToCanvas` letterboxes and the
-    // panels look tiny with wasted horizontal space. Soft limits only for corrupt ratios.
-    const r = Math.min(4, Math.max(0.2, rawRatio));
-    return Math.round(px * r);
+    // `scaleHoodieCompositeToCanvas` uses the same `pad` (20) for both (W - pad) / compW
+    // and (H - pad) / compH. We must have (px - pad) / W === (canvasH - pad) / H, i.e.
+    // canvasH = (px - pad) * (H / W) + pad — not `px * (H/W)` or the preview keeps grey bands.
+    if (!Number.isFinite(rawRatio) || rawRatio <= 0) return px;
+    const layoutPad = 20;
+    const r = Math.min(6, Math.max(0.15, rawRatio));
+    return Math.max(1, Math.round((px - layoutPad) * r + layoutPad));
   }
 
   const clampedRatio = Math.min(2.0, Math.max(0.3, rawRatio));
@@ -1183,7 +1185,10 @@ export function PatternCustomizer({
   const [activeView, setActiveView] = useState<HoodiePanelView>("front");
 
   const inferredLayoutKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
-  const productKind = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
+  const fromTemplate = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
+  // DB mistake: `leggings_v1` on a zip AOP; placeholders still infer "hoodie". Use hoodie rules.
+  const productKind: AopLayoutKind =
+    inferredLayoutKind === "hoodie" && fromTemplate === "leggings" ? "hoodie" : fromTemplate;
   const panelFillColor = bgColor && bgColor !== "transparent" ? bgColor : "#ffffff";
 
   const getEffectivePanelConfig = useCallback(
