@@ -3,7 +3,7 @@ import pRetry from "p-retry";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
-const MAX_PANEL_UPLOAD_CONCURRENCY = 3;
+const MAX_PANEL_UPLOAD_CONCURRENCY = 5;
 /** Max mockups returned after preference ordering (leggings grid + fallbacks). */
 const MAX_MOCKUP_VIEWS = 12;
 
@@ -670,9 +670,9 @@ export async function generatePrintifyMockup(
         return data;
       },
       {
-        retries: 14,
-        minTimeout: 2000,
-        maxTimeout: 9000,
+        retries: 20,
+        minTimeout: 1000,
+        maxTimeout: 4000,
         onFailedAttempt: (err) => {
           console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
         },

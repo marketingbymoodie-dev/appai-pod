@@ -241,12 +241,23 @@ function getSeamPairs(
  */
 function buildCompositeLayout(
   view: HoodiePanelView,
-  panels: Array<{ position: string; width: number; height: number }>
+  panels: Array<{ position: string; width: number; height: number }>,
+  svgImages?: Record<string, HTMLImageElement>,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   const viewPanels = panels.filter(p => getPanelGroup(p.position) === view && !isHoodieSupportingPanel(p.position));
   if (viewPanels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
 
-  const maxH = Math.max(...viewPanels.map(p => p.height));
+  const displaySize = (panel: { position: string; width: number; height: number }) => {
+    const svgImg = svgImages ? getSvgImageForPosition(svgImages, panel.position) : null;
+    const naturalW = svgImg?.naturalWidth || svgImg?.width || 0;
+    const naturalH = svgImg?.naturalHeight || svgImg?.height || 0;
+    if (naturalW > 0 && naturalH > 0) {
+      return { w: panel.height * (naturalW / naturalH), h: panel.height };
+    }
+    return { w: panel.width, h: panel.height };
+  };
+
+  const maxH = Math.max(...viewPanels.map(p => displaySize(p).h));
 
   const sorted = [...viewPanels].sort((a, b) => {
     const aLeft = a.position.toLowerCase().includes("left");
@@ -260,8 +271,9 @@ function buildCompositeLayout(
   let x = 0;
   const slots: PanelSlot[] = [];
   for (const p of sorted) {
-    slots.push({ position: p.position, x, y: 0, w: p.width, h: p.height });
-    x += p.width + GAP;
+    const size = displaySize(p);
+    slots.push({ position: p.position, x, y: 0, w: size.w, h: size.h });
+    x += size.w + GAP;
   }
   return { compositeW: x - GAP, compositeH: maxH, slots };
 }
@@ -560,8 +572,9 @@ function hitTestHoodiePlacePanel(
   canvas: HTMLCanvasElement,
   activeView: "front" | "back" | "hood",
   panelPositions: Array<{ position: string; width: number; height: number }>,
+  svgImages: Record<string, HTMLImageElement>,
 ): string | null {
-  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
   if (compositeW === 0) return null;
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / Math.max(rect.width, 1);
@@ -1427,7 +1440,7 @@ export function PatternCustomizer({
     (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number, canvasH = px) => {
       const pad = 20;
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
         if (compositeW === 0) return;
         const scl = Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
@@ -1650,7 +1663,7 @@ export function PatternCustomizer({
       };
 
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
         drawSlots(slots, compositeW, compositeH);
       } else {
         const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
@@ -1676,7 +1689,7 @@ export function PatternCustomizer({
     if (panelPositions.length > 0 && (mode === "place" || mode === "pattern")) {
       const layout =
         productKind === "hoodie"
-          ? buildCompositeLayout(activeView, panelPositions)
+          ? buildCompositeLayout(activeView, panelPositions, svgImages)
           : buildLinearPanelsLayout(panelPositions, productKind === "leggings" ? seamBleedPx : 0);
       canvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
     }
@@ -1774,7 +1787,7 @@ export function PatternCustomizer({
       if (mirrorMode) {
         const { slots } =
           productKind === "hoodie"
-            ? buildCompositeLayout(activeView, panelPositions)
+            ? buildCompositeLayout(activeView, panelPositions, svgImages)
             : buildLinearPanelsLayout(panelPositions, 0);
         const source = getMirrorSource(panel, slots);
         return source || panel;
@@ -1786,7 +1799,7 @@ export function PatternCustomizer({
       if (mode !== "place") return;
       const hit =
         productKind === "hoodie"
-          ? hitTestHoodiePlacePanel(e.clientX, e.clientY, canvas, activeView, panelPositions)
+          ? hitTestHoodiePlacePanel(e.clientX, e.clientY, canvas, activeView, panelPositions, svgImages)
           : hitTestLinearPlacePanel(
               e.clientX,
               e.clientY,
@@ -1825,7 +1838,7 @@ export function PatternCustomizer({
       const touch = e.touches[0];
       const hit =
         productKind === "hoodie"
-          ? hitTestHoodiePlacePanel(touch.clientX, touch.clientY, canvas, activeView, panelPositions)
+          ? hitTestHoodiePlacePanel(touch.clientX, touch.clientY, canvas, activeView, panelPositions, svgImages)
           : hitTestLinearPlacePanel(
               touch.clientX,
               touch.clientY,
@@ -1873,7 +1886,7 @@ export function PatternCustomizer({
       canvas.removeEventListener("touchmove",  onTouchMove);
       window.removeEventListener("touchend",   onMouseUp);
     };
-  }, [activePanel, mode, perPanelTransforms, mirrorMode, syncSidesMode, productKind, activeView, panelPositions, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activePanel, mode, perPanelTransforms, mirrorMode, syncSidesMode, productKind, activeView, panelPositions, svgImages, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updatePanelTransform = useCallback(
     (position: string, partial: Partial<PanelTransform>) => {
@@ -1945,7 +1958,7 @@ export function PatternCustomizer({
     let previewSlotW = px;
     let previewSlotH = px;
     if (productKind === "hoodie") {
-      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
+      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions, svgImages);
       if (layout.compositeW > 0) {
         const previewCanvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
         const scl = Math.min((px - 20) / layout.compositeW, (previewCanvasH - 20) / layout.compositeH, 1);
@@ -2236,7 +2249,7 @@ export function PatternCustomizer({
 
           // Compute upscale: preview → output canvas px (= print px × cScaleRatio).
           const view = getPanelGroup(rightPos);
-          const layout = buildCompositeLayout(view, panelPositions);
+          const layout = buildCompositeLayout(view, panelPositions, svgImages);
           const previewCanvasH = computePanelCanvasHeight(previewPx, layout, productKind, panelPositions);
           const layoutScl = layout.compositeW > 0
             ? Math.min((previewPx - 20) / layout.compositeW, (previewCanvasH - 20) / layout.compositeH, 1)
