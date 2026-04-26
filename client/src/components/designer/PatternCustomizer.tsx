@@ -165,6 +165,7 @@ const SNAP_THRESHOLD_PX = 10;
 interface PanelSlot { position: string; x: number; y: number; w: number; h: number }
 
 type HoodiePanelView = "front" | "back" | "hood";
+type HoodiePatternSpec = { tileInches: number; offsetX: number };
 
 function isHoodieSupportingPanel(position: string): boolean {
   const lower = position.toLowerCase();
@@ -1091,8 +1092,8 @@ export function PatternCustomizer({
     return kind === "leggings";
   });
   const [patternOffsetX, setPatternOffsetX] = useState(initialPlacement?.patternOffsetX ?? 0);
-  const [hoodiePatternOffsets, setHoodiePatternOffsets] = useState<Partial<Record<HoodiePanelView, number>>>({
-    front: initialPlacement?.patternOffsetX ?? 0,
+  const [hoodiePatternSpecs, setHoodiePatternSpecs] = useState<Partial<Record<HoodiePanelView, HoodiePatternSpec>>>({
+    front: { tileInches, offsetX: initialPlacement?.patternOffsetX ?? 0 },
   });
   const [seamBleedPx, setSeamBleedPx] = useState(
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
@@ -1137,26 +1138,54 @@ export function PatternCustomizer({
     [panelPositions],
   );
 
-  const activePatternOffsetX =
-    productKind === "hoodie" ? (hoodiePatternOffsets[activeView] ?? 0) : patternOffsetX;
+  const fallbackPatternSpec = useMemo<HoodiePatternSpec>(
+    () => ({ tileInches, offsetX: patternOffsetX }),
+    [patternOffsetX, tileInches],
+  );
+
+  const getPatternSpecForView = useCallback(
+    (view: HoodiePanelView): HoodiePatternSpec =>
+      hoodiePatternSpecs[view] || hoodiePatternSpecs.front || fallbackPatternSpec,
+    [fallbackPatternSpec, hoodiePatternSpecs],
+  );
+
+  const activePatternSpec =
+    productKind === "hoodie" ? getPatternSpecForView(activeView) : fallbackPatternSpec;
+  const activePatternTileInches = activePatternSpec.tileInches;
+  const activePatternOffsetX = activePatternSpec.offsetX;
+
+  const setActivePatternTileInches = useCallback(
+    (value: number) => {
+      if (productKind === "hoodie") {
+        setHoodiePatternSpecs((prev) => {
+          const base = prev[activeView] || prev.front || fallbackPatternSpec;
+          return { ...prev, [activeView]: { ...base, tileInches: value } };
+        });
+      } else {
+        setTileInches(value);
+      }
+    },
+    [activeView, fallbackPatternSpec, productKind],
+  );
 
   const setActivePatternOffsetX = useCallback(
     (value: number) => {
       if (productKind === "hoodie") {
-        setHoodiePatternOffsets((prev) => ({ ...prev, [activeView]: value }));
+        setHoodiePatternSpecs((prev) => {
+          const base = prev[activeView] || prev.front || fallbackPatternSpec;
+          return { ...prev, [activeView]: { ...base, offsetX: value } };
+        });
       } else {
         setPatternOffsetX(value);
       }
     },
-    [activeView, productKind],
+    [activeView, fallbackPatternSpec, productKind],
   );
 
-  const getPatternOffsetForPanel = useCallback(
-    (position: string) =>
-      productKind === "hoodie"
-        ? (hoodiePatternOffsets[getPanelGroup(position)] ?? 0)
-        : patternOffsetX,
-    [hoodiePatternOffsets, patternOffsetX, productKind],
+  const getPatternSpecForPanel = useCallback(
+    (position: string): HoodiePatternSpec =>
+      productKind === "hoodie" ? getPatternSpecForView(getPanelGroup(position)) : fallbackPatternSpec,
+    [fallbackPatternSpec, getPatternSpecForView, productKind],
   );
 
   const setActiveHoodieView = useCallback(
@@ -1392,7 +1421,12 @@ export function PatternCustomizer({
               ? canonicalHoodieTransformPanelId(slot.position, true, panelPositions)
               : null;
           const syncT = syncTarget ? (perPanelTransforms[syncTarget] || t) : t;
-          const effectiveT = sourcePos ? (perPanelTransforms[sourcePos] || t) : syncTarget ? syncT : t;
+          const isSyncedLeftPanel =
+            !!syncTarget &&
+            syncTarget !== slot.position &&
+            slot.position.toLowerCase().includes("left");
+          const syncedT = isSyncedLeftPanel ? { ...syncT, dxPx: -syncT.dxPx } : syncT;
+          const effectiveT = sourcePos ? (perPanelTransforms[sourcePos] || t) : syncTarget ? syncedT : t;
           const renderArtwork = shouldRenderPanelArtwork(sourcePos || slot.position);
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
@@ -1493,7 +1527,7 @@ export function PatternCustomizer({
         const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
         const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
         // Convert patternOffsetX (% of tile width) to screen pixels
-        const tileWScreen = Math.max(4, tileInches * pxPerInch);
+        const tileWScreen = Math.max(4, activePatternTileInches * pxPerInch);
         const offsetScreenPx = (activePatternOffsetX / 100) * tileWScreen;
 
         // Find right leg slot for sync/mirror calculations (leggings only)
@@ -1521,8 +1555,7 @@ export function PatternCustomizer({
           bCtx.save();
           bCtx.translate(-rsx, -rsy);
           // Apply horizontal offset so the buffer matches the right leg's shifted anchor
-          const tileWBuf = Math.max(4, tileInches * pxPerInch);
-          drawTiledMotifInRect(bCtx, img, rsx, rsy, rsw, rsh, tileInches, patternType, pxPerInch, rsx + offsetScreenPx, offY);
+          drawTiledMotifInRect(bCtx, img, rsx, rsy, rsw, rsh, activePatternTileInches, patternType, pxPerInch, rsx + offsetScreenPx, offY);
           bCtx.restore();
           rightLegTileBuffer = buf;
         }
@@ -1576,7 +1609,7 @@ export function PatternCustomizer({
             } else {
               // Apply offset to any panel that didn't get an explicit anchor above
               const effectiveAnchorX = tileAnchorX ?? (sx + offsetScreenPx);
-              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, tileInches, patternType, pxPerInch, effectiveAnchorX, tileAnchorY);
+              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, activePatternTileInches, patternType, pxPerInch, effectiveAnchorX, tileAnchorY);
             }
           }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
@@ -1596,7 +1629,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, tileInches, patternType, mirrorMode, syncSidesMode, activePatternOffsetX, seamBleedPx],
+    [productKind, panelPositions, activeView, svgImages, bgColor, activePatternTileInches, patternType, mirrorMode, syncSidesMode, activePatternOffsetX, seamBleedPx],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -1670,6 +1703,7 @@ export function PatternCustomizer({
     mirrorMode,
     syncSidesMode,
     activePatternOffsetX,
+    activePatternTileInches,
     svgImages,
     activeView,
     previewPx,
@@ -1863,10 +1897,10 @@ export function PatternCustomizer({
     onSettingsChange({
       patternType,
       tilesAcross: 0,
-      tileInches,
+      tileInches: activePatternTileInches,
       bgColor: bgColor || undefined,
     });
-  }, [tileInches, patternType, bgColor, onSettingsChange]);
+  }, [activePatternTileInches, patternType, bgColor, onSettingsChange]);
 
   // ── Full-res panel export ──────────────────────────────────────────────────
 
@@ -2094,9 +2128,9 @@ export function PatternCustomizer({
                 ctx.fillStyle = bgColor;
                 ctx.fillRect(0, 0, outW, outH);
               }
-              const panelPatternOffsetX = getPatternOffsetForPanel(p.position);
-              drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInches, patternType, PRINT_DPI * renderScale,
-                (panelPatternOffsetX / 100) * Math.max(4, tileInches * PRINT_DPI * renderScale), 0);
+              const panelPatternSpec = getPatternSpecForPanel(p.position);
+              drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, panelPatternSpec.tileInches, patternType, PRINT_DPI * renderScale,
+                (panelPatternSpec.offsetX / 100) * Math.max(4, panelPatternSpec.tileInches * PRINT_DPI * renderScale), 0);
               let outForUpload: HTMLCanvasElement = canvas;
               if (shouldFlipLeggingsLegSlot(productKind, p.position)) {
                 const flipped = document.createElement("canvas");
@@ -2117,7 +2151,7 @@ export function PatternCustomizer({
           await onApply(motifUrl, {
             mode,
             patternType,
-            tileInches,
+            tileInches: productKind === "hoodie" ? getPatternSpecForView("front").tileInches : tileInches,
             bgColor,
             panelUrls,
             getPrintPanelUrls: async () =>
@@ -2193,12 +2227,23 @@ export function PatternCustomizer({
             ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
             : 1;
           const rightPreviewSlotW = rightDef.width * layoutScl;
+          const rightPreviewSlotH = rightDef.height * layoutScl;
+          const leftPreviewSlotW = leftDef.width * layoutScl;
+          const leftPreviewSlotH = leftDef.height * layoutScl;
           const upscale = cRW / (rightPreviewSlotW || cRW);
+          const upscaleY = cH / (rightPreviewSlotH || cH);
+          const leftUpscale = cLW / (leftPreviewSlotW || cLW);
+          const leftUpscaleY = cH / (leftPreviewSlotH || cH);
 
           const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
           const printT: PanelTransform = {
             dxPx: tRight.dxPx * upscale,
-            dyPx: tRight.dyPx * upscale,
+            dyPx: tRight.dyPx * upscaleY,
+            scalePct: tRight.scalePct,
+          };
+          const mirroredLeftT: PanelTransform = {
+            dxPx: -tRight.dxPx * leftUpscale,
+            dyPx: tRight.dyPx * leftUpscaleY,
             scalePct: tRight.scalePct,
           };
 
@@ -2218,8 +2263,13 @@ export function PatternCustomizer({
           if (rightSvgImg) ctx.drawImage(rightSvgImg, 0,    0, cRW, cH);
           if (leftSvgImg)  ctx.drawImage(leftSvgImg,  cRW,  0, cLW, cH);
 
-          // Draw artwork across the full composite (seam continuity)
-          drawArtworkInSlot(ctx, motifImage, 0, 0, cTotalW, cH, printT, false);
+          if (productKind === "hoodie" && syncSidesMode) {
+            drawArtworkInSlot(ctx, motifImage, 0, 0, cRW, cH, printT, false);
+            drawArtworkInSlot(ctx, motifImage, cRW, 0, cLW, cH, mirroredLeftT, false);
+          } else {
+            // Draw artwork across the full composite (seam continuity)
+            drawArtworkInSlot(ctx, motifImage, 0, 0, cTotalW, cH, printT, false);
+          }
 
           // Crop right panel
           const cropRight = document.createElement("canvas");
@@ -2448,7 +2498,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, getPatternOffsetForPanel, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, getPatternSpecForPanel, getPatternSpecForView, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -2555,7 +2605,7 @@ export function PatternCustomizer({
                     ))}
                   </div>
                   <p className="text-[10px] text-muted-foreground leading-snug">
-                    All printable hoodie panels receive the all-over pattern; this preview lets you inspect each group.
+                    Front, Back and Hood can use their own pattern size/alignment. Unedited views inherit Front.
                   </p>
                 </div>
               )}
@@ -2576,10 +2626,10 @@ export function PatternCustomizer({
                 </Select>
               </div>
               <div>
-                <Label className="text-xs">Tile size: {tileInches.toFixed(2)}"</Label>
+                <Label className="text-xs">Tile size: {activePatternTileInches.toFixed(2)}"</Label>
                 <Slider
-                  value={[tileInches]}
-                  onValueChange={v => setTileInches(Math.max(MIN_TILE_INCHES, Math.min(6, v[0])))}
+                  value={[activePatternTileInches]}
+                  onValueChange={v => setActivePatternTileInches(Math.max(MIN_TILE_INCHES, Math.min(6, v[0])))}
                   min={MIN_TILE_INCHES}
                   max={6}
                   step={0.25}
