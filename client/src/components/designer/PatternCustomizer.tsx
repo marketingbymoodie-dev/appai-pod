@@ -121,8 +121,10 @@ export const HOODIE_COMPOSITE_GAP_PX = 2;
  * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
  * between panels is GAP - OVERLAP, countering large transparent margins in Printify flat SVGs.
  * Tuned to match a tight on-screen centre seam. Large value offsets wide transparent margins in mask SVGs.
+ * Applied per active view only: the **Front** tab composite (chest L/R, then pockets) and the **Hood** tab
+ * composite (hood L/R) are built separately — not a single "squish" of every panel in one pass.
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 120;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 200;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite — matches
@@ -419,22 +421,63 @@ function buildCompositeLayout(
       const frontSeam = getSeamPairs(panels).find(
         ([a, b]) => getPanelGroup(a) === "front" && getPanelGroup(b) === "front",
       );
-      for (const p of pocketPanels) {
-        const size = displaySize(p);
-        const pl = p.position.toLowerCase();
-        let px: number;
-        if (pocketPanels.length === 1) {
-          px = Math.max(0, (compositeW - size.w) / 2);
-        } else if (frontSeam) {
-          const sLeft = slots.find(s => s.position === frontSeam[0]);
-          const sRight = slots.find(s => s.position === frontSeam[1]);
-          if (pl.includes("left") && !pl.includes("right") && sLeft) px = sLeft.x;
-          else if (pl.includes("right") && sRight) px = sRight.x;
-          else px = Math.max(0, (compositeW - size.w) / 2);
+      const pocketLrStep = HOODIE_COMPOSITE_GAP_PX - HOODIE_L_R_SLOT_OVERLAP_PX;
+
+      if (pocketPanels.length === 2 && frontSeam) {
+        const pl = pocketPanels.find(p => {
+          const l = p.position.toLowerCase();
+          return l.includes("left") && l.includes("pocket");
+        });
+        const pr = pocketPanels.find(p => {
+          const l = p.position.toLowerCase();
+          return l.includes("right") && l.includes("pocket");
+        });
+        const sLeftMain = slots.find(s => s.position === frontSeam[0]);
+        if (pl && pr && sLeftMain) {
+          // Same L/R print-space step as the chest row — *not* anchoring to full-width column xs (that left a huge void between two narrow pocket masks).
+          const szL = displaySize(pl);
+          const szR = displaySize(pr);
+          const yP = row2Y;
+          const hP = Math.max(szL.h, szR.h);
+          slots.push({ position: pl.position, x: sLeftMain.x, y: yP, w: szL.w, h: szL.h });
+          slots.push({
+            position: pr.position,
+            x: sLeftMain.x + szL.w + pocketLrStep,
+            y: yP,
+            w: szR.w,
+            h: szR.h,
+          });
         } else {
-          px = Math.max(0, (compositeW - size.w) / 2);
+          for (const p of pocketPanels) {
+            const size = displaySize(p);
+            const plo = p.position.toLowerCase();
+            const pxP =
+              plo.includes("left") && !plo.includes("right")
+                ? (slots.find(s => s.position === frontSeam[0])?.x ?? 0)
+                : plo.includes("right")
+                  ? (slots.find(s => s.position === frontSeam[1])?.x ?? 0)
+                  : Math.max(0, (compositeW - size.w) / 2);
+            slots.push({ position: p.position, x: pxP, y: row2Y, w: size.w, h: size.h });
+          }
         }
-        slots.push({ position: p.position, x: px, y: row2Y, w: size.w, h: size.h });
+      } else {
+        for (const p of pocketPanels) {
+          const size = displaySize(p);
+          const plo = p.position.toLowerCase();
+          let px: number;
+          if (pocketPanels.length === 1) {
+            px = Math.max(0, (compositeW - size.w) / 2);
+          } else if (frontSeam) {
+            const sLeft = slots.find(s => s.position === frontSeam[0]);
+            const sRight = slots.find(s => s.position === frontSeam[1]);
+            if (plo.includes("left") && !plo.includes("right") && sLeft) px = sLeft.x;
+            else if (plo.includes("right") && sRight) px = sRight.x;
+            else px = Math.max(0, (compositeW - size.w) / 2);
+          } else {
+            px = Math.max(0, (compositeW - size.w) / 2);
+          }
+          slots.push({ position: p.position, x: px, y: row2Y, w: size.w, h: size.h });
+        }
       }
       compositeH = Math.max(...slots.map(s => s.y + s.h));
       compositeW = Math.max(...slots.map(s => s.x + s.w), compositeW);
@@ -2798,7 +2841,7 @@ export function PatternCustomizer({
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.04.26"
+            data-appai-pc="2026.04.27"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
             data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
