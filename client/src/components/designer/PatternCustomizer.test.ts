@@ -15,9 +15,9 @@ describe("getDefaultPanelRenderConfig", () => {
     expect(hood.enabled).toBe(false);
   });
 
-  it("defaults hoodie supporting panels to solid mode", () => {
+  it("defaults hoodie supporting panels to background color", () => {
     const cfg = getDefaultPanelRenderConfig("right_cuff_panel", "hoodie", "hoodie_v1");
-    expect(cfg.enabled).toBe(true);
+    expect(cfg.enabled).toBe(false);
     expect(cfg.mode).toBe("solid");
   });
 });

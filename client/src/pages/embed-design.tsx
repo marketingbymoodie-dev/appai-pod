@@ -859,6 +859,7 @@ export default function EmbedDesign() {
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   
@@ -1544,6 +1545,34 @@ export default function EmbedDesign() {
       // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
       if (absUrl) setAopPatternUrl(absUrl);
       sendMockupsToParent(absMockups);
+    }
+
+    const shouldAutoRemoveBg =
+      !!productTypeConfig?.isAllOverPrint || productTypeConfig?.designerType === "apparel";
+    if (shouldAutoRemoveBg && !bgRemovedLoadedDesignsRef.current.has(designId)) {
+      bgRemovedLoadedDesignsRef.current.add(designId);
+      void (async () => {
+        try {
+          const response = await safeFetch(`${API_BASE}/api/pattern/remove-bg`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imageUrl: absUrl }),
+          }, 60000);
+          if (!response.ok) throw new Error(`Remove BG failed (${response.status})`);
+          const result = await response.json();
+          const cleanedUrl = typeof result?.url === "string" ? result.url : "";
+          if (!cleanedUrl) return;
+          setGeneratedDesign((prev) =>
+            prev?.id === designId ? { ...prev, imageUrl: cleanedUrl } : prev,
+          );
+          setAopPendingMotifUrl((prev) => (prev === absUrl ? cleanedUrl : prev));
+          if (productTypeConfig?.isAllOverPrint) {
+            setAopPatternUrl(cleanedUrl);
+          }
+        } catch (error) {
+          console.warn("[LoadDesign] Auto background removal failed; using original artwork:", error);
+        }
+      })();
     }
   };
 

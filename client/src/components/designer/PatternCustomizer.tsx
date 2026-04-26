@@ -162,6 +162,18 @@ const SNAP_THRESHOLD_PX = 10;
 
 interface PanelSlot { position: string; x: number; y: number; w: number; h: number }
 
+type HoodiePanelView = "front" | "back" | "hood";
+
+function isHoodieSupportingPanel(position: string): boolean {
+  const lower = position.toLowerCase();
+  return (
+    lower.includes("cuff") ||
+    lower.includes("waistband") ||
+    lower.includes("pocket") ||
+    lower.includes("placket")
+  );
+}
+
 function getPanelGroup(position: string): "front" | "back" | "hood" {
   const l = position.toLowerCase();
   if (l.includes("hood")) return "hood";
@@ -179,19 +191,14 @@ export function getDefaultPanelRenderConfig(
   const isHoodieTemplate = productKind === "hoodie" || aopTemplateId === "hoodie_v1";
 
   if (isHoodieTemplate) {
-    if (
-      lower.includes("cuff") ||
-      lower.includes("waistband") ||
-      lower.includes("pocket") ||
-      lower.includes("placket")
-    ) {
-      return { enabled: true, mode: "solid", solidColor: "#ffffff" };
+    if (isHoodieSupportingPanel(lower)) {
+      return { enabled: false, mode: "solid" };
     }
     if (group === "front") {
       return { enabled: true, mode: "artwork" };
     }
     if (group === "back" || group === "hood") {
-      return { enabled: false, mode: "artwork", solidColor: "#ffffff" };
+      return { enabled: false, mode: "artwork" };
     }
   }
 
@@ -229,10 +236,10 @@ function getSeamPairs(
  * Front view: right panel first (seam at centre), left panel second.
  */
 function buildCompositeLayout(
-  view: "front" | "back" | "hood",
+  view: HoodiePanelView,
   panels: Array<{ position: string; width: number; height: number }>
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
-  const viewPanels = panels.filter(p => getPanelGroup(p.position) === view);
+  const viewPanels = panels.filter(p => getPanelGroup(p.position) === view && !isHoodieSupportingPanel(p.position));
   if (viewPanels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
 
   const maxH = Math.max(...viewPanels.map(p => p.height));
@@ -1048,10 +1055,57 @@ export function PatternCustomizer({
   );
 
   // Active view for hoodie (front / back / hood)
-  const [activeView, setActiveView] = useState<"front" | "back" | "hood">("front");
+  const [activeView, setActiveView] = useState<HoodiePanelView>("front");
 
   const inferredLayoutKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
   const productKind = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
+  const panelFillColor = bgColor && bgColor !== "transparent" ? bgColor : "#ffffff";
+
+  const getEffectivePanelConfig = useCallback(
+    (position: string): PanelRenderConfig =>
+      panelRenderConfig[position] || getDefaultPanelRenderConfig(position, productKind, aopTemplateId),
+    [panelRenderConfig, productKind, aopTemplateId],
+  );
+
+  const shouldRenderPanelArtwork = useCallback(
+    (position: string): boolean => {
+      const cfg = getEffectivePanelConfig(position);
+      return cfg.enabled !== false && cfg.mode !== "solid";
+    },
+    [getEffectivePanelConfig],
+  );
+
+  const hoodieSupportingPanels = useMemo(
+    () =>
+      productKind === "hoodie"
+        ? panelPositions.filter((p) => isHoodieSupportingPanel(p.position))
+        : [],
+    [panelPositions, productKind],
+  );
+
+  const hoodieOtherPanelsUseArtwork = useMemo(
+    () =>
+      hoodieSupportingPanels.length > 0 &&
+      hoodieSupportingPanels.every((p) => shouldRenderPanelArtwork(p.position)),
+    [hoodieSupportingPanels, shouldRenderPanelArtwork],
+  );
+
+  const availableHoodieViews = useMemo(
+    () =>
+      (["front", "back", "hood"] as const).filter((view) =>
+        panelPositions.some((p) => getPanelGroup(p.position) === view && !isHoodieSupportingPanel(p.position)),
+      ),
+    [panelPositions],
+  );
+
+  const setActiveHoodieView = useCallback(
+    (view: HoodiePanelView) => {
+      setActiveView(view);
+      const firstPanel = buildCompositeLayout(view, panelPositions).slots[0]?.position || null;
+      if (firstPanel) setActivePanel(firstPanel);
+    },
+    [panelPositions],
+  );
 
   useEffect(() => {
     if (panelPositions.length === 0) return;
@@ -1065,6 +1119,19 @@ export function PatternCustomizer({
       return next;
     });
   }, [panelPositions, productKind, aopTemplateId]);
+
+  useEffect(() => {
+    if (productKind !== "hoodie") return;
+    const currentViewPanels = buildCompositeLayout(activeView, panelPositions).slots;
+    if (currentViewPanels.length === 0 && availableHoodieViews[0]) {
+      setActiveHoodieView(availableHoodieViews[0]);
+      return;
+    }
+    if (!activePanel || !currentViewPanels.some((slot) => slot.position === activePanel)) {
+      const firstPanel = currentViewPanels[0]?.position;
+      if (firstPanel) setActivePanel(firstPanel);
+    }
+  }, [productKind, activeView, activePanel, panelPositions, availableHoodieViews, setActiveHoodieView]);
 
   // ── Image loading ──────────────────────────────────────────────────────────
   // Load motif via fetch → blob URL so the canvas is never tainted by cross-origin
@@ -1260,12 +1327,14 @@ export function PatternCustomizer({
           const mirrorTarget = mirrorMode && isMirrorTarget(slot.position, slots);
           const sourcePos = mirrorTarget ? getMirrorSource(slot.position, slots) : null;
           const effectiveT = sourcePos ? (perPanelTransforms[sourcePos] || t) : t;
+          const renderArtwork = shouldRenderPanelArtwork(sourcePos || slot.position);
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
-            const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-            offCtx.fillStyle = fill;
+            offCtx.fillStyle = panelFillColor;
             offCtx.fillRect(sx, sy, sw, sh);
-            drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
+            if (renderArtwork) {
+              drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
+            }
           }, false);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, false);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
@@ -1324,12 +1393,14 @@ export function PatternCustomizer({
           const effectiveT = doMirror ? rightT : useSyncSides ? symT : t;
 
           const flipSlot = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
+          const renderArtwork = shouldRenderPanelArtwork(slot.position);
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
-            offCtx.fillStyle = fill;
+            offCtx.fillStyle = panelFillColor;
             offCtx.fillRect(sx, sy, sw, sh);
-            drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
+            if (renderArtwork) {
+              drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
+            }
           }, flipSlot);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
@@ -1341,7 +1412,7 @@ export function PatternCustomizer({
         }
       }
     },
-    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, syncSidesMode, bgColor, seamBleedPx],
+    [productKind, panelPositions, activeView, svgImages, perPanelTransforms, activePanel, mirrorMode, syncSidesMode, panelFillColor, seamBleedPx, shouldRenderPanelArtwork],
   );
 
   const renderPatternMaskedPreview = useCallback(
@@ -1839,15 +1910,12 @@ export function PatternCustomizer({
     pixelCap: number,
   ): { position: string; dataUrl: string }[] {
     return urls.map((entry) => {
-      const cfg = panelRenderConfig[entry.position];
-      if (!cfg) return entry;
-      if (cfg.enabled && cfg.mode === "artwork") return entry;
+      if (shouldRenderPanelArtwork(entry.position)) return entry;
       const panel = panelPositions.find((p) => p.position === entry.position);
       if (!panel) return entry;
-      const solidColor = cfg.solidColor || (bgColor && bgColor !== "transparent" ? bgColor : "#ffffff");
       return {
         position: entry.position,
-        dataUrl: buildSolidPanelDataUrl(panel, pixelCap, solidColor),
+        dataUrl: buildSolidPanelDataUrl(panel, pixelCap, panelFillColor),
       };
     });
   }
@@ -2305,7 +2373,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, aopTemplateId, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, shouldRenderPanelArtwork]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -2353,31 +2421,6 @@ export function PatternCustomizer({
             />
           </div>
 
-          {mode === "place" && productKind === "hoodie" && (() => {
-            const availableViews = (["front", "back", "hood"] as const).filter(v =>
-              panelPositions.some(p => getPanelGroup(p.position) === v)
-            );
-            if (availableViews.length < 2) return null;
-            return (
-              <div className="flex gap-1 mt-2">
-                {availableViews.map(v => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setActiveView(v)}
-                    className={`flex-1 px-2 py-1 text-xs rounded capitalize border transition-colors ${
-                      activeView === v
-                        ? "bg-foreground text-background border-foreground"
-                        : "bg-background border-border text-muted-foreground"
-                    }`}
-                  >
-                    {v}
-                  </button>
-                ))}
-              </div>
-            );
-          })()}
-
           {mode === "place" && svgLoadErrors.length > 0 && (
             <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
               Panel shapes unavailable: {svgLoadErrors.join(", ")} — showing outline only.
@@ -2403,6 +2446,17 @@ export function PatternCustomizer({
               </button>
             ))}
           </div>
+
+          <Button
+            type="button"
+            onClick={handleApply}
+            disabled={isLoading}
+            size="sm"
+            className="w-full shrink-0 overflow-hidden"
+          >
+            {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Apply to Mockups
+          </Button>
 
           {mode === "pattern" && (
             <>
@@ -2493,7 +2547,57 @@ export function PatternCustomizer({
 
           {mode === "place" && (
             <>
-              {activePanelT && transformEditPanelId && activePanel && (
+              {productKind === "hoodie" && availableHoodieViews.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-xs">View</Label>
+                  <div className="flex gap-1">
+                    {availableHoodieViews.map((view) => (
+                      <button
+                        key={view}
+                        type="button"
+                        onClick={() => setActiveHoodieView(view)}
+                        className={`flex-1 px-2 py-1.5 text-xs rounded-md capitalize border transition-colors ${
+                          activeView === view
+                            ? "bg-foreground text-background border-foreground"
+                            : "bg-background border-border text-muted-foreground hover:border-foreground/40"
+                        }`}
+                      >
+                        {view}
+                      </button>
+                    ))}
+                  </div>
+                  {activePanel && (
+                    <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                      <Label htmlFor="panel-artwork-enabled" className="text-xs cursor-pointer">
+                        Artwork enabled
+                      </Label>
+                      <Switch
+                        id="panel-artwork-enabled"
+                        checked={buildCompositeLayout(activeView, panelPositions).slots.some((slot) =>
+                          shouldRenderPanelArtwork(slot.position),
+                        )}
+                        onCheckedChange={(v) => {
+                          const slots = buildCompositeLayout(activeView, panelPositions).slots;
+                          setPanelRenderConfig((prev) => {
+                            const next = { ...prev };
+                            for (const slot of slots) {
+                              next[slot.position] = {
+                                ...(prev[slot.position] || getDefaultPanelRenderConfig(slot.position, productKind, aopTemplateId)),
+                                enabled: v,
+                                mode: v ? "artwork" : "solid",
+                              };
+                            }
+                            return next;
+                          });
+                        }}
+                        className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
                 <div>
                   <Label className="text-xs">Artwork scale: {activePanelT.scalePct}%</Label>
                   <Slider
@@ -2507,7 +2611,7 @@ export function PatternCustomizer({
                 </div>
               )}
 
-              {activePanelT && transformEditPanelId && activePanel && (
+              {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
                 <button
                   type="button"
                   onClick={() => updatePanelTransform(transformEditPanelId, { dxPx: 0, dyPx: 0, scalePct: 100 })}
@@ -2517,88 +2621,71 @@ export function PatternCustomizer({
                 </button>
               )}
 
-              {activePanel && (
-                <>
-                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
-                    <Label htmlFor="panel-artwork-enabled" className="text-xs cursor-pointer">
-                      Artwork enabled
-                    </Label>
-                    <Switch
-                      id="panel-artwork-enabled"
-                      checked={panelRenderConfig[activePanel]?.enabled ?? true}
-                      onCheckedChange={(v) =>
-                        setPanelRenderConfig((prev) => ({
-                          ...prev,
-                          [activePanel]: {
-                            ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
-                            enabled: v,
-                          },
-                        }))
-                      }
-                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Panel mode</Label>
-                    <Select
-                      value={panelRenderConfig[activePanel]?.mode ?? "artwork"}
-                      onValueChange={(v) =>
-                        setPanelRenderConfig((prev) => ({
-                          ...prev,
-                          [activePanel]: {
-                            ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
-                            mode: v as "artwork" | "solid",
-                          },
-                        }))
-                      }
-                    >
-                      <SelectTrigger className="h-9 text-xs min-w-0 flex-1 border-foreground/20 mt-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="artwork" className="text-xs">Artwork</SelectItem>
-                        <SelectItem value="solid" className="text-xs">Solid color</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {(panelRenderConfig[activePanel]?.mode === "solid" ||
-                    panelRenderConfig[activePanel]?.enabled === false) && (
-                    <div>
-                      <Label className="text-xs">Panel solid color</Label>
-                      <input
-                        type="color"
-                        aria-label="Panel solid color"
-                        value={panelRenderConfig[activePanel]?.solidColor || "#ffffff"}
-                        onChange={(e) =>
-                          setPanelRenderConfig((prev) => ({
-                            ...prev,
-                            [activePanel]: {
-                              ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
-                              solidColor: e.target.value,
-                            },
-                          }))
-                        }
-                        className="w-10 h-10 mt-1 rounded border-2 border-foreground/25 cursor-pointer bg-background"
-                      />
-                    </div>
-                  )}
-                </>
+              {productKind !== "hoodie" && activePanel && (
+                <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                  <Label htmlFor="panel-artwork-enabled" className="text-xs cursor-pointer">
+                    Artwork enabled
+                  </Label>
+                  <Switch
+                    id="panel-artwork-enabled"
+                    checked={shouldRenderPanelArtwork(activePanel)}
+                    onCheckedChange={(v) =>
+                      setPanelRenderConfig((prev) => ({
+                        ...prev,
+                        [activePanel]: {
+                          ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                          enabled: v,
+                          mode: v ? "artwork" : "solid",
+                        },
+                      }))
+                    }
+                    className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                  />
+                </div>
               )}
 
-              <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
-                <Label htmlFor="aop-mirror" className="text-xs cursor-pointer">
-                  Mirror paired panel
-                </Label>
-                <Switch
-                  id="aop-mirror"
-                  checked={mirrorMode}
-                  onCheckedChange={v => {
-                    setMirrorMode(v);
-                    if (v) setSyncSidesMode(false);
-                  }}
-                  className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
-                />
-              </div>
+              {productKind === "hoodie" && hoodieSupportingPanels.length > 0 && (
+                <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                  <Label htmlFor="hoodie-other-panels-artwork" className="text-xs cursor-pointer">
+                    Other panels artwork
+                  </Label>
+                  <Switch
+                    id="hoodie-other-panels-artwork"
+                    checked={hoodieOtherPanelsUseArtwork}
+                    onCheckedChange={(v) => {
+                      setPanelRenderConfig((prev) => {
+                        const next = { ...prev };
+                        for (const panel of hoodieSupportingPanels) {
+                          next[panel.position] = {
+                            ...(prev[panel.position] || getDefaultPanelRenderConfig(panel.position, productKind, aopTemplateId)),
+                            enabled: v,
+                            mode: v ? "artwork" : "solid",
+                          };
+                        }
+                        return next;
+                      });
+                    }}
+                    className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                  />
+                </div>
+              )}
+
+              {productKind !== "hoodie" && (
+                <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                  <Label htmlFor="aop-mirror" className="text-xs cursor-pointer">
+                    Mirror paired panel
+                  </Label>
+                  <Switch
+                    id="aop-mirror"
+                    checked={mirrorMode}
+                    onCheckedChange={v => {
+                      setMirrorMode(v);
+                      if (v) setSyncSidesMode(false);
+                    }}
+                    className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                  />
+                </div>
+              )}
 
               {productKind === "leggings" &&
                 panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
@@ -2623,13 +2710,10 @@ export function PatternCustomizer({
                 Dashed inner line is a <strong className="font-medium">guide</strong> only. Mockups use the full panel image; art placed near the edge can still show on the product. 3D previews may not match the flat template pixel-for-pixel.
               </p>
 
-              {(getSeamPairs(panelPositions).length > 0 ||
-                (productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)))) && (
+              {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
                 <div>
                   <Label className="text-xs">
-                    {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position))
-                      ? `Front seam allowance: ${seamBleedPx}px`
-                      : `Seam bleed: ${seamBleedPx}px`}
+                    Front seam allowance: {seamBleedPx}px
                   </Label>
                   <Slider
                     value={[seamBleedPx]}
@@ -2690,7 +2774,7 @@ export function PatternCustomizer({
             </div>
           </div>
 
-          {mode === "place" && panelPositions.length > 0 && (
+          {mode === "place" && productKind !== "hoodie" && panelPositions.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {panelPositions.map(p => (
                 <button
@@ -2710,16 +2794,6 @@ export function PatternCustomizer({
           )}
 
           <div className="flex flex-col gap-3 pt-3">
-            <Button
-              type="button"
-              onClick={handleApply}
-              disabled={isLoading}
-              size="sm"
-              className="w-full shrink-0 overflow-hidden"
-            >
-              {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-              Apply
-            </Button>
             {onCancel && (
               <Button type="button" onClick={onCancel} variant="outline" size="sm" className="w-full">
                 Cancel
