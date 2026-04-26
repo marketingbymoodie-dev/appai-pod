@@ -170,7 +170,8 @@ function isHoodieSupportingPanel(position: string): boolean {
     lower.includes("cuff") ||
     lower.includes("waistband") ||
     lower.includes("pocket") ||
-    lower.includes("placket")
+    lower.includes("placket") ||
+    lower.includes("sleeve")
   );
 }
 

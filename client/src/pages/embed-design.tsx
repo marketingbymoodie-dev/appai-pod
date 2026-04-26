@@ -5498,15 +5498,13 @@ export default function EmbedDesign() {
                     options.panelUrls
                   );
 
-                  // Persist high-res per-panel assets on the job in the background so the
-                  // user is not blocked on a second 9000px render or sequential uploads
-                  // before the preview mockup request even starts.
+                  // Persist the same panel rasters used for the mockup. The previous
+                  // high-res background render could exceed the upload body limit and
+                  // compete with the active Printify mockup request.
                   if (isStorefront && savedJobIdRef.current && shopDomain) {
                     void (async () => {
                       try {
-                        const printPanels = options.getPrintPanelUrls
-                          ? await options.getPrintPanelUrls()
-                          : options.printPanelUrls;
+                        const printPanels = options.printPanelUrls || options.panelUrls;
                         if (!printPanels?.length) return;
 
                         const aopPrintPanelUrls = await Promise.all(

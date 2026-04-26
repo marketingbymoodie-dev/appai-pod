@@ -20,5 +20,11 @@ describe("getDefaultPanelRenderConfig", () => {
     expect(cfg.enabled).toBe(false);
     expect(cfg.mode).toBe("solid");
   });
+
+  it("defaults hoodie sleeves to background color", () => {
+    const cfg = getDefaultPanelRenderConfig("right_sleeve", "hoodie", "hoodie_v1");
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.mode).toBe("solid");
+  });
 });
 

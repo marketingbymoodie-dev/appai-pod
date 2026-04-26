@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { resolveAopLayoutKind } from "./registry";
-import type { AopLayoutKind } from "./detectLayoutKind";
+import { detectProductKind, type AopLayoutKind } from "./detectLayoutKind";
 
 describe("resolveAopLayoutKind", () => {
   it("returns inferred when template id is empty", () => {
@@ -18,5 +18,19 @@ describe("resolveAopLayoutKind", () => {
   it("falls back to inferred for unknown template id", () => {
     const inferred: AopLayoutKind = "leggings";
     expect(resolveAopLayoutKind("unknown_vendor_v9", inferred)).toBe(inferred);
+  });
+});
+
+describe("detectProductKind", () => {
+  it("prefers hoodie layout when zip hoodie panels include a waistband", () => {
+    expect(
+      detectProductKind([
+        { position: "front_right" },
+        { position: "front_left" },
+        { position: "right_hood" },
+        { position: "left_hood" },
+        { position: "waistband" },
+      ]),
+    ).toBe("hoodie");
   });
 });

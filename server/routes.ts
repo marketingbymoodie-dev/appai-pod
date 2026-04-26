@@ -7281,34 +7281,35 @@ ${textEdgeRestrictions}
       });
 
       // ========== CACHE MOCKUP IMAGES TO SUPABASE ==========
-      // Printify mockup URLs are temporary — they expire once the temp product is deleted.
-      // Download each mockup image and upload to Supabase for permanent storage.
+      // Printify mockup URLs are temporary, but customers should not wait for our
+      // storage copy after Printify has already rendered the previews. Cache in the
+      // background and let the client persist returned URLs via save-mockups.
       if (result.success && result.mockupImages && result.mockupImages.length > 0) {
         const cacheDesignId = correlationId;
         console.log(`[Storefront Mockup] [${correlationId}] Caching ${result.mockupImages.length} mockup images to Supabase...`);
-        const cachedImages = await Promise.all(
-          result.mockupImages.map(async (img: { url: string; label: string }, idx: number) => {
-            try {
-              const viewName = img.label || `view-${idx}`;
-              const cachedUrl = await uploadMockupToSupabase({
-                sourceUrl: img.url,
-                designId: cacheDesignId,
-                viewName,
-              });
-              if (cachedUrl) {
-                console.log(`[Storefront Mockup] [${correlationId}] Cached ${viewName} → ${cachedUrl.substring(0, 80)}`);
-                return { url: cachedUrl, label: img.label };
+        const imagesToCache = [...result.mockupImages];
+        void (async () => {
+          const cachedImages = await Promise.all(
+            imagesToCache.map(async (img: { url: string; label: string }, idx: number) => {
+              try {
+                const viewName = img.label || `view-${idx}`;
+                const cachedUrl = await uploadMockupToSupabase({
+                  sourceUrl: img.url,
+                  designId: cacheDesignId,
+                  viewName,
+                });
+                if (cachedUrl) {
+                  console.log(`[Storefront Mockup] [${correlationId}] Cached ${viewName} → ${cachedUrl.substring(0, 80)}`);
+                  return { url: cachedUrl, label: img.label };
+                }
+              } catch (cacheErr: any) {
+                console.warn(`[Storefront Mockup] [${correlationId}] Cache failed for ${img.label}:`, cacheErr.message);
               }
-            } catch (cacheErr: any) {
-              console.warn(`[Storefront Mockup] [${correlationId}] Cache failed for ${img.label}:`, cacheErr.message);
-            }
-            // Fall back to original Printify URL if caching fails
-            return img;
-          })
-        );
-        result.mockupImages = cachedImages;
-        result.mockupUrls = cachedImages.map((img: { url: string }) => img.url);
-        console.log(`[Storefront Mockup] [${correlationId}] Caching complete. URLs now point to Supabase.`);
+              return img;
+            })
+          );
+          console.log(`[Storefront Mockup] [${correlationId}] Background caching complete (${cachedImages.length} image(s)).`);
+        })();
       }
 
       res.json({ ...result, correlationId });

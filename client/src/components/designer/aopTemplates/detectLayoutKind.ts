@@ -7,11 +7,11 @@ export type AopLayoutKind = "hoodie" | "leggings" | "generic";
  */
 export function detectProductKind(panels: Array<{ position: string }>): AopLayoutKind {
   const p = panels.map((x) => x.position.toLowerCase());
-  if (p.some((x) => x.includes("_leg") || x.includes("_side") || x.includes("waistband"))) {
-    return "leggings";
-  }
   if (p.some((x) => x.includes("hood") || /^front_(left|right)/.test(x) || /^back_(left|right)/.test(x))) {
     return "hoodie";
+  }
+  if (p.some((x) => x.includes("_leg") || x.includes("_side") || x.includes("waistband"))) {
+    return "leggings";
   }
   return "generic";
 }
