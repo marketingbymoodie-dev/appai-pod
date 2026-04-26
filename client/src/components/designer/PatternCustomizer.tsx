@@ -16,7 +16,7 @@
  * Hood and back panels are rendered in separate "view" tabs.
  */
 
-import { useState, useCallback, useRef, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -120,9 +120,9 @@ export const HOODIE_COMPOSITE_GAP_PX = 2;
 /**
  * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
  * between panels is GAP - OVERLAP, countering large transparent margins in Printify flat SVGs.
- * Tuned to match a tight on-screen centre seam (design QA: “almost flush” L/R for zip + hood 2-up).
+ * Tuned to match a tight on-screen centre seam. Large value offsets wide transparent margins in mask SVGs.
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 72;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 120;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite — matches
@@ -1496,19 +1496,32 @@ export function PatternCustomizer({
 
   const [svgLoadErrors, setSvgLoadErrors] = useState<string[]>([]);
 
-  useEffect(() => {
+  // useLayoutEffect + re-run when layout inputs change: first paint often has width=0 while embed grid/config loads;
+  // a one-shot useEffect[] misses the real column width, so the preview stayed at the default 400px.
+  useLayoutEffect(() => {
     const el = previewWrapRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const measure = () => {
-      const w = el.clientWidth;
+      const w = el.getBoundingClientRect().width;
+      if (w < 1) return;
       const s = Math.floor(Math.min(Math.max(w, 160), 1100));
-      if (s >= 160) setPreviewPx(s);
+      setPreviewPx(s);
     };
     measure();
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(measure);
+    });
     ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+    window.addEventListener("resize", measure);
+    const t0 = window.setTimeout(measure, 0);
+    const t1 = window.setTimeout(measure, 120);
+    return () => {
+      clearTimeout(t0);
+      clearTimeout(t1);
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [panelPositions.length, activeView, mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2785,6 +2798,10 @@ export function PatternCustomizer({
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
+            data-appai-pc="2026.04.26"
+            data-aop-kind={productKind}
+            data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
+            data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
           >
             <canvas
               ref={canvasRef}

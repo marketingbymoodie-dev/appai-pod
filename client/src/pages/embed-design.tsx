@@ -5448,6 +5448,7 @@ export default function EmbedDesign() {
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
               <PatternCustomizer
+                key={`aop-pc-${productTypeConfig?.id ?? 0}-${patternPanelPositions.length}`}
                 motifUrl={aopPendingMotifUrl}
                 aopTemplateId={productTypeConfig?.aopTemplateId ?? null}
                 productWidth={patternPanelPositions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000)}
