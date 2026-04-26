@@ -5440,7 +5440,7 @@ export default function EmbedDesign() {
             ref={artworkColumnRef}
             className={`order-2 min-w-0 w-full ${
               showPatternStep && aopPendingMotifUrl
-                ? "lg:order-1 lg:col-span-2 flex flex-col min-h-[560px]"
+                ? "lg:order-1 lg:col-span-2 flex flex-col min-h-0"
                 : "space-y-3 md:order-1"
             }`}
           >

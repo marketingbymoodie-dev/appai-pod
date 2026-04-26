@@ -123,7 +123,7 @@ export const HOODIE_COMPOSITE_GAP_PX = 0;
  * Applied per active view: Front and Hood (each is a 2-up L/R row only; pocket panels are not laid out
  * in the flat composite — the kangaroo is covered by the main front artwork in the preview).
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 420;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 560;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite; keep small
@@ -360,23 +360,30 @@ function isHoodieLrOverlapView(
  * Build the flat composite layout for a given view.
  * Front view: L/R **chest** only (dedicated pocket print files are not shown as a second row — same as
  * the Hood view being only L/R hood halves, so the preview scale matches the reference mock).
+ *
+ * When mask SVGs are loaded, each slot’s **width** is derived from the mask’s aspect × Printify **height**,
+ * so the composite is wider and `compositeH / compositeW` is lower — preview box is **shorter** and panels
+ * read less “tall and narrow” than with Printify’s strip-like `width` alone.
  */
 function buildCompositeLayout(
   view: HoodiePanelView,
   panels: Array<{ position: string; width: number; height: number }>,
+  svgImages?: Record<string, HTMLImageElement>,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   const viewPanels = panels.filter(
     p => getPanelGroup(p.position) === view && !isHoodieTrimPanel(p.position) && !isHoodiePocketPanel(p.position),
   );
   if (viewPanels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
 
-  // Match `buildLinearPanelsLayout` / leggings: layout uses Printify placeholder width × height
-  // so composite scale matches the "print" box. Using SVG natural dimensions for slot w/h
-  // bloats the artboard and leaves the garment a small island in each slot.
-  const displaySize = (panel: { position: string; width: number; height: number }) => ({
-    w: panel.width,
-    h: panel.height,
-  });
+  const displaySize = (panel: { position: string; width: number; height: number }) => {
+    const svgImg = svgImages ? getSvgImageForPosition(svgImages, panel.position) : null;
+    const nw = svgImg?.naturalWidth || svgImg?.width || 0;
+    const nh = svgImg?.naturalHeight || svgImg?.height || 0;
+    if (nw > 0 && nh > 0) {
+      return { w: panel.height * (nw / nh), h: panel.height };
+    }
+    return { w: panel.width, h: panel.height };
+  };
 
   const maxH = Math.max(...viewPanels.map(p => displaySize(p).h));
 
@@ -717,7 +724,7 @@ function hitTestHoodiePlacePanel(
   panelPositions: Array<{ position: string; width: number; height: number }>,
   svgImages: Record<string, HTMLImageElement>,
 ): string | null {
-  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
   if (compositeW === 0) return null;
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / Math.max(rect.width, 1);
@@ -1379,10 +1386,10 @@ export function PatternCustomizer({
   const setActiveHoodieView = useCallback(
     (view: HoodiePanelView) => {
       setActiveView(view);
-      const firstPanel = buildCompositeLayout(view, panelPositions).slots[0]?.position || null;
+      const firstPanel = buildCompositeLayout(view, panelPositions, svgImages).slots[0]?.position || null;
       if (firstPanel) setActivePanel(firstPanel);
     },
-    [panelPositions],
+    [panelPositions, svgImages],
   );
 
   useEffect(() => {
@@ -1400,7 +1407,7 @@ export function PatternCustomizer({
 
   useEffect(() => {
     if (productKind !== "hoodie") return;
-    const currentViewPanels = buildCompositeLayout(activeView, panelPositions).slots;
+    const currentViewPanels = buildCompositeLayout(activeView, panelPositions, svgImages).slots;
     if (currentViewPanels.length === 0 && availableHoodieViews[0]) {
       setActiveHoodieView(availableHoodieViews[0]);
       return;
@@ -1409,7 +1416,7 @@ export function PatternCustomizer({
       const firstPanel = currentViewPanels[0]?.position;
       if (firstPanel) setActivePanel(firstPanel);
     }
-  }, [productKind, activeView, activePanel, panelPositions, availableHoodieViews, setActiveHoodieView]);
+  }, [productKind, activeView, activePanel, panelPositions, availableHoodieViews, setActiveHoodieView, svgImages]);
 
   // ── Image loading ──────────────────────────────────────────────────────────
   // Load motif via fetch → blob URL so the canvas is never tainted by cross-origin
@@ -1599,7 +1606,7 @@ export function PatternCustomizer({
     (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number, canvasH = px) => {
       const pad = 20;
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
         if (compositeW === 0) return;
         const hPad = HOODIE_PREVIEW_PAD;
         const scl = scaleHoodieCompositeToCanvas(hPad, px, canvasH, compositeW, compositeH);
@@ -1837,7 +1844,7 @@ export function PatternCustomizer({
       };
 
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
         drawSlots(slots, compositeW, compositeH);
       } else {
         const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
@@ -1863,7 +1870,7 @@ export function PatternCustomizer({
     if (panelPositions.length > 0 && (mode === "place" || mode === "pattern")) {
       const layout =
         productKind === "hoodie"
-          ? buildCompositeLayout(activeView, panelPositions)
+          ? buildCompositeLayout(activeView, panelPositions, svgImages)
           : buildLinearPanelsLayout(panelPositions, productKind === "leggings" ? seamBleedPx : 0);
       canvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
     }
@@ -1965,7 +1972,7 @@ export function PatternCustomizer({
       if (mirrorMode) {
         const { slots } =
           productKind === "hoodie"
-            ? buildCompositeLayout(activeView, panelPositions)
+            ? buildCompositeLayout(activeView, panelPositions, svgImages)
             : buildLinearPanelsLayout(panelPositions, 0);
         const source = getMirrorSource(p0, slots);
         return source || p0;
@@ -2140,7 +2147,7 @@ export function PatternCustomizer({
     let previewSlotW = px;
     let previewSlotH = px;
     if (productKind === "hoodie") {
-      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
+      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions, svgImages);
       if (layout.compositeW > 0) {
         const previewCanvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
         const scl = scaleHoodieCompositeToCanvas(
@@ -2445,7 +2452,7 @@ export function PatternCustomizer({
 
           // Compute upscale: preview → output canvas px (= print px × cScaleRatio).
           const view = getPanelGroup(rightPos);
-          const layout = buildCompositeLayout(view, panelPositions);
+          const layout = buildCompositeLayout(view, panelPositions, svgImages);
           const previewCanvasH = computePanelCanvasHeight(previewPx, layout, productKind, panelPositions);
           const layoutScl = layout.compositeW > 0
             ? Math.min((previewPx - 20) / layout.compositeW, (previewCanvasH - 20) / layout.compositeH, 1)
@@ -2763,14 +2770,14 @@ export function PatternCustomizer({
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
       {/* Slightly slimmer control column so the preview (ResizeObserver width) is wider on lg+ */}
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(180px,220px)] gap-3 sm:gap-4 p-2 sm:p-3 flex-1 min-h-0">
-        {/* Preview — matches mockup column height when embedded */}
-        <div className="flex flex-col min-h-0 min-w-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(180px,220px)] gap-3 sm:gap-4 p-2 sm:p-3 flex-1 min-h-0 items-start">
+        {/* Preview — cap height on tall hood/front composites so the step stays above the fold in embeds */}
+        <div className="flex flex-col min-h-0 min-w-0 w-full max-w-full max-h-[min(65vh,620px)] lg:max-h-[min(72vh,700px)]">
           <div
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.05.01"
+            data-appai-pc="2026.05.02"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
             data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
@@ -2987,11 +2994,11 @@ export function PatternCustomizer({
                       </Label>
                       <Switch
                         id="panel-artwork-enabled"
-                        checked={buildCompositeLayout(activeView, panelPositions).slots.some((slot) =>
+                        checked={buildCompositeLayout(activeView, panelPositions, svgImages).slots.some((slot) =>
                           shouldRenderPanelArtwork(slot.position),
                         )}
                         onCheckedChange={(v) => {
-                          const slots = buildCompositeLayout(activeView, panelPositions).slots;
+                          const slots = buildCompositeLayout(activeView, panelPositions, svgImages).slots;
                           setPanelRenderConfig((prev) => {
                             const next = { ...prev };
                             for (const slot of slots) {
@@ -3013,7 +3020,7 @@ export function PatternCustomizer({
 
               {productKind === "hoodie" &&
                 (activeView === "front" || activeView === "hood") &&
-                buildCompositeLayout(activeView, panelPositions).slots.length === 2 && (
+                buildCompositeLayout(activeView, panelPositions, svgImages).slots.length === 2 && (
                   <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
                     <Label htmlFor="hoodie-sync-sides" className="text-xs cursor-pointer">
                       Sync sides
