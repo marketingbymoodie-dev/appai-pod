@@ -29,8 +29,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { PanelTransform, AopPlacementSettings } from "./types";
-import { detectProductKind } from "./aopTemplates/detectLayoutKind";
+import type { PanelTransform, AopPlacementSettings, PanelRenderConfig } from "./types";
+import { detectProductKind, type AopLayoutKind } from "./aopTemplates/detectLayoutKind";
 import { resolveAopLayoutKind } from "./aopTemplates/registry";
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -52,6 +52,7 @@ export interface PatternApplyOptions {
   tileInches?: number;
   bgColor?: string;
   perPanelTransforms?: Record<string, PanelTransform>;
+  panelRenderConfig?: Record<string, PanelRenderConfig>;
 }
 
 export type { AopPlacementSettings };
@@ -166,6 +167,35 @@ function getPanelGroup(position: string): "front" | "back" | "hood" {
   if (l.includes("hood")) return "hood";
   if (l.includes("back")) return "back";
   return "front";
+}
+
+export function getDefaultPanelRenderConfig(
+  position: string,
+  productKind: AopLayoutKind,
+  aopTemplateId?: string | null,
+): PanelRenderConfig {
+  const group = getPanelGroup(position);
+  const lower = position.toLowerCase();
+  const isHoodieTemplate = productKind === "hoodie" || aopTemplateId === "hoodie_v1";
+
+  if (isHoodieTemplate) {
+    if (
+      lower.includes("cuff") ||
+      lower.includes("waistband") ||
+      lower.includes("pocket") ||
+      lower.includes("placket")
+    ) {
+      return { enabled: true, mode: "solid", solidColor: "#ffffff" };
+    }
+    if (group === "front") {
+      return { enabled: true, mode: "artwork" };
+    }
+    if (group === "back" || group === "hood") {
+      return { enabled: false, mode: "artwork", solidColor: "#ffffff" };
+    }
+  }
+
+  return { enabled: true, mode: "artwork" };
 }
 
 /**
@@ -999,6 +1029,9 @@ export function PatternCustomizer({
   const [perPanelTransforms, setPerPanelTransforms] = useState<Record<string, PanelTransform>>(
     initialPlacement?.perPanelTransforms || {}
   );
+  const [panelRenderConfig, setPanelRenderConfig] = useState<Record<string, PanelRenderConfig>>(
+    initialPlacement?.panelRenderConfig || {}
+  );
   const [activePanel, setActivePanel] = useState<string | null>(
     initialPlacement?.activePanel || null
   );
@@ -1019,6 +1052,19 @@ export function PatternCustomizer({
 
   const inferredLayoutKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
   const productKind = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
+
+  useEffect(() => {
+    if (panelPositions.length === 0) return;
+    setPanelRenderConfig((prev) => {
+      const next: Record<string, PanelRenderConfig> = { ...prev };
+      for (const p of panelPositions) {
+        if (!next[p.position]) {
+          next[p.position] = getDefaultPanelRenderConfig(p.position, productKind, aopTemplateId);
+        }
+      }
+      return next;
+    });
+  }, [panelPositions, productKind, aopTemplateId]);
 
   // ── Image loading ──────────────────────────────────────────────────────────
   // Load motif via fetch → blob URL so the canvas is never tainted by cross-origin
@@ -1661,6 +1707,7 @@ export function PatternCustomizer({
     if (!onPlacementChange) return;
     onPlacementChange({
       perPanelTransforms,
+      panelRenderConfig,
       activePanel,
       mirrorMode,
       seamBleedPx,
@@ -1668,7 +1715,7 @@ export function PatternCustomizer({
       patternOffsetX,
       lastMode: mode,
     });
-  }, [perPanelTransforms, activePanel, mirrorMode, seamBleedPx, syncSidesMode, patternOffsetX, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, syncSidesMode, patternOffsetX, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -1767,6 +1814,42 @@ export function PatternCustomizer({
     }
 
     return canvasToUploadDataUrl(canvas, pixelCap);
+  }
+
+  function buildSolidPanelDataUrl(
+    panel: { width: number; height: number },
+    pixelCap: number,
+    color: string,
+  ): string {
+    const scaleRatio = Math.min(1, pixelCap / Math.max(panel.width, panel.height));
+    const outW = Math.max(1, Math.round(panel.width * scaleRatio));
+    const outH = Math.max(1, Math.round(panel.height * scaleRatio));
+    const canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return canvasToUploadDataUrl(canvas, pixelCap);
+    ctx.fillStyle = color || "#ffffff";
+    ctx.fillRect(0, 0, outW, outH);
+    return canvasToUploadDataUrl(canvas, pixelCap);
+  }
+
+  function applyPanelRenderOverrides(
+    urls: { position: string; dataUrl: string }[],
+    pixelCap: number,
+  ): { position: string; dataUrl: string }[] {
+    return urls.map((entry) => {
+      const cfg = panelRenderConfig[entry.position];
+      if (!cfg) return entry;
+      if (cfg.enabled && cfg.mode === "artwork") return entry;
+      const panel = panelPositions.find((p) => p.position === entry.position);
+      if (!panel) return entry;
+      const solidColor = cfg.solidColor || (bgColor && bgColor !== "transparent" ? bgColor : "#ffffff");
+      return {
+        position: entry.position,
+        dataUrl: buildSolidPanelDataUrl(panel, pixelCap, solidColor),
+      };
+    });
   }
 
   // ── Apply handler ──────────────────────────────────────────────────────────
@@ -1895,15 +1978,20 @@ export function PatternCustomizer({
             return urls;
           };
 
-          const panelUrls = await buildPatternAopPanelUrls(mockupPixelCap);
+          const panelUrls = applyPanelRenderOverrides(
+            await buildPatternAopPanelUrls(mockupPixelCap),
+            mockupPixelCap,
+          );
           await onApply(motifUrl, {
             mode,
             patternType,
             tileInches,
             bgColor,
             panelUrls,
-            getPrintPanelUrls: () => buildPatternAopPanelUrls(MAX_PANEL_PRINT_PX),
+            getPrintPanelUrls: async () =>
+              applyPanelRenderOverrides(await buildPatternAopPanelUrls(MAX_PANEL_PRINT_PX), MAX_PANEL_PRINT_PX),
             perPanelTransforms,
+            panelRenderConfig,
           });
           return;
         }
@@ -1930,6 +2018,7 @@ export function PatternCustomizer({
           tileInches,
           bgColor,
           perPanelTransforms,
+          panelRenderConfig,
         });
         return;
       }
@@ -2196,14 +2285,19 @@ export function PatternCustomizer({
 
       // Place mode now follows the same split pipeline as pattern mode:
       // low-res preview assets first, high-res fulfillment assets only when needed.
-      const panelUrls = await buildPlaceModePanelUrls(mockupPixelCap);
+      const panelUrls = applyPanelRenderOverrides(
+        await buildPlaceModePanelUrls(mockupPixelCap),
+        mockupPixelCap,
+      );
       await onApply(motifUrl, {
         mode,
         panelUrls,
-        getPrintPanelUrls: () => buildPlaceModePanelUrls(MAX_PANEL_PRINT_PX),
+        getPrintPanelUrls: async () =>
+          applyPanelRenderOverrides(await buildPlaceModePanelUrls(MAX_PANEL_PRINT_PX), MAX_PANEL_PRINT_PX),
         mirrorLegs: mirrorMode,
         seamOffset: seamBleedPx,
         perPanelTransforms,
+        panelRenderConfig,
       });
     } catch (err) {
       console.error("[PatternCustomizer] Apply failed:", err);
@@ -2211,7 +2305,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, aopTemplateId, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, svgImages, productKind, aopTemplateId, onApply, previewPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -2421,6 +2515,74 @@ export function PatternCustomizer({
                 >
                   Reset panel
                 </button>
+              )}
+
+              {activePanel && (
+                <>
+                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                    <Label htmlFor="panel-artwork-enabled" className="text-xs cursor-pointer">
+                      Artwork enabled
+                    </Label>
+                    <Switch
+                      id="panel-artwork-enabled"
+                      checked={panelRenderConfig[activePanel]?.enabled ?? true}
+                      onCheckedChange={(v) =>
+                        setPanelRenderConfig((prev) => ({
+                          ...prev,
+                          [activePanel]: {
+                            ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                            enabled: v,
+                          },
+                        }))
+                      }
+                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Panel mode</Label>
+                    <Select
+                      value={panelRenderConfig[activePanel]?.mode ?? "artwork"}
+                      onValueChange={(v) =>
+                        setPanelRenderConfig((prev) => ({
+                          ...prev,
+                          [activePanel]: {
+                            ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                            mode: v as "artwork" | "solid",
+                          },
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="h-9 text-xs min-w-0 flex-1 border-foreground/20 mt-1">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="artwork" className="text-xs">Artwork</SelectItem>
+                        <SelectItem value="solid" className="text-xs">Solid color</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {(panelRenderConfig[activePanel]?.mode === "solid" ||
+                    panelRenderConfig[activePanel]?.enabled === false) && (
+                    <div>
+                      <Label className="text-xs">Panel solid color</Label>
+                      <input
+                        type="color"
+                        aria-label="Panel solid color"
+                        value={panelRenderConfig[activePanel]?.solidColor || "#ffffff"}
+                        onChange={(e) =>
+                          setPanelRenderConfig((prev) => ({
+                            ...prev,
+                            [activePanel]: {
+                              ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                              solidColor: e.target.value,
+                            },
+                          }))
+                        }
+                        className="w-10 h-10 mt-1 rounded border-2 border-foreground/25 cursor-pointer bg-background"
+                      />
+                    </div>
+                  )}
+                </>
               )}
 
               <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">

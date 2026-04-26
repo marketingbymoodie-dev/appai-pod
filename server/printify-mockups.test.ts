@@ -340,6 +340,28 @@ describe("AOP per-panel placement: panel images use centered placement", () => {
   });
 });
 
+describe("Non-AOP printOnBack override contract", () => {
+  const resolveEffectiveDoubleSided = (
+    isAllOverPrint: boolean,
+    resolvedDoubleSided: boolean,
+    printOnBack: boolean | undefined,
+  ) => {
+    return isAllOverPrint
+      ? resolvedDoubleSided
+      : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
+  };
+
+  it("uses toggle value for non-AOP products", () => {
+    expect(resolveEffectiveDoubleSided(false, true, false)).toBe(false);
+    expect(resolveEffectiveDoubleSided(false, false, true)).toBe(true);
+  });
+
+  it("ignores toggle value for AOP products", () => {
+    expect(resolveEffectiveDoubleSided(true, true, false)).toBe(true);
+    expect(resolveEffectiveDoubleSided(true, false, true)).toBe(false);
+  });
+});
+
 describe("Generate endpoint storage fallback", () => {
   it("should fall back to data URL when storage fails after retry", () => {
     // When storage fails twice, generate falls back to data URL so the

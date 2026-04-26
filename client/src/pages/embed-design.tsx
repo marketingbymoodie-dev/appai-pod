@@ -5,6 +5,7 @@ import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -837,6 +838,7 @@ export default function EmbedDesign() {
   const [showPatternStep, setShowPatternStep] = useState(false);
   const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
   const [aopPatternUrl, setAopPatternUrl] = useState<string | null>(null);
+  const [printOnBack, setPrintOnBack] = useState(false);
   // Persisted PatternCustomizer settings — survive close/reopen of the overlay
   const [aopPatternSettings, setAopPatternSettings] = useState<{
     tilesAcross: number;
@@ -1868,7 +1870,8 @@ export default function EmbedDesign() {
     y: number = 50,
     patternUrl?: string,
     mirrorLegs?: boolean,
-    panelUrls?: { position: string; dataUrl: string }[]
+    panelUrls?: { position: string; dataUrl: string }[],
+    printOnBackOverride?: boolean
   ) => {
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
@@ -1936,6 +1939,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
+        printOnBack: !productTypeConfig?.isAllOverPrint ? (printOnBackOverride ?? printOnBack) : undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1948,6 +1952,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
+        printOnBack: !productTypeConfig?.isAllOverPrint ? (printOnBackOverride ?? printOnBack) : undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -1961,6 +1966,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
+        printOnBack: !productTypeConfig?.isAllOverPrint ? (printOnBackOverride ?? printOnBack) : undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2071,7 +2077,7 @@ export default function EmbedDesign() {
         window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printOnBack, productTypeConfig?.isAllOverPrint]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -4943,6 +4949,35 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
+              {!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups && (
+                <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
+                  <Label htmlFor="print-on-back-toggle" className="text-sm cursor-pointer">
+                    Print on back
+                  </Label>
+                  <Switch
+                    id="print-on-back-toggle"
+                    checked={printOnBack}
+                    onCheckedChange={(checked) => {
+                      setPrintOnBack(checked);
+                      if (generatedDesign?.imageUrl && productTypeConfig && selectedSize && !productTypeConfig.isAllOverPrint) {
+                        fetchPrintifyMockups(
+                          toAbsoluteImageUrl(generatedDesign.imageUrl),
+                          productTypeConfig.id,
+                          selectedSize,
+                          selectedFrameColor || 'default',
+                          transform.scale,
+                          transform.x,
+                          transform.y,
+                          undefined,
+                          undefined,
+                          undefined,
+                          checked
+                        );
+                      }
+                    }}
+                  />
+                </div>
+              )}
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}

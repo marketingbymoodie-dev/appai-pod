@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { Sparkles, Upload, Loader2, ZoomIn, Send, Package, ExternalLink, Store, AlertTriangle, Check, Move, DollarSign, Info, ChevronRight, ChevronLeft } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -105,6 +106,7 @@ export default function AdminCreateProduct() {
   const [showPatternStep, setShowPatternStep] = useState(false);
   const [pendingMotifUrl, setPendingMotifUrl] = useState<string | null>(null);
   const [patternUrl, setPatternUrl] = useState<string | null>(null);
+  const [printOnBack, setPrintOnBack] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importFileInputRef = useRef<HTMLInputElement>(null);
@@ -195,6 +197,7 @@ export default function AdminCreateProduct() {
       if (shouldSetDefaults) {
         const newDefaultZoom = designerConfig.designerType === "apparel" ? 135 : 100;
         setImageScale(newDefaultZoom);
+        setPrintOnBack(false);
         setHasSetDefaults(designerConfig.id);
       }
     }
@@ -410,6 +413,7 @@ export default function AdminCreateProduct() {
         designImageUrl: imageUrl,
         patternUrl: appliedPatternUrl || undefined,
         mirrorLegs: mirrorLegs ?? false,
+        printOnBack: !designerConfig?.isAllOverPrint ? printOnBack : undefined,
         sizeId: selectedSize,
         colorId: selectedFrameColor || "default",
         scale: imageScale,
@@ -1120,6 +1124,18 @@ export default function AdminCreateProduct() {
                     </div>
                   )}
                 </div>
+                {!designerConfig?.isAllOverPrint && designerConfig?.hasPrintifyMockups && (
+                  <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2 mt-3">
+                    <Label htmlFor="admin-print-on-back" className="text-sm cursor-pointer">
+                      Print on back
+                    </Label>
+                    <Switch
+                      id="admin-print-on-back"
+                      checked={printOnBack}
+                      onCheckedChange={setPrintOnBack}
+                    />
+                  </div>
+                )}
               </div>
             )}
 

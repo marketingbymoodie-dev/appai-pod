@@ -55,9 +55,18 @@ export interface PanelTransform {
   scalePct: number; // additional scale factor (100 = no change)
 }
 
+export type PanelRenderMode = "artwork" | "solid";
+
+export interface PanelRenderConfig {
+  enabled: boolean;
+  mode: PanelRenderMode;
+  solidColor?: string;
+}
+
 /** Persistent AOP placement state passed between PatternCustomizer sessions. */
 export interface AopPlacementSettings {
   perPanelTransforms: Record<string, PanelTransform>;
+  panelRenderConfig?: Record<string, PanelRenderConfig>;
   activePanel: string | null;
   mirrorMode: boolean;
   seamBleedPx: number;

@@ -7093,7 +7093,7 @@ ${textEdgeRestrictions}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -7244,8 +7244,11 @@ ${textEdgeRestrictions}
 
       // ========== GENERATE MOCKUP ==========
       const resolvedDoubleSided = resolveDoubleSided(productType);
+      const effectiveDoubleSided = productType.isAllOverPrint
+        ? resolvedDoubleSided
+        : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
       const resolvedWrapAround = resolveWrapAround(productType);
-      console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
+      console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { generatePrintifyMockup } = await import("./printify-mockups.js");
 
       const result = await generatePrintifyMockup({
@@ -7258,7 +7261,7 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        doubleSided: resolvedDoubleSided,
+        doubleSided: effectiveDoubleSided,
         wrapAround: resolvedWrapAround,
         wrapDirection: resolvedWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
@@ -13254,7 +13257,7 @@ ${textEdgeRestrictions}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -13324,6 +13327,10 @@ ${textEdgeRestrictions}
       const aopPositions = productType.isAllOverPrint && productType.placeholderPositions
         ? JSON.parse(productType.placeholderPositions as string)
         : undefined;
+      const resolvedDoubleSided = resolveDoubleSided(productType);
+      const effectiveDoubleSided = productType.isAllOverPrint
+        ? resolvedDoubleSided
+        : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
 
       console.log("[Mockup Generate] AOP:", !!aopPositions, "positions:", aopPositions?.length, "mirrorLegs:", !!mirrorLegs, "imageUrl:", absoluteImageUrl.substring(0, 80));
 
@@ -13337,7 +13344,7 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        doubleSided: resolveDoubleSided(productType),
+        doubleSided: effectiveDoubleSided,
         wrapAround: resolveWrapAround(productType),
         wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions,
@@ -13357,7 +13364,7 @@ ${textEdgeRestrictions}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -13457,6 +13464,10 @@ ${textEdgeRestrictions}
 
       console.log("[Shopify Mockup] Generating mockup for:", { productTypeId, sizeId, colorId, variantId: targetVariantId });
 
+      const resolvedDoubleSided = resolveDoubleSided(productType);
+      const effectiveDoubleSided = productType.isAllOverPrint
+        ? resolvedDoubleSided
+        : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
       const result = await generatePrintifyMockup({
         blueprintId: productType.printifyBlueprintId,
         providerId,
@@ -13467,7 +13478,7 @@ ${textEdgeRestrictions}
         scale: scale ? scale / 100 : 1,
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
-        doubleSided: resolveDoubleSided(productType),
+        doubleSided: effectiveDoubleSided,
         wrapAround: resolveWrapAround(productType),
         wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
