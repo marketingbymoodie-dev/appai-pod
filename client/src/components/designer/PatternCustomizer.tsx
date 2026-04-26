@@ -391,8 +391,17 @@ function computePanelCanvasHeight(
   panelPositions: Array<{ position: string }>,
 ): number {
   if (layout.compositeW <= 0 || layout.compositeH <= 0) return px;
-  const ratio = layout.compositeH / layout.compositeW;
-  const clampedRatio = Math.min(2.0, Math.max(0.3, ratio));
+  const rawRatio = layout.compositeH / layout.compositeW;
+
+  if (productKind === "hoodie") {
+    // Do not cap height to 2× width (old logic): zip front + hood L/R are often *taller* than 2:1.
+    // If canvas aspect ≠ layout aspect, `scaleHoodieCompositeToCanvas` letterboxes and the
+    // panels look tiny with wasted horizontal space. Soft limits only for corrupt ratios.
+    const r = Math.min(4, Math.max(0.2, rawRatio));
+    return Math.round(px * r);
+  }
+
+  const clampedRatio = Math.min(2.0, Math.max(0.3, rawRatio));
   let canvasH = Math.round(px * clampedRatio);
 
   const hasLegSlots = panelPositions.some(p => shouldFlipLeggingsLegSlot(productKind, p.position));
