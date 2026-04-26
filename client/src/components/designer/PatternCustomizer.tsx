@@ -115,7 +115,16 @@ const MAX_PANEL_PRINT_PX = 9000;
 const SOLID_PANEL_LONG_EDGE_PX = 256;
 
 /** Layout gap between L/R front/hood panels (print px). Small so the seam preview is almost edge-to-edge. */
-const HOODIE_COMPOSITE_GAP_PX = 2;
+export const HOODIE_COMPOSITE_GAP_PX = 2;
+
+/**
+ * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
+ * between panels is GAP - OVERLAP, countering large transparent margins in Printify flat SVGs.
+ */
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 16;
+
+/** Inset (canvas px) for hoodie preview scale; must match computePanelCanvasHeight and export. */
+export const HOODIE_PREVIEW_PAD = 10;
 
 /**
  * After preview→print mapping, nudge artwork on split L/R panels slightly away from the centre
@@ -268,6 +277,22 @@ function getSeamPairs(
   return pairs;
 }
 
+/** Front/hood views: exactly two L/R half-panels (zip or hood seam). Excludes back multi-panel edge cases. */
+function isHoodieTwoUpLrView(
+  view: HoodiePanelView,
+  sortedViewPanels: Array<{ position: string }>,
+): boolean {
+  if (view !== "front" && view !== "hood") return false;
+  if (sortedViewPanels.length !== 2) return false;
+  const a = sortedViewPanels[0].position.toLowerCase();
+  const b = sortedViewPanels[1].position.toLowerCase();
+  const la = a.includes("left");
+  const ra = a.includes("right");
+  const lb = b.includes("left");
+  const rb = b.includes("right");
+  return (la && rb && !ra && !lb) || (ra && lb && !la && !rb);
+}
+
 /**
  * Build the flat composite layout for a given view.
  * Front view: right panel first (seam at centre), left panel second.
@@ -300,15 +325,22 @@ function buildCompositeLayout(
     return aLeft ? 1 : -1;
   });
 
-  const GAP = HOODIE_COMPOSITE_GAP_PX;
   let x = 0;
   const slots: PanelSlot[] = [];
-  for (const p of sorted) {
+  for (let i = 0; i < sorted.length; i++) {
+    const p = sorted[i];
     const size = displaySize(p);
     slots.push({ position: p.position, x, y: 0, w: size.w, h: size.h });
-    x += size.w + GAP;
+    if (i < sorted.length - 1) {
+      const betweenGap = isHoodieTwoUpLrView(view, sorted)
+        ? HOODIE_COMPOSITE_GAP_PX - HOODIE_L_R_SLOT_OVERLAP_PX
+        : HOODIE_COMPOSITE_GAP_PX;
+      x += size.w + betweenGap;
+    }
   }
-  return { compositeW: x - GAP, compositeH: maxH, slots };
+  const last = slots[slots.length - 1];
+  const compositeW = last ? last.x + last.w : 0;
+  return { compositeW, compositeH: maxH, slots };
 }
 
 /** Build leggings side-by-side layout. */
@@ -394,11 +426,11 @@ function computePanelCanvasHeight(
   const rawRatio = layout.compositeH / layout.compositeW;
 
   if (productKind === "hoodie") {
-    // `scaleHoodieCompositeToCanvas` uses the same `pad` (20) for both (W - pad) / compW
+    // `scaleHoodieCompositeToCanvas` uses the same `pad` for both (W - pad) / compW
     // and (H - pad) / compH. We must have (px - pad) / W === (canvasH - pad) / H, i.e.
     // canvasH = (px - pad) * (H / W) + pad — not `px * (H/W)` or the preview keeps grey bands.
     if (!Number.isFinite(rawRatio) || rawRatio <= 0) return px;
-    const layoutPad = 20;
+    const layoutPad = HOODIE_PREVIEW_PAD;
     const r = Math.min(6, Math.max(0.15, rawRatio));
     return Math.max(1, Math.round((px - layoutPad) * r + layoutPad));
   }
@@ -625,10 +657,10 @@ function hitTestHoodiePlacePanel(
   const scaleY = canvas.height / Math.max(rect.height, 1);
   const cx = (clientX - rect.left) * scaleX;
   const cy = (clientY - rect.top) * scaleY;
-  const pad = 20;
+  const hPad = HOODIE_PREVIEW_PAD;
   const canvasW = canvas.width;
   const canvasH = canvas.height;
-  const scl = scaleHoodieCompositeToCanvas(pad, canvasW, canvasH, compositeW, compositeH);
+  const scl = scaleHoodieCompositeToCanvas(hPad, canvasW, canvasH, compositeW, compositeH);
   const offX = (canvasW - compositeW * scl) / 2;
   const offY = (canvasH - compositeH * scl) / 2;
   for (const slot of slots) {
@@ -1489,7 +1521,8 @@ export function PatternCustomizer({
       if (productKind === "hoodie") {
         const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
         if (compositeW === 0) return;
-        const scl = scaleHoodieCompositeToCanvas(pad, px, canvasH, compositeW, compositeH);
+        const hPad = HOODIE_PREVIEW_PAD;
+        const scl = scaleHoodieCompositeToCanvas(hPad, px, canvasH, compositeW, compositeH);
         const offX = (px - compositeW * scl) / 2;
         const offY = (canvasH - compositeH * scl) / 2;
         const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
@@ -1533,7 +1566,7 @@ export function PatternCustomizer({
         if (slots.length === 2) {
           const right = slots[0];
           const left = slots[1];
-          const seamX = offX + (right.x + right.w) * scl + (left.x - right.x - right.w) * scl / 2;
+          const seamX = offX + 0.5 * (right.x + right.w + left.x) * scl;
           ctx.save();
           ctx.strokeStyle = "rgba(255,80,80,0.6)";
           ctx.lineWidth = 1;
@@ -1609,9 +1642,10 @@ export function PatternCustomizer({
       const pad = 20;
       const drawSlots = (slots: PanelSlot[], compositeW: number, compositeH: number) => {
         if (compositeW === 0) return;
+        const hPad = productKind === "hoodie" ? HOODIE_PREVIEW_PAD : pad;
         const scl =
           productKind === "hoodie"
-            ? scaleHoodieCompositeToCanvas(pad, px, canvasH, compositeW, compositeH)
+            ? scaleHoodieCompositeToCanvas(hPad, px, canvasH, compositeW, compositeH)
             : Math.min((px - pad) / compositeW, (canvasH - pad) / compositeH, 1);
         const offX = (px - compositeW * scl) / 2;
         const offY = (canvasH - compositeH * scl) / 2;
@@ -2011,7 +2045,13 @@ export function PatternCustomizer({
       const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions, svgImages);
       if (layout.compositeW > 0) {
         const previewCanvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
-        const scl = scaleHoodieCompositeToCanvas(20, px, previewCanvasH, layout.compositeW, layout.compositeH);
+        const scl = scaleHoodieCompositeToCanvas(
+          HOODIE_PREVIEW_PAD,
+          px,
+          previewCanvasH,
+          layout.compositeW,
+          layout.compositeH,
+        );
         const found = layout.slots.find(s => s.position === pos.position);
         if (found) {
           previewSlotW = found.w * scl;
