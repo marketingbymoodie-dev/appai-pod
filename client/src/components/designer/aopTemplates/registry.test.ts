@@ -12,7 +12,11 @@ describe("resolveAopLayoutKind", () => {
   it("maps known template ids", () => {
     expect(resolveAopLayoutKind("leggings_v1", "generic")).toBe("leggings");
     expect(resolveAopLayoutKind("hoodie_v1", "leggings")).toBe("hoodie");
-    expect(resolveAopLayoutKind("generic_aop_v1", "hoodie")).toBe("generic");
+  });
+
+  it("generic_aop_v1 defers to inferred layout (zip hoodie uses hoodie rules)", () => {
+    expect(resolveAopLayoutKind("generic_aop_v1", "hoodie")).toBe("hoodie");
+    expect(resolveAopLayoutKind("generic_aop_v1", "leggings")).toBe("leggings");
   });
 
   it("falls back to inferred for unknown template id", () => {
@@ -31,6 +35,12 @@ describe("detectProductKind", () => {
         { position: "left_hood" },
         { position: "waistband" },
       ]),
+    ).toBe("hoodie");
+  });
+
+  it("treats spaced Printify position names as hoodie (front left / right)", () => {
+    expect(
+      detectProductKind([{ position: "Front Right" }, { position: "Front Left" }]),
     ).toBe("hoodie");
   });
 });

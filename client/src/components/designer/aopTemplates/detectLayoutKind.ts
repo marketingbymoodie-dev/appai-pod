@@ -6,7 +6,8 @@ export type AopLayoutKind = "hoodie" | "leggings" | "generic";
  * Used when `aopTemplateId` is unset (backward compatible).
  */
 export function detectProductKind(panels: Array<{ position: string }>): AopLayoutKind {
-  const p = panels.map((x) => x.position.toLowerCase());
+  // Normalize: Printify / APIs sometimes use spaces, hyphens, or mixed case.
+  const p = panels.map((x) => x.position.toLowerCase().replace(/[\s-]+/g, "_"));
   if (p.some((x) => x.includes("hood") || /^front_(left|right)/.test(x) || /^back_(left|right)/.test(x))) {
     return "hoodie";
   }

@@ -30,12 +30,17 @@ export const AOP_TEMPLATE_SELECT_AUTO = "__auto__";
 /**
  * When set, forces layout behavior for PatternCustomizer regardless of placeholder name quirks
  * (e.g. another supplier’s blueprint with non-standard keys).
+ *
+ * `generic_aop_v1` does **not** override inference: the product is still a DB “generic AOP” row,
+ * but `detectProductKind` (from Printify `position` strings) must choose hoodie vs leggings vs linear.
+ * Previously mapping it to "generic" forced a 40px linear gap and ignored zip-hoodie layout fixes.
  */
 export function resolveAopLayoutKind(
   templateId: string | null | undefined,
   inferred: AopLayoutKind,
 ): AopLayoutKind {
   if (!templateId) return inferred;
+  if (templateId === "generic_aop_v1") return inferred;
   const mapped = TEMPLATE_TO_LAYOUT[templateId as AopTemplateId];
   return mapped ?? inferred;
 }
