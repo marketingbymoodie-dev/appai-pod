@@ -114,23 +114,22 @@ const MAX_PANEL_PRINT_PX = 9000;
 /** Solid-colour panels can be compact; Printify scales the image to the placeholder. */
 const SOLID_PANEL_LONG_EDGE_PX = 256;
 
-/** Layout gap between L/R front/hood panels (print px). Small so the seam preview is almost edge-to-edge. */
-export const HOODIE_COMPOSITE_GAP_PX = 2;
+/** Layout gap between L/R front/hood panels (print px). 0 = seam is controlled by overlap only. */
+export const HOODIE_COMPOSITE_GAP_PX = 0;
 
 /**
  * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
- * between panels is GAP - OVERLAP, countering large transparent margins in Printify flat SVGs.
- * Tuned to match a tight on-screen centre seam. Large value offsets wide transparent margins in mask SVGs.
- * Applied per active view only: the **Front** tab composite (chest L/R, then pockets) and the **Hood** tab
- * composite (hood L/R) are built separately — not a single "squish" of every panel in one pass.
+ * between main-row panels is GAP - OVERLAP (strongly negative to counter Printify artboard + mask margins).
+ * Pocket L/R step is clamped in {@link buildCompositeLayout} so narrow pocket placeholders do not cross over.
+ * Applied per active view: Front (chest + pocket row) and Hood (L/R) composites are built separately.
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 200;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 420;
 
 /**
- * Gutter (CSS/canvas px) between the preview border and the scaled composite — matches
- * the ~10–12px “gold bar” the designer drew around the two-up mock (not the mask safe area).
+ * Gutter (CSS/canvas px) between the preview border and the scaled composite; keep small
+ * so panels read large in the box (like the leggings reference), without clipping the dashed guides.
  */
-export const HOODIE_PREVIEW_PAD = 12;
+export const HOODIE_PREVIEW_PAD = 4;
 
 /**
  * After preview→print mapping, nudge artwork on split L/R panels slightly away from the centre
@@ -418,7 +417,7 @@ function buildCompositeLayout(
       const frontSeam = getSeamPairs(panels).find(
         ([a, b]) => getPanelGroup(a) === "front" && getPanelGroup(b) === "front",
       );
-      const pocketLrStep = HOODIE_COMPOSITE_GAP_PX - HOODIE_L_R_SLOT_OVERLAP_PX;
+      const rawMainLrStep = HOODIE_COMPOSITE_GAP_PX - HOODIE_L_R_SLOT_OVERLAP_PX;
 
       if (pocketPanels.length === 2 && frontSeam) {
         const pl = pocketPanels.find(p => {
@@ -434,6 +433,9 @@ function buildCompositeLayout(
           // Same L/R print-space step as the chest row — *not* anchoring to full-width column xs (that left a huge void between two narrow pocket masks).
           const szL = displaySize(pl);
           const szR = displaySize(pr);
+          // Chest overlap (420px) can exceed narrow pocket width; cap step so the right pocket still starts
+          // to the right of the left pocket column (with a few px margin), even when notches are tiny.
+          const pocketLrStep = Math.max(rawMainLrStep, 4 - szL.w);
           const yP = row2Y;
           const hP = Math.max(szL.h, szR.h);
           slots.push({ position: pl.position, x: sLeftMain.x, y: yP, w: szL.w, h: szL.h });
@@ -1866,7 +1868,11 @@ export function PatternCustomizer({
           const useMirrorLeft = mirrorMode  && isLeftLeg && isLegSlot && !!rightLegTileBuffer;
           const useSyncLeft   = syncSidesMode && isLeftLeg && isLegSlot && !!rightLegSlot;
 
-          if (!isLeftLeg && isLegSlot && (syncSidesMode || mirrorMode) && rightLegSlot) {
+          if (productKind === "hoodie") {
+            // One grid origin in canvas space so the repeat matches across the centre seam and onto pockets.
+            tileAnchorX = offX + offsetScreenPx;
+            tileAnchorY = offY;
+          } else if (!isLeftLeg && isLegSlot && (syncSidesMode || mirrorMode) && rightLegSlot) {
             // Right leg: anchor at its own left edge so phase is deterministic
             tileAnchorX = rightSx + offsetScreenPx;
             tileAnchorY = offY;
@@ -2838,7 +2844,7 @@ export function PatternCustomizer({
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.04.28"
+            data-appai-pc="2026.04.30"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
             data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
