@@ -120,12 +120,15 @@ export const HOODIE_COMPOSITE_GAP_PX = 2;
 /**
  * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
  * between panels is GAP - OVERLAP, countering large transparent margins in Printify flat SVGs.
- * 16px was barely visible at typical composite widths (~1500+ print px); 48+ reads clearly on screen.
+ * Tuned to match a tight on-screen centre seam (design QA: “almost flush” L/R for zip + hood 2-up).
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 52;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 72;
 
-/** Inset (canvas px) for hoodie preview scale; must match computePanelCanvasHeight and export. */
-export const HOODIE_PREVIEW_PAD = 4;
+/**
+ * Gutter (CSS/canvas px) between the preview border and the scaled composite — matches
+ * the ~10–12px “gold bar” the designer drew around the two-up mock (not the mask safe area).
+ */
+export const HOODIE_PREVIEW_PAD = 12;
 
 /**
  * After preview→print mapping, nudge artwork on split L/R panels slightly away from the centre
@@ -2674,7 +2677,7 @@ export function PatternCustomizer({
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
       {/* Slightly slimmer control column so the preview (ResizeObserver width) is wider on lg+ */}
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(200px,240px)] gap-3 sm:gap-4 p-2 sm:p-3 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(180px,220px)] gap-3 sm:gap-4 p-2 sm:p-3 flex-1 min-h-0">
         {/* Preview — matches mockup column height when embedded */}
         <div className="flex flex-col min-h-0 min-w-0">
           <div
