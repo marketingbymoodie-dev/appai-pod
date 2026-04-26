@@ -111,8 +111,8 @@ const MAX_PANEL_MOCKUP_PX = 2048;
 const MOBILE_MOCKUP_PANEL_PX = 1400;
 /** Max long-edge for persisted print assets (native template up to this cap). */
 const MAX_PANEL_PRINT_PX = 9000;
-/** Solid-colour panels can be tiny; Printify scales the image to the placeholder. */
-const SOLID_PANEL_LONG_EDGE_PX = 64;
+/** Solid-colour panels can be compact; Printify scales the image to the placeholder. */
+const SOLID_PANEL_LONG_EDGE_PX = 256;
 
 function getAdaptiveMockupPanelPx(): number {
   if (typeof window === "undefined" || typeof navigator === "undefined") {
@@ -337,6 +337,30 @@ function buildLinearPanelsLayout(
     maxH = Math.max(maxH, p.height);
   }
   return { compositeW: x, compositeH: maxH, slots };
+}
+
+function computePanelCanvasHeight(
+  px: number,
+  layout: { compositeW: number; compositeH: number; slots: PanelSlot[] },
+  productKind: AopLayoutKind,
+  panelPositions: Array<{ position: string }>,
+): number {
+  if (layout.compositeW <= 0 || layout.compositeH <= 0) return px;
+  const ratio = layout.compositeH / layout.compositeW;
+  const clampedRatio = Math.min(2.0, Math.max(0.3, ratio));
+  let canvasH = Math.round(px * clampedRatio);
+
+  const hasLegSlots = panelPositions.some(p => shouldFlipLeggingsLegSlot(productKind, p.position));
+  if (hasLegSlots) {
+    const sclEst = Math.min((px - 20) / layout.compositeW, (canvasH - 20) / layout.compositeH, 1);
+    const legSlot = layout.slots.find(s => isLeggingsLegSlot(s.position));
+    const swEst = (legSlot?.w ?? layout.compositeW / 2) * sclEst;
+    const fontEst = Math.max(9, Math.min(13, swEst * 0.085));
+    const lineHEst = fontEst + 3;
+    canvasH += Math.ceil(lineHEst * 4 + 8);
+  }
+
+  return canvasH;
 }
 
 /** Leg flat shapes (_leg / _side); excludes waistbands. Used for Printify-style horizontal flip. */
@@ -1091,6 +1115,7 @@ export function PatternCustomizer({
     const kind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
     return kind === "leggings";
   });
+  const [applyAllover, setApplyAllover] = useState(true);
   const [patternOffsetX, setPatternOffsetX] = useState(initialPlacement?.patternOffsetX ?? 0);
   const [hoodiePatternSpecs, setHoodiePatternSpecs] = useState<Partial<Record<HoodiePanelView, HoodiePatternSpec>>>({
     front: { tileInches, offsetX: initialPlacement?.patternOffsetX ?? 0 },
@@ -1123,11 +1148,11 @@ export function PatternCustomizer({
   const shouldRenderPanelArtworkForMode = useCallback(
     (position: string, exportMode: EditorMode): boolean => {
       if (exportMode === "pattern" && productKind === "hoodie") {
-        return !isHoodieSupportingPanel(position);
+        return !isHoodieSupportingPanel(position) || applyAllover;
       }
       return shouldRenderPanelArtwork(position);
     },
-    [productKind, shouldRenderPanelArtwork],
+    [applyAllover, productKind, shouldRenderPanelArtwork],
   );
 
   const availableHoodieViews = useMemo(
@@ -1184,7 +1209,11 @@ export function PatternCustomizer({
 
   const getPatternSpecForPanel = useCallback(
     (position: string): HoodiePatternSpec =>
-      productKind === "hoodie" ? getPatternSpecForView(getPanelGroup(position)) : fallbackPatternSpec,
+      productKind === "hoodie"
+        ? isHoodieSupportingPanel(position)
+          ? getPatternSpecForView("front")
+          : getPatternSpecForView(getPanelGroup(position))
+        : fallbackPatternSpec,
     [fallbackPatternSpec, getPatternSpecForView, productKind],
   );
 
@@ -1649,27 +1678,7 @@ export function PatternCustomizer({
         productKind === "hoodie"
           ? buildCompositeLayout(activeView, panelPositions)
           : buildLinearPanelsLayout(panelPositions, productKind === "leggings" ? seamBleedPx : 0);
-      if (layout.compositeW > 0 && layout.compositeH > 0) {
-        const ratio = layout.compositeH / layout.compositeW;
-        // Constrain canvas height: never smaller than 30% of width or larger than 200%
-        const clampedRatio = Math.min(2.0, Math.max(0.3, ratio));
-        canvasH = Math.round(px * clampedRatio);
-        // Extra room below panels for BACK/FRONT + leg name labels on leggings.
-        // Compute the actual label height from the rendering scale rather than a
-        // fixed fraction of px, because centering the panels inside the taller
-        // canvas shifts them down by labelExtra/2 — so we need ≥4× lineH of room.
-        const hasLegSlots = panelPositions.some(p => shouldFlipLeggingsLegSlot(productKind, p.position));
-        if (hasLegSlots && layout.compositeW > 0) {
-          const baseH   = Math.round(px * clampedRatio);
-          const sclEst  = Math.min((px - 20) / layout.compositeW,
-                                   (baseH - 20) / layout.compositeH, 1);
-          const legSlot = layout.slots.find(s => isLeggingsLegSlot(s.position));
-          const swEst   = (legSlot?.w ?? layout.compositeW / 2) * sclEst;
-          const fontEst  = Math.max(9, Math.min(13, swEst * 0.085));
-          const lineHEst = fontEst + 3;
-          canvasH += Math.ceil(lineHEst * 4 + 8);
-        }
-      }
+      canvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
     }
 
     canvas.width = px;
@@ -1938,7 +1947,8 @@ export function PatternCustomizer({
     if (productKind === "hoodie") {
       const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
       if (layout.compositeW > 0) {
-        const scl = Math.min((px - 20) / layout.compositeW, (px - 20) / layout.compositeH, 1);
+        const previewCanvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
+        const scl = Math.min((px - 20) / layout.compositeW, (previewCanvasH - 20) / layout.compositeH, 1);
         const found = layout.slots.find(s => s.position === pos.position);
         if (found) {
           previewSlotW = found.w * scl;
@@ -1948,7 +1958,9 @@ export function PatternCustomizer({
     } else {
       const { compositeW, compositeH, slots } = buildLinearPanelsLayout(panelPositions, 0);
       if (compositeW > 0) {
-        const scl = Math.min((px - 20) / compositeW, (px - 20) / compositeH, 1);
+        const layout = { compositeW, compositeH, slots };
+        const previewCanvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
+        const scl = Math.min((px - 20) / compositeW, (previewCanvasH - 20) / compositeH, 1);
         const found = slots.find(s => s.position === pos.position);
         if (found) {
           previewSlotW = found.w * scl;
@@ -2223,8 +2235,9 @@ export function PatternCustomizer({
           // Compute upscale: preview → output canvas px (= print px × cScaleRatio).
           const view = getPanelGroup(rightPos);
           const layout = buildCompositeLayout(view, panelPositions);
+          const previewCanvasH = computePanelCanvasHeight(previewPx, layout, productKind, panelPositions);
           const layoutScl = layout.compositeW > 0
-            ? Math.min((previewPx - 20) / layout.compositeW, (previewPx - 20) / layout.compositeH, 1)
+            ? Math.min((previewPx - 20) / layout.compositeW, (previewCanvasH - 20) / layout.compositeH, 1)
             : 1;
           const rightPreviewSlotW = rightDef.width * layoutScl;
           const rightPreviewSlotH = rightDef.height * layoutScl;
@@ -2580,7 +2593,7 @@ export function PatternCustomizer({
             className="w-full shrink-0 overflow-hidden"
           >
             {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            {mode === "pattern" ? "Apply Allover" : "Apply to Mockups"}
+            Apply to Mockups
           </Button>
 
           {mode === "pattern" && (
@@ -2611,19 +2624,43 @@ export function PatternCustomizer({
               )}
 
               <div>
-                <Label className="text-xs">Pattern type</Label>
-                <Select value={patternType} onValueChange={v => setPatternType(v as PatternType)}>
-                  <SelectTrigger className="h-9 text-xs mt-1 border-foreground/20">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PATTERN_OPTIONS.map(opt => (
-                      <SelectItem key={opt.value} value={opt.value} className="text-xs">
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <Label className="text-xs">Pattern type</Label>
+                    <Select value={patternType} onValueChange={v => setPatternType(v as PatternType)}>
+                      <SelectTrigger className="h-9 text-xs mt-1 border-foreground/20">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PATTERN_OPTIONS.map(opt => (
+                          <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {productKind === "hoodie" && (
+                    <button
+                      type="button"
+                      onClick={() => setApplyAllover((v) => !v)}
+                      className={`mt-5 h-9 shrink-0 rounded-md border px-3 text-xs font-medium transition-colors ${
+                        applyAllover
+                          ? "bg-foreground text-background border-foreground"
+                          : "bg-background text-muted-foreground border-border hover:border-foreground/40"
+                      }`}
+                    >
+                      Apply Allover
+                    </button>
+                  )}
+                </div>
+                {productKind === "hoodie" && (
+                  <p className="mt-1 text-[10px] text-muted-foreground leading-snug">
+                    {applyAllover
+                      ? "Accent panels use the Front pattern specs."
+                      : "Accent panels use the selected background colour."}
+                  </p>
+                )}
               </div>
               <div>
                 <Label className="text-xs">Tile size: {activePatternTileInches.toFixed(2)}"</Label>
