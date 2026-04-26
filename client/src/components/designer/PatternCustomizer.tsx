@@ -136,6 +136,32 @@ export const HOODIE_PREVIEW_PAD = 12;
  */
 const HOODIE_SEAM_SAFETY_NUDGE_PRINT_PX = 6;
 
+/** Print px gap between the main front L/R row and a pocket row (heuristic layout). */
+const HOODIE_POCKET_ROW_GAP_PX = 6;
+
+/** Cuffs / placket / waistband / sleeves: solid in default config, not part of the L/R seam row. */
+function isHoodieTrimPanel(position: string): boolean {
+  const lower = position.toLowerCase();
+  return (
+    lower.includes("cuff") ||
+    lower.includes("waistband") ||
+    lower.includes("placket") ||
+    lower.includes("sleeve")
+  );
+}
+
+function isHoodiePocketPanel(position: string): boolean {
+  return position.toLowerCase().includes("pocket");
+}
+
+/**
+ * “Supporting” = trim or pocket (excluded from the main 2-up seam row; pocket is placed in a second row).
+ * @deprecated Use {@link isHoodieTrimPanel} / {@link isHoodiePocketPanel} for new logic.
+ */
+function isHoodieSupportingPanel(position: string): boolean {
+  return isHoodieTrimPanel(position) || isHoodiePocketPanel(position);
+}
+
 /** Scale hoodie flat layout to fill the preview canvas (may upscale > 1). Leggings/generic cap at 1. */
 function scaleHoodieCompositeToCanvas(
   pad: number,
@@ -151,7 +177,7 @@ function scaleHoodieCompositeToCanvas(
 function nudgeHoodieSeamExportDx(productKind: AopLayoutKind, position: string, dxPrintPx: number): number {
   if (productKind !== "hoodie") return dxPrintPx;
   const l = position.toLowerCase();
-  if (l.includes("back") || isHoodieSupportingPanel(position)) return dxPrintPx;
+  if (l.includes("back") || isHoodieTrimPanel(position) || isHoodiePocketPanel(position)) return dxPrintPx;
   const hasRight = l.includes("right");
   const hasLeft = l.includes("left");
   if (!hasRight && !hasLeft) return dxPrintPx;
@@ -213,17 +239,6 @@ interface PanelSlot { position: string; x: number; y: number; w: number; h: numb
 type HoodiePanelView = "front" | "back" | "hood";
 type HoodiePatternSpec = { tileInches: number; offsetX: number };
 
-function isHoodieSupportingPanel(position: string): boolean {
-  const lower = position.toLowerCase();
-  return (
-    lower.includes("cuff") ||
-    lower.includes("waistband") ||
-    lower.includes("pocket") ||
-    lower.includes("placket") ||
-    lower.includes("sleeve")
-  );
-}
-
 function getPanelGroup(position: string): "front" | "back" | "hood" {
   const l = position.toLowerCase();
   if (l.includes("hood")) return "hood";
@@ -241,8 +256,11 @@ export function getDefaultPanelRenderConfig(
   const isHoodieTemplate = productKind === "hoodie" || aopTemplateId === "hoodie_v1";
 
   if (isHoodieTemplate) {
-    if (isHoodieSupportingPanel(lower)) {
+    if (isHoodieTrimPanel(lower)) {
       return { enabled: false, mode: "solid" };
+    }
+    if (isHoodiePocketPanel(position)) {
+      return { enabled: true, mode: "artwork" };
     }
     if (group === "front") {
       return { enabled: true, mode: "artwork" };
@@ -279,6 +297,28 @@ function getSeamPairs(
     if (left && right) pairs.push([left.position, right.position]);
   }
   return pairs;
+}
+
+/** Map pocket → front seam half whose transform should be reused (kangaroo / centre → `right` half). */
+function getHoodiePocketTransformSourcePosition(
+  pocketPos: string,
+  panels: Array<{ position: string }>,
+): string | null {
+  const l = pocketPos.toLowerCase();
+  const frontPair = getSeamPairs(panels).find(
+    ([a, b]) => getPanelGroup(a) === "front" && getPanelGroup(b) === "front",
+  );
+  if (!frontPair) return null;
+  const L = frontPair[0];
+  const R = frontPair[1];
+  if (l.includes("pocket") && l.includes("left") && !l.includes("right")) return L;
+  if (l.includes("pocket") && l.includes("right")) return R;
+  return R;
+}
+
+function getHoodiePocketNudgeKey(pocketOrSeam: string, panels: Array<{ position: string }>): string {
+  if (!isHoodiePocketPanel(pocketOrSeam)) return pocketOrSeam;
+  return getHoodiePocketTransformSourcePosition(pocketOrSeam, panels) || pocketOrSeam;
 }
 
 /** Front/hood views: exactly two L/R half-panels (zip or hood seam). Excludes back multi-panel edge cases. */
@@ -327,7 +367,9 @@ function buildCompositeLayout(
   panels: Array<{ position: string; width: number; height: number }>,
   svgImages?: Record<string, HTMLImageElement>,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
-  const viewPanels = panels.filter(p => getPanelGroup(p.position) === view && !isHoodieSupportingPanel(p.position));
+  const viewPanels = panels.filter(
+    p => getPanelGroup(p.position) === view && !isHoodieTrimPanel(p.position) && !isHoodiePocketPanel(p.position),
+  );
   if (viewPanels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
 
   const displaySize = (panel: { position: string; width: number; height: number }) => {
@@ -364,8 +406,42 @@ function buildCompositeLayout(
     }
   }
   const last = slots[slots.length - 1];
-  const compositeW = last ? last.x + last.w : 0;
-  return { compositeW, compositeH: maxH, slots };
+  let compositeW = last ? last.x + last.w : 0;
+  let compositeH = maxH;
+
+  if (view === "front" && slots.length > 0) {
+    const pocketPanels = panels.filter(
+      p => getPanelGroup(p.position) === "front" && isHoodiePocketPanel(p.position),
+    );
+    if (pocketPanels.length > 0) {
+      const mainRowH = maxH;
+      const row2Y = mainRowH + HOODIE_POCKET_ROW_GAP_PX;
+      const frontSeam = getSeamPairs(panels).find(
+        ([a, b]) => getPanelGroup(a) === "front" && getPanelGroup(b) === "front",
+      );
+      for (const p of pocketPanels) {
+        const size = displaySize(p);
+        const pl = p.position.toLowerCase();
+        let px: number;
+        if (pocketPanels.length === 1) {
+          px = Math.max(0, (compositeW - size.w) / 2);
+        } else if (frontSeam) {
+          const sLeft = slots.find(s => s.position === frontSeam[0]);
+          const sRight = slots.find(s => s.position === frontSeam[1]);
+          if (pl.includes("left") && !pl.includes("right") && sLeft) px = sLeft.x;
+          else if (pl.includes("right") && sRight) px = sRight.x;
+          else px = Math.max(0, (compositeW - size.w) / 2);
+        } else {
+          px = Math.max(0, (compositeW - size.w) / 2);
+        }
+        slots.push({ position: p.position, x: px, y: row2Y, w: size.w, h: size.h });
+      }
+      compositeH = Math.max(...slots.map(s => s.y + s.h));
+      compositeW = Math.max(...slots.map(s => s.x + s.w), compositeW);
+    }
+  }
+
+  return { compositeW, compositeH, slots };
 }
 
 /** Build leggings side-by-side layout. */
@@ -604,22 +680,24 @@ function canonicalHoodieTransformPanelId(
   syncSides: boolean,
   panels: Array<{ position: string }>,
 ): string | null {
-  if (!active || !syncSides) return active;
-  const group = getPanelGroup(active);
-  if (group === "back" || isHoodieSupportingPanel(active)) return active;
-  const lower = active.toLowerCase();
-  if (!lower.includes("left") && !lower.includes("right")) return active;
+  if (!active) return active;
+  const a = isHoodiePocketPanel(active) ? (getHoodiePocketTransformSourcePosition(active, panels) || active) : active;
+  if (!syncSides) return a;
+  const group = getPanelGroup(a);
+  if (group === "back" || isHoodieTrimPanel(a)) return a;
+  const lower = a.toLowerCase();
+  if (!lower.includes("left") && !lower.includes("right")) return a;
   const paired = panels.find((panel) => {
     const panelLower = panel.position.toLowerCase();
-    if (getPanelGroup(panel.position) !== group || isHoodieSupportingPanel(panel.position)) {
+    if (getPanelGroup(panel.position) !== group || isHoodieTrimPanel(panel.position) || isHoodiePocketPanel(panel.position)) {
       return false;
     }
     return lower.includes("left")
       ? panelLower.includes("right")
       : panelLower.includes("left");
   });
-  if (!paired) return active;
-  return lower.includes("left") ? paired.position : active;
+  if (!paired) return a;
+  return lower.includes("left") ? paired.position : a;
 }
 
 function canonicalTransformPanelId(
@@ -1265,7 +1343,7 @@ export function PatternCustomizer({
   const shouldRenderPanelArtworkForMode = useCallback(
     (position: string, exportMode: EditorMode): boolean => {
       if (exportMode === "pattern" && productKind === "hoodie") {
-        return !isHoodieSupportingPanel(position) || applyAllover;
+        return !isHoodieTrimPanel(position) || isHoodiePocketPanel(position) || applyAllover;
       }
       return shouldRenderPanelArtwork(position);
     },
@@ -1275,7 +1353,7 @@ export function PatternCustomizer({
   const availableHoodieViews = useMemo(
     () =>
       (["front", "back", "hood"] as const).filter((view) =>
-        panelPositions.some((p) => getPanelGroup(p.position) === view && !isHoodieSupportingPanel(p.position)),
+        panelPositions.some((p) => getPanelGroup(p.position) === view && !isHoodieTrimPanel(p.position)),
       ),
     [panelPositions],
   );
@@ -1327,7 +1405,7 @@ export function PatternCustomizer({
   const getPatternSpecForPanel = useCallback(
     (position: string): HoodiePatternSpec =>
       productKind === "hoodie"
-        ? isHoodieSupportingPanel(position)
+        ? isHoodieTrimPanel(position)
           ? getPatternSpecForView("front")
           : getPatternSpecForView(getPanelGroup(position))
         : fallbackPatternSpec,
@@ -1560,21 +1638,24 @@ export function PatternCustomizer({
           const svgImg  = getSvgImageForPosition(svgImages, slot.position);
           const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
-          const t = perPanelTransforms[slot.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
-          const mirrorTarget = mirrorMode && isMirrorTarget(slot.position, slots);
-          const sourcePos = mirrorTarget ? getMirrorSource(slot.position, slots) : null;
+          const placeKey = isHoodiePocketPanel(slot.position)
+            ? (getHoodiePocketTransformSourcePosition(slot.position, panelPositions) || slot.position)
+            : slot.position;
+          const t = perPanelTransforms[placeKey] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+          const mirrorTarget = mirrorMode && isMirrorTarget(placeKey, slots);
+          const sourcePos = mirrorTarget ? getMirrorSource(placeKey, slots) : null;
           const syncTarget =
             !sourcePos && syncSidesMode
-              ? canonicalHoodieTransformPanelId(slot.position, true, panelPositions)
+              ? canonicalHoodieTransformPanelId(placeKey, true, panelPositions)
               : null;
           const syncT = syncTarget ? (perPanelTransforms[syncTarget] || t) : t;
           const isSyncedLeftPanel =
             !!syncTarget &&
-            syncTarget !== slot.position &&
-            slot.position.toLowerCase().includes("left");
+            syncTarget !== placeKey &&
+            placeKey.toLowerCase().includes("left");
           const syncedT = isSyncedLeftPanel ? { ...syncT, dxPx: -syncT.dxPx } : syncT;
           const effectiveT = sourcePos ? (perPanelTransforms[sourcePos] || t) : syncTarget ? syncedT : t;
-          const renderArtwork = shouldRenderPanelArtwork(sourcePos || slot.position);
+          const renderArtwork = shouldRenderPanelArtwork(sourcePos || placeKey);
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = panelFillColor;
@@ -1588,20 +1669,23 @@ export function PatternCustomizer({
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
 
-        if (slots.length === 2) {
+        if (slots.length >= 2) {
           const right = slots[0];
           const left = slots[1];
-          const seamX = offX + 0.5 * (right.x + right.w + left.x) * scl;
-          ctx.save();
-          ctx.strokeStyle = "rgba(255,80,80,0.6)";
-          ctx.lineWidth = 1;
-          ctx.setLineDash([4, 4]);
-          ctx.beginPath();
-          ctx.moveTo(seamX, offY);
-          ctx.lineTo(seamX, offY + compositeH * scl);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.restore();
+          if (!isHoodiePocketPanel(right.position) && !isHoodiePocketPanel(left.position)) {
+            const row1H = Math.max(right.h, left.h);
+            const seamX = offX + 0.5 * (right.x + right.w + left.x) * scl;
+            ctx.save();
+            ctx.strokeStyle = "rgba(255,80,80,0.6)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(seamX, offY);
+            ctx.lineTo(seamX, offY + row1H * scl);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.restore();
+          }
         }
       } else {
         const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
@@ -1893,15 +1977,19 @@ export function PatternCustomizer({
       if (syncSidesMode) {
         return canonicalTransformPanelId(panel, true, panelPositions, productKind) || panel;
       }
+      const p0 =
+        productKind === "hoodie" && isHoodiePocketPanel(panel)
+          ? (getHoodiePocketTransformSourcePosition(panel, panelPositions) || panel)
+          : panel;
       if (mirrorMode) {
         const { slots } =
           productKind === "hoodie"
             ? buildCompositeLayout(activeView, panelPositions, svgImages)
             : buildLinearPanelsLayout(panelPositions, 0);
-        const source = getMirrorSource(panel, slots);
-        return source || panel;
+        const source = getMirrorSource(p0, slots);
+        return source || p0;
       }
-      return panel;
+      return p0;
     };
 
     const onMouseDown = (e: MouseEvent) => {
@@ -2060,7 +2148,11 @@ export function PatternCustomizer({
     canvas.height = outH;
     const ctx = canvas.getContext("2d")!;
 
-    const t = transformOverride ?? perPanelTransforms[pos.position] ?? { dxPx: 0, dyPx: 0, scalePct: 100 };
+    let t = transformOverride ?? perPanelTransforms[pos.position] ?? { dxPx: 0, dyPx: 0, scalePct: 100 };
+    if (productKind === "hoodie" && isHoodiePocketPanel(pos.position) && !transformOverride) {
+      const src = getHoodiePocketTransformSourcePosition(pos.position, panelPositions);
+      if (src) t = perPanelTransforms[src] || t;
+    }
 
     // Derive upscale: preview slot px → output canvas px (= print px × scaleRatio).
     const px = previewPx;
@@ -2105,7 +2197,11 @@ export function PatternCustomizer({
         : 0;
 
     const printT: PanelTransform = {
-      dxPx:     nudgeHoodieSeamExportDx(productKind, pos.position, t.dxPx * upscaleX),
+      dxPx:     nudgeHoodieSeamExportDx(
+        productKind,
+        getHoodiePocketNudgeKey(pos.position, panelPositions),
+        t.dxPx * upscaleX,
+      ),
       dyPx:     t.dyPx * upscaleY + yExportNudge,
       scalePct: t.scalePct,
     };
@@ -2554,7 +2650,8 @@ export function PatternCustomizer({
           productKind === "hoodie" &&
           isLeft &&
           getPanelGroup(p.position) !== "back" &&
-          !isHoodieSupportingPanel(p.position);
+          !isHoodieTrimPanel(p.position) &&
+          !isHoodiePocketPanel(p.position);
         const doMirror = mirrorMode && isLeggings && isLeft;
         const doSyncSides = syncSidesMode && ((isLeggings && isLeft) || isHoodieSyncedPanel);
 
@@ -2610,7 +2707,11 @@ export function PatternCustomizer({
             const ql = q.position.toLowerCase();
             if (!ql.includes("right") || compositeCovered.has(q.position)) return false;
             if (isLeggings) return ql.includes("side") || ql.includes("leg");
-            return getPanelGroup(q.position) === getPanelGroup(p.position) && !isHoodieSupportingPanel(q.position);
+            return (
+              getPanelGroup(q.position) === getPanelGroup(p.position) &&
+              !isHoodieTrimPanel(q.position) &&
+              !isHoodiePocketPanel(q.position)
+            );
           });
           if (rightPanel) {
             const rightT = perPanelTransforms[rightPanel.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
