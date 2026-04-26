@@ -106,9 +106,9 @@ const MIN_TILE_INCHES = 0.5;
 const DEFAULT_SEAM_BLEED_PX = 70;
 
 /** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
-const MAX_PANEL_MOCKUP_PX = 2048;
+const MAX_PANEL_MOCKUP_PX = 1100;
 /** Mobile-friendly preview cap: smaller payloads, still sharp enough for mockups. */
-const MOBILE_MOCKUP_PANEL_PX = 1400;
+const MOBILE_MOCKUP_PANEL_PX = 900;
 /** Max long-edge for persisted print assets (native template up to this cap). */
 const MAX_PANEL_PRINT_PX = 9000;
 /** Solid-colour panels can be compact; Printify scales the image to the placeholder. */
@@ -2208,10 +2208,12 @@ export function PatternCustomizer({
         // Track which positions are handled by composite export
         const compositeCovered = new Set<string>();
 
-        // Seam-pair panels: render as a single composite then crop each side.
+        // Legging seam-pair panels: render as a single composite then crop each side.
+        // Hoodie split panels export independently below so the mockup uses the same
+        // per-panel transform math as the visible customizer preview.
         // This guarantees artwork continuity across the seam with no pixel offset.
         for (const [leftPos, rightPos] of seamPairs) {
-          if (productKind === "hoodie" && !syncSidesMode) {
+          if (productKind === "hoodie" || !syncSidesMode) {
             continue;
           }
           if (!shouldRenderPanelArtworkForMode(leftPos, "place") || !shouldRenderPanelArtworkForMode(rightPos, "place")) {
@@ -2417,10 +2419,16 @@ export function PatternCustomizer({
           continue;
         }
 
-        const isLeft = p.position.toLowerCase().includes("left");
+        const panelLower = p.position.toLowerCase();
+        const isLeft = panelLower.includes("left");
         const isLeggings = productKind === "leggings";
+        const isHoodieSyncedPanel =
+          productKind === "hoodie" &&
+          isLeft &&
+          getPanelGroup(p.position) !== "back" &&
+          !isHoodieSupportingPanel(p.position);
         const doMirror = mirrorMode && isLeggings && isLeft;
-        const doSyncSides = syncSidesMode && isLeggings && isLeft;
+        const doSyncSides = syncSidesMode && ((isLeggings && isLeft) || isHoodieSyncedPanel);
 
         if (doMirror) {
           // Find the paired right panel
@@ -2468,13 +2476,13 @@ export function PatternCustomizer({
           }
         }
 
-          if (doSyncSides) {
-          // Sync sides: left leg uses symmetric horizontal offset of the right leg (no artwork flip).
+        if (doSyncSides) {
+          // Sync sides: left panel uses symmetric horizontal offset of the right/canonical panel (no artwork flip).
           const rightPanel = panelPositions.find(q => {
             const ql = q.position.toLowerCase();
-            return ql.includes("right") &&
-              (ql.includes("side") || ql.includes("leg")) &&
-              !compositeCovered.has(q.position);
+            if (!ql.includes("right") || compositeCovered.has(q.position)) return false;
+            if (isLeggings) return ql.includes("side") || ql.includes("leg");
+            return getPanelGroup(q.position) === getPanelGroup(p.position) && !isHoodieSupportingPanel(q.position);
           });
           if (rightPanel) {
             const rightT = perPanelTransforms[rightPanel.position] || { dxPx: 0, dyPx: 0, scalePct: 100 };
