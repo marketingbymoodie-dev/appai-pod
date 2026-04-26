@@ -367,22 +367,19 @@ function isHoodieLrOverlapView(
 function buildCompositeLayout(
   view: HoodiePanelView,
   panels: Array<{ position: string; width: number; height: number }>,
-  svgImages?: Record<string, HTMLImageElement>,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   const viewPanels = panels.filter(
     p => getPanelGroup(p.position) === view && !isHoodieTrimPanel(p.position) && !isHoodiePocketPanel(p.position),
   );
   if (viewPanels.length === 0) return { compositeW: 0, compositeH: 0, slots: [] };
 
-  const displaySize = (panel: { position: string; width: number; height: number }) => {
-    const svgImg = svgImages ? getSvgImageForPosition(svgImages, panel.position) : null;
-    const naturalW = svgImg?.naturalWidth || svgImg?.width || 0;
-    const naturalH = svgImg?.naturalHeight || svgImg?.height || 0;
-    if (naturalW > 0 && naturalH > 0) {
-      return { w: panel.height * (naturalW / naturalH), h: panel.height };
-    }
-    return { w: panel.width, h: panel.height };
-  };
+  // Match `buildLinearPanelsLayout` / leggings: layout uses Printify placeholder width × height
+  // so composite scale matches the "print" box. Using SVG natural dimensions for slot w/h
+  // bloats the artboard and leaves the garment a small island in each slot.
+  const displaySize = (panel: { position: string; width: number; height: number }) => ({
+    w: panel.width,
+    h: panel.height,
+  });
 
   const maxH = Math.max(...viewPanels.map(p => displaySize(p).h));
 
@@ -796,7 +793,7 @@ function hitTestHoodiePlacePanel(
   panelPositions: Array<{ position: string; width: number; height: number }>,
   svgImages: Record<string, HTMLImageElement>,
 ): string | null {
-  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
+  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
   if (compositeW === 0) return null;
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / Math.max(rect.width, 1);
@@ -1678,7 +1675,7 @@ export function PatternCustomizer({
     (ctx: CanvasRenderingContext2D, img: HTMLImageElement, px: number, canvasH = px) => {
       const pad = 20;
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
         if (compositeW === 0) return;
         const hPad = HOODIE_PREVIEW_PAD;
         const scl = scaleHoodieCompositeToCanvas(hPad, px, canvasH, compositeW, compositeH);
@@ -1912,7 +1909,7 @@ export function PatternCustomizer({
       };
 
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
+        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions);
         drawSlots(slots, compositeW, compositeH);
       } else {
         const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
@@ -1938,7 +1935,7 @@ export function PatternCustomizer({
     if (panelPositions.length > 0 && (mode === "place" || mode === "pattern")) {
       const layout =
         productKind === "hoodie"
-          ? buildCompositeLayout(activeView, panelPositions, svgImages)
+          ? buildCompositeLayout(activeView, panelPositions)
           : buildLinearPanelsLayout(panelPositions, productKind === "leggings" ? seamBleedPx : 0);
       canvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
     }
@@ -2040,7 +2037,7 @@ export function PatternCustomizer({
       if (mirrorMode) {
         const { slots } =
           productKind === "hoodie"
-            ? buildCompositeLayout(activeView, panelPositions, svgImages)
+            ? buildCompositeLayout(activeView, panelPositions)
             : buildLinearPanelsLayout(panelPositions, 0);
         const source = getMirrorSource(p0, slots);
         return source || p0;
@@ -2215,7 +2212,7 @@ export function PatternCustomizer({
     let previewSlotW = px;
     let previewSlotH = px;
     if (productKind === "hoodie") {
-      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions, svgImages);
+      const layout = buildCompositeLayout(getPanelGroup(pos.position), panelPositions);
       if (layout.compositeW > 0) {
         const previewCanvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
         const scl = scaleHoodieCompositeToCanvas(
@@ -2516,7 +2513,7 @@ export function PatternCustomizer({
 
           // Compute upscale: preview → output canvas px (= print px × cScaleRatio).
           const view = getPanelGroup(rightPos);
-          const layout = buildCompositeLayout(view, panelPositions, svgImages);
+          const layout = buildCompositeLayout(view, panelPositions);
           const previewCanvasH = computePanelCanvasHeight(previewPx, layout, productKind, panelPositions);
           const layoutScl = layout.compositeW > 0
             ? Math.min((previewPx - 20) / layout.compositeW, (previewCanvasH - 20) / layout.compositeH, 1)
@@ -2841,7 +2838,7 @@ export function PatternCustomizer({
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.04.27"
+            data-appai-pc="2026.04.28"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
             data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
