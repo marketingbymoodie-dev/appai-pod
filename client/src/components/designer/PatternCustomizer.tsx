@@ -120,11 +120,12 @@ export const HOODIE_COMPOSITE_GAP_PX = 2;
 /**
  * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
  * between panels is GAP - OVERLAP, countering large transparent margins in Printify flat SVGs.
+ * 16px was barely visible at typical composite widths (~1500+ print px); 48+ reads clearly on screen.
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 16;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 52;
 
 /** Inset (canvas px) for hoodie preview scale; must match computePanelCanvasHeight and export. */
-export const HOODIE_PREVIEW_PAD = 10;
+export const HOODIE_PREVIEW_PAD = 4;
 
 /**
  * After preview→print mapping, nudge artwork on split L/R panels slightly away from the centre
@@ -294,6 +295,27 @@ function isHoodieTwoUpLrView(
 }
 
 /**
+ * Use zip/hood L/R overlap for layout when the strict name heuristics match, or when
+ * `getSeamPairs` (Printify-style prefixes) identifies this view's two slots as a left+right row.
+ * Covers odd spellings that still map to a seam pair in admin data.
+ */
+function isHoodieLrOverlapView(
+  view: HoodiePanelView,
+  sortedViewPanels: Array<{ position: string }>,
+  allPanels: Array<{ position: string }>,
+): boolean {
+  if (view !== "front" && view !== "hood") return false;
+  if (sortedViewPanels.length !== 2) return false;
+  if (isHoodieTwoUpLrView(view, sortedViewPanels)) return true;
+  const active = new Set(sortedViewPanels.map((s) => s.position));
+  for (const [leftPos, rightPos] of getSeamPairs(allPanels)) {
+    if (getPanelGroup(leftPos) !== view) continue;
+    if (active.has(leftPos) && active.has(rightPos)) return true;
+  }
+  return false;
+}
+
+/**
  * Build the flat composite layout for a given view.
  * Front view: right panel first (seam at centre), left panel second.
  */
@@ -332,7 +354,7 @@ function buildCompositeLayout(
     const size = displaySize(p);
     slots.push({ position: p.position, x, y: 0, w: size.w, h: size.h });
     if (i < sorted.length - 1) {
-      const betweenGap = isHoodieTwoUpLrView(view, sorted)
+      const betweenGap = isHoodieLrOverlapView(view, sorted, panels)
         ? HOODIE_COMPOSITE_GAP_PX - HOODIE_L_R_SLOT_OVERLAP_PX
         : HOODIE_COMPOSITE_GAP_PX;
       x += size.w + betweenGap;
@@ -2651,7 +2673,8 @@ export function PatternCustomizer({
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)] gap-4 p-2 sm:p-3 flex-1 min-h-0">
+      {/* Slightly slimmer control column so the preview (ResizeObserver width) is wider on lg+ */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(200px,240px)] gap-3 sm:gap-4 p-2 sm:p-3 flex-1 min-h-0">
         {/* Preview — matches mockup column height when embedded */}
         <div className="flex flex-col min-h-0 min-w-0">
           <div
