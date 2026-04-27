@@ -114,16 +114,20 @@ const MAX_PANEL_PRINT_PX = 9000;
 /** Solid-colour panels can be compact; Printify scales the image to the placeholder. */
 const SOLID_PANEL_LONG_EDGE_PX = 256;
 
-/** Layout gap between L/R front/hood panels (print px). 0 = seam is controlled by overlap only. */
+/** Base row gap for non-special hoodie composite rows (print px). */
 export const HOODIE_COMPOSITE_GAP_PX = 0;
 
 /**
- * Pull L/R front/hood mask slots toward the zip/hood centre (print px). The effective step
- * between main-row panels is GAP - OVERLAP (strongly negative to counter Printify artboard + mask margins).
- * Applied per active view: Front and Hood (each is a 2-up L/R row only; pocket panels are not laid out
- * in the flat composite — the kangaroo is covered by the main front artwork in the preview).
+ * Front mask SVGs include transparent artboard margin at the zipper edge. This is only a capped
+ * slot compensation so the visible zip seams land with a small gap; Hood must not use this.
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 1000;
+export const HOODIE_FRONT_MAX_SLOT_OVERLAP_PX = 450;
+
+/** Hood halves should keep a real center gap, then scale as a two-up row to the preview width. */
+export const HOODIE_HOOD_CENTER_GAP_PX = 140;
+
+/** Aim front/hood two-up rows at a near-square footprint so contain scaling fills the box width. */
+const HOODIE_TWO_UP_TARGET_ASPECT = 0.98;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite; keep small
@@ -173,6 +177,28 @@ function scaleHoodieCompositeToCanvas(
 ): number {
   if (compositeW <= 0 || compositeH <= 0) return 1;
   return Math.min((canvasW - pad) / compositeW, (canvasH - pad) / compositeH);
+}
+
+function getHoodieTwoUpCenterGapPx(
+  view: HoodiePanelView,
+  sizes: Array<{ w: number; h: number }>,
+  maxH: number,
+): number {
+  if (sizes.length !== 2 || maxH <= 0) return HOODIE_COMPOSITE_GAP_PX;
+
+  const naturalW = sizes[0].w + sizes[1].w;
+  const targetW = maxH * HOODIE_TWO_UP_TARGET_ASPECT;
+  const aspectGap = targetW - naturalW;
+
+  if (view === "hood") {
+    return Math.max(HOODIE_HOOD_CENTER_GAP_PX, aspectGap);
+  }
+
+  if (view === "front") {
+    return Math.max(-HOODIE_FRONT_MAX_SLOT_OVERLAP_PX, Math.min(80, aspectGap));
+  }
+
+  return HOODIE_COMPOSITE_GAP_PX;
 }
 
 function nudgeHoodieSeamExportDx(productKind: AopLayoutKind, position: string, dxPrintPx: number): number {
@@ -388,8 +414,6 @@ function buildCompositeLayout(
     return { w: panel.width, h: panel.height };
   };
 
-  const maxH = Math.max(...viewPanels.map(p => displaySize(p).h));
-
   const sorted = [...viewPanels].sort((a, b) => {
     const aLeft = a.position.toLowerCase().includes("left");
     const bLeft = b.position.toLowerCase().includes("left");
@@ -397,17 +421,18 @@ function buildCompositeLayout(
     if (view === "back") return aLeft ? -1 : 1;
     return aLeft ? 1 : -1;
   });
+  const sized = sorted.map((panel) => ({ panel, size: displaySize(panel) }));
+  const maxH = Math.max(...sized.map(({ size }) => size.h));
+  const betweenGap = isHoodieLrOverlapView(view, sorted, panels)
+    ? getHoodieTwoUpCenterGapPx(view, sized.map(({ size }) => size), maxH)
+    : HOODIE_COMPOSITE_GAP_PX;
 
   let x = 0;
   const slots: PanelSlot[] = [];
-  for (let i = 0; i < sorted.length; i++) {
-    const p = sorted[i];
-    const size = displaySize(p);
-    slots.push({ position: p.position, x, y: 0, w: size.w, h: size.h });
+  for (let i = 0; i < sized.length; i++) {
+    const { panel, size } = sized[i];
+    slots.push({ position: panel.position, x, y: 0, w: size.w, h: size.h });
     if (i < sorted.length - 1) {
-      const betweenGap = isHoodieLrOverlapView(view, sorted, panels)
-        ? HOODIE_COMPOSITE_GAP_PX - HOODIE_L_R_SLOT_OVERLAP_PX
-        : HOODIE_COMPOSITE_GAP_PX;
       x += size.w + betweenGap;
     }
   }
@@ -2820,10 +2845,11 @@ export function PatternCustomizer({
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.04.27"
+            data-appai-pc="2026.04.27.2"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
-            data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
+            data-hoodie-front-max-overlap-print-px={productKind === "hoodie" ? HOODIE_FRONT_MAX_SLOT_OVERLAP_PX : undefined}
+            data-hoodie-hood-gap-print-px={productKind === "hoodie" ? HOODIE_HOOD_CENTER_GAP_PX : undefined}
           >
             <canvas
               ref={canvasRef}
