@@ -1547,8 +1547,10 @@ export default function EmbedDesign() {
       sendMockupsToParent(absMockups);
     }
 
+    // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
+    // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =
-      !!productTypeConfig?.isAllOverPrint || productTypeConfig?.designerType === "apparel";
+      !productTypeConfig?.isAllOverPrint && productTypeConfig?.designerType === "apparel";
     if (shouldAutoRemoveBg && !bgRemovedLoadedDesignsRef.current.has(designId)) {
       bgRemovedLoadedDesignsRef.current.add(designId);
       void (async () => {
@@ -1566,9 +1568,6 @@ export default function EmbedDesign() {
             prev?.id === designId ? { ...prev, imageUrl: cleanedUrl } : prev,
           );
           setAopPendingMotifUrl((prev) => (prev === absUrl ? cleanedUrl : prev));
-          if (productTypeConfig?.isAllOverPrint) {
-            setAopPatternUrl(cleanedUrl);
-          }
         } catch (error) {
           console.warn("[LoadDesign] Auto background removal failed; using original artwork:", error);
         }
