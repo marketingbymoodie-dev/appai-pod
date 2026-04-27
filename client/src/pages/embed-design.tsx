@@ -228,6 +228,15 @@ function toAbsoluteImageUrl(url: string): string {
   return buildAppUrl(url);
 }
 
+function isTemporaryPrintifyMockupUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "images-api.printify.com" && parsed.pathname.includes("/mockup/");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Convert a data URL to a Blob for upload.
  */
@@ -1567,6 +1576,11 @@ export default function EmbedDesign() {
     const mockups = topLevel.mockupUrls;
     if (mockups?.length) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
+      const shouldRefreshSavedAopMockups =
+        !!productTypeConfig?.isAllOverPrint &&
+        absMockups.some(isTemporaryPrintifyMockupUrl) &&
+        Array.isArray(ds?.aopPrintPanelUrls) &&
+        ds.aopPrintPanelUrls.length > 0;
       setPrintifyMockups(absMockups);
       setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
       setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
@@ -1585,6 +1599,30 @@ export default function EmbedDesign() {
       // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
       if (absUrl) setAopPatternUrl(absUrl);
       sendMockupsToParent(absMockups);
+      if (shouldRefreshSavedAopMockups && productTypeConfig && (ds?.selectedSize || topLevel.size)) {
+        const panelUrls = ds.aopPrintPanelUrls
+          .map((panel: any) => ({
+            position: String(panel?.position || ""),
+            dataUrl: toAbsoluteImageUrl(String(panel?.url || panel?.dataUrl || "")),
+          }))
+          .filter((panel: { position: string; dataUrl: string }) => panel.position && panel.dataUrl);
+        if (panelUrls.length > 0) {
+          console.log("[LoadDesign] Refreshing stale Printify AOP mockups from saved panel URLs");
+          setMockupTriggered(true);
+          fetchPrintifyMockups(
+            toAbsoluteImageUrl(absUrl),
+            productTypeConfig.id,
+            String(ds?.selectedSize || topLevel.size),
+            String(ds?.selectedFrameColor || topLevel.frameColor || "default"),
+            typeof ds?.scale === "number" ? ds.scale : 100,
+            50,
+            50,
+            absUrl,
+            aopPlacementSettings?.mirrorMode,
+            panelUrls,
+          );
+        }
+      }
     }
 
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
@@ -1954,6 +1992,7 @@ export default function EmbedDesign() {
     if (panelUrls && panelUrls.length > 0) {
       const invalidPanels = panelUrls.filter(({ dataUrl }) => {
         if (!dataUrl || typeof dataUrl !== 'string') return true;
+        if (dataUrl.startsWith('http://') || dataUrl.startsWith('https://')) return false;
         if (!dataUrl.startsWith('data:')) return true;
         // Must have a base64 marker and at least a few hundred chars of payload.
         const b64Idx = dataUrl.indexOf(';base64,');

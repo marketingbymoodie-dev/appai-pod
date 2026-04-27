@@ -7251,6 +7251,24 @@ ${textEdgeRestrictions}
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { generatePrintifyMockup } = await import("./printify-mockups.js");
 
+      const toPublicPanelImageRef = (value: unknown): string => {
+        const raw = typeof value === "string" ? value : "";
+        if (!raw) return "";
+        if (raw.startsWith("data:") || raw.startsWith("https://") || raw.startsWith("http://")) return raw;
+        const appUrl = (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+        if (raw.startsWith("/apps/appai/objects/")) return `${appUrl}${raw.slice("/apps/appai".length)}`;
+        if (raw.startsWith("/objects/")) return `${appUrl}${raw}`;
+        return raw;
+      };
+      const normalizedPanelUrls = Array.isArray(panelUrls) && panelUrls.length > 0
+        ? panelUrls
+            .map((panel: any) => ({
+              position: String(panel?.position || ""),
+              dataUrl: toPublicPanelImageRef(panel?.dataUrl || panel?.url),
+            }))
+            .filter((panel: { position: string; dataUrl: string }) => panel.position && panel.dataUrl)
+        : undefined;
+
       const result = await generatePrintifyMockup({
         blueprintId,
         providerId,
@@ -7268,7 +7286,7 @@ ${textEdgeRestrictions}
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
         mirrorLegs: !!mirrorLegs,
-        panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+        panelUrls: normalizedPanelUrls,
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {

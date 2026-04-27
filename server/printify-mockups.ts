@@ -47,7 +47,7 @@ interface MockupRequest {
   wrapAround?: boolean;
   wrapDirection?: "horizontal" | "vertical";
   aopPositions?: { position: string; width: number; height: number }[];
-  /** Per-panel canvas images (dataUrls) — already incorporate placement/mirror transforms. */
+  /** Per-panel images — data URLs for fresh applies, hosted URLs for saved-design regeneration. */
   panelUrls?: { position: string; dataUrl: string }[];
   /** Legacy: mirror flag. Client now bakes mirror into panelUrls so server-side handling is a no-op. */
   mirrorLegs?: boolean;
@@ -106,6 +106,9 @@ export function extractBase64FromDataUrl(dataUrl: string): string | null {
 
 /** Return a short, non-sensitive summary for a panel data URL suitable for logging. */
 function describeDataUrl(dataUrl: string): { mime: string; byteLen: number; valid: boolean } {
+  if (/^https?:\/\//.test(dataUrl)) {
+    return { mime: "url", byteLen: dataUrl.length, valid: true };
+  }
   const mimeMatch = dataUrl.match(/^data:([^;,]+)/);
   const mime = mimeMatch ? mimeMatch[1] : "unknown";
   const b64 = extractBase64FromDataUrl(dataUrl);
@@ -538,24 +541,31 @@ export async function generatePrintifyMockup(
         MAX_PANEL_UPLOAD_CONCURRENCY,
         async ({ position, dataUrl }) => {
           try {
-            const b64 = extractBase64FromDataUrl(dataUrl);
-            if (!b64) {
-              console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
-              return { position, uploadedId: null as string | null };
-            }
+            let uploadSource: string | Buffer;
+            if (/^https?:\/\//.test(dataUrl)) {
+              uploadSource = dataUrl;
+              console.log(`[Printify AOP] Panel "${position}" using hosted URL: ${dataUrl.substring(0, 100)}`);
+            } else {
+              const b64 = extractBase64FromDataUrl(dataUrl);
+              if (!b64) {
+                console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
+                return { position, uploadedId: null as string | null };
+              }
 
-            let buf = Buffer.from(b64, "base64");
-            const mime = getDataUrlMime(dataUrl);
-            // Validate that the payload is a real image. Avoid re-encoding already-PNG
-            // panels because the client now sends PNG mockup assets and re-encoding adds
-            // server CPU time without improving the preview.
-            await sharp(buf).metadata();
-            if (mime !== "image/png") {
-              buf = await sharp(buf).png().toBuffer();
-            }
+              let buf = Buffer.from(b64, "base64");
+              const mime = getDataUrlMime(dataUrl);
+              // Validate that the payload is a real image. Avoid re-encoding already-PNG
+              // panels because the client now sends PNG mockup assets and re-encoding adds
+              // server CPU time without improving the preview.
+              await sharp(buf).metadata();
+              if (mime !== "image/png") {
+                buf = await sharp(buf).png().toBuffer();
+              }
 
-            console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes ${mime}`);
-            const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
+              console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes ${mime}`);
+              uploadSource = buf;
+            }
+            const uploaded = await uploadImageToPrintify(uploadSource, printifyApiToken);
             if (!uploaded) {
               console.warn(`[Printify AOP] Panel "${position}" upload returned null`);
               return { position, uploadedId: null as string | null };
