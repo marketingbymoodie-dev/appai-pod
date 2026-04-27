@@ -862,6 +862,8 @@ export default function EmbedDesign() {
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
+  // Ensures quick successive AOP edits do not let an older mockup response overwrite the latest one.
+  const mockupRequestSeqRef = useRef(0);
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -1937,6 +1939,7 @@ export default function EmbedDesign() {
       console.log(`[EmbedDesign] AOP preflight OK: ${panelUrls.length} panel(s) — sizes: ${panelUrls.map(p => `${p.position}:${(p.dataUrl.length / 1024).toFixed(0)}KB`).join(', ')}`);
     }
 
+    const requestSeq = ++mockupRequestSeqRef.current;
     setMockupLoading(true);
     setMockupsStale(false);
     // Notify parent page so it can show the "Artwork Generating" overlay
@@ -2033,6 +2036,10 @@ export default function EmbedDesign() {
       const result = await response.json();
       
       if (result.success && result.mockupUrls?.length > 0) {
+        if (requestSeq !== mockupRequestSeqRef.current) {
+          console.log('[Mockups] Ignoring stale mockup response', requestSeq);
+          return;
+        }
         const absUrls = result.mockupUrls.map(toAbsoluteImageUrl);
         const absImages = (result.mockupImages || []).map((img: { url: string; label: string }) => ({
           ...img,
@@ -2094,15 +2101,21 @@ export default function EmbedDesign() {
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
       }
     } catch (error) {
+      if (requestSeq !== mockupRequestSeqRef.current) {
+        console.log('[Mockups] Ignoring stale mockup error', requestSeq);
+        return;
+      }
       console.error("Failed to generate Printify mockups:", error);
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
       setMockupFailed(true);
     } finally {
-      setMockupLoading(false);
-      setMockupTriggered(false);
-      // Clear the "Artwork Generating" overlay on the parent page
-      if (runtimeMode !== 'standalone') {
-        window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
+      if (requestSeq === mockupRequestSeqRef.current) {
+        setMockupLoading(false);
+        setMockupTriggered(false);
+        // Clear the "Artwork Generating" overlay on the parent page
+        if (runtimeMode !== 'standalone') {
+          window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: false }, '*');
+        }
       }
     }
   }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printOnBack, productTypeConfig?.isAllOverPrint]);
@@ -5564,7 +5577,6 @@ export default function EmbedDesign() {
                     </div>
                   ) : undefined
                 }
-                isLoading={mockupLoading}
               />
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
