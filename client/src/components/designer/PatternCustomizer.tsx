@@ -123,7 +123,7 @@ export const HOODIE_COMPOSITE_GAP_PX = 0;
  * Applied per active view: Front and Hood (each is a 2-up L/R row only; pocket panels are not laid out
  * in the flat composite — the kangaroo is covered by the main front artwork in the preview).
  */
-export const HOODIE_L_R_SLOT_OVERLAP_PX = 560;
+export const HOODIE_L_R_SLOT_OVERLAP_PX = 700;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite; keep small
@@ -495,18 +495,16 @@ function computePanelCanvasHeight(
   panelPositions: Array<{ position: string }>,
 ): number {
   if (layout.compositeW <= 0 || layout.compositeH <= 0) return px;
-  const rawRatio = layout.compositeH / layout.compositeW;
 
   if (productKind === "hoodie") {
-    // `scaleHoodieCompositeToCanvas` uses the same `pad` for both (W - pad) / compW
-    // and (H - pad) / compH. We must have (px - pad) / W === (canvasH - pad) / H, i.e.
-    // canvasH = (px - pad) * (H / W) + pad — not `px * (H/W)` or the preview keeps grey bands.
-    if (!Number.isFinite(rawRatio) || rawRatio <= 0) return px;
-    const layoutPad = HOODIE_PREVIEW_PAD;
-    const r = Math.min(6, Math.max(0.15, rawRatio));
-    return Math.max(1, Math.round((px - layoutPad) * r + layoutPad));
+    // Square (1:1) preview: same width and height in CSS px so the frame matches the
+    // designer's reference box, stays above the fold, and `scaleHoodieCompositeToCanvas`
+    // letterboxes the composite (grey) when print-space aspect ≠ 1. Non-uniform H/W
+    // would reintroduce a tall box from tall garment placeholders.
+    return Math.max(1, Math.round(px));
   }
 
+  const rawRatio = layout.compositeH / layout.compositeW;
   const clampedRatio = Math.min(2.0, Math.max(0.3, rawRatio));
   let canvasH = Math.round(px * clampedRatio);
 
@@ -820,6 +818,32 @@ function resolveFlatLayUrl(
   return undefined;
 }
 
+/**
+ * Draw `img` into [dx,dy,dw×dh] with uniform scale and centering (object-fit: contain)
+ * so mask artwork is never anamorphically stretched to the layout slot.
+ */
+function drawImageUniformInRect(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+): void {
+  const natW = img.naturalWidth || img.width;
+  const natH = img.naturalHeight || img.height;
+  if (natW <= 0 || natH <= 0) {
+    ctx.drawImage(img, dx, dy, dw, dh);
+    return;
+  }
+  const s = Math.min(dw / natW, dh / natH);
+  const w = natW * s;
+  const h = natH * s;
+  const x = dx + (dw - w) / 2;
+  const y = dy + (dh - h) / 2;
+  ctx.drawImage(img, 0, 0, natW, natH, x, y, w, h);
+}
+
 /** Sew-safe dashed inner rect + solid outer (when SVG missing). */
 function drawFallbackPanelOutline(
   ctx: CanvasRenderingContext2D,
@@ -846,6 +870,7 @@ function drawFallbackPanelOutline(
  * @param drawContent  Callback that draws fill + artwork onto the offscreen
  *                     canvas.  Coords are in offscreen space (origin = 0,0).
  * @param flipHorizontal  Mirror the slot horizontally so FRONT halves meet at the centre seam (leggings).
+ * @param preserveSvgAspect  When true (hoodie AOP), mask draws use natural aspect; no stretch to the slot.
  */
 function drawMaskedSlot(
   ctx: CanvasRenderingContext2D,
@@ -853,6 +878,7 @@ function drawMaskedSlot(
   sx: number, sy: number, sw: number, sh: number,
   drawContent: (offCtx: CanvasRenderingContext2D) => void,
   flipHorizontal = false,
+  preserveSvgAspect = false,
 ): void {
   const iw = Math.max(1, Math.round(sw));
   const ih = Math.max(1, Math.round(sh));
@@ -903,7 +929,11 @@ function drawMaskedSlot(
 
   // Clip to garment silhouette via SVG alpha.
   offCtx.globalCompositeOperation = "destination-in";
-  offCtx.drawImage(svgImg, 0, 0, iw, ih);
+  if (preserveSvgAspect) {
+    drawImageUniformInRect(offCtx, svgImg, 0, 0, iw, ih);
+  } else {
+    offCtx.drawImage(svgImg, 0, 0, iw, ih);
+  }
   offCtx.globalCompositeOperation = "source-over";
 
   // Composite masked result onto main canvas.
@@ -921,7 +951,11 @@ function drawMaskedSlot(
   if (!flipHorizontal) {
     ctx.save();
     ctx.globalAlpha = 0.4;
-    ctx.drawImage(svgImg, sx, sy, sw, sh);
+    if (preserveSvgAspect) {
+      drawImageUniformInRect(ctx, svgImg, sx, sy, sw, sh);
+    } else {
+      ctx.drawImage(svgImg, sx, sy, sw, sh);
+    }
     ctx.restore();
   }
   // For flipped leg panels: skip the SVG overlay entirely — the hem SVG contains graphical
@@ -966,6 +1000,8 @@ function drawPanelSilhouetteOverlay(
   flipHorizontal = false,
   showBleedBand = false,
   skipSafeDash = false,
+  /** When true, silhouette/safe rasters are drawn with object-fit: contain (no stretch). */
+  uniformSvg = false,
 ): void {
   if (!svgImg) {
     if (!flipHorizontal) {
@@ -1002,7 +1038,13 @@ function drawPanelSilhouetteOverlay(
     off.width = iw; off.height = ih;
     const c = off.getContext("2d")!;
     if (px === 0) {
-      c.drawImage(img, 0, 0, iw, ih);
+      if (uniformSvg) {
+        drawImageUniformInRect(c, img, 0, 0, iw, ih);
+      } else {
+        c.drawImage(img, 0, 0, iw, ih);
+      }
+    } else if (uniformSvg) {
+      drawImageUniformInRect(c, img, px, px, iw - 2 * px, ih - 2 * px);
     } else {
       c.drawImage(img, px, px, iw - 2 * px, ih - 2 * px);
     }
@@ -1647,8 +1689,8 @@ export function PatternCustomizer({
             if (renderArtwork) {
               drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
             }
-          }, false);
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, false);
+          }, false, true);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, false, false, false, true);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
         }
@@ -1716,8 +1758,8 @@ export function PatternCustomizer({
             if (renderArtwork) {
               drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
             }
-          }, flipSlot);
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
+          }, flipSlot, false);
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, false);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
           if (flipSlot) {
@@ -1834,8 +1876,8 @@ export function PatternCustomizer({
               const effectiveAnchorX = tileAnchorX ?? (sx + offsetScreenPx);
               drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, activePatternTileInches, patternType, pxPerInch, effectiveAnchorX, tileAnchorY);
             }
-          }, flipSlot);
-          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot);
+          }, flipSlot, productKind === "hoodie");
+          drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, productKind === "hoodie");
           if (flipSlot) {
             const isRightLeg = !isLeftLegPanelPosition(slot.position);
             drawLeggingLegLabels(ctx, sx, sy, sw, sh, isRightLeg);
@@ -2772,12 +2814,12 @@ export function PatternCustomizer({
       {/* Slightly slimmer control column so the preview (ResizeObserver width) is wider on lg+ */}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.25fr)_minmax(180px,220px)] gap-3 sm:gap-4 p-2 sm:p-3 flex-1 min-h-0 items-start">
         {/* Preview — cap height on tall hood/front composites so the step stays above the fold in embeds */}
-        <div className="flex flex-col min-h-0 min-w-0 w-full max-w-full max-h-[min(65vh,620px)] lg:max-h-[min(72vh,700px)]">
+        <div className="flex flex-col min-h-0 min-w-0 w-full max-w-full max-h-[min(88vh,960px)]">
           <div
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.05.02"
+            data-appai-pc="2026.05.03"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
             data-hoodie-lr-overlap-print-px={productKind === "hoodie" ? HOODIE_L_R_SLOT_OVERLAP_PX : undefined}
