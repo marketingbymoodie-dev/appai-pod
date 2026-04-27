@@ -245,6 +245,9 @@ const SNAP_THRESHOLD_PX = 10;
 // ── Panel geometry helpers ────────────────────────────────────────────────────
 
 interface PanelSlot { position: string; x: number; y: number; w: number; h: number }
+type SvgVisibleBounds = { x: number; y: number; w: number; h: number };
+
+const svgVisibleBoundsCache = new WeakMap<HTMLImageElement, SvgVisibleBounds | null>();
 
 type HoodiePanelView = "front" | "back" | "hood";
 type HoodiePatternSpec = { tileInches: number; offsetX: number };
@@ -254,6 +257,68 @@ function getPanelGroup(position: string): "front" | "back" | "hood" {
   if (l.includes("hood")) return "hood";
   if (l.includes("back")) return "back";
   return "front";
+}
+
+function getSvgVisibleBounds(img: HTMLImageElement | null): SvgVisibleBounds | null {
+  if (!img) return null;
+  if (svgVisibleBoundsCache.has(img)) return svgVisibleBoundsCache.get(img) ?? null;
+
+  const natW = img.naturalWidth || img.width;
+  const natH = img.naturalHeight || img.height;
+  if (natW <= 0 || natH <= 0) {
+    svgVisibleBoundsCache.set(img, null);
+    return null;
+  }
+
+  const maxSample = 512;
+  const sampleScale = Math.min(1, maxSample / Math.max(natW, natH));
+  const sampleW = Math.max(1, Math.round(natW * sampleScale));
+  const sampleH = Math.max(1, Math.round(natH * sampleScale));
+
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = sampleW;
+    canvas.height = sampleH;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      svgVisibleBoundsCache.set(img, null);
+      return null;
+    }
+    ctx.drawImage(img, 0, 0, sampleW, sampleH);
+    const data = ctx.getImageData(0, 0, sampleW, sampleH).data;
+    let minX = sampleW;
+    let minY = sampleH;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < sampleH; y++) {
+      for (let x = 0; x < sampleW; x++) {
+        if (data[(y * sampleW + x) * 4 + 3] > 8) {
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+
+    if (maxX < minX || maxY < minY) {
+      svgVisibleBoundsCache.set(img, null);
+      return null;
+    }
+
+    const inv = 1 / sampleScale;
+    const pad = Math.max(2, Math.round(Math.min(natW, natH) * 0.006));
+    const x = Math.max(0, Math.floor(minX * inv) - pad);
+    const y = Math.max(0, Math.floor(minY * inv) - pad);
+    const right = Math.min(natW, Math.ceil((maxX + 1) * inv) + pad);
+    const bottom = Math.min(natH, Math.ceil((maxY + 1) * inv) + pad);
+    const bounds = { x, y, w: Math.max(1, right - x), h: Math.max(1, bottom - y) };
+    svgVisibleBoundsCache.set(img, bounds);
+    return bounds;
+  } catch {
+    svgVisibleBoundsCache.set(img, null);
+    return null;
+  }
 }
 
 export function getDefaultPanelRenderConfig(
@@ -389,6 +454,10 @@ function buildCompositeLayout(
 
   const displaySize = (panel: { position: string; width: number; height: number }) => {
     const svgImg = svgImages ? getSvgImageForPosition(svgImages, panel.position) : null;
+    const bounds = getSvgVisibleBounds(svgImg);
+    if (bounds && bounds.w > 0 && bounds.h > 0) {
+      return { w: panel.height * (bounds.w / bounds.h), h: panel.height };
+    }
     const nw = svgImg?.naturalWidth || svgImg?.width || 0;
     const nh = svgImg?.naturalHeight || svgImg?.height || 0;
     if (nw > 0 && nh > 0) {
@@ -838,6 +907,7 @@ function drawImageUniformInRect(
   dy: number,
   dw: number,
   dh: number,
+  sourceBounds?: SvgVisibleBounds | null,
 ): void {
   const natW = img.naturalWidth || img.width;
   const natH = img.naturalHeight || img.height;
@@ -845,12 +915,16 @@ function drawImageUniformInRect(
     ctx.drawImage(img, dx, dy, dw, dh);
     return;
   }
-  const s = Math.min(dw / natW, dh / natH);
-  const w = natW * s;
-  const h = natH * s;
+  const srcX = sourceBounds?.x ?? 0;
+  const srcY = sourceBounds?.y ?? 0;
+  const srcW = sourceBounds?.w ?? natW;
+  const srcH = sourceBounds?.h ?? natH;
+  const s = Math.min(dw / srcW, dh / srcH);
+  const w = srcW * s;
+  const h = srcH * s;
   const x = dx + (dw - w) / 2;
   const y = dy + (dh - h) / 2;
-  ctx.drawImage(img, 0, 0, natW, natH, x, y, w, h);
+  ctx.drawImage(img, srcX, srcY, srcW, srcH, x, y, w, h);
 }
 
 /** Sew-safe dashed inner rect + solid outer (when SVG missing). */
@@ -939,7 +1013,7 @@ function drawMaskedSlot(
   // Clip to garment silhouette via SVG alpha.
   offCtx.globalCompositeOperation = "destination-in";
   if (preserveSvgAspect) {
-    drawImageUniformInRect(offCtx, svgImg, 0, 0, iw, ih);
+    drawImageUniformInRect(offCtx, svgImg, 0, 0, iw, ih, getSvgVisibleBounds(svgImg));
   } else {
     offCtx.drawImage(svgImg, 0, 0, iw, ih);
   }
@@ -961,7 +1035,7 @@ function drawMaskedSlot(
     ctx.save();
     ctx.globalAlpha = 0.4;
     if (preserveSvgAspect) {
-      drawImageUniformInRect(ctx, svgImg, sx, sy, sw, sh);
+      drawImageUniformInRect(ctx, svgImg, sx, sy, sw, sh, getSvgVisibleBounds(svgImg));
     } else {
       ctx.drawImage(svgImg, sx, sy, sw, sh);
     }
@@ -1048,12 +1122,12 @@ function drawPanelSilhouetteOverlay(
     const c = off.getContext("2d")!;
     if (px === 0) {
       if (uniformSvg) {
-        drawImageUniformInRect(c, img, 0, 0, iw, ih);
+        drawImageUniformInRect(c, img, 0, 0, iw, ih, getSvgVisibleBounds(img));
       } else {
         c.drawImage(img, 0, 0, iw, ih);
       }
     } else if (uniformSvg) {
-      drawImageUniformInRect(c, img, px, px, iw - 2 * px, ih - 2 * px);
+      drawImageUniformInRect(c, img, px, px, iw - 2 * px, ih - 2 * px, getSvgVisibleBounds(img));
     } else {
       c.drawImage(img, px, px, iw - 2 * px, ih - 2 * px);
     }
