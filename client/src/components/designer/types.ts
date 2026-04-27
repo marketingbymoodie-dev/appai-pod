@@ -76,6 +76,10 @@ export interface AopPlacementSettings {
   patternOffsetX?: number;
   /** Last active editor mode — restores the correct tab when re-editing. */
   lastMode?: "pattern" | "single" | "place";
+  /** Pattern controls restored when re-editing AOP designs. */
+  patternType?: "grid" | "brick" | "half";
+  tileInches?: number;
+  bgColor?: string;
   activeLeg?: string; // legacy compat
   dragOffset?: { x: number; y: number }; // legacy compat
 }

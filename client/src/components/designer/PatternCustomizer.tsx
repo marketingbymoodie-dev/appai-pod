@@ -53,6 +53,7 @@ export interface PatternApplyOptions {
   bgColor?: string;
   perPanelTransforms?: Record<string, PanelTransform>;
   panelRenderConfig?: Record<string, PanelRenderConfig>;
+  placementSettings?: AopPlacementSettings;
 }
 
 export type { AopPlacementSettings };
@@ -188,7 +189,12 @@ function getHoodieTwoUpCenterGapPx(
   return HOODIE_COMPOSITE_GAP_PX;
 }
 
-function nudgeHoodieSeamExportDx(productKind: AopLayoutKind, position: string, dxPrintPx: number): number {
+function nudgeHoodieSeamExportDx(
+  productKind: AopLayoutKind,
+  position: string,
+  dxPrintPx: number,
+  seamNudgePx = HOODIE_SEAM_SAFETY_NUDGE_PRINT_PX,
+): number {
   if (productKind !== "hoodie") return dxPrintPx;
   const l = position.toLowerCase();
   if (l.includes("back") || isHoodieTrimPanel(position) || isHoodiePocketPanel(position)) return dxPrintPx;
@@ -196,8 +202,8 @@ function nudgeHoodieSeamExportDx(productKind: AopLayoutKind, position: string, d
   const hasLeft = l.includes("left");
   if (!hasRight && !hasLeft) return dxPrintPx;
   if (hasRight && hasLeft) return dxPrintPx;
-  if (hasRight) return dxPrintPx + HOODIE_SEAM_SAFETY_NUDGE_PRINT_PX;
-  return dxPrintPx - HOODIE_SEAM_SAFETY_NUDGE_PRINT_PX;
+  if (hasRight) return dxPrintPx + seamNudgePx;
+  return dxPrintPx - seamNudgePx;
 }
 
 function getAdaptiveMockupPanelPx(): number {
@@ -1374,10 +1380,13 @@ export function PatternCustomizer({
   const [mode, setMode] = useState<EditorMode>(
     initialMode ?? initialPlacement?.lastMode ?? "pattern"
   );
-  const [patternType, setPatternType] = useState<PatternType>(initialPattern || "grid");
+  const [patternType, setPatternType] = useState<PatternType>(initialPlacement?.patternType || initialPattern || "grid");
   // tileInches: real-world size of one tile in inches (replaces abstract tilesAcross).
   // Back-compat: if only initialTilesAcross was stored, convert via a nominal 6" panel width.
   const [tileInches, setTileInches] = useState<number>(() => {
+    if (typeof initialPlacement?.tileInches === "number" && initialPlacement.tileInches > 0) {
+      return Math.max(MIN_TILE_INCHES, Math.min(6, initialPlacement.tileInches));
+    }
     if (typeof initialTileInches === "number" && initialTileInches > 0) {
       return Math.max(MIN_TILE_INCHES, Math.min(6, initialTileInches));
     }
@@ -1386,7 +1395,7 @@ export function PatternCustomizer({
     }
     return 1.5;
   });
-  const [bgColor, setBgColor] = useState(initialBgColor || "");
+  const [bgColor, setBgColor] = useState(initialPlacement?.bgColor ?? initialBgColor ?? "");
   const [applyLoading, setApplyLoading] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -2251,8 +2260,11 @@ export function PatternCustomizer({
       syncSidesMode,
       patternOffsetX: activePatternOffsetX,
       lastMode: mode,
+      patternType,
+      tileInches,
+      bgColor,
     });
-  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, syncSidesMode, activePatternOffsetX, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, syncSidesMode, activePatternOffsetX, mode, patternType, tileInches, bgColor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -2365,6 +2377,7 @@ export function PatternCustomizer({
         productKind,
         getHoodiePocketNudgeKey(pos.position, panelPositions),
         t.dxPx * upscaleX,
+        seamBleedPx,
       ),
       dyPx:     t.dyPx * upscaleY + yExportNudge,
       scalePct,
@@ -2558,6 +2571,19 @@ export function PatternCustomizer({
               applyPanelRenderOverrides(await buildPatternAopPanelUrls(MAX_PANEL_PRINT_PX), "pattern"),
             perPanelTransforms,
             panelRenderConfig,
+            placementSettings: {
+              perPanelTransforms,
+              panelRenderConfig,
+              activePanel,
+              mirrorMode,
+              seamBleedPx,
+              syncSidesMode,
+              patternOffsetX: activePatternOffsetX,
+              lastMode: mode,
+              patternType,
+              tileInches: productKind === "hoodie" ? getPatternSpecForView("front").tileInches : tileInches,
+              bgColor,
+            },
           });
           return;
         }
@@ -2585,6 +2611,19 @@ export function PatternCustomizer({
           bgColor,
           perPanelTransforms,
           panelRenderConfig,
+          placementSettings: {
+            perPanelTransforms,
+            panelRenderConfig,
+            activePanel,
+            mirrorMode,
+            seamBleedPx,
+            syncSidesMode,
+            patternOffsetX: activePatternOffsetX,
+            lastMode: mode,
+            patternType,
+            tileInches,
+            bgColor,
+          },
         });
         return;
       }
@@ -2891,6 +2930,19 @@ export function PatternCustomizer({
         seamOffset: seamBleedPx,
         perPanelTransforms,
         panelRenderConfig,
+        placementSettings: {
+          perPanelTransforms,
+          panelRenderConfig,
+          activePanel,
+          mirrorMode,
+          seamBleedPx,
+          syncSidesMode,
+          patternOffsetX: activePatternOffsetX,
+          lastMode: mode,
+          patternType,
+          tileInches,
+          bgColor,
+        },
       });
     } catch (err) {
       console.error("[PatternCustomizer] Apply failed:", err);
@@ -3153,23 +3205,17 @@ export function PatternCustomizer({
                       </Label>
                       <Switch
                         id="panel-artwork-enabled"
-                        checked={buildCompositeLayout(activeView, panelPositions, svgImages).slots.some((slot) =>
-                          shouldRenderPanelArtwork(slot.position),
-                        )}
-                        onCheckedChange={(v) => {
-                          const slots = buildCompositeLayout(activeView, panelPositions, svgImages).slots;
-                          setPanelRenderConfig((prev) => {
-                            const next = { ...prev };
-                            for (const slot of slots) {
-                              next[slot.position] = {
-                                ...(prev[slot.position] || getDefaultPanelRenderConfig(slot.position, productKind, aopTemplateId)),
-                                enabled: v,
-                                mode: v ? "artwork" : "solid",
-                              };
-                            }
-                            return next;
-                          });
-                        }}
+                        checked={shouldRenderPanelArtwork(activePanel)}
+                        onCheckedChange={(v) =>
+                          setPanelRenderConfig((prev) => ({
+                            ...prev,
+                            [activePanel]: {
+                              ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                              enabled: v,
+                              mode: v ? "artwork" : "solid",
+                            },
+                          }))
+                        }
                         className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
                       />
                     </div>
@@ -3282,6 +3328,22 @@ export function PatternCustomizer({
               <p className="text-[10px] text-muted-foreground leading-snug px-0.5">
                 Dashed inner line is a <strong className="font-medium">guide</strong> only. Mockups use the full panel image; art placed near the edge can still show on the product. 3D previews may not match the flat template pixel-for-pixel.
               </p>
+
+              {productKind === "hoodie" && (activeView === "front" || activeView === "hood") && (
+                <div>
+                  <Label className="text-xs">
+                    Seam allowance: {seamBleedPx}px
+                  </Label>
+                  <Slider
+                    value={[seamBleedPx]}
+                    onValueChange={v => setSeamBleedPx(v[0])}
+                    min={0}
+                    max={140}
+                    step={5}
+                    className={sliderTrackClass}
+                  />
+                </div>
+              )}
 
               {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
                 <div>

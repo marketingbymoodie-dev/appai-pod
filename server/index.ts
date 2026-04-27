@@ -338,6 +338,9 @@ app.use((req, res, next) => {
       }
 
       const P = "/apps/appai";
+      const assetBase =
+        (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "") ||
+        `${req.protocol}://${req.get("host")}`;
       let html = fs.readFileSync(indexPath, "utf-8");
 
       // Rewrite absolute /assets/ refs to proxy path (handles base:"/" builds)
@@ -353,7 +356,7 @@ app.use((req, res, next) => {
       // proxy if the iframe request is redirected or normalized by the theme.
       html = html.replace(
         /<head>/i,
-        `<head><script>window.__APPAI_API_BASE__="${P}";window.__APPAI_ROUTER_BASE__="${P}";</script>`
+        `<head><script>window.__APPAI_API_BASE__=${JSON.stringify(P)};window.__APPAI_ROUTER_BASE__=${JSON.stringify(P)};window.__APPAI_ASSET_BASE__=${JSON.stringify(assetBase)};</script>`
       );
 
       res.setHeader("Content-Type", "text/html");

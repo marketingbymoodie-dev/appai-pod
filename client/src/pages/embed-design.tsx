@@ -32,6 +32,12 @@ import {
   type AopPlacementSettings,
 } from "@/components/designer";
 
+declare global {
+  interface Window {
+    __APPAI_ASSET_BASE__?: string;
+  }
+}
+
 interface CustomerInfo {
   id: string;
   email?: string;
@@ -202,6 +208,13 @@ function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
   if (isDataUrl(url)) return url;
+  const assetBase = typeof window !== "undefined" ? window.__APPAI_ASSET_BASE__ : undefined;
+  if (assetBase && url.startsWith(`${PROXY_PREFIX}/objects/`)) {
+    return `${assetBase.replace(/\/$/, "")}${url.slice(PROXY_PREFIX.length)}`;
+  }
+  if (assetBase && url.startsWith("/objects/")) {
+    return `${assetBase.replace(/\/$/, "")}${url}`;
+  }
   return buildAppUrl(url);
 }
 
@@ -1521,6 +1534,21 @@ export default function EmbedDesign() {
       if (ds.selectedSize) setSelectedSize(ds.selectedSize);
       if (ds.selectedFrameColor) setSelectedFrameColor(ds.selectedFrameColor);
       if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
+      if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
+        setAopPlacementSettings(ds.aopPlacementSettings as AopPlacementSettings);
+        if (typeof ds.aopPlacementSettings.bgColor === 'string') {
+          setAopPatternSettings((prev) => ({ ...prev, bgColor: ds.aopPlacementSettings.bgColor }));
+        }
+        if (typeof ds.aopPlacementSettings.patternType === 'string') {
+          setAopPatternSettings((prev) => ({ ...prev, pattern: ds.aopPlacementSettings.patternType }));
+        }
+        if (typeof ds.aopPlacementSettings.tileInches === 'number') {
+          setAopPatternSettings((prev) => ({ ...prev, tileInches: ds.aopPlacementSettings.tileInches }));
+        }
+      }
+      if (typeof ds.aopPatternUrl === 'string' && ds.aopPatternUrl) {
+        setAopPatternUrl(abs(ds.aopPatternUrl) || ds.aopPatternUrl);
+      }
     } else {
       if (topLevel.size) setSelectedSize(topLevel.size);
       if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
@@ -5487,15 +5515,21 @@ export default function EmbedDesign() {
                 initialPlacement={aopPlacementSettings}
                 onPlacementChange={(p) => setAopPlacementSettings(p)}
                 onApply={async (appliedPatternUrl: string, options) => {
-                  const nextPlacement = options.perPanelTransforms || options.panelRenderConfig
+                  const nextPlacement: AopPlacementSettings | undefined = options.placementSettings || options.perPanelTransforms || options.panelRenderConfig
                     ? {
                         ...(aopPlacementSettings || {}),
+                        ...(options.placementSettings || {}),
                         perPanelTransforms: options.perPanelTransforms || aopPlacementSettings?.perPanelTransforms || {},
                         panelRenderConfig: options.panelRenderConfig || aopPlacementSettings?.panelRenderConfig || {},
+                        activePanel: options.placementSettings?.activePanel ?? aopPlacementSettings?.activePanel ?? null,
                         mirrorMode: options.mirrorLegs ?? aopPlacementSettings?.mirrorMode ?? false,
-                        seamBleedPx: options.seamOffset ?? aopPlacementSettings?.seamBleedPx,
-                        patternOffsetX: aopPlacementSettings?.patternOffsetX,
+                        seamBleedPx: options.seamOffset ?? aopPlacementSettings?.seamBleedPx ?? 70,
+                        syncSidesMode: options.placementSettings?.syncSidesMode ?? aopPlacementSettings?.syncSidesMode,
+                        patternOffsetX: options.placementSettings?.patternOffsetX ?? aopPlacementSettings?.patternOffsetX,
                         lastMode: options.mode || aopPlacementSettings?.lastMode,
+                        patternType: options.patternType || options.placementSettings?.patternType || aopPlacementSettings?.patternType,
+                        tileInches: options.tileInches || options.placementSettings?.tileInches || aopPlacementSettings?.tileInches,
+                        bgColor: options.bgColor ?? options.placementSettings?.bgColor ?? aopPlacementSettings?.bgColor,
                       }
                     : aopPlacementSettings;
                   if (nextPlacement) setAopPlacementSettings(nextPlacement);
@@ -5552,7 +5586,11 @@ export default function EmbedDesign() {
                           body: JSON.stringify({
                             jobId: savedJobIdRef.current,
                             shop: shopDomain,
-                            designState: { aopPrintPanelUrls },
+                            designState: {
+                              aopPrintPanelUrls,
+                              aopPlacementSettings: nextPlacement,
+                              aopPatternUrl: appliedPatternUrl,
+                            },
                           }),
                         });
                         console.log("[AOP] Saved aopPrintPanelUrls on job", savedJobIdRef.current, aopPrintPanelUrls.length);
