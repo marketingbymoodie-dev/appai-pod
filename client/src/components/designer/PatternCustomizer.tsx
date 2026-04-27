@@ -153,6 +153,10 @@ function isHoodiePocketPanel(position: string): boolean {
   return position.toLowerCase().includes("pocket");
 }
 
+function isPrimaryHoodieArtworkPanel(position: string): boolean {
+  return !isHoodieTrimPanel(position) && !isHoodiePocketPanel(position);
+}
+
 /**
  * “Supporting” = trim or pocket (excluded from the main 2-up seam row; pocket is placed in a second row).
  * @deprecated Use {@link isHoodieTrimPanel} / {@link isHoodiePocketPanel} for new logic.
@@ -337,11 +341,8 @@ export function getDefaultPanelRenderConfig(
     if (isHoodiePocketPanel(position)) {
       return { enabled: true, mode: "artwork" };
     }
-    if (group === "front") {
+    if (group === "front" || group === "back" || group === "hood") {
       return { enabled: true, mode: "artwork" };
-    }
-    if (group === "back" || group === "hood") {
-      return { enabled: false, mode: "artwork" };
     }
   }
 
@@ -954,6 +955,7 @@ function drawFallbackPanelOutline(
  *                     canvas.  Coords are in offscreen space (origin = 0,0).
  * @param flipHorizontal  Mirror the slot horizontally so FRONT halves meet at the centre seam (leggings).
  * @param preserveSvgAspect  When true (hoodie AOP), mask draws use natural aspect; no stretch to the slot.
+ * @param localContentCoords  When true, `drawContent` draws in slot-local coords (0,0 → sw,sh).
  */
 function drawMaskedSlot(
   ctx: CanvasRenderingContext2D,
@@ -962,6 +964,7 @@ function drawMaskedSlot(
   drawContent: (offCtx: CanvasRenderingContext2D) => void,
   flipHorizontal = false,
   preserveSvgAspect = false,
+  localContentCoords = false,
 ): void {
   const iw = Math.max(1, Math.round(sw));
   const ih = Math.max(1, Math.round(sh));
@@ -972,6 +975,7 @@ function drawMaskedSlot(
       ctx.beginPath();
       ctx.rect(sx, sy, sw, sh);
       ctx.clip();
+      if (localContentCoords) ctx.translate(sx, sy);
       drawContent(ctx);
       ctx.restore();
       drawFallbackPanelOutline(ctx, sx, sy, sw, sh);
@@ -981,7 +985,7 @@ function drawMaskedSlot(
       tmp.height = ih;
       const tctx = tmp.getContext("2d")!;
       tctx.save();
-      tctx.translate(-sx, -sy);
+      if (!localContentCoords) tctx.translate(-sx, -sy);
       drawContent(tctx);
       tctx.restore();
       ctx.save();
@@ -1006,7 +1010,7 @@ function drawMaskedSlot(
 
   // Content is drawn in offscreen space (slot origin = 0,0).
   offCtx.save();
-  offCtx.translate(-sx, -sy);
+  if (!localContentCoords) offCtx.translate(-sx, -sy);
   drawContent(offCtx);
   offCtx.restore();
 
@@ -1439,11 +1443,11 @@ export function PatternCustomizer({
   const shouldRenderPanelArtworkForMode = useCallback(
     (position: string, exportMode: EditorMode): boolean => {
       if (exportMode === "pattern" && productKind === "hoodie") {
-        return !isHoodieTrimPanel(position) || isHoodiePocketPanel(position) || applyAllover;
+        return isPrimaryHoodieArtworkPanel(position) || isHoodiePocketPanel(position);
       }
       return shouldRenderPanelArtwork(position);
     },
-    [applyAllover, productKind, shouldRenderPanelArtwork],
+    [productKind, shouldRenderPanelArtwork],
   );
 
   const availableHoodieViews = useMemo(
@@ -1524,6 +1528,13 @@ export function PatternCustomizer({
       for (const p of panelPositions) {
         if (!next[p.position]) {
           next[p.position] = getDefaultPanelRenderConfig(p.position, productKind, aopTemplateId);
+        } else if (
+          productKind === "hoodie" &&
+          isPrimaryHoodieArtworkPanel(p.position) &&
+          next[p.position].enabled === false &&
+          next[p.position].mode === "artwork"
+        ) {
+          next[p.position] = { ...next[p.position], enabled: true };
         }
       }
       return next;
@@ -1768,11 +1779,11 @@ export function PatternCustomizer({
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = panelFillColor;
-            offCtx.fillRect(sx, sy, sw, sh);
+            offCtx.fillRect(0, 0, sw, sh);
             if (renderArtwork) {
-              drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, mirrorTarget);
+              drawArtworkInSlot(offCtx, img, 0, 0, sw, sh, effectiveT, mirrorTarget);
             }
-          }, false, true);
+          }, false, true, true);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, false, false, false, true);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
@@ -1943,9 +1954,10 @@ export function PatternCustomizer({
             tileAnchorY = offY;
           }
 
+          const useLocalSlotCoords = productKind === "hoodie";
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = fill;
-            offCtx.fillRect(sx, sy, sw, sh);
+            offCtx.fillRect(useLocalSlotCoords ? 0 : sx, useLocalSlotCoords ? 0 : sy, sw, sh);
             if (useMirrorLeft && rightLegTileBuffer) {
               // Draw rightLegTileBuffer flipped horizontally into this left leg off-canvas.
               // offCtx has translate(-sx,-sy); translate(sx+sw, sy) → net (sw,0); scale(-1,1) mirrors.
@@ -1957,9 +1969,21 @@ export function PatternCustomizer({
             } else {
               // Apply offset to any panel that didn't get an explicit anchor above
               const effectiveAnchorX = tileAnchorX ?? (sx + offsetScreenPx);
-              drawTiledMotifInRect(offCtx, img, sx, sy, sw, sh, activePatternTileInches, patternType, pxPerInch, effectiveAnchorX, tileAnchorY);
+              drawTiledMotifInRect(
+                offCtx,
+                img,
+                useLocalSlotCoords ? 0 : sx,
+                useLocalSlotCoords ? 0 : sy,
+                sw,
+                sh,
+                activePatternTileInches,
+                patternType,
+                pxPerInch,
+                useLocalSlotCoords ? effectiveAnchorX - sx : effectiveAnchorX,
+                useLocalSlotCoords && tileAnchorY !== undefined ? tileAnchorY - sy : tileAnchorY,
+              );
             }
-          }, flipSlot, productKind === "hoodie");
+          }, flipSlot, productKind === "hoodie", useLocalSlotCoords);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, productKind === "hoodie");
           if (flipSlot) {
             const isRightLeg = !isLeftLegPanelPosition(slot.position);
