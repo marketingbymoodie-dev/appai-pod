@@ -118,16 +118,13 @@ const SOLID_PANEL_LONG_EDGE_PX = 256;
 export const HOODIE_COMPOSITE_GAP_PX = 0;
 
 /**
- * Front mask SVGs include transparent artboard margin at the zipper edge. This is only a capped
- * slot compensation so the visible zip seams land with a small gap; Hood must not use this.
+ * Front zip seam: small visible center gap (print px). Bounding boxes sit apart so the
+ * visible zip seams have a clean thin gutter and the row still fills the canvas width.
  */
-export const HOODIE_FRONT_MAX_SLOT_OVERLAP_PX = 450;
+export const HOODIE_FRONT_CENTER_GAP_PX = 200;
 
-/** Hood halves should keep a real center gap, then scale as a two-up row to the preview width. */
-export const HOODIE_HOOD_CENTER_GAP_PX = 140;
-
-/** Aim front/hood two-up rows at a near-square footprint so contain scaling fills the box width. */
-const HOODIE_TWO_UP_TARGET_ASPECT = 0.98;
+/** Hood center seam: clear visible center gap (print px). Matches the reference look. */
+export const HOODIE_HOOD_CENTER_GAP_PX = 800;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite; keep small
@@ -181,23 +178,9 @@ function scaleHoodieCompositeToCanvas(
 
 function getHoodieTwoUpCenterGapPx(
   view: HoodiePanelView,
-  sizes: Array<{ w: number; h: number }>,
-  maxH: number,
 ): number {
-  if (sizes.length !== 2 || maxH <= 0) return HOODIE_COMPOSITE_GAP_PX;
-
-  const naturalW = sizes[0].w + sizes[1].w;
-  const targetW = maxH * HOODIE_TWO_UP_TARGET_ASPECT;
-  const aspectGap = targetW - naturalW;
-
-  if (view === "hood") {
-    return Math.max(HOODIE_HOOD_CENTER_GAP_PX, aspectGap);
-  }
-
-  if (view === "front") {
-    return Math.max(-HOODIE_FRONT_MAX_SLOT_OVERLAP_PX, Math.min(80, aspectGap));
-  }
-
+  if (view === "hood") return HOODIE_HOOD_CENTER_GAP_PX;
+  if (view === "front") return HOODIE_FRONT_CENTER_GAP_PX;
   return HOODIE_COMPOSITE_GAP_PX;
 }
 
@@ -424,7 +407,7 @@ function buildCompositeLayout(
   const sized = sorted.map((panel) => ({ panel, size: displaySize(panel) }));
   const maxH = Math.max(...sized.map(({ size }) => size.h));
   const betweenGap = isHoodieLrOverlapView(view, sorted, panels)
-    ? getHoodieTwoUpCenterGapPx(view, sized.map(({ size }) => size), maxH)
+    ? getHoodieTwoUpCenterGapPx(view)
     : HOODIE_COMPOSITE_GAP_PX;
 
   let x = 0;
@@ -2845,10 +2828,10 @@ export function PatternCustomizer({
             ref={previewWrapRef}
             className="relative w-full border-2 border-foreground/20 rounded-md bg-muted/50 overflow-hidden"
             style={{ aspectRatio: `${canvasDims.w} / ${canvasDims.h}` }}
-            data-appai-pc="2026.04.27.2"
+            data-appai-pc="2026.04.27.3"
             data-aop-kind={productKind}
             data-hoodie-pad={productKind === "hoodie" ? HOODIE_PREVIEW_PAD : undefined}
-            data-hoodie-front-max-overlap-print-px={productKind === "hoodie" ? HOODIE_FRONT_MAX_SLOT_OVERLAP_PX : undefined}
+            data-hoodie-front-gap-print-px={productKind === "hoodie" ? HOODIE_FRONT_CENTER_GAP_PX : undefined}
             data-hoodie-hood-gap-print-px={productKind === "hoodie" ? HOODIE_HOOD_CENTER_GAP_PX : undefined}
           >
             <canvas
