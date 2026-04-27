@@ -5487,12 +5487,31 @@ export default function EmbedDesign() {
                 initialPlacement={aopPlacementSettings}
                 onPlacementChange={(p) => setAopPlacementSettings(p)}
                 onApply={async (appliedPatternUrl: string, options) => {
+                  const nextPlacement = options.perPanelTransforms || options.panelRenderConfig
+                    ? {
+                        ...(aopPlacementSettings || {}),
+                        perPanelTransforms: options.perPanelTransforms || aopPlacementSettings?.perPanelTransforms || {},
+                        panelRenderConfig: options.panelRenderConfig || aopPlacementSettings?.panelRenderConfig || {},
+                        mirrorMode: options.mirrorLegs ?? aopPlacementSettings?.mirrorMode ?? false,
+                        seamBleedPx: options.seamOffset ?? aopPlacementSettings?.seamBleedPx,
+                        patternOffsetX: aopPlacementSettings?.patternOffsetX,
+                        lastMode: options.mode || aopPlacementSettings?.lastMode,
+                      }
+                    : aopPlacementSettings;
+                  if (nextPlacement) setAopPlacementSettings(nextPlacement);
                   setAopPatternUrl(appliedPatternUrl);
                   setShowPatternStep(false);
                   if (!productTypeConfig || !generatedDesign?.imageUrl || !selectedSize) return;
                   setMockupTriggered(true);
                   setMockupError(null);
                   setMockupFailed(false);
+                  setMockupsStale(false);
+                  setPreShadowVariantId(null);
+                  setPreShadowProductId(null);
+                  if (preShadowPollRef.current) {
+                    clearTimeout(preShadowPollRef.current);
+                    preShadowPollRef.current = null;
+                  }
                   setPrintifyMockups([]);
                   setPrintifyMockupImages([]);
                   setSelectedMockupIndex(0);
