@@ -113,7 +113,7 @@ const MOBILE_MOCKUP_PANEL_PX = 900;
 /** Max long-edge for persisted print assets (native template up to this cap). */
 const MAX_PANEL_PRINT_PX = 9000;
 /** Solid-colour panels can be compact; Printify scales the image to the placeholder. */
-const SOLID_PANEL_LONG_EDGE_PX = 256;
+const SOLID_PANEL_LONG_EDGE_PX = 100;
 
 /** Base row gap for non-special hoodie composite rows (print px). */
 export const HOODIE_COMPOSITE_GAP_PX = 0;
@@ -2413,7 +2413,7 @@ export function PatternCustomizer({
     if (!ctx) return canvas.toDataURL("image/png");
     ctx.fillStyle = color || "#ffffff";
     ctx.fillRect(0, 0, outW, outH);
-    return canvas.toDataURL("image/png");
+    return canvas.toDataURL("image/jpeg", 0.5);
   }
 
   function applyPanelRenderOverrides(

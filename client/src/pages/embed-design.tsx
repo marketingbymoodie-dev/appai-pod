@@ -206,9 +206,19 @@ function adjustHSLLightness(hsl: string, delta: number): string {
  */
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
   if (isDataUrl(url)) return url;
   const assetBase = typeof window !== "undefined" ? window.__APPAI_ASSET_BASE__ : undefined;
+  if (assetBase && (url.startsWith("http://") || url.startsWith("https://"))) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.pathname.startsWith(`${PROXY_PREFIX}/objects/`)) {
+        return `${assetBase.replace(/\/$/, "")}${parsed.pathname.slice(PROXY_PREFIX.length)}${parsed.search}`;
+      }
+    } catch {
+      // Keep malformed absolute-looking URLs unchanged below.
+    }
+  }
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
   if (assetBase && url.startsWith(`${PROXY_PREFIX}/objects/`)) {
     return `${assetBase.replace(/\/$/, "")}${url.slice(PROXY_PREFIX.length)}`;
   }
@@ -1556,7 +1566,7 @@ export default function EmbedDesign() {
     }
     const mockups = topLevel.mockupUrls;
     if (mockups?.length) {
-      const absMockups = mockups.map((u: string) => u.startsWith('/') ? buildAppUrl(u) : u);
+      const absMockups = mockups.map(toAbsoluteImageUrl);
       setPrintifyMockups(absMockups);
       setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
       setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
