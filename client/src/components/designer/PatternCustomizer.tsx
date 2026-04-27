@@ -136,7 +136,7 @@ export const HOODIE_PREVIEW_PAD = 2;
  * After preview→print mapping, nudge artwork on split L/R panels slightly away from the centre
  * sew line (print px). Reduces edge placement that sits “on” the dashed seam but trims in production.
  */
-const HOODIE_SEAM_SAFETY_NUDGE_PRINT_PX = 6;
+const HOODIE_SEAM_SAFETY_NUDGE_PRINT_PX = DEFAULT_SEAM_BLEED_PX;
 
 /** Cuffs / placket / waistband / sleeves: solid in default config, not part of the L/R seam row. */
 function isHoodieTrimPanel(position: string): boolean {
@@ -1448,6 +1448,9 @@ export function PatternCustomizer({
 
   const shouldRenderPanelArtworkForMode = useCallback(
     (position: string, exportMode: EditorMode): boolean => {
+      if (exportMode === "place" && productKind === "hoodie" && isHoodiePocketPanel(position)) {
+        return false;
+      }
       if (exportMode === "pattern" && productKind === "hoodie") {
         return isPrimaryHoodieArtworkPanel(position) || isHoodiePocketPanel(position);
       }
@@ -2336,6 +2339,22 @@ export function PatternCustomizer({
     // upscaleX/Y: preview → output canvas (scaleRatio is already baked into outW/H).
     const upscaleX = outW / (previewSlotW || outW);
     const upscaleY = outH / (previewSlotH || outH);
+    const imgW = img.naturalWidth || img.width;
+    const imgH = img.naturalHeight || img.height;
+    const previewBaseScale =
+      imgW > 0 && imgH > 0 ? Math.min(previewSlotW / imgW, previewSlotH / imgH) : 0;
+    const exportBaseScale =
+      imgW > 0 && imgH > 0 ? Math.min(outW / imgW, outH / imgH) : 0;
+    const previewLimiterUpscale =
+      imgW > 0 &&
+      imgH > 0 &&
+      previewSlotW / imgW <= previewSlotH / imgH
+        ? upscaleX
+        : upscaleY;
+    const scalePct =
+      previewBaseScale > 0 && exportBaseScale > 0
+        ? t.scalePct * ((previewBaseScale * previewLimiterUpscale) / exportBaseScale)
+        : t.scalePct;
     const yExportNudge =
       productKind === "leggings" && isLeggingsLegSlot(pos.position)
         ? LEGGINGS_EXPORT_DY_OFFSET_PX * scaleRatio
@@ -2348,7 +2367,7 @@ export function PatternCustomizer({
         t.dxPx * upscaleX,
       ),
       dyPx:     t.dyPx * upscaleY + yExportNudge,
-      scalePct: t.scalePct,
+      scalePct,
     };
 
     if (bgColor && bgColor !== "transparent") {
