@@ -9,9 +9,9 @@ import {
 describe("hoodie 2-up layout constants", () => {
   it("front and hood use simple positive print-px gaps", () => {
     expect(HOODIE_COMPOSITE_GAP_PX).toBe(0);
-    expect(HOODIE_FRONT_CENTER_GAP_PX).toBe(200);
-    expect(HOODIE_HOOD_CENTER_GAP_PX).toBe(800);
-    expect(HOODIE_FRONT_CENTER_GAP_PX).toBeLessThan(HOODIE_HOOD_CENTER_GAP_PX);
+    expect(HOODIE_FRONT_CENTER_GAP_PX).toBe(40);
+    expect(HOODIE_HOOD_CENTER_GAP_PX).toBe(40);
+    expect(HOODIE_FRONT_CENTER_GAP_PX).toBe(HOODIE_HOOD_CENTER_GAP_PX);
   });
 
   it("HOODIE_PREVIEW_PAD is shared for pad-aware scale", () => {

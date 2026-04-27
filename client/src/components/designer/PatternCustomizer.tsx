@@ -118,13 +118,13 @@ const SOLID_PANEL_LONG_EDGE_PX = 256;
 export const HOODIE_COMPOSITE_GAP_PX = 0;
 
 /**
- * Front zip seam: small visible center gap (print px). Bounding boxes sit apart so the
- * visible zip seams have a clean thin gutter and the row still fills the canvas width.
+ * Front zip seam: small visible center gap (print px). Keep this tight so the
+ * two chest halves fill the preview width while meeting close to seam-to-seam.
  */
-export const HOODIE_FRONT_CENTER_GAP_PX = 200;
+export const HOODIE_FRONT_CENTER_GAP_PX = 40;
 
-/** Hood center seam: clear visible center gap (print px). Matches the reference look. */
-export const HOODIE_HOOD_CENTER_GAP_PX = 800;
+/** Hood center seam: small visible center gap (print px). */
+export const HOODIE_HOOD_CENTER_GAP_PX = 40;
 
 /**
  * Gutter (CSS/canvas px) between the preview border and the scaled composite; keep small
