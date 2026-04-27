@@ -654,10 +654,13 @@ function drawArtworkInSlot(
   transform: PanelTransform,
   mirrorX = false,
 ) {
+  const imgW = img.naturalWidth || img.width;
+  const imgH = img.naturalHeight || img.height;
+  if (imgW <= 0 || imgH <= 0) return;
   const scaleFactor = (transform.scalePct / 100);
-  const baseScale = Math.min(slotW / img.width, slotH / img.height) * scaleFactor;
-  const w = img.width  * baseScale;
-  const h = img.height * baseScale;
+  const baseScale = Math.min(slotW / imgW, slotH / imgH) * scaleFactor;
+  const w = imgW * baseScale;
+  const h = imgH * baseScale;
   // Centre of artwork in slot (before user offset)
   const cx = slotX + slotW / 2 + transform.dxPx;
   const cy = slotY + slotH / 2 + transform.dyPx;
@@ -1277,11 +1280,14 @@ function drawTiledMotifInRect(
   anchorX?: number,
   anchorY?: number,
 ) {
+  const imgW = img.naturalWidth || img.width;
+  const imgH = img.naturalHeight || img.height;
+  if (imgW <= 0 || imgH <= 0) return;
   const ax = anchorX ?? sx;
   const ay = anchorY ?? sy;
   const ti = Math.max(MIN_TILE_INCHES, Math.min(6, tileInches));
   const tileW = Math.max(4, ti * pxPerInch);
-  const tileH = tileW * (img.height / img.width);
+  const tileH = tileW * (imgH / imgW);
   // Compute column/row range that covers [sx, sx+rw] × [sy, sy+rh] from anchor (ax, ay).
   const startCol = Math.floor((sx - ax) / tileW) - 1;
   const endCol   = Math.ceil((sx + rw - ax) / tileW) + 1;
@@ -1848,11 +1854,11 @@ export function PatternCustomizer({
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = panelFillColor;
-            offCtx.fillRect(sx, sy, sw, sh);
+            offCtx.fillRect(0, 0, sw, sh);
             if (renderArtwork) {
-              drawArtworkInSlot(offCtx, img, sx, sy, sw, sh, effectiveT, doMirror);
+              drawArtworkInSlot(offCtx, img, 0, 0, sw, sh, effectiveT, doMirror);
             }
-          }, flipSlot, false);
+          }, flipSlot, false, true);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, false);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
@@ -1954,15 +1960,13 @@ export function PatternCustomizer({
             tileAnchorY = offY;
           }
 
-          const useLocalSlotCoords = productKind === "hoodie";
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = fill;
-            offCtx.fillRect(useLocalSlotCoords ? 0 : sx, useLocalSlotCoords ? 0 : sy, sw, sh);
+            offCtx.fillRect(0, 0, sw, sh);
             if (useMirrorLeft && rightLegTileBuffer) {
               // Draw rightLegTileBuffer flipped horizontally into this left leg off-canvas.
-              // offCtx has translate(-sx,-sy); translate(sx+sw, sy) → net (sw,0); scale(-1,1) mirrors.
               offCtx.save();
-              offCtx.translate(sx + sw, sy);
+              offCtx.translate(sw, 0);
               offCtx.scale(-1, 1);
               offCtx.drawImage(rightLegTileBuffer, 0, 0, sw, sh);
               offCtx.restore();
@@ -1972,18 +1976,18 @@ export function PatternCustomizer({
               drawTiledMotifInRect(
                 offCtx,
                 img,
-                useLocalSlotCoords ? 0 : sx,
-                useLocalSlotCoords ? 0 : sy,
+                0,
+                0,
                 sw,
                 sh,
                 activePatternTileInches,
                 patternType,
                 pxPerInch,
-                useLocalSlotCoords ? effectiveAnchorX - sx : effectiveAnchorX,
-                useLocalSlotCoords && tileAnchorY !== undefined ? tileAnchorY - sy : tileAnchorY,
+                effectiveAnchorX - sx,
+                tileAnchorY !== undefined ? tileAnchorY - sy : undefined,
               );
             }
-          }, flipSlot, productKind === "hoodie", useLocalSlotCoords);
+          }, flipSlot, productKind === "hoodie", true);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, productKind === "hoodie");
           if (flipSlot) {
             const isRightLeg = !isLeftLegPanelPosition(slot.position);
@@ -2608,22 +2612,13 @@ export function PatternCustomizer({
             : 1;
           const rightPreviewSlotW = rightDef.width * layoutScl;
           const rightPreviewSlotH = rightDef.height * layoutScl;
-          const leftPreviewSlotW = leftDef.width * layoutScl;
-          const leftPreviewSlotH = leftDef.height * layoutScl;
           const upscale = cRW / (rightPreviewSlotW || cRW);
           const upscaleY = cH / (rightPreviewSlotH || cH);
-          const leftUpscale = cLW / (leftPreviewSlotW || cLW);
-          const leftUpscaleY = cH / (leftPreviewSlotH || cH);
 
           const tRight = perPanelTransforms[rightPos] || { dxPx: 0, dyPx: 0, scalePct: 100 };
           const printT: PanelTransform = {
             dxPx: tRight.dxPx * upscale,
             dyPx: tRight.dyPx * upscaleY,
-            scalePct: tRight.scalePct,
-          };
-          const mirroredLeftT: PanelTransform = {
-            dxPx: -tRight.dxPx * leftUpscale,
-            dyPx: tRight.dyPx * leftUpscaleY,
             scalePct: tRight.scalePct,
           };
 
@@ -2643,13 +2638,8 @@ export function PatternCustomizer({
           if (rightSvgImg) ctx.drawImage(rightSvgImg, 0,    0, cRW, cH);
           if (leftSvgImg)  ctx.drawImage(leftSvgImg,  cRW,  0, cLW, cH);
 
-          if (productKind === "hoodie" && syncSidesMode) {
-            drawArtworkInSlot(ctx, motifImage, 0, 0, cRW, cH, printT, false);
-            drawArtworkInSlot(ctx, motifImage, cRW, 0, cLW, cH, mirroredLeftT, false);
-          } else {
-            // Draw artwork across the full composite (seam continuity)
-            drawArtworkInSlot(ctx, motifImage, 0, 0, cTotalW, cH, printT, false);
-          }
+          // Draw artwork across the full composite (seam continuity).
+          drawArtworkInSlot(ctx, motifImage, 0, 0, cTotalW, cH, printT, false);
 
           // Crop right panel
           const cropRight = document.createElement("canvas");
