@@ -2088,20 +2088,7 @@ export default function EmbedDesign() {
         throw new Error(msg);
       }
 
-      const response = await safeFetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      }, 120000);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Mockup generation failed (${response.status})`);
-      }
-
-      const result = await response.json();
-      
-      if (result.success && result.mockupUrls?.length > 0) {
+      const handleMockupSuccess = (result: any) => {
         if (requestSeq !== mockupRequestSeqRef.current) {
           console.log('[Mockups] Ignoring stale mockup response', requestSeq);
           return;
@@ -2163,6 +2150,63 @@ export default function EmbedDesign() {
             startShadowVariantPoll(savedJobIdRef.current, shopDomain, 5000);
           }
         }
+      };
+
+      const statusEndpoint = isStorefront
+        ? `${API_BASE}/api/storefront/mockup-status`
+        : isShopify
+          ? `${API_BASE}/api/shopify/mockup-status`
+          : `${API_BASE}/api/mockup/status`;
+
+      const pollMockupJob = async (jobId: string) => {
+        const started = Date.now();
+        const MAX_POLL_MS = 300_000;
+        const POLL_INTERVAL_MS = 2_000;
+
+        while (Date.now() - started < MAX_POLL_MS) {
+          if (requestSeq !== mockupRequestSeqRef.current) {
+            console.log('[Mockups] Stopping stale mockup poll', requestSeq);
+            return;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          const pollUrl = `${statusEndpoint}?jobId=${encodeURIComponent(jobId)}`;
+          const pollResponse = await safeFetch(pollUrl);
+          if (!pollResponse.ok) {
+            const errorData = await pollResponse.json().catch(() => ({}));
+            throw new Error(errorData.error || `Mockup status failed (${pollResponse.status})`);
+          }
+
+          const pollResult = await pollResponse.json();
+          if (pollResult.status === 'done' && pollResult.mockupUrls?.length > 0) {
+            handleMockupSuccess({ ...pollResult, success: true });
+            return;
+          }
+          if (pollResult.status === 'failed') {
+            throw new Error(pollResult.error || 'Mockup generation failed');
+          }
+        }
+
+        throw new Error('Mockup generation timed out. Please click Retry.');
+      };
+
+      const response = await safeFetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      }, 15000);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Mockup generation failed (${response.status})`);
+      }
+
+      const result = await response.json();
+      
+      if ((result.status === 'done' || result.fromCache || result.success) && result.mockupUrls?.length > 0) {
+        handleMockupSuccess(result);
+      } else if (result.jobId) {
+        await pollMockupJob(result.jobId);
       } else if (!result.success) {
         throw new Error(result.error || result.message || "Mockup generation returned unsuccessful");
       }

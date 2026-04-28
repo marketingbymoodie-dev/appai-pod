@@ -29,7 +29,7 @@ import {
   uploadDesignFileToSupabase,
   getSupabaseDesignPublicUrl,
 } from "./supabaseDesigns";
-import { uploadMockupToSupabase } from "./supabaseMockups";
+import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
   return Uint8Array.from(buf);
@@ -7249,9 +7249,7 @@ ${textEdgeRestrictions}
         : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
       const resolvedWrapAround = resolveWrapAround(productType);
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
-      const { generatePrintifyMockup } = await import("./printify-mockups.js");
-
-      const result = await generatePrintifyMockup({
+      const { jobId, cached } = await enqueueMockupJob({
         blueprintId,
         providerId,
         variantId: targetVariantId,
@@ -7269,49 +7267,24 @@ ${textEdgeRestrictions}
           : undefined,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+      }, {
+        correlationId,
+        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printOnBack: effectiveDoubleSided },
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
-        success: result.success,
-        mockupCount: result.mockupUrls?.length,
-        source: result.source,
-        error: result.error || null,
+        jobId,
+        queued: !cached,
+        success: cached?.success,
+        mockupCount: cached?.mockupUrls?.length,
+        source: cached?.source,
+        error: cached?.error || null,
         resolvedProductTypeId: productType.id,
         requestedProductTypeId: parsedId,
       });
 
-      // ========== CACHE MOCKUP IMAGES TO SUPABASE ==========
-      // Printify mockup URLs are temporary. Wait for the durable copies before
-      // responding so save-mockups persists Supabase URLs, not expiring CDN URLs.
-      if (result.success && result.mockupImages && result.mockupImages.length > 0) {
-        const cacheDesignId = correlationId;
-        console.log(`[Storefront Mockup] [${correlationId}] Caching ${result.mockupImages.length} mockup images to Supabase...`);
-        const imagesToCache = [...result.mockupImages];
-        const cachedImages = await Promise.all(
-          imagesToCache.map(async (img: { url: string; label: string }, idx: number) => {
-            try {
-              const viewName = img.label || `view-${idx}`;
-              const cachedUrl = await uploadMockupToSupabase({
-                sourceUrl: img.url,
-                designId: cacheDesignId,
-                viewName,
-              });
-              if (cachedUrl) {
-                console.log(`[Storefront Mockup] [${correlationId}] Cached ${viewName} → ${cachedUrl.substring(0, 80)}`);
-                return { url: cachedUrl, label: img.label };
-              }
-            } catch (cacheErr: any) {
-              console.warn(`[Storefront Mockup] [${correlationId}] Cache failed for ${img.label}:`, cacheErr.message);
-            }
-            return img;
-          })
-        );
-        result.mockupImages = cachedImages;
-        result.mockupUrls = cachedImages.map((img) => img.url);
-        console.log(`[Storefront Mockup] [${correlationId}] Background caching complete (${cachedImages.length} image(s)).`);
-      }
-
-      res.json({ ...result, correlationId });
+      if (cached) return res.json({ ...cached, jobId, fromCache: true, status: "done", correlationId });
+      return res.json({ jobId, status: "queued", correlationId });
     } catch (error: any) {
       console.error(`[Storefront Mockup] [${correlationId}] Error:`, error);
       res.status(500).json({
@@ -7322,6 +7295,28 @@ ${textEdgeRestrictions}
       });
     }
   });
+
+  const handleMockupStatus = (req: Request, res: Response) => {
+    const jobId = String(req.query.jobId || "");
+    if (!jobId) return res.status(400).json({ error: "jobId is required" });
+
+    const job = getMockupJob(jobId);
+    if (!job) return res.status(404).json({ error: "Job not found or expired" });
+
+    return res.json({
+      jobId: job.id,
+      status: job.status,
+      mockupUrls: job.mockupUrls,
+      mockupImages: job.mockupImages,
+      error: job.error,
+      correlationId: job.correlationId,
+      source: job.source,
+    });
+  };
+
+  app.get("/api/storefront/mockup-status", handleMockupStatus);
+  app.get("/api/shopify/mockup-status", handleMockupStatus);
+  app.get("/api/mockup/status", isAuthenticated, handleMockupStatus);
 
   // ==================== STOREFRONT VARIANT IMAGE (FOR CHECKOUT) ====================
   // Updates the Shopify variant image so checkout displays the custom mockup.
@@ -13300,9 +13295,6 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Generate Printify mockup
-      const { generatePrintifyMockup } = await import("./printify-mockups.js");
-      
       // Look up the correct variant from the variantMap using server-side data only
       const variantMapData = JSON.parse(productType.variantMap as string || "{}");
       const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
@@ -13334,7 +13326,8 @@ ${textEdgeRestrictions}
 
       console.log("[Mockup Generate] AOP:", !!aopPositions, "positions:", aopPositions?.length, "mirrorLegs:", !!mirrorLegs, "imageUrl:", absoluteImageUrl.substring(0, 80));
 
-      const result = await generatePrintifyMockup({
+      const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const { jobId, cached } = await enqueueMockupJob({
         blueprintId: productType.printifyBlueprintId,
         providerId,
         variantId: targetVariantId,
@@ -13350,10 +13343,14 @@ ${textEdgeRestrictions}
         aopPositions,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+      }, {
+        correlationId,
+        cacheParts: { userId, productTypeId: productType.id, sizeId, colorId, printOnBack: effectiveDoubleSided },
       });
 
-      console.log("[Mockup Generate] Result:", result.success, "mockups:", result.mockupImages?.length);
-      res.json(result);
+      console.log("[Mockup Generate] Result:", { jobId, queued: !cached, success: cached?.success, mockups: cached?.mockupImages?.length });
+      if (cached) return res.json({ ...cached, jobId, fromCache: true, status: "done", correlationId });
+      return res.json({ jobId, status: "queued", correlationId });
     } catch (error: any) {
       console.error("[Mockup Generate] Error:", error?.message || error);
       res.status(500).json({ error: error?.message || "Failed to generate mockup" });
@@ -13439,9 +13436,6 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Generate Printify mockup
-      const { generatePrintifyMockup } = await import("./printify-mockups.js");
-      
       // Look up the correct variant from the variantMap
       const variantMapData = JSON.parse(productType.variantMap as string || "{}");
       const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
@@ -13468,7 +13462,8 @@ ${textEdgeRestrictions}
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
         : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
-      const result = await generatePrintifyMockup({
+      const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const { jobId, cached } = await enqueueMockupJob({
         blueprintId: productType.printifyBlueprintId,
         providerId,
         variantId: targetVariantId,
@@ -13486,10 +13481,14 @@ ${textEdgeRestrictions}
           : undefined,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+      }, {
+        correlationId,
+        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printOnBack: effectiveDoubleSided },
       });
 
-      console.log("[Shopify Mockup] Generated result:", { success: result.success, mockupCount: result.mockupUrls?.length });
-      res.json(result);
+      console.log("[Shopify Mockup] Generated result:", { jobId, queued: !cached, success: cached?.success, mockupCount: cached?.mockupUrls?.length });
+      if (cached) return res.json({ ...cached, jobId, fromCache: true, status: "done", correlationId });
+      return res.json({ jobId, status: "queued", correlationId });
     } catch (error) {
       console.error("[Shopify Mockup] Error generating mockup:", error);
       res.status(500).json({ error: "Failed to generate mockup" });

@@ -3,7 +3,7 @@ import pRetry from "p-retry";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
-const MAX_PANEL_UPLOAD_CONCURRENCY = 5;
+const MAX_PANEL_UPLOAD_CONCURRENCY = 8;
 /** Max mockups returned after preference ordering (leggings grid + fallbacks). */
 const MAX_MOCKUP_VIEWS = 12;
 
@@ -33,7 +33,7 @@ const ON_PERSON_FRONT_LABELS = Array.from(
 
 const PREFERRED_LABELS: string[] = [...LEGGINGS_STYLE_PRIORITY, ...ON_PERSON_FRONT_LABELS];
 
-interface MockupRequest {
+export interface MockupRequest {
   blueprintId: number;
   providerId: number;
   variantId: number;
@@ -53,12 +53,12 @@ interface MockupRequest {
   mirrorLegs?: boolean;
 }
 
-interface MockupImage {
+export interface MockupImage {
   url: string;
   label: string;
 }
 
-interface MockupResult {
+export interface MockupResult {
   success: boolean;
   mockupUrls: string[];
   mockupImages: MockupImage[];
@@ -677,8 +677,8 @@ export async function generatePrintifyMockup(
       },
       {
         retries: 20,
-        minTimeout: 1000,
-        maxTimeout: 4000,
+        minTimeout: 500,
+        maxTimeout: 1500,
         onFailedAttempt: (err) => {
           console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
         },

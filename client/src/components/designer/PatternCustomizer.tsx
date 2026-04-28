@@ -106,8 +106,8 @@ const MIN_TILE_INCHES = 0.5;
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
 const DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX = -10;
-const PREVIOUS_HOODIE_HOOD_SEAM_BLEED_PX = 120;
-const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = -70;
+const PREVIOUS_HOODIE_HOOD_SEAM_BLEEDS = new Set([120, -70]);
+const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = -90;
 
 /** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
 const MAX_PANEL_MOCKUP_PX = 1100;
@@ -1464,7 +1464,7 @@ export function PatternCustomizer({
       const saved = initialPlacement?.hoodieSeamBleedPx || {};
       return {
         front: saved.front ?? DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX,
-        hood: saved.hood === PREVIOUS_HOODIE_HOOD_SEAM_BLEED_PX || saved.hood === undefined
+        hood: saved.hood === undefined || PREVIOUS_HOODIE_HOOD_SEAM_BLEEDS.has(saved.hood)
           ? DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX
           : saved.hood,
       };
