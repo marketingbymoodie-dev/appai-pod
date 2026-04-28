@@ -666,24 +666,35 @@ export async function generatePrintifyMockup(
     }
 
     productId = createResult.productId;
-    const mockupData = await pRetry(
-      async (attemptNumber) => {
-        const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
-        if (!data || data.urls.length === 0) {
-          console.log(`[Printify Mockup] Poll attempt ${attemptNumber}: images not ready yet`);
-          throw new Error("Mockups not ready yet");
-        }
-        return data;
-      },
-      {
-        retries: 20,
-        minTimeout: 500,
-        maxTimeout: 1500,
-        onFailedAttempt: (err) => {
-          console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
+    const pollStarted = Date.now();
+    let mockupData;
+    try {
+      mockupData = await pRetry(
+        async (attemptNumber) => {
+          const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
+          if (!data || data.urls.length === 0) {
+            console.log(`[Printify Mockup] Poll attempt ${attemptNumber}: images not ready yet`);
+            throw new Error("Mockups not ready yet");
+          }
+          return data;
         },
-      }
-    );
+        {
+          // Async job pattern lets us wait well past the old App Proxy 30s limit.
+          // Total budget ~120s: 0.5s + 1s + 2s*60 attempts.
+          retries: 60,
+          minTimeout: 500,
+          maxTimeout: 2000,
+          onFailedAttempt: (err) => {
+            console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
+          },
+        }
+      );
+    } catch (pollErr: any) {
+      const elapsedSec = Math.round((Date.now() - pollStarted) / 1000);
+      throw new Error(
+        `Printify did not return mockup images after ${elapsedSec}s. Printify is slow right now — please retry.`,
+      );
+    }
 
     const selected = selectPreferredViews(mockupData.images);
 
