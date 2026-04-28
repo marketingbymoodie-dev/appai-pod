@@ -118,6 +118,11 @@ function getDataUrlMime(dataUrl: string): string {
   return mimeMatch ? mimeMatch[1].toLowerCase() : "application/octet-stream";
 }
 
+function getDataUrlExtension(dataUrl: string): "jpg" | "png" {
+  const mime = getDataUrlMime(dataUrl);
+  return mime === "image/jpeg" || mime === "image/jpg" ? "jpg" : "png";
+}
+
 function normalizeImageUrl(url: string): string {
   if (typeof url !== "string") return url;
   const appUrl = process.env.APP_URL || "";
@@ -147,9 +152,10 @@ async function uploadImageToPrintify(
       console.error("[Printify Upload] Failed to extract base64 from data URL");
       return null;
     }
-    uploadMethod = `data-url (${base64Data.length} chars base64)`;
+    const ext = getDataUrlExtension(imageUrlOrBuffer);
+    uploadMethod = `data-url (${ext}, ${base64Data.length} chars base64)`;
     requestBody = {
-      file_name: `design-${Date.now()}.png`,
+      file_name: `design-${Date.now()}.${ext}`,
       contents: base64Data,
     };
   } else {
@@ -546,16 +552,16 @@ export async function generatePrintifyMockup(
 
             let buf = Buffer.from(b64, "base64");
             const mime = getDataUrlMime(dataUrl);
-            // Validate that the payload is a real image. Avoid re-encoding already-PNG
-            // panels because the client now sends PNG mockup assets and re-encoding adds
-            // server CPU time without improving the preview.
+            // Validate that the payload is a real image. Preserve JPEG mockup panels
+            // so Printify uploads stay small; only normalize unusual formats to PNG.
             await sharp(buf).metadata();
-            if (mime !== "image/png") {
+            const isDirectPrintifyMime = mime === "image/png" || mime === "image/jpeg" || mime === "image/jpg";
+            if (!isDirectPrintifyMime) {
               buf = await sharp(buf).png().toBuffer();
             }
 
             console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes ${mime}`);
-            const uploaded = await uploadImageToPrintify(buf, printifyApiToken);
+            const uploaded = await uploadImageToPrintify(isDirectPrintifyMime ? dataUrl : buf, printifyApiToken);
             if (!uploaded) {
               console.warn(`[Printify AOP] Panel "${position}" upload returned null`);
               return { position, uploadedId: null as string | null };

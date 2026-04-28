@@ -105,6 +105,8 @@ const MIN_TILE_INCHES = 0.5;
  * across the sewn seam even with slight manufacturing misalignment.
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
+const DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX = -10;
+const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = 120;
 
 /** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
 const MAX_PANEL_MOCKUP_PX = 1100;
@@ -223,20 +225,25 @@ function getAdaptiveMockupPanelPx(): number {
   return likelyMobile || lowMemory ? MOBILE_MOCKUP_PANEL_PX : MAX_PANEL_MOCKUP_PX;
 }
 
-/**
- * Encode canvas as PNG for AOP panel export.
- * PNG is required (not JPEG) because JPEG has no alpha channel — a transparent or
- * empty canvas encodes as solid black in JPEG, which Printify then applies as a
- * completely black print. PNG preserves transparency so Printify can fall back
- * to the garment colour rather than flooding it black. Downscale if over max dimension.
- */
+/** Encode AOP panels: compact JPEG for mockups, PNG for persisted print assets. */
 function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOCKUP_PX): string {
   let w = canvas.width;
   let h = canvas.height;
-  if (w <= 0 || h <= 0) return canvas.toDataURL("image/png");
-  if (Math.max(w, h) <= maxDim) {
-    return canvas.toDataURL("image/png");
-  }
+  const isPrintAsset = maxDim > MAX_PANEL_MOCKUP_PX;
+  const encode = (source: HTMLCanvasElement) => {
+    if (isPrintAsset) return source.toDataURL("image/png");
+    const flattened = document.createElement("canvas");
+    flattened.width = source.width;
+    flattened.height = source.height;
+    const fctx = flattened.getContext("2d");
+    if (!fctx) return source.toDataURL("image/jpeg", 0.92);
+    fctx.fillStyle = "#ffffff";
+    fctx.fillRect(0, 0, flattened.width, flattened.height);
+    fctx.drawImage(source, 0, 0);
+    return flattened.toDataURL("image/jpeg", 0.92);
+  };
+  if (w <= 0 || h <= 0) return encode(canvas);
+  if (Math.max(w, h) <= maxDim) return encode(canvas);
   const scale = maxDim / Math.max(w, h);
   const nw = Math.max(1, Math.round(w * scale));
   const nh = Math.max(1, Math.round(h * scale));
@@ -244,9 +251,9 @@ function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOC
   out.width = nw;
   out.height = nh;
   const octx = out.getContext("2d");
-  if (!octx) return canvas.toDataURL("image/png");
+  if (!octx) return encode(canvas);
   octx.drawImage(canvas, 0, 0, nw, nh);
-  return out.toDataURL("image/png");
+  return encode(out);
 }
 
 /** Snap threshold in CSS pixels — snaps when artwork centre is within this distance. */
@@ -261,6 +268,24 @@ const svgVisibleBoundsCache = new WeakMap<HTMLImageElement, SvgVisibleBounds | n
 
 type HoodiePanelView = "front" | "back" | "hood";
 type HoodiePatternSpec = { tileInches: number; offsetX: number };
+type HoodieSeamView = "front" | "hood";
+
+const DEFAULT_HOODIE_PATTERN_OFFSETS: Record<HoodiePanelView, number> = {
+  front: 3,
+  back: -10,
+  hood: 28,
+};
+
+function buildDefaultHoodiePatternSpecs(
+  tileInches: number,
+  legacyFrontOffset?: number,
+): Record<HoodiePanelView, HoodiePatternSpec> {
+  return {
+    front: { tileInches, offsetX: legacyFrontOffset ?? DEFAULT_HOODIE_PATTERN_OFFSETS.front },
+    back: { tileInches, offsetX: DEFAULT_HOODIE_PATTERN_OFFSETS.back },
+    hood: { tileInches, offsetX: DEFAULT_HOODIE_PATTERN_OFFSETS.hood },
+  };
+}
 
 function getPanelGroup(position: string): "front" | "back" | "hood" {
   const l = position.toLowerCase();
@@ -1422,13 +1447,23 @@ export function PatternCustomizer({
     const kind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
     return kind === "leggings";
   });
-  const [applyAllover, setApplyAllover] = useState(true);
+  const [applyAllover, setApplyAllover] = useState(initialPlacement?.applyAllover ?? true);
   const [patternOffsetX, setPatternOffsetX] = useState(initialPlacement?.patternOffsetX ?? 0);
-  const [hoodiePatternSpecs, setHoodiePatternSpecs] = useState<Partial<Record<HoodiePanelView, HoodiePatternSpec>>>({
-    front: { tileInches, offsetX: initialPlacement?.patternOffsetX ?? 0 },
-  });
+  const [hoodiePatternSpecs, setHoodiePatternSpecs] = useState<Partial<Record<HoodiePanelView, HoodiePatternSpec>>>(
+    () => ({
+      ...buildDefaultHoodiePatternSpecs(tileInches, initialPlacement?.patternOffsetX),
+      ...(initialPlacement?.hoodiePatternSpecs || {}),
+    }),
+  );
   const [seamBleedPx, setSeamBleedPx] = useState(
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
+  );
+  const [hoodieSeamBleedPx, setHoodieSeamBleedPx] = useState<Partial<Record<HoodieSeamView, number>>>(
+    () => ({
+      front: DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX,
+      hood: DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX,
+      ...(initialPlacement?.hoodieSeamBleedPx || {}),
+    }),
   );
 
   // Active view for hoodie (front / back / hood)
@@ -1461,11 +1496,12 @@ export function PatternCustomizer({
         return false;
       }
       if (exportMode === "pattern" && productKind === "hoodie") {
+        if (applyAllover) return true;
         return isPrimaryHoodieArtworkPanel(position) || isHoodiePocketPanel(position);
       }
       return shouldRenderPanelArtwork(position);
     },
-    [productKind, shouldRenderPanelArtwork],
+    [applyAllover, productKind, shouldRenderPanelArtwork],
   );
 
   const availableHoodieViews = useMemo(
@@ -1523,11 +1559,35 @@ export function PatternCustomizer({
   const getPatternSpecForPanel = useCallback(
     (position: string): HoodiePatternSpec =>
       productKind === "hoodie"
-        ? isHoodieTrimPanel(position)
+        ? isHoodieTrimPanel(position) || isHoodiePocketPanel(position)
           ? getPatternSpecForView("front")
           : getPatternSpecForView(getPanelGroup(position))
         : fallbackPatternSpec,
     [fallbackPatternSpec, getPatternSpecForView, productKind],
+  );
+
+  const getSeamBleedForPanel = useCallback(
+    (position: string): number => {
+      if (productKind !== "hoodie") return seamBleedPx;
+      const group = getPanelGroup(position);
+      if (group === "hood") return hoodieSeamBleedPx.hood ?? seamBleedPx;
+      if (group === "front") return hoodieSeamBleedPx.front ?? seamBleedPx;
+      return seamBleedPx;
+    },
+    [hoodieSeamBleedPx.front, hoodieSeamBleedPx.hood, productKind, seamBleedPx],
+  );
+
+  const activeHoodieSeamBleedPx =
+    activeView === "hood"
+      ? hoodieSeamBleedPx.hood ?? seamBleedPx
+      : hoodieSeamBleedPx.front ?? seamBleedPx;
+
+  const setActiveHoodieSeamBleedPx = useCallback(
+    (value: number) => {
+      const key: HoodieSeamView = activeView === "hood" ? "hood" : "front";
+      setHoodieSeamBleedPx((prev) => ({ ...prev, [key]: value }));
+    },
+    [activeView],
   );
 
   const setActiveHoodieView = useCallback(
@@ -2257,14 +2317,17 @@ export function PatternCustomizer({
       activePanel,
       mirrorMode,
       seamBleedPx,
+      hoodieSeamBleedPx,
       syncSidesMode,
       patternOffsetX: activePatternOffsetX,
+      hoodiePatternSpecs,
+      applyAllover,
       lastMode: mode,
       patternType,
       tileInches,
       bgColor,
     });
-  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, syncSidesMode, activePatternOffsetX, mode, patternType, tileInches, bgColor]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, hoodieSeamBleedPx, syncSidesMode, activePatternOffsetX, mode, patternType, tileInches, bgColor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -2377,7 +2440,7 @@ export function PatternCustomizer({
         productKind,
         getHoodiePocketNudgeKey(pos.position, panelPositions),
         t.dxPx * upscaleX,
-        seamBleedPx,
+        getSeamBleedForPanel(pos.position),
       ),
       dyPx:     t.dyPx * upscaleY + yExportNudge,
       scalePct,
@@ -2577,8 +2640,11 @@ export function PatternCustomizer({
               activePanel,
               mirrorMode,
               seamBleedPx,
+              hoodieSeamBleedPx,
               syncSidesMode,
               patternOffsetX: activePatternOffsetX,
+              hoodiePatternSpecs,
+              applyAllover,
               lastMode: mode,
               patternType,
               tileInches: productKind === "hoodie" ? getPatternSpecForView("front").tileInches : tileInches,
@@ -2617,8 +2683,11 @@ export function PatternCustomizer({
             activePanel,
             mirrorMode,
             seamBleedPx,
+            hoodieSeamBleedPx,
             syncSidesMode,
             patternOffsetX: activePatternOffsetX,
+            hoodiePatternSpecs,
+            applyAllover,
             lastMode: mode,
             patternType,
             tileInches,
@@ -2936,8 +3005,11 @@ export function PatternCustomizer({
           activePanel,
           mirrorMode,
           seamBleedPx,
+          hoodieSeamBleedPx,
           syncSidesMode,
           patternOffsetX: activePatternOffsetX,
+          hoodiePatternSpecs,
+          applyAllover,
           lastMode: mode,
           patternType,
           tileInches,
@@ -2950,7 +3022,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, patternOffsetX, getPatternSpecForPanel, getPatternSpecForView, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
@@ -3332,13 +3404,13 @@ export function PatternCustomizer({
               {productKind === "hoodie" && (activeView === "front" || activeView === "hood") && (
                 <div>
                   <Label className="text-xs">
-                    Seam allowance: {seamBleedPx}px
+                    {activeView === "hood" ? "Hood" : "Front"} seam allowance: {activeHoodieSeamBleedPx}px
                   </Label>
                   <Slider
-                    value={[seamBleedPx]}
-                    onValueChange={v => setSeamBleedPx(v[0])}
-                    min={0}
-                    max={140}
+                    value={[activeHoodieSeamBleedPx]}
+                    onValueChange={v => setActiveHoodieSeamBleedPx(v[0])}
+                    min={-50}
+                    max={180}
                     step={5}
                     className={sliderTrackClass}
                   />

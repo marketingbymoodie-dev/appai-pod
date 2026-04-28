@@ -70,10 +70,16 @@ export interface AopPlacementSettings {
   activePanel: string | null;
   mirrorMode: boolean;
   seamBleedPx: number;
+  /** Per hoodie view seam nudge in print pixels. */
+  hoodieSeamBleedPx?: Partial<Record<"front" | "hood", number>>;
   /** When true, dragging either legging leg updates both legs from the same canonical transform (no artwork mirror). */
   syncSidesMode?: boolean;
   /** Horizontal grid shift as percent of tile width (−50 → +50). Nudges the tile anchor left/right. */
   patternOffsetX?: number;
+  /** Per-view hoodie pattern controls. */
+  hoodiePatternSpecs?: Partial<Record<"front" | "back" | "hood", { tileInches: number; offsetX: number }>>;
+  /** When true, hoodie accent panels receive the front pattern instead of solid background. */
+  applyAllover?: boolean;
   /** Last active editor mode — restores the correct tab when re-editing. */
   lastMode?: "pattern" | "single" | "place";
   /** Pattern controls restored when re-editing AOP designs. */
