@@ -1576,52 +1576,36 @@ export default function EmbedDesign() {
     const mockups = topLevel.mockupUrls;
     if (mockups?.length) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
-      const shouldRefreshSavedAopMockups =
-        !!productTypeConfig?.isAllOverPrint &&
-        absMockups.some(isTemporaryPrintifyMockupUrl) &&
-        Array.isArray(ds?.aopPrintPanelUrls) &&
-        ds.aopPrintPanelUrls.length > 0;
-      setPrintifyMockups(absMockups);
-      setPrintifyMockupImages(absMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
-      setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
-      // The loaded mockups are already correct for this design — mark them fresh.
-      // Without this, setTransform() called above triggers the stale-on-transform
-      // effect (which fires because transform deps changed) and sets mockupsStale=true,
-      // blocking _mockup_url from being included in add-to-cart for the 2nd+ design.
-      setMockupsStale(false);
-      // Sync the color ref so the colorMatches guard in handleAddToCart doesn't
-      // incorrectly block the mockup URL when a saved design is loaded.
-      // topLevel.frameColor is the restored frame color for this design.
-      currentMockupColorRef.current = topLevel.frameColor || '';
       // Restore aopPatternUrl so the ATC button is not blocked by the
       // "productTypeConfig.isAllOverPrint && !aopPatternUrl" guard for saved AOP
       // designs. The design URL is the same value set by onApply when applying fresh.
       // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
       if (absUrl) setAopPatternUrl(absUrl);
-      sendMockupsToParent(absMockups);
-      if (shouldRefreshSavedAopMockups && productTypeConfig && (ds?.selectedSize || topLevel.size)) {
-        const panelUrls = ds.aopPrintPanelUrls
-          .map((panel: any) => ({
-            position: String(panel?.position || ""),
-            dataUrl: toAbsoluteImageUrl(String(panel?.url || panel?.dataUrl || "")),
-          }))
-          .filter((panel: { position: string; dataUrl: string }) => panel.position && panel.dataUrl);
-        if (panelUrls.length > 0) {
-          console.log("[LoadDesign] Refreshing stale Printify AOP mockups from saved panel URLs");
-          setMockupTriggered(true);
-          fetchPrintifyMockups(
-            toAbsoluteImageUrl(absUrl),
-            productTypeConfig.id,
-            String(ds?.selectedSize || topLevel.size),
-            String(ds?.selectedFrameColor || topLevel.frameColor || "default"),
-            typeof ds?.scale === "number" ? ds.scale : 100,
-            50,
-            50,
-            absUrl,
-            aopPlacementSettings?.mirrorMode,
-            panelUrls,
-          );
-        }
+      const durableMockups = productTypeConfig?.isAllOverPrint
+        ? absMockups.filter((url: string) => !isTemporaryPrintifyMockupUrl(url))
+        : absMockups;
+
+      if (durableMockups.length > 0) {
+        setPrintifyMockups(durableMockups);
+        setPrintifyMockupImages(durableMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
+        setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
+        // The loaded mockups are already correct for this design — mark them fresh.
+        // Without this, setTransform() called above triggers the stale-on-transform
+        // effect (which fires because transform deps changed) and sets mockupsStale=true,
+        // blocking _mockup_url from being included in add-to-cart for the 2nd+ design.
+        setMockupsStale(false);
+        // Sync the color ref so the colorMatches guard in handleAddToCart doesn't
+        // incorrectly block the mockup URL when a saved design is loaded.
+        // topLevel.frameColor is the restored frame color for this design.
+        currentMockupColorRef.current = topLevel.frameColor || '';
+        sendMockupsToParent(durableMockups);
+      } else {
+        console.warn("[LoadDesign] Saved AOP mockups use expired Printify CDN URLs; skipping auto-refresh.");
+        setPrintifyMockups([]);
+        setPrintifyMockupImages([]);
+        setSelectedMockupIndex(0);
+        setMockupsStale(true);
+        sendMockupsToParent([]);
       }
     }
 
@@ -1992,7 +1976,6 @@ export default function EmbedDesign() {
     if (panelUrls && panelUrls.length > 0) {
       const invalidPanels = panelUrls.filter(({ dataUrl }) => {
         if (!dataUrl || typeof dataUrl !== 'string') return true;
-        if (dataUrl.startsWith('http://') || dataUrl.startsWith('https://')) return false;
         if (!dataUrl.startsWith('data:')) return true;
         // Must have a base64 marker and at least a few hundred chars of payload.
         const b64Idx = dataUrl.indexOf(';base64,');

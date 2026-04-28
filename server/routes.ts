@@ -7251,24 +7251,6 @@ ${textEdgeRestrictions}
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { generatePrintifyMockup } = await import("./printify-mockups.js");
 
-      const toPublicPanelImageRef = (value: unknown): string => {
-        const raw = typeof value === "string" ? value : "";
-        if (!raw) return "";
-        if (raw.startsWith("data:") || raw.startsWith("https://") || raw.startsWith("http://")) return raw;
-        const appUrl = (process.env.PUBLIC_APP_URL || process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-        if (raw.startsWith("/apps/appai/objects/")) return `${appUrl}${raw.slice("/apps/appai".length)}`;
-        if (raw.startsWith("/objects/")) return `${appUrl}${raw}`;
-        return raw;
-      };
-      const normalizedPanelUrls = Array.isArray(panelUrls) && panelUrls.length > 0
-        ? panelUrls
-            .map((panel: any) => ({
-              position: String(panel?.position || ""),
-              dataUrl: toPublicPanelImageRef(panel?.dataUrl || panel?.url),
-            }))
-            .filter((panel: { position: string; dataUrl: string }) => panel.position && panel.dataUrl)
-        : undefined;
-
       const result = await generatePrintifyMockup({
         blueprintId,
         providerId,
@@ -7286,7 +7268,7 @@ ${textEdgeRestrictions}
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
         mirrorLegs: !!mirrorLegs,
-        panelUrls: normalizedPanelUrls,
+        panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -7299,35 +7281,34 @@ ${textEdgeRestrictions}
       });
 
       // ========== CACHE MOCKUP IMAGES TO SUPABASE ==========
-      // Printify mockup URLs are temporary, but customers should not wait for our
-      // storage copy after Printify has already rendered the previews. Cache in the
-      // background and let the client persist returned URLs via save-mockups.
+      // Printify mockup URLs are temporary. Wait for the durable copies before
+      // responding so save-mockups persists Supabase URLs, not expiring CDN URLs.
       if (result.success && result.mockupImages && result.mockupImages.length > 0) {
         const cacheDesignId = correlationId;
         console.log(`[Storefront Mockup] [${correlationId}] Caching ${result.mockupImages.length} mockup images to Supabase...`);
         const imagesToCache = [...result.mockupImages];
-        void (async () => {
-          const cachedImages = await Promise.all(
-            imagesToCache.map(async (img: { url: string; label: string }, idx: number) => {
-              try {
-                const viewName = img.label || `view-${idx}`;
-                const cachedUrl = await uploadMockupToSupabase({
-                  sourceUrl: img.url,
-                  designId: cacheDesignId,
-                  viewName,
-                });
-                if (cachedUrl) {
-                  console.log(`[Storefront Mockup] [${correlationId}] Cached ${viewName} → ${cachedUrl.substring(0, 80)}`);
-                  return { url: cachedUrl, label: img.label };
-                }
-              } catch (cacheErr: any) {
-                console.warn(`[Storefront Mockup] [${correlationId}] Cache failed for ${img.label}:`, cacheErr.message);
+        const cachedImages = await Promise.all(
+          imagesToCache.map(async (img: { url: string; label: string }, idx: number) => {
+            try {
+              const viewName = img.label || `view-${idx}`;
+              const cachedUrl = await uploadMockupToSupabase({
+                sourceUrl: img.url,
+                designId: cacheDesignId,
+                viewName,
+              });
+              if (cachedUrl) {
+                console.log(`[Storefront Mockup] [${correlationId}] Cached ${viewName} → ${cachedUrl.substring(0, 80)}`);
+                return { url: cachedUrl, label: img.label };
               }
-              return img;
-            })
-          );
-          console.log(`[Storefront Mockup] [${correlationId}] Background caching complete (${cachedImages.length} image(s)).`);
-        })();
+            } catch (cacheErr: any) {
+              console.warn(`[Storefront Mockup] [${correlationId}] Cache failed for ${img.label}:`, cacheErr.message);
+            }
+            return img;
+          })
+        );
+        result.mockupImages = cachedImages;
+        result.mockupUrls = cachedImages.map((img) => img.url);
+        console.log(`[Storefront Mockup] [${correlationId}] Background caching complete (${cachedImages.length} image(s)).`);
       }
 
       res.json({ ...result, correlationId });
