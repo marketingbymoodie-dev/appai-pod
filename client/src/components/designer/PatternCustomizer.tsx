@@ -3414,7 +3414,7 @@ export function PatternCustomizer({
                   <Slider
                     value={[activeHoodieSeamBleedPx]}
                     onValueChange={v => setActiveHoodieSeamBleedPx(v[0])}
-                    min={-50}
+                    min={-140}
                     max={180}
                     step={5}
                     className={sliderTrackClass}
