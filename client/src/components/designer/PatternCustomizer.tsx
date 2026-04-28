@@ -106,7 +106,8 @@ const MIN_TILE_INCHES = 0.5;
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
 const DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX = -10;
-const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = 120;
+const PREVIOUS_HOODIE_HOOD_SEAM_BLEED_PX = 120;
+const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = -70;
 
 /** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
 const MAX_PANEL_MOCKUP_PX = 1100;
@@ -1459,11 +1460,15 @@ export function PatternCustomizer({
     initialPlacement?.seamBleedPx ?? DEFAULT_SEAM_BLEED_PX
   );
   const [hoodieSeamBleedPx, setHoodieSeamBleedPx] = useState<Partial<Record<HoodieSeamView, number>>>(
-    () => ({
-      front: DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX,
-      hood: DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX,
-      ...(initialPlacement?.hoodieSeamBleedPx || {}),
-    }),
+    () => {
+      const saved = initialPlacement?.hoodieSeamBleedPx || {};
+      return {
+        front: saved.front ?? DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX,
+        hood: saved.hood === PREVIOUS_HOODIE_HOOD_SEAM_BLEED_PX || saved.hood === undefined
+          ? DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX
+          : saved.hood,
+      };
+    },
   );
 
   // Active view for hoodie (front / back / hood)
