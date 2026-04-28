@@ -1573,6 +1573,12 @@ export default function EmbedDesign() {
       if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
       if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     }
+    // Some older saved AOP designs only persisted panel URLs in designState; their
+    // size/color/style live on the top-level saved-design row. Always fall back to
+    // those values so Edit Pattern -> Apply can regenerate mockups.
+    if (!ds?.selectedSize && topLevel.size) setSelectedSize(topLevel.size);
+    if (!ds?.selectedFrameColor && topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
+    if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
     if (mockups?.length) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
@@ -5098,6 +5104,13 @@ export default function EmbedDesign() {
                       <Button
                         onClick={() => {
                           if (mockupsStale) {
+                            if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                              if (generatedDesign?.imageUrl) {
+                                setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                                setShowPatternStep(true);
+                              }
+                              return;
+                            }
                             // Refresh mockups first, then the button will switch to Add to Cart
                             if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
                               setMockupError(null);
@@ -5841,7 +5854,13 @@ export default function EmbedDesign() {
                         variant="outline"
                         size="sm"
                         onClick={() => {
-                          if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                          if (generatedDesign?.imageUrl && productTypeConfig) {
+                            if (productTypeConfig.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                              setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                              setShowPatternStep(true);
+                              return;
+                            }
+                            if (!selectedSize) return;
                             setMockupError(null);
                             setMockupFailed(false);
                             setPrintifyMockups([]);
@@ -5944,7 +5963,13 @@ export default function EmbedDesign() {
                     type="button"
                     className="text-xs text-destructive underline shrink-0"
                     onClick={() => {
-                      if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                      if (generatedDesign?.imageUrl && productTypeConfig) {
+                        if (productTypeConfig.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                          setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                          setShowPatternStep(true);
+                          return;
+                        }
+                        if (!selectedSize) return;
                         setMockupError(null);
                         setMockupFailed(false);
                         setMockupTriggered(true);
