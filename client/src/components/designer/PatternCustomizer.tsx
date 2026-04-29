@@ -1353,7 +1353,10 @@ function getPreviewPatternAnchorForSlot(
       slots.some((s) => s.position.toLowerCase().includes("right"));
     if (hasTwoSidedRow) {
       const sorted = [...slots].sort((a, b) => a.x - b.x);
-      centerX = (sorted[0].x + sorted[0].w + sorted[1].x) / 2;
+      const isFirstVisualSlot = slot.position === sorted[0].position;
+      // Anchor to the actual panel seam edge, not the preview gap midpoint, so both sides
+      // start with equal pattern distance from the join.
+      centerX = isFirstVisualSlot ? slot.x + slot.w : slot.x;
     } else {
       const minX = Math.min(...slots.map((s) => s.x));
       const maxX = Math.max(...slots.map((s) => s.x + s.w));
