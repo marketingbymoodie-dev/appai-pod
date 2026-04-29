@@ -2780,7 +2780,13 @@ export function PatternCustomizer({
                 panelPositions,
                 scaleRatio,
               );
-              const anchorX = baseAnchor.x + t.dxPx * renderScale + offsetPrintPx;
+              const dxPrintPx = nudgeHoodieSeamExportDx(
+                productKind,
+                getHoodiePocketNudgeKey(p.position, panelPositions),
+                t.dxPx * renderScale,
+                getSeamBleedForPanel(p.position),
+              );
+              const anchorX = baseAnchor.x + dxPrintPx + offsetPrintPx;
               const anchorY = baseAnchor.y + t.dyPx * renderScale;
               if (shouldRenderPanelArtworkForMode(renderKey, "pattern")) {
                 drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, anchorX, anchorY);
