@@ -1336,19 +1336,51 @@ function drawTiledMotifInRect(
   }
 }
 
+/**
+ * Compute base tile anchor for a preview slot.
+ *
+ * Default: pattern is centred on each individual panel.
+ *
+ * When `syncSides` is on AND the row is a paired hoodie L/R seam row
+ * (front_right + front_left, or right_hood + left_hood), the anchor is
+ * shifted to the seam edge so the same tile straddles the seam in both
+ * panels — i.e. a continuous pattern across the seam.
+ */
 function getPreviewPatternAnchorForSlot(
   slot: PanelSlot,
-  _slots: PanelSlot[],
-  _productKind: AopLayoutKind,
+  slots: PanelSlot[],
+  productKind: AopLayoutKind,
   tileW: number,
   tileH: number,
+  syncSides: boolean,
 ): { x: number; y: number } {
-  return {
-    x: slot.w / 2 - tileW / 2,
-    y: slot.h / 2 - tileH / 2,
-  };
+  const yAnchor = slot.h / 2 - tileH / 2;
+
+  if (syncSides && productKind === "hoodie" && slots.length === 2) {
+    const sorted = [...slots].sort((a, b) => a.x - b.x);
+    const positions = sorted.map((s) => s.position.toLowerCase());
+    const hasLeft = positions.some((p) => p.includes("left") && !p.includes("right"));
+    const hasRight = positions.some((p) => p.includes("right"));
+    if (hasLeft && hasRight) {
+      const isFirstVisualSlot = slot.position === sorted[0].position;
+      const centerX = isFirstVisualSlot ? slot.w : 0;
+      return { x: centerX - tileW / 2, y: yAnchor };
+    }
+  }
+
+  return { x: slot.w / 2 - tileW / 2, y: yAnchor };
 }
 
+/**
+ * Compute base tile anchor for an export panel.
+ *
+ * Default: panel-centred. When `syncSides` is on for a paired hoodie L/R
+ * seam panel, anchor at the seam edge (matches the preview helper above so
+ * Printify renders look identical to the customiser).
+ *
+ * Pocket panels still inherit the source panel's anchor (so the front pocket
+ * stays consistent with the front panels).
+ */
 function getExportPatternAnchorForPanel(
   position: string,
   outW: number,
@@ -1358,17 +1390,48 @@ function getExportPatternAnchorForPanel(
   productKind: AopLayoutKind,
   panels: Array<{ position: string; width: number; height: number }>,
   scaleRatio: number,
+  syncSides: boolean,
 ): { x: number; y: number } {
-  const anchorFor = (_pos: string, width: number, height: number): { x: number; y: number } => ({
-    x: width / 2 - tileW / 2,
-    y: height / 2 - tileH / 2,
-  });
+  const computeAnchor = (
+    pos: string,
+    width: number,
+    height: number,
+  ): { x: number; y: number } => {
+    const yAnchor = height / 2 - tileH / 2;
+
+    if (syncSides && productKind === "hoodie") {
+      const lower = pos.toLowerCase();
+      const isLeftSide = lower.includes("left") && !lower.includes("right");
+      const isRightSide = lower.includes("right");
+      if (isLeftSide || isRightSide) {
+        const group = getPanelGroup(pos);
+        const peers = panels.filter(
+          (p) =>
+            getPanelGroup(p.position) === group &&
+            !isHoodieTrimPanel(p.position) &&
+            !isHoodiePocketPanel(p.position),
+        );
+        if (peers.length === 2) {
+          // buildCompositeLayout sorts so that "right_*" is the visually-left
+          // (first) slot for front/hood views, and "left_*" is the visually-right
+          // (second) slot. Mirror that here so the print panel seam side matches
+          // what the preview shows.
+          const isFirstVisualSlot =
+            group === "back" ? isLeftSide : isRightSide;
+          const centerX = isFirstVisualSlot ? width : 0;
+          return { x: centerX - tileW / 2, y: yAnchor };
+        }
+      }
+    }
+
+    return { x: width / 2 - tileW / 2, y: yAnchor };
+  };
 
   if (productKind === "hoodie" && isHoodiePocketPanel(position)) {
     const source = getHoodiePocketTransformSourcePosition(position, panels);
     const sourcePanel = source ? panels.find((panel) => panel.position === source) : null;
     if (sourcePanel) {
-      return anchorFor(
+      return computeAnchor(
         sourcePanel.position,
         Math.max(1, Math.round(sourcePanel.width * scaleRatio)),
         Math.max(1, Math.round(sourcePanel.height * scaleRatio)),
@@ -1376,7 +1439,7 @@ function getExportPatternAnchorForPanel(
     }
   }
 
-  return anchorFor(position, outW, outH);
+  return computeAnchor(position, outW, outH);
 }
 
 // ── Snap helper ───────────────────────────────────────────────────────────────
@@ -2060,9 +2123,12 @@ export function PatternCustomizer({
           const tileInchesEff = Math.max(MIN_TILE_INCHES, Math.min(6, activePatternTileInches * (t.scalePct / 100)));
           const tileWScreen = Math.max(4, tileInchesEff * pxPerInch);
           const tileHScreen = tileWScreen * ((img.naturalHeight || img.height) / Math.max(1, img.naturalWidth || img.width));
-          const offsetScreenPx = (activePatternOffsetX / 100) * tileWScreen;
-          const baseAnchor = getPreviewPatternAnchorForSlot(slot, slots, productKind, tileWScreen, tileHScreen);
-          const tileAnchorX = baseAnchor.x + t.dxPx + offsetScreenPx;
+          // Legacy `activePatternOffsetX` (the old "Pattern alignment" slider) is intentionally
+          // ignored here — saved values from earlier designs (e.g. front +3, hood −23) were
+          // silently shifting the pattern on top of the new per-panel transform model.
+          void activePatternOffsetX;
+          const baseAnchor = getPreviewPatternAnchorForSlot(slot, slots, productKind, tileWScreen, tileHScreen, syncSidesMode);
+          const tileAnchorX = baseAnchor.x + t.dxPx;
           const tileAnchorY = baseAnchor.y + t.dyPx;
           const renderArtwork = shouldRenderPanelArtworkForMode(renderKey, "pattern");
 
@@ -2737,7 +2803,10 @@ export function PatternCustomizer({
               const pxPerInch = PRINT_DPI * renderScale;
               const tileWPrint = Math.max(4, tileInchesEff * pxPerInch);
               const tileHPrint = tileWPrint * ((motifImage.naturalHeight || motifImage.height) / Math.max(1, motifImage.naturalWidth || motifImage.width));
-              const offsetPrintPx = (panelPatternSpec.offsetX / 100) * tileWPrint;
+              // Legacy `panelPatternSpec.offsetX` (old "Pattern alignment" slider) is intentionally
+              // ignored — see preview render note. Saved values from older designs were silently
+              // shifting Printify output on top of the new per-panel transform model.
+              void panelPatternSpec.offsetX;
               const baseAnchor = getExportPatternAnchorForPanel(
                 p.position,
                 outW,
@@ -2747,6 +2816,7 @@ export function PatternCustomizer({
                 productKind,
                 panelPositions,
                 scaleRatio,
+                syncSidesMode,
               );
               const dxPrintPx = nudgeHoodieSeamExportDx(
                 productKind,
@@ -2754,7 +2824,7 @@ export function PatternCustomizer({
                 t.dxPx * renderScale,
                 getSeamBleedForPanel(p.position),
               );
-              const anchorX = baseAnchor.x + dxPrintPx + offsetPrintPx;
+              const anchorX = baseAnchor.x + dxPrintPx;
               const anchorY = baseAnchor.y + t.dyPx * renderScale;
               if (shouldRenderPanelArtworkForMode(renderKey, "pattern")) {
                 drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, anchorX, anchorY);
