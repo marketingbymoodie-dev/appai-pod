@@ -1339,47 +1339,31 @@ function drawTiledMotifInRect(
 /**
  * Compute base tile anchor for a preview slot.
  *
- * Default: pattern is centred on each individual panel.
- *
- * When `syncSides` is on AND the row is a paired hoodie L/R seam row
- * (front_right + front_left, or right_hood + left_hood), the anchor is
- * shifted to the seam edge so the same tile straddles the seam in both
- * panels — i.e. a continuous pattern across the seam.
+ * Pattern is always centred on each individual panel — the same positioning
+ * Mirror mode uses (Mirror mode just additionally flips the artwork on the
+ * target panel). Sync Sides links the per-panel transforms across the pair
+ * but does NOT change this base anchor or flip the artwork; both panels
+ * simply share the same dx/dy/scale.
  */
 function getPreviewPatternAnchorForSlot(
   slot: PanelSlot,
-  slots: PanelSlot[],
-  productKind: AopLayoutKind,
+  _slots: PanelSlot[],
+  _productKind: AopLayoutKind,
   tileW: number,
   tileH: number,
-  syncSides: boolean,
 ): { x: number; y: number } {
-  const yAnchor = slot.h / 2 - tileH / 2;
-
-  if (syncSides && productKind === "hoodie" && slots.length === 2) {
-    const sorted = [...slots].sort((a, b) => a.x - b.x);
-    const positions = sorted.map((s) => s.position.toLowerCase());
-    const hasLeft = positions.some((p) => p.includes("left") && !p.includes("right"));
-    const hasRight = positions.some((p) => p.includes("right"));
-    if (hasLeft && hasRight) {
-      const isFirstVisualSlot = slot.position === sorted[0].position;
-      const centerX = isFirstVisualSlot ? slot.w : 0;
-      return { x: centerX - tileW / 2, y: yAnchor };
-    }
-  }
-
-  return { x: slot.w / 2 - tileW / 2, y: yAnchor };
+  return {
+    x: slot.w / 2 - tileW / 2,
+    y: slot.h / 2 - tileH / 2,
+  };
 }
 
 /**
  * Compute base tile anchor for an export panel.
  *
- * Default: panel-centred. When `syncSides` is on for a paired hoodie L/R
- * seam panel, anchor at the seam edge (matches the preview helper above so
- * Printify renders look identical to the customiser).
- *
- * Pocket panels still inherit the source panel's anchor (so the front pocket
- * stays consistent with the front panels).
+ * Always panel-centred (matches the preview helper above). Pocket panels
+ * inherit the source panel's anchor so the front pocket stays consistent
+ * with the front panels.
  */
 function getExportPatternAnchorForPanel(
   position: string,
@@ -1390,48 +1374,17 @@ function getExportPatternAnchorForPanel(
   productKind: AopLayoutKind,
   panels: Array<{ position: string; width: number; height: number }>,
   scaleRatio: number,
-  syncSides: boolean,
 ): { x: number; y: number } {
-  const computeAnchor = (
-    pos: string,
-    width: number,
-    height: number,
-  ): { x: number; y: number } => {
-    const yAnchor = height / 2 - tileH / 2;
-
-    if (syncSides && productKind === "hoodie") {
-      const lower = pos.toLowerCase();
-      const isLeftSide = lower.includes("left") && !lower.includes("right");
-      const isRightSide = lower.includes("right");
-      if (isLeftSide || isRightSide) {
-        const group = getPanelGroup(pos);
-        const peers = panels.filter(
-          (p) =>
-            getPanelGroup(p.position) === group &&
-            !isHoodieTrimPanel(p.position) &&
-            !isHoodiePocketPanel(p.position),
-        );
-        if (peers.length === 2) {
-          // buildCompositeLayout sorts so that "right_*" is the visually-left
-          // (first) slot for front/hood views, and "left_*" is the visually-right
-          // (second) slot. Mirror that here so the print panel seam side matches
-          // what the preview shows.
-          const isFirstVisualSlot =
-            group === "back" ? isLeftSide : isRightSide;
-          const centerX = isFirstVisualSlot ? width : 0;
-          return { x: centerX - tileW / 2, y: yAnchor };
-        }
-      }
-    }
-
-    return { x: width / 2 - tileW / 2, y: yAnchor };
-  };
+  const anchorFor = (_pos: string, width: number, height: number): { x: number; y: number } => ({
+    x: width / 2 - tileW / 2,
+    y: height / 2 - tileH / 2,
+  });
 
   if (productKind === "hoodie" && isHoodiePocketPanel(position)) {
     const source = getHoodiePocketTransformSourcePosition(position, panels);
     const sourcePanel = source ? panels.find((panel) => panel.position === source) : null;
     if (sourcePanel) {
-      return computeAnchor(
+      return anchorFor(
         sourcePanel.position,
         Math.max(1, Math.round(sourcePanel.width * scaleRatio)),
         Math.max(1, Math.round(sourcePanel.height * scaleRatio)),
@@ -1439,7 +1392,7 @@ function getExportPatternAnchorForPanel(
     }
   }
 
-  return computeAnchor(position, outW, outH);
+  return anchorFor(position, outW, outH);
 }
 
 // ── Snap helper ───────────────────────────────────────────────────────────────
@@ -2127,7 +2080,7 @@ export function PatternCustomizer({
           // ignored here — saved values from earlier designs (e.g. front +3, hood −23) were
           // silently shifting the pattern on top of the new per-panel transform model.
           void activePatternOffsetX;
-          const baseAnchor = getPreviewPatternAnchorForSlot(slot, slots, productKind, tileWScreen, tileHScreen, syncSidesMode);
+          const baseAnchor = getPreviewPatternAnchorForSlot(slot, slots, productKind, tileWScreen, tileHScreen);
           const tileAnchorX = baseAnchor.x + t.dxPx;
           const tileAnchorY = baseAnchor.y + t.dyPx;
           const renderArtwork = shouldRenderPanelArtworkForMode(renderKey, "pattern");
@@ -2816,7 +2769,6 @@ export function PatternCustomizer({
                 productKind,
                 panelPositions,
                 scaleRatio,
-                syncSidesMode,
               );
               const dxPrintPx = nudgeHoodieSeamExportDx(
                 productKind,
