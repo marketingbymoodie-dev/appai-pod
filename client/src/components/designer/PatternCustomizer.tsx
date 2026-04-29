@@ -1338,35 +1338,14 @@ function drawTiledMotifInRect(
 
 function getPreviewPatternAnchorForSlot(
   slot: PanelSlot,
-  slots: PanelSlot[],
-  productKind: AopLayoutKind,
+  _slots: PanelSlot[],
+  _productKind: AopLayoutKind,
   tileW: number,
   tileH: number,
 ): { x: number; y: number } {
-  const centerY = Math.max(...slots.map((s) => s.y + s.h), slot.y + slot.h) / 2;
-  let centerX = slot.x + slot.w / 2;
-
-  if (productKind === "hoodie") {
-    const hasTwoSidedRow =
-      slots.length === 2 &&
-      slots.some((s) => s.position.toLowerCase().includes("left") && !s.position.toLowerCase().includes("right")) &&
-      slots.some((s) => s.position.toLowerCase().includes("right"));
-    if (hasTwoSidedRow) {
-      const sorted = [...slots].sort((a, b) => a.x - b.x);
-      const isFirstVisualSlot = slot.position === sorted[0].position;
-      // Anchor to the actual panel seam edge, not the preview gap midpoint, so both sides
-      // start with equal pattern distance from the join.
-      centerX = isFirstVisualSlot ? slot.x + slot.w : slot.x;
-    } else {
-      const minX = Math.min(...slots.map((s) => s.x));
-      const maxX = Math.max(...slots.map((s) => s.x + s.w));
-      centerX = (minX + maxX) / 2;
-    }
-  }
-
   return {
-    x: centerX - slot.x - tileW / 2,
-    y: centerY - slot.y - tileH / 2,
+    x: slot.w / 2 - tileW / 2,
+    y: slot.h / 2 - tileH / 2,
   };
 }
 
@@ -1380,25 +1359,10 @@ function getExportPatternAnchorForPanel(
   panels: Array<{ position: string; width: number; height: number }>,
   scaleRatio: number,
 ): { x: number; y: number } {
-  const anchorFor = (pos: string, width: number, height: number): { x: number; y: number } => {
-    if (productKind === "hoodie") {
-      const group = getPanelGroup(pos);
-      const lower = pos.toLowerCase();
-      if ((group === "front" || group === "hood") && lower.includes("right")) {
-        return { x: width - tileW / 2, y: height / 2 - tileH / 2 };
-      }
-      if ((group === "front" || group === "hood") && lower.includes("left") && !lower.includes("right")) {
-        return { x: -tileW / 2, y: height / 2 - tileH / 2 };
-      }
-      if (group === "back" && lower.includes("left") && !lower.includes("right")) {
-        return { x: width - tileW / 2, y: height / 2 - tileH / 2 };
-      }
-      if (group === "back" && lower.includes("right")) {
-        return { x: -tileW / 2, y: height / 2 - tileH / 2 };
-      }
-    }
-    return { x: width / 2 - tileW / 2, y: height / 2 - tileH / 2 };
-  };
+  const anchorFor = (_pos: string, width: number, height: number): { x: number; y: number } => ({
+    x: width / 2 - tileW / 2,
+    y: height / 2 - tileH / 2,
+  });
 
   if (productKind === "hoodie" && isHoodiePocketPanel(position)) {
     const source = getHoodiePocketTransformSourcePosition(position, panels);
@@ -1576,13 +1540,14 @@ export function PatternCustomizer({
 
   const shouldRenderPanelArtworkForMode = useCallback(
     (position: string, exportMode: EditorMode): boolean => {
+      if (exportMode === "pattern" && productKind === "hoodie") {
+        if (applyAllover) return true;
+        if (!shouldRenderPanelArtwork(position)) return false;
+        return isPrimaryHoodieArtworkPanel(position) || isHoodiePocketPanel(position);
+      }
       if (!shouldRenderPanelArtwork(position)) return false;
       if (exportMode === "place" && productKind === "hoodie" && isHoodiePocketPanel(position)) {
         return false;
-      }
-      if (exportMode === "pattern" && productKind === "hoodie") {
-        if (applyAllover) return true;
-        return isPrimaryHoodieArtworkPanel(position) || isHoodiePocketPanel(position);
       }
       return shouldRenderPanelArtwork(position);
     },
