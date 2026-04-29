@@ -1336,6 +1336,82 @@ function drawTiledMotifInRect(
   }
 }
 
+function getPreviewPatternAnchorForSlot(
+  slot: PanelSlot,
+  slots: PanelSlot[],
+  productKind: AopLayoutKind,
+  tileW: number,
+  tileH: number,
+): { x: number; y: number } {
+  const centerY = Math.max(...slots.map((s) => s.y + s.h), slot.y + slot.h) / 2;
+  let centerX = slot.x + slot.w / 2;
+
+  if (productKind === "hoodie") {
+    const hasTwoSidedRow =
+      slots.length === 2 &&
+      slots.some((s) => s.position.toLowerCase().includes("left") && !s.position.toLowerCase().includes("right")) &&
+      slots.some((s) => s.position.toLowerCase().includes("right"));
+    if (hasTwoSidedRow) {
+      const sorted = [...slots].sort((a, b) => a.x - b.x);
+      centerX = (sorted[0].x + sorted[0].w + sorted[1].x) / 2;
+    } else {
+      const minX = Math.min(...slots.map((s) => s.x));
+      const maxX = Math.max(...slots.map((s) => s.x + s.w));
+      centerX = (minX + maxX) / 2;
+    }
+  }
+
+  return {
+    x: centerX - slot.x - tileW / 2,
+    y: centerY - slot.y - tileH / 2,
+  };
+}
+
+function getExportPatternAnchorForPanel(
+  position: string,
+  outW: number,
+  outH: number,
+  tileW: number,
+  tileH: number,
+  productKind: AopLayoutKind,
+  panels: Array<{ position: string; width: number; height: number }>,
+  scaleRatio: number,
+): { x: number; y: number } {
+  const anchorFor = (pos: string, width: number, height: number): { x: number; y: number } => {
+    if (productKind === "hoodie") {
+      const group = getPanelGroup(pos);
+      const lower = pos.toLowerCase();
+      if ((group === "front" || group === "hood") && lower.includes("right")) {
+        return { x: width - tileW / 2, y: height / 2 - tileH / 2 };
+      }
+      if ((group === "front" || group === "hood") && lower.includes("left") && !lower.includes("right")) {
+        return { x: -tileW / 2, y: height / 2 - tileH / 2 };
+      }
+      if (group === "back" && lower.includes("left") && !lower.includes("right")) {
+        return { x: width - tileW / 2, y: height / 2 - tileH / 2 };
+      }
+      if (group === "back" && lower.includes("right")) {
+        return { x: -tileW / 2, y: height / 2 - tileH / 2 };
+      }
+    }
+    return { x: width / 2 - tileW / 2, y: height / 2 - tileH / 2 };
+  };
+
+  if (productKind === "hoodie" && isHoodiePocketPanel(position)) {
+    const source = getHoodiePocketTransformSourcePosition(position, panels);
+    const sourcePanel = source ? panels.find((panel) => panel.position === source) : null;
+    if (sourcePanel) {
+      return anchorFor(
+        sourcePanel.position,
+        Math.max(1, Math.round(sourcePanel.width * scaleRatio)),
+        Math.max(1, Math.round(sourcePanel.height * scaleRatio)),
+      );
+    }
+  }
+
+  return anchorFor(position, outW, outH);
+}
+
 // ── Snap helper ───────────────────────────────────────────────────────────────
 
 /**
@@ -2014,9 +2090,12 @@ export function PatternCustomizer({
           const flipSlot  = shouldFlipLeggingsLegSlot(productKind, slot.position);
           const { t, mirrorX, renderKey } = resolvePatternTransform(slot.position);
           const tileInchesEff = Math.max(MIN_TILE_INCHES, Math.min(6, activePatternTileInches * (t.scalePct / 100)));
-          const offsetScreenPx = (activePatternOffsetX / 100) * Math.max(4, tileInchesEff * pxPerInch);
-          const tileAnchorX = t.dxPx + offsetScreenPx;
-          const tileAnchorY = t.dyPx;
+          const tileWScreen = Math.max(4, tileInchesEff * pxPerInch);
+          const tileHScreen = tileWScreen * ((img.naturalHeight || img.height) / Math.max(1, img.naturalWidth || img.width));
+          const offsetScreenPx = (activePatternOffsetX / 100) * tileWScreen;
+          const baseAnchor = getPreviewPatternAnchorForSlot(slot, slots, productKind, tileWScreen, tileHScreen);
+          const tileAnchorX = baseAnchor.x + t.dxPx + offsetScreenPx;
+          const tileAnchorY = baseAnchor.y + t.dyPx;
           const renderArtwork = shouldRenderPanelArtworkForMode(renderKey, "pattern");
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
@@ -2688,9 +2767,21 @@ export function PatternCustomizer({
               const { t, mirrorX, renderKey } = resolveExportTransform(p.position);
               const tileInchesEff = Math.max(MIN_TILE_INCHES, Math.min(6, panelPatternSpec.tileInches * (t.scalePct / 100)));
               const pxPerInch = PRINT_DPI * renderScale;
-              const offsetPrintPx = (panelPatternSpec.offsetX / 100) * Math.max(4, tileInchesEff * pxPerInch);
-              const anchorX = t.dxPx * renderScale + offsetPrintPx;
-              const anchorY = t.dyPx * renderScale;
+              const tileWPrint = Math.max(4, tileInchesEff * pxPerInch);
+              const tileHPrint = tileWPrint * ((motifImage.naturalHeight || motifImage.height) / Math.max(1, motifImage.naturalWidth || motifImage.width));
+              const offsetPrintPx = (panelPatternSpec.offsetX / 100) * tileWPrint;
+              const baseAnchor = getExportPatternAnchorForPanel(
+                p.position,
+                outW,
+                outH,
+                tileWPrint,
+                tileHPrint,
+                productKind,
+                panelPositions,
+                scaleRatio,
+              );
+              const anchorX = baseAnchor.x + t.dxPx * renderScale + offsetPrintPx;
+              const anchorY = baseAnchor.y + t.dyPx * renderScale;
               if (shouldRenderPanelArtworkForMode(renderKey, "pattern")) {
                 drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, anchorX, anchorY);
               }
