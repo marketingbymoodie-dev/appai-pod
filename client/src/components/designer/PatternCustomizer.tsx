@@ -1497,6 +1497,7 @@ export function PatternCustomizer({
 
   const shouldRenderPanelArtworkForMode = useCallback(
     (position: string, exportMode: EditorMode): boolean => {
+      if (!shouldRenderPanelArtwork(position)) return false;
       if (exportMode === "place" && productKind === "hoodie" && isHoodiePocketPanel(position)) {
         return false;
       }
@@ -1537,6 +1538,14 @@ export function PatternCustomizer({
     (value: number) => {
       if (productKind === "hoodie") {
         setHoodiePatternSpecs((prev) => {
+          if (applyAllover) {
+            const next: Partial<Record<HoodiePanelView, HoodiePatternSpec>> = { ...prev };
+            for (const view of ["front", "back", "hood"] as const) {
+              const base = prev[view] || prev.front || fallbackPatternSpec;
+              next[view] = { ...base, tileInches: value };
+            }
+            return next;
+          }
           const base = prev[activeView] || prev.front || fallbackPatternSpec;
           return { ...prev, [activeView]: { ...base, tileInches: value } };
         });
@@ -1544,7 +1553,7 @@ export function PatternCustomizer({
         setTileInches(value);
       }
     },
-    [activeView, fallbackPatternSpec, productKind],
+    [activeView, applyAllover, fallbackPatternSpec, productKind],
   );
 
   const setActivePatternOffsetX = useCallback(
@@ -1964,39 +1973,35 @@ export function PatternCustomizer({
         const pxPerInch = scl * PRINT_DPI;
         const safeInset = Math.max(3, SAFE_AREA_INCHES * PRINT_DPI * scl);
         const fill = bgColor && bgColor !== "transparent" ? bgColor : "#f4f4f5";
-        // Convert patternOffsetX (% of tile width) to screen pixels
-        const tileWScreen = Math.max(4, activePatternTileInches * pxPerInch);
-        const offsetScreenPx = (activePatternOffsetX / 100) * tileWScreen;
+        const alloverScaleKey = canonicalTransformPanelId(activePanel, syncSidesMode, panelPositions, productKind);
+        const alloverScalePct = alloverScaleKey ? (perPanelTransforms[alloverScaleKey]?.scalePct ?? 100) : 100;
 
-        // Find right leg slot for sync/mirror calculations (leggings only)
-        const rightLegSlot = (syncSidesMode || mirrorMode)
-          ? slots.find(s => isLeggingsLegSlot(s.position) && !isLeftLegPanelPosition(s.position))
-          : undefined;
-        const rightSx = rightLegSlot ? offX + rightLegSlot.x * scl : 0;
-
-        // Pre-render right leg tile pattern to an offscreen buffer (mirror mode only).
-        // The left leg will draw this buffer flipped horizontally so the preview matches export.
-        let rightLegTileBuffer: HTMLCanvasElement | null = null;
-        if (mirrorMode && rightLegSlot) {
-          const rsx = offX + rightLegSlot.x * scl;
-          const rsy = offY + rightLegSlot.y * scl;
-          const rsw = rightLegSlot.w * scl;
-          const rsh = rightLegSlot.h * scl;
-          const riw = Math.max(1, Math.round(rsw));
-          const rih = Math.max(1, Math.round(rsh));
-          const buf = document.createElement("canvas");
-          buf.width = riw;
-          buf.height = rih;
-          const bCtx = buf.getContext("2d")!;
-          bCtx.fillStyle = fill;
-          bCtx.fillRect(0, 0, riw, rih);
-          bCtx.save();
-          bCtx.translate(-rsx, -rsy);
-          // Apply horizontal offset so the buffer matches the right leg's shifted anchor
-          drawTiledMotifInRect(bCtx, img, rsx, rsy, rsw, rsh, activePatternTileInches, patternType, pxPerInch, rsx + offsetScreenPx, offY);
-          bCtx.restore();
-          rightLegTileBuffer = buf;
-        }
+        const resolvePatternTransform = (position: string): { t: PanelTransform; mirrorX: boolean; renderKey: string } => {
+          const placeKey =
+            productKind === "hoodie" && isHoodiePocketPanel(position)
+              ? (getHoodiePocketTransformSourcePosition(position, panelPositions) || position)
+              : position;
+          const baseT = perPanelTransforms[placeKey] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+          const mirrorTarget = mirrorMode && isMirrorTarget(placeKey, slots);
+          const sourcePos = mirrorTarget ? getMirrorSource(placeKey, slots) : null;
+          const syncTarget =
+            !sourcePos && syncSidesMode
+              ? canonicalTransformPanelId(placeKey, true, panelPositions, productKind)
+              : null;
+          const syncT = syncTarget ? (perPanelTransforms[syncTarget] || baseT) : baseT;
+          const isSyncedLeftPanel =
+            !!syncTarget &&
+            syncTarget !== placeKey &&
+            placeKey.toLowerCase().includes("left");
+          const syncedT = isSyncedLeftPanel ? { ...syncT, dxPx: -syncT.dxPx } : syncT;
+          const sourceT = sourcePos ? (perPanelTransforms[sourcePos] || baseT) : null;
+          const rawT = sourceT || (syncTarget ? syncedT : baseT);
+          return {
+            t: { ...rawT, scalePct: applyAllover ? alloverScalePct : rawT.scalePct },
+            mirrorX: !!sourcePos,
+            renderKey: sourcePos || placeKey,
+          };
+        };
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
@@ -2007,49 +2012,43 @@ export function PatternCustomizer({
           const safeImg = getSafeAreaImageForPosition(svgImages, slot.position);
 
           const flipSlot  = shouldFlipLeggingsLegSlot(productKind, slot.position);
-          const isLeftLeg = isLeftLegPanelPosition(slot.position);
-          const isLegSlot = isLeggingsLegSlot(slot.position);
-
-          // Decide whether to use a shared tile anchor (sync) or mirror flip (mirror)
-          let tileAnchorX: number | undefined;
-          let tileAnchorY: number | undefined;
-          const useMirrorLeft = mirrorMode  && isLeftLeg && isLegSlot && !!rightLegTileBuffer;
-          const useSyncLeft   = syncSidesMode && isLeftLeg && isLegSlot && !!rightLegSlot;
-
-          if (productKind === "hoodie") {
-            // One grid origin in canvas space so the repeat matches across the centre seam and onto pockets.
-            tileAnchorX = offX + offsetScreenPx;
-            tileAnchorY = offY;
-          } else if (!isLeftLeg && isLegSlot && (syncSidesMode || mirrorMode) && rightLegSlot) {
-            // Right leg: anchor at its own left edge so phase is deterministic
-            tileAnchorX = rightSx + offsetScreenPx;
-            tileAnchorY = offY;
-          } else if (useSyncLeft && rightLegSlot) {
-            // Left leg sync: offset tile anchor by the **layout** gap between right and left leg slots
-            // (includes seam allowance when `seamBleedPx` widens the preview-only leg pair gap).
-            const leftLegSlot = slots.find(
-              s => isLeggingsLegSlot(s.position) && isLeftLegPanelPosition(s.position),
-            );
-            const seamLayoutGapPx = leftLegSlot
-              ? leftLegSlot.x - rightLegSlot.x - rightLegSlot.w
-              : LEGGINGS_GAP;
-            tileAnchorX = rightSx - seamLayoutGapPx * scl + offsetScreenPx;
-            tileAnchorY = offY;
-          }
+          const { t, mirrorX, renderKey } = resolvePatternTransform(slot.position);
+          const tileInchesEff = Math.max(MIN_TILE_INCHES, Math.min(6, activePatternTileInches * (t.scalePct / 100)));
+          const offsetScreenPx = (activePatternOffsetX / 100) * Math.max(4, tileInchesEff * pxPerInch);
+          const tileAnchorX = t.dxPx + offsetScreenPx;
+          const tileAnchorY = t.dyPx;
+          const renderArtwork = shouldRenderPanelArtworkForMode(renderKey, "pattern");
 
           drawMaskedSlot(ctx, svgImg, sx, sy, sw, sh, (offCtx) => {
             offCtx.fillStyle = fill;
             offCtx.fillRect(0, 0, sw, sh);
-            if (useMirrorLeft && rightLegTileBuffer) {
-              // Draw rightLegTileBuffer flipped horizontally into this left leg off-canvas.
+            if (!renderArtwork) return;
+            if (mirrorX) {
+              const buf = document.createElement("canvas");
+              buf.width = Math.max(1, Math.round(sw));
+              buf.height = Math.max(1, Math.round(sh));
+              const bCtx = buf.getContext("2d")!;
+              bCtx.fillStyle = fill;
+              bCtx.fillRect(0, 0, buf.width, buf.height);
+              drawTiledMotifInRect(
+                bCtx,
+                img,
+                0,
+                0,
+                sw,
+                sh,
+                tileInchesEff,
+                patternType,
+                pxPerInch,
+                tileAnchorX,
+                tileAnchorY,
+              );
               offCtx.save();
               offCtx.translate(sw, 0);
               offCtx.scale(-1, 1);
-              offCtx.drawImage(rightLegTileBuffer, 0, 0, sw, sh);
+              offCtx.drawImage(buf, 0, 0, sw, sh);
               offCtx.restore();
             } else {
-              // Apply offset to any panel that didn't get an explicit anchor above
-              const effectiveAnchorX = tileAnchorX ?? (sx + offsetScreenPx);
               drawTiledMotifInRect(
                 offCtx,
                 img,
@@ -2057,15 +2056,17 @@ export function PatternCustomizer({
                 0,
                 sw,
                 sh,
-                activePatternTileInches,
+                tileInchesEff,
                 patternType,
                 pxPerInch,
-                effectiveAnchorX - sx,
-                tileAnchorY !== undefined ? tileAnchorY - sy : undefined,
+                tileAnchorX,
+                tileAnchorY,
               );
             }
           }, flipSlot, productKind === "hoodie", true);
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, productKind === "hoodie");
+          drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
+          if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
           if (flipSlot) {
             const isRightLeg = !isLeftLegPanelPosition(slot.position);
             drawLeggingLegLabels(ctx, sx, sy, sw, sh, isRightLeg);
@@ -2082,7 +2083,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, activePatternTileInches, patternType, mirrorMode, syncSidesMode, activePatternOffsetX, seamBleedPx],
+    [productKind, panelPositions, activeView, svgImages, bgColor, activePatternTileInches, patternType, mirrorMode, syncSidesMode, activePatternOffsetX, seamBleedPx, activePanel, perPanelTransforms, applyAllover, shouldRenderPanelArtworkForMode],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -2211,7 +2212,7 @@ export function PatternCustomizer({
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      if (mode !== "place") return;
+      if (mode !== "place" && mode !== "pattern") return;
       const hit =
         productKind === "hoodie"
           ? hitTestHoodiePlacePanel(e.clientX, e.clientY, canvas, activeView, panelPositions, svgImages)
@@ -2249,7 +2250,7 @@ export function PatternCustomizer({
     const onMouseUp = () => { dragRef.current.active = false; };
 
     const onTouchStart = (e: TouchEvent) => {
-      if (mode !== "place" || e.touches.length !== 1) return;
+      if ((mode !== "place" && mode !== "pattern") || e.touches.length !== 1) return;
       const touch = e.touches[0];
       const hit =
         productKind === "hoodie"
@@ -2311,6 +2312,48 @@ export function PatternCustomizer({
       }));
     },
     []
+  );
+
+  const updatePatternPanelScale = useCallback(
+    (position: string, scalePct: number) => {
+      if (mode === "pattern" && applyAllover) {
+        setPerPanelTransforms((prev) => {
+          const next: Record<string, PanelTransform> = { ...prev };
+          for (const panel of panelPositions) {
+            const key =
+              productKind === "hoodie" && isHoodiePocketPanel(panel.position)
+                ? (getHoodiePocketTransformSourcePosition(panel.position, panelPositions) || panel.position)
+                : panel.position;
+            next[key] = { ...(next[key] || { dxPx: 0, dyPx: 0, scalePct: 100 }), scalePct };
+          }
+          return next;
+        });
+        return;
+      }
+      updatePanelTransform(position, { scalePct });
+    },
+    [applyAllover, mode, panelPositions, productKind, updatePanelTransform],
+  );
+
+  const resetPatternPanelTransform = useCallback(
+    (position: string) => {
+      if (mode === "pattern" && applyAllover) {
+        setPerPanelTransforms((prev) => {
+          const next: Record<string, PanelTransform> = { ...prev };
+          for (const panel of panelPositions) {
+            const key =
+              productKind === "hoodie" && isHoodiePocketPanel(panel.position)
+                ? (getHoodiePocketTransformSourcePosition(panel.position, panelPositions) || panel.position)
+                : panel.position;
+            next[key] = { dxPx: 0, dyPx: 0, scalePct: 100 };
+          }
+          return next;
+        });
+        return;
+      }
+      updatePanelTransform(position, { dxPx: 0, dyPx: 0, scalePct: 100 });
+    },
+    [applyAllover, mode, panelPositions, productKind, updatePanelTransform],
   );
 
   // Notify parent of placement changes
@@ -2512,6 +2555,38 @@ export function PatternCustomizer({
           const buildPatternAopPanelUrls = async (pixelCap: number): Promise<{ position: string; dataUrl: string }[]> => {
             const urls: { position: string; dataUrl: string }[] = [];
             const patternCompositeCovered = new Set<string>();
+            const alloverScaleKey = canonicalTransformPanelId(activePanel, syncSidesMode, panelPositions, productKind);
+            const alloverScalePct = alloverScaleKey ? (perPanelTransforms[alloverScaleKey]?.scalePct ?? 100) : 100;
+            const resolveExportTransform = (position: string): { t: PanelTransform; mirrorX: boolean; renderKey: string } => {
+              const placeKey =
+                productKind === "hoodie" && isHoodiePocketPanel(position)
+                  ? (getHoodiePocketTransformSourcePosition(position, panelPositions) || position)
+                  : position;
+              const baseT = perPanelTransforms[placeKey] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+              const groups =
+                productKind === "hoodie"
+                  ? buildCompositeLayout(getPanelGroup(position), panelPositions, svgImages).slots
+                  : buildLinearPanelsLayout(panelPositions, 0).slots;
+              const mirrorTarget = mirrorMode && isMirrorTarget(placeKey, groups);
+              const sourcePos = mirrorTarget ? getMirrorSource(placeKey, groups) : null;
+              const syncTarget =
+                !sourcePos && syncSidesMode
+                  ? canonicalTransformPanelId(placeKey, true, panelPositions, productKind)
+                  : null;
+              const syncT = syncTarget ? (perPanelTransforms[syncTarget] || baseT) : baseT;
+              const isSyncedLeftPanel =
+                !!syncTarget &&
+                syncTarget !== placeKey &&
+                placeKey.toLowerCase().includes("left");
+              const syncedT = isSyncedLeftPanel ? { ...syncT, dxPx: -syncT.dxPx } : syncT;
+              const sourceT = sourcePos ? (perPanelTransforms[sourcePos] || baseT) : null;
+              const rawT = sourceT || (syncTarget ? syncedT : baseT);
+              return {
+                t: { ...rawT, scalePct: applyAllover ? alloverScalePct : rawT.scalePct },
+                mirrorX: !!sourcePos,
+                renderKey: sourcePos || placeKey,
+              };
+            };
 
             if (productKind === "leggings" && (syncSidesMode || mirrorMode)) {
               const rightDef = panelPositions.find(p =>
@@ -2610,9 +2685,26 @@ export function PatternCustomizer({
                 ctx.fillRect(0, 0, outW, outH);
               }
               const panelPatternSpec = getPatternSpecForPanel(p.position);
-              drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, panelPatternSpec.tileInches, patternType, PRINT_DPI * renderScale,
-                (panelPatternSpec.offsetX / 100) * Math.max(4, panelPatternSpec.tileInches * PRINT_DPI * renderScale), 0);
+              const { t, mirrorX, renderKey } = resolveExportTransform(p.position);
+              const tileInchesEff = Math.max(MIN_TILE_INCHES, Math.min(6, panelPatternSpec.tileInches * (t.scalePct / 100)));
+              const pxPerInch = PRINT_DPI * renderScale;
+              const offsetPrintPx = (panelPatternSpec.offsetX / 100) * Math.max(4, tileInchesEff * pxPerInch);
+              const anchorX = t.dxPx * renderScale + offsetPrintPx;
+              const anchorY = t.dyPx * renderScale;
+              if (shouldRenderPanelArtworkForMode(renderKey, "pattern")) {
+                drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, anchorX, anchorY);
+              }
               let outForUpload: HTMLCanvasElement = canvas;
+              if (mirrorX) {
+                const mirrored = document.createElement("canvas");
+                mirrored.width = outW;
+                mirrored.height = outH;
+                const mx = mirrored.getContext("2d")!;
+                mx.translate(outW, 0);
+                mx.scale(-1, 1);
+                mx.drawImage(canvas, 0, 0);
+                outForUpload = mirrored;
+              }
               if (shouldFlipLeggingsLegSlot(productKind, p.position)) {
                 const flipped = document.createElement("canvas");
                 flipped.width = outW;
@@ -3047,6 +3139,10 @@ export function PatternCustomizer({
   const activePanelT = transformEditPanelId
     ? (perPanelTransforms[transformEditPanelId] || { dxPx: 0, dyPx: 0, scalePct: 100 })
     : null;
+  const patternScalePct =
+    mode === "pattern" && applyAllover
+      ? activePanelT?.scalePct ?? 100
+      : activePanelT?.scalePct ?? 100;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -3074,7 +3170,7 @@ export function PatternCustomizer({
               ref={canvasRef}
               className="absolute inset-0 w-full h-full touch-none"
               style={{
-                cursor: mode === "place" ? "grab" : "default",
+                cursor: mode === "place" || mode === "pattern" ? "grab" : "default",
                 display: "block",
                 touchAction: "none",
               }}
@@ -3196,60 +3292,161 @@ export function PatternCustomizer({
                 />
               </div>
 
-              {panelPositions.length > 0 && (
-                <div>
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs">Pattern alignment</Label>
-                    {activePatternOffsetX !== 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setActivePatternOffsetX(0)}
-                        className="text-[10px] text-muted-foreground underline"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-                  <Slider
-                    value={[activePatternOffsetX]}
-                    onValueChange={v => setActivePatternOffsetX(v[0])}
-                    min={-50}
-                    max={50}
-                    step={1}
-                    className={sliderTrackClass}
+              {activePanel && (
+                <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                  <Label htmlFor="pattern-panel-artwork-enabled" className="text-xs cursor-pointer">
+                    Artwork enabled
+                  </Label>
+                  <Switch
+                    id="pattern-panel-artwork-enabled"
+                    checked={shouldRenderPanelArtwork(activePanel)}
+                    onCheckedChange={(v) =>
+                      setPanelRenderConfig((prev) => ({
+                        ...prev,
+                        [activePanel]: {
+                          ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                          enabled: v,
+                          mode: v ? "artwork" : "solid",
+                        },
+                      }))
+                    }
+                    className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
                   />
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    {activePatternOffsetX === 0 ? "Centred" : activePatternOffsetX > 0 ? `+${activePatternOffsetX}% right` : `${activePatternOffsetX}% left`}
-                  </p>
                 </div>
               )}
 
-              {/* Mirror / Sync Sides for leggings pattern mode */}
-              {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
-                <>
-                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
-                    <Label htmlFor="pat-mirror" className="text-xs cursor-pointer">
-                      Mirror paired panel
-                    </Label>
-                    <Switch
-                      id="pat-mirror"
-                      checked={mirrorMode}
-                      onCheckedChange={v => { setMirrorMode(v); if (v) setSyncSidesMode(false); }}
-                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
-                    />
+              {productKind === "hoodie" &&
+                (activeView === "front" || activeView === "hood") &&
+                buildCompositeLayout(activeView, panelPositions, svgImages).slots.length === 2 && (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                      <Label htmlFor="pattern-hoodie-sync-sides" className="text-xs cursor-pointer">
+                        Sync sides
+                      </Label>
+                      <Switch
+                        id="pattern-hoodie-sync-sides"
+                        checked={syncSidesMode}
+                        onCheckedChange={v => {
+                          setSyncSidesMode(v);
+                          if (v) setMirrorMode(false);
+                        }}
+                        className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                      <Label htmlFor="pattern-hoodie-mirror" className="text-xs cursor-pointer">
+                        Mirror
+                      </Label>
+                      <Switch
+                        id="pattern-hoodie-mirror"
+                        checked={mirrorMode}
+                        onCheckedChange={v => {
+                          setMirrorMode(v);
+                          if (v) setSyncSidesMode(false);
+                        }}
+                        className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                      />
+                    </div>
                   </div>
+                )}
+
+              {productKind !== "hoodie" && (
+                <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                  <Label htmlFor="pattern-aop-mirror" className="text-xs cursor-pointer">
+                    Mirror paired panel
+                  </Label>
+                  <Switch
+                    id="pattern-aop-mirror"
+                    checked={mirrorMode}
+                    onCheckedChange={v => {
+                      setMirrorMode(v);
+                      if (v) setSyncSidesMode(false);
+                    }}
+                    className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                  />
+                </div>
+              )}
+
+              {productKind === "leggings" &&
+                panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
                   <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
-                    <Label htmlFor="pat-sync-sides" className="text-xs cursor-pointer">
+                    <Label htmlFor="pattern-aop-sync-sides" className="text-xs cursor-pointer">
                       Sync sides
                     </Label>
                     <Switch
-                      id="pat-sync-sides"
+                      id="pattern-aop-sync-sides"
                       checked={syncSidesMode}
-                      onCheckedChange={v => { setSyncSidesMode(v); if (v) setMirrorMode(false); }}
+                      onCheckedChange={v => {
+                        setSyncSidesMode(v);
+                        if (v) setMirrorMode(false);
+                      }}
                       className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
                     />
                   </div>
-                </>
+                )}
+
+              {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
+                <div>
+                  <Label className="text-xs">
+                    Artwork scale: {patternScalePct}%
+                    {applyAllover ? " (all panels)" : ""}
+                  </Label>
+                  <Slider
+                    value={[patternScalePct]}
+                    onValueChange={v => updatePatternPanelScale(transformEditPanelId, v[0])}
+                    min={20}
+                    max={200}
+                    step={5}
+                    className={sliderTrackClass}
+                  />
+                </div>
+              )}
+
+              {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
+                <button
+                  type="button"
+                  onClick={() => resetPatternPanelTransform(transformEditPanelId)}
+                  className="text-xs text-muted-foreground underline text-left"
+                >
+                  Reset panel{applyAllover ? "s" : ""}
+                </button>
+              )}
+
+              <p className="text-[10px] text-muted-foreground leading-snug px-0.5">
+                Drag the pattern on the panel to place it. Tile size controls repeat size; Artwork scale fine-tunes panel size
+                {applyAllover ? " across every panel." : " on the selected panel."}
+              </p>
+
+              {productKind === "hoodie" && (activeView === "front" || activeView === "hood") && (
+                <div>
+                  <Label className="text-xs">
+                    {activeView === "hood" ? "Hood" : "Front"} seam allowance: {activeHoodieSeamBleedPx}px
+                  </Label>
+                  <Slider
+                    value={[activeHoodieSeamBleedPx]}
+                    onValueChange={v => setActiveHoodieSeamBleedPx(v[0])}
+                    min={-140}
+                    max={180}
+                    step={5}
+                    className={sliderTrackClass}
+                  />
+                </div>
+              )}
+
+              {productKind === "leggings" && panelPositions.some(p => isLeggingsLegSlot(p.position)) && (
+                <div>
+                  <Label className="text-xs">
+                    Front seam allowance: {seamBleedPx}px
+                  </Label>
+                  <Slider
+                    value={[seamBleedPx]}
+                    onValueChange={v => setSeamBleedPx(v[0])}
+                    min={0}
+                    max={100}
+                    step={5}
+                    className={sliderTrackClass}
+                  />
+                </div>
               )}
             </>
           )}
