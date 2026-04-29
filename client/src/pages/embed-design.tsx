@@ -2161,7 +2161,8 @@ export default function EmbedDesign() {
       const pollMockupJob = async (jobId: string) => {
         const started = Date.now();
         const MAX_POLL_MS = 300_000;
-        const POLL_INTERVAL_MS = 2_000;
+        const POLL_RAMP_MS = [0, 500, 750, 1000, 1500];
+        let pollIndex = 0;
 
         while (Date.now() - started < MAX_POLL_MS) {
           if (requestSeq !== mockupRequestSeqRef.current) {
@@ -2169,7 +2170,11 @@ export default function EmbedDesign() {
             return;
           }
 
-          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          const waitMs = POLL_RAMP_MS[pollIndex] ?? 2_000;
+          pollIndex += 1;
+          if (waitMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+          }
           const pollUrl = `${statusEndpoint}?jobId=${encodeURIComponent(jobId)}`;
           const pollResponse = await safeFetch(pollUrl);
           if (!pollResponse.ok) {

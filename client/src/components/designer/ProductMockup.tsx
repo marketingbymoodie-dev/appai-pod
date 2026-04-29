@@ -79,6 +79,15 @@ const GENERATING_MESSAGES = [
   { line1: "Almost", line2: "there..." },
 ];
 
+const MOCKUP_PHASES = [
+  { at: 0, text: "Rendering Artwork" },
+  { at: 2500, text: "Generating Patterns" },
+  { at: 5500, text: "Fine Tuning" },
+  { at: 9000, text: "Nearly Ready" },
+  { at: 12500, text: "Finishing Touches" },
+  { at: 16000, text: "Loading Mockups" },
+];
+
 function GeneratingLoader({ isAop = false }: { isAop?: boolean }) {
   ensureStyles();
   const messages = isAop
@@ -204,9 +213,24 @@ function MockupsLoader({ imageUrl, transform, printShape }: {
   printShape: PrintShape;
 }) {
   ensureStyles();
+  const [phaseText, setPhaseText] = useState(MOCKUP_PHASES[0].text);
   const scaleVal = transform.scale / 100;
   const xOffset = transform.x - 50;
   const yOffset = transform.y - 50;
+
+  useEffect(() => {
+    const started = Date.now();
+    const intervalId = window.setInterval(() => {
+      const elapsed = Date.now() - started;
+      const phase = [...MOCKUP_PHASES].reverse().find((p) => elapsed >= p.at) || MOCKUP_PHASES[0];
+      setPhaseText(phase.text);
+    }, 400);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  const [phaseLine1, ...phaseRest] = phaseText.split(" ");
+  const phaseLine2 = phaseRest.join(" ");
+
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden" }}>
       {/* Artwork underneath */}
@@ -246,7 +270,7 @@ function MockupsLoader({ imageUrl, transform, printShape }: {
           textShadow: "0 1px 8px rgba(255,255,255,0.6)",
           animation: "appai-text-pulse 2.6s ease-in-out infinite",
         }}>
-          Creating<br />Mockups
+          {phaseLine1}<br />{phaseLine2}
         </span>
       </div>
     </div>

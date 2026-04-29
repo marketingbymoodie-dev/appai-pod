@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import pRetry from "p-retry";
+import crypto from "crypto";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -76,6 +77,41 @@ interface PrintifyImage {
   mime_type: string;
   preview_url: string;
   upload_time: string;
+}
+
+type PrintifyImageRef = {
+  id: string;
+  width: number;
+  height: number;
+  bufLen: number;
+};
+
+type CachedPrintifyImageRef = {
+  ref: PrintifyImageRef;
+  ts: number;
+};
+
+const PRINTIFY_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const PRINTIFY_IMAGE_CACHE_LIMIT = 200;
+const printifyImageCache = new Map<string, CachedPrintifyImageRef>();
+
+function hashBuffer(buf: Buffer): string {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+function prunePrintifyImageCache() {
+  const now = Date.now();
+  for (const [key, entry] of printifyImageCache) {
+    if (now - entry.ts > PRINTIFY_IMAGE_TTL_MS) {
+      printifyImageCache.delete(key);
+    }
+  }
+
+  while (printifyImageCache.size > PRINTIFY_IMAGE_CACHE_LIMIT) {
+    const oldestKey = printifyImageCache.keys().next().value;
+    if (!oldestKey) break;
+    printifyImageCache.delete(oldestKey);
+  }
 }
 
 function sleep(ms: number) {
@@ -520,8 +556,10 @@ export async function generatePrintifyMockup(
     }
 
     const panelImageIds = new Map<string, string>();
+    const panelImageRefs = new Map<string, PrintifyImageRef>();
 
     if (isAop && request.panelUrls && request.panelUrls.length > 0) {
+      prunePrintifyImageCache();
       // Log per-panel stats so mobile vs desktop sessions can be compared in Railway logs.
       const panelStats = request.panelUrls.map(({ position, dataUrl }) => {
         const desc = describeDataUrl(dataUrl);
@@ -539,48 +577,108 @@ export async function generatePrintifyMockup(
         );
       }
 
+      const panelGroups = new Map<string, {
+        hash: string;
+        positions: string[];
+        dataUrl: string;
+        uploadSource: string | Buffer;
+        bufLen: number;
+        width: number;
+        height: number;
+        mime: string;
+      }>();
+
+      for (const { position, dataUrl } of request.panelUrls) {
+        try {
+          const b64 = extractBase64FromDataUrl(dataUrl);
+          if (!b64) {
+            console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
+            continue;
+          }
+
+          let buf = Buffer.from(b64, "base64");
+          const mime = getDataUrlMime(dataUrl);
+          const metadata = await sharp(buf).metadata();
+          const isDirectPrintifyMime = mime === "image/png" || mime === "image/jpeg" || mime === "image/jpg";
+          if (!isDirectPrintifyMime) {
+            buf = await sharp(buf).png().toBuffer();
+          }
+
+          const hash = hashBuffer(buf);
+          const existing = panelGroups.get(hash);
+          if (existing) {
+            existing.positions.push(position);
+            continue;
+          }
+
+          panelGroups.set(hash, {
+            hash,
+            positions: [position],
+            dataUrl,
+            uploadSource: isDirectPrintifyMime ? dataUrl : buf,
+            bufLen: buf.length,
+            width: metadata.width || 1,
+            height: metadata.height || 1,
+            mime,
+          });
+        } catch (panelErr: any) {
+          console.warn(`[Printify AOP] Panel "${position}" error before upload: ${panelErr.message}`);
+        }
+      }
+
+      console.log(
+        `[Printify AOP] Deduped ${request.panelUrls.length} panel(s) into ${panelGroups.size} unique upload payload(s).`
+      );
+
       const uploadResults = await mapWithConcurrency(
-        request.panelUrls,
+        Array.from(panelGroups.values()),
         MAX_PANEL_UPLOAD_CONCURRENCY,
-        async ({ position, dataUrl }) => {
+        async (group) => {
+          const primaryPosition = group.positions[0];
           try {
-            const b64 = extractBase64FromDataUrl(dataUrl);
-            if (!b64) {
-              console.warn(`[Printify AOP] Panel "${position}" has no valid base64 data — skipping`);
-              return { position, uploadedId: null as string | null };
-            }
-
-            let buf = Buffer.from(b64, "base64");
-            const mime = getDataUrlMime(dataUrl);
-            // Validate that the payload is a real image. Preserve JPEG mockup panels
-            // so Printify uploads stay small; only normalize unusual formats to PNG.
-            await sharp(buf).metadata();
-            const isDirectPrintifyMime = mime === "image/png" || mime === "image/jpeg" || mime === "image/jpg";
-            if (!isDirectPrintifyMime) {
-              buf = await sharp(buf).png().toBuffer();
-            }
-
-            console.log(`[Printify AOP] Panel "${position}" decoded: ${buf.length} bytes ${mime}`);
-            const uploaded = await uploadImageToPrintify(isDirectPrintifyMime ? dataUrl : buf, printifyApiToken);
-            if (!uploaded) {
-              console.warn(`[Printify AOP] Panel "${position}" upload returned null`);
-              return { position, uploadedId: null as string | null };
+            const cached = printifyImageCache.get(group.hash);
+            if (cached && Date.now() - cached.ts <= PRINTIFY_IMAGE_TTL_MS) {
+              cached.ts = Date.now();
+              console.log(
+                `[Printify AOP] Cache hit for ${group.positions.length} panel(s): ${group.positions.join(", ")} -> id=${cached.ref.id}`
+              );
+              return { positions: group.positions, ref: cached.ref };
             }
 
             console.log(
-              `[Printify AOP] Panel "${position}" uploaded OK: id=${uploaded.id} ${uploaded.width}x${uploaded.height}`
+              `[Printify AOP] Uploading unique payload for ${group.positions.length} panel(s): ` +
+              `${group.positions.join(", ")} ${group.mime} ${group.width}x${group.height} ${group.bufLen} bytes`
             );
-            return { position, uploadedId: uploaded.id };
+            const uploaded = await uploadImageToPrintify(group.uploadSource, printifyApiToken);
+            if (!uploaded) {
+              console.warn(`[Printify AOP] Panel group "${primaryPosition}" upload returned null`);
+              return { positions: group.positions, ref: null as PrintifyImageRef | null };
+            }
+
+            const ref: PrintifyImageRef = {
+              id: uploaded.id,
+              width: uploaded.width || group.width,
+              height: uploaded.height || group.height,
+              bufLen: group.bufLen,
+            };
+            printifyImageCache.set(group.hash, { ref, ts: Date.now() });
+            console.log(
+              `[Printify AOP] Panel group "${primaryPosition}" uploaded OK: id=${uploaded.id} ${uploaded.width}x${uploaded.height}`
+            );
+            return { positions: group.positions, ref };
           } catch (panelErr: any) {
-            console.warn(`[Printify AOP] Panel "${position}" error: ${panelErr.message}`);
-            return { position, uploadedId: null as string | null };
+            console.warn(`[Printify AOP] Panel group "${primaryPosition}" error: ${panelErr.message}`);
+            return { positions: group.positions, ref: null as PrintifyImageRef | null };
           }
         }
       );
 
       for (const result of uploadResults) {
-        if (result.uploadedId) {
-          panelImageIds.set(result.position, result.uploadedId);
+        if (result.ref) {
+          for (const position of result.positions) {
+            panelImageIds.set(position, result.ref.id);
+            panelImageRefs.set(position, result.ref);
+          }
         }
       }
 
@@ -623,7 +721,13 @@ export async function generatePrintifyMockup(
 
     let uploadedImage: { id: string } | null = null;
     if (panelImageIds.size > 0) {
-      uploadedImage = { id: panelImageIds.values().next().value as string };
+      const largestPanel = Array.from(panelImageRefs.values())
+        .sort((a, b) => (b.width * b.height) - (a.width * a.height))[0];
+      uploadedImage = { id: largestPanel?.id ?? (panelImageIds.values().next().value as string) };
+      console.log(
+        `[Printify AOP] Primary image id=${uploadedImage.id}` +
+        (largestPanel ? ` (${largestPanel.width}x${largestPanel.height}, ${largestPanel.bufLen} bytes)` : "")
+      );
     } else {
       uploadedImage = await uploadImageToPrintify(uploadUrl, printifyApiToken);
       if (!uploadedImage) {
