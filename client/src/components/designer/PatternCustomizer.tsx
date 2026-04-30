@@ -1368,11 +1368,13 @@ function getPreviewPatternAnchorForSlot(
   slot: PanelSlot,
   slots: PanelSlot[],
   productKind: AopLayoutKind,
+  sw: number,
+  sh: number,
   tileW: number,
   tileH: number,
   syncSides = false,
 ): { x: number; y: number } {
-  const yAnchor = slot.h / 2 - tileH / 2;
+  const yAnchor = sh / 2 - tileH / 2;
   if (syncSides && productKind === "hoodie" && slots.length === 2) {
     const sorted = [...slots].sort((a, b) => a.x - b.x);
     const positions = sorted.map((s) => s.position.toLowerCase());
@@ -1381,14 +1383,14 @@ function getPreviewPatternAnchorForSlot(
     if (hasLeft && hasRight) {
       const isFirstVisualSlot = slot.position === sorted[0].position;
       // First visual slot (right_*): tiles end at right edge → anchor so col=0
-      //   tile's right boundary = slot.w. anchor.x = slot.w - tileW.
+      //   tile's right boundary = sw. anchor.x = sw - tileW.
       // Second visual slot (left_*): tiles start at left edge → anchor.x = 0
       //   so col=0 tile's left boundary = 0.
-      return { x: isFirstVisualSlot ? slot.w - tileW : 0, y: yAnchor };
+      return { x: isFirstVisualSlot ? sw - tileW : 0, y: yAnchor };
     }
   }
   return {
-    x: slot.w / 2 - tileW / 2,
+    x: sw / 2 - tileW / 2,
     y: yAnchor,
   };
 }
@@ -2177,6 +2179,8 @@ export function PatternCustomizer({
             slot,
             slots,
             productKind,
+            sw,
+            sh,
             tileWScreen,
             tileHScreen,
             useSyncAnchor,
