@@ -1655,8 +1655,26 @@ export function PatternCustomizer({
   const activePatternTileInches = activePatternSpec.tileInches;
   const activePatternOffsetX = activePatternSpec.offsetX;
 
+  // Reset every panel's drag / scale back to identity. Used when a change
+  // invalidates existing per-panel positioning (tile size changes, or the
+  // user toggles between Place and Pattern modes).
+  const resetAllPatternPanelTransforms = useCallback(() => {
+    setPerPanelTransforms((prev) => {
+      const next: Record<string, PanelTransform> = { ...prev };
+      for (const panel of panelPositions) {
+        const key =
+          productKind === "hoodie" && isHoodiePocketPanel(panel.position)
+            ? (getHoodiePocketTransformSourcePosition(panel.position, panelPositions) || panel.position)
+            : panel.position;
+        next[key] = { dxPx: 0, dyPx: 0, scalePct: 100 };
+      }
+      return next;
+    });
+  }, [panelPositions, productKind]);
+
   const setActivePatternTileInches = useCallback(
     (value: number) => {
+      const didChange = Math.abs(value - activePatternTileInches) > 0.001;
       if (productKind === "hoodie") {
         setHoodiePatternSpecs((prev) => {
           if (applyAllover) {
@@ -1673,8 +1691,9 @@ export function PatternCustomizer({
       } else {
         setTileInches(value);
       }
+      if (didChange) resetAllPatternPanelTransforms();
     },
-    [activeView, applyAllover, fallbackPatternSpec, productKind],
+    [activePatternTileInches, activeView, applyAllover, fallbackPatternSpec, productKind, resetAllPatternPanelTransforms],
   );
 
   const setActivePatternOffsetX = useCallback(
@@ -3424,7 +3443,17 @@ export function PatternCustomizer({
               <button
                 key={m}
                 type="button"
-                onClick={() => setMode(m)}
+                onClick={() => {
+                  if (m === mode) return;
+                  // Place mode and Pattern mode share the perPanelTransforms store
+                  // but interpret the values differently, so going Place -> Pattern
+                  // can leave pattern tiles anchored off. Reset panels on entry to
+                  // Pattern mode so the seam/centre anchors start clean.
+                  if (mode === "place" && m === "pattern") {
+                    resetAllPatternPanelTransforms();
+                  }
+                  setMode(m);
+                }}
                 className={`flex-1 py-2 text-xs font-medium rounded-md border transition-colors ${
                   mode === m
                     ? "bg-foreground text-background border-foreground"
