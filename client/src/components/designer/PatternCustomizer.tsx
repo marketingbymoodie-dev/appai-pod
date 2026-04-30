@@ -106,6 +106,7 @@ const MIN_TILE_INCHES = 0.5;
  */
 const DEFAULT_SEAM_BLEED_PX = 70;
 const DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX = -10;
+const PREVIOUS_HOODIE_FRONT_SEAM_BLEEDS = new Set([0, 70]);
 const PREVIOUS_HOODIE_HOOD_SEAM_BLEEDS = new Set([120, -70]);
 const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = -90;
 
@@ -1440,13 +1441,13 @@ function getExportPatternAnchorForPanel(
 
   if (productKind === "hoodie" && isHoodiePocketPanel(position)) {
     const source = getHoodiePocketTransformSourcePosition(position, panels);
-    const sourcePanel = source ? panels.find((panel) => panel.position === source) : null;
-    if (sourcePanel) {
-      return anchorFor(
-        sourcePanel.position,
-        Math.max(1, Math.round(sourcePanel.width * scaleRatio)),
-        Math.max(1, Math.round(sourcePanel.height * scaleRatio)),
-      );
+    if (source) {
+      // Inherit ONLY the source front panel's position (for L/R seam detection in
+      // seamAnchorFor) and use the POCKET's own outW/outH so a tile boundary lands
+      // on the pocket's own zip-seam edge. Previously we passed the source panel's
+      // chest dimensions, which put the anchor far outside the smaller pocket
+      // canvas and produced an arbitrary tile-grid phase at the seam.
+      return anchorFor(source, outW, outH);
     }
   }
 
@@ -1580,7 +1581,9 @@ export function PatternCustomizer({
     () => {
       const saved = initialPlacement?.hoodieSeamBleedPx || {};
       return {
-        front: saved.front ?? DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX,
+        front: saved.front === undefined || PREVIOUS_HOODIE_FRONT_SEAM_BLEEDS.has(saved.front)
+          ? DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX
+          : saved.front,
         hood: saved.hood === undefined || PREVIOUS_HOODIE_HOOD_SEAM_BLEEDS.has(saved.hood)
           ? DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX
           : saved.hood,
