@@ -479,6 +479,10 @@ function buildCompositeLayout(
   view: HoodiePanelView,
   panels: Array<{ position: string; width: number; height: number }>,
   svgImages?: Record<string, HTMLImageElement>,
+  // When set, overrides the centre gap between the two paired panels
+  // (front pair / hood pair). Used to "close" the gap when Sync Sides is on
+  // so the continuous tile grid visually meets at the seam.
+  centerGapPxOverride?: number | null,
 ): { compositeW: number; compositeH: number; slots: PanelSlot[] } {
   const viewPanels = panels.filter(
     p => getPanelGroup(p.position) === view && !isHoodieTrimPanel(p.position) && !isHoodiePocketPanel(p.position),
@@ -508,9 +512,14 @@ function buildCompositeLayout(
   });
   const sized = sorted.map((panel) => ({ panel, size: displaySize(panel) }));
   const maxH = Math.max(...sized.map(({ size }) => size.h));
-  const betweenGap = isHoodieLrOverlapView(view, sorted, panels)
+  const isPairedTwoUp = isHoodieLrOverlapView(view, sorted, panels);
+  const defaultGap = isPairedTwoUp
     ? getHoodieTwoUpCenterGapPx(view)
     : HOODIE_COMPOSITE_GAP_PX;
+  const betweenGap =
+    isPairedTwoUp && centerGapPxOverride !== null && centerGapPxOverride !== undefined
+      ? Math.max(0, centerGapPxOverride)
+      : defaultGap;
 
   let x = 0;
   const slots: PanelSlot[] = [];
@@ -835,8 +844,14 @@ function hitTestHoodiePlacePanel(
   activeView: "front" | "back" | "hood",
   panelPositions: Array<{ position: string; width: number; height: number }>,
   svgImages: Record<string, HTMLImageElement>,
+  centerGapPxOverride?: number | null,
 ): string | null {
-  const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
+  const { compositeW, compositeH, slots } = buildCompositeLayout(
+    activeView,
+    panelPositions,
+    svgImages,
+    centerGapPxOverride,
+  );
   if (compositeW === 0) return null;
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / Math.max(rect.width, 1);
@@ -1339,31 +1354,52 @@ function drawTiledMotifInRect(
 /**
  * Compute base tile anchor for a preview slot.
  *
- * Pattern is always centred on each individual panel — the same positioning
- * Mirror mode uses (Mirror mode just additionally flips the artwork on the
- * target panel). Sync Sides links the per-panel transforms across the pair
- * but does NOT change this base anchor or flip the artwork; both panels
- * simply share the same dx/dy/scale.
+ * Default: pattern is panel-centred (the same positioning Mirror mode uses;
+ * Mirror additionally flips the artwork on the target panel).
+ *
+ * When `syncSides` is true and the slot belongs to a paired hoodie front/hood
+ * row (slots.length === 2), we instead use a SHARED tile grid anchored at the
+ * seam: the visually-left panel's tiles end exactly at its right edge (seam),
+ * and the visually-right panel's tiles start exactly at its left edge (seam).
+ * Combined, this puts a tile boundary right on the seam — two whole tiles flank
+ * the seam, matching what the user sees on the stitched garment.
  */
 function getPreviewPatternAnchorForSlot(
   slot: PanelSlot,
-  _slots: PanelSlot[],
-  _productKind: AopLayoutKind,
+  slots: PanelSlot[],
+  productKind: AopLayoutKind,
   tileW: number,
   tileH: number,
+  syncSides = false,
 ): { x: number; y: number } {
+  const yAnchor = slot.h / 2 - tileH / 2;
+  if (syncSides && productKind === "hoodie" && slots.length === 2) {
+    const sorted = [...slots].sort((a, b) => a.x - b.x);
+    const positions = sorted.map((s) => s.position.toLowerCase());
+    const hasLeft = positions.some((p) => p.includes("left") && !p.includes("right"));
+    const hasRight = positions.some((p) => p.includes("right"));
+    if (hasLeft && hasRight) {
+      const isFirstVisualSlot = slot.position === sorted[0].position;
+      // First visual slot (right_*): tiles end at right edge → anchor so col=0
+      //   tile's right boundary = slot.w. anchor.x = slot.w - tileW.
+      // Second visual slot (left_*): tiles start at left edge → anchor.x = 0
+      //   so col=0 tile's left boundary = 0.
+      return { x: isFirstVisualSlot ? slot.w - tileW : 0, y: yAnchor };
+    }
+  }
   return {
     x: slot.w / 2 - tileW / 2,
-    y: slot.h / 2 - tileH / 2,
+    y: yAnchor,
   };
 }
 
 /**
  * Compute base tile anchor for an export panel.
  *
- * Always panel-centred (matches the preview helper above). Pocket panels
- * inherit the source panel's anchor so the front pocket stays consistent
- * with the front panels.
+ * Mirrors the preview helper: panel-centred by default; for paired hoodie
+ * front/hood under Sync Sides we anchor at the seam edge so a tile boundary
+ * lands exactly on the seam in the stitched output. Pocket panels inherit the
+ * source panel's anchor so the front pocket stays consistent with the front.
  */
 function getExportPatternAnchorForPanel(
   position: string,
@@ -1374,11 +1410,31 @@ function getExportPatternAnchorForPanel(
   productKind: AopLayoutKind,
   panels: Array<{ position: string; width: number; height: number }>,
   scaleRatio: number,
+  syncSides = false,
 ): { x: number; y: number } {
-  const anchorFor = (_pos: string, width: number, height: number): { x: number; y: number } => ({
-    x: width / 2 - tileW / 2,
-    y: height / 2 - tileH / 2,
-  });
+  const seamAnchorFor = (pos: string, width: number, height: number): { x: number; y: number } | null => {
+    if (!syncSides || productKind !== "hoodie") return null;
+    const lower = pos.toLowerCase();
+    const group = getPanelGroup(pos);
+    if (group !== "front" && group !== "hood") return null;
+    const groupPanels = panels.filter(
+      (p) => getPanelGroup(p.position) === group && !isHoodieTrimPanel(p.position) && !isHoodiePocketPanel(p.position),
+    );
+    if (groupPanels.length !== 2) return null;
+    const hasLeft = groupPanels.some((p) => p.position.toLowerCase().includes("left") && !p.position.toLowerCase().includes("right"));
+    const hasRight = groupPanels.some((p) => p.position.toLowerCase().includes("right"));
+    if (!hasLeft || !hasRight) return null;
+    // First visual slot in composite ordering is the panel containing "right"
+    // (see buildCompositeLayout: front/hood sort right-first so seam is centre).
+    const isFirstVisualSlot = lower.includes("right");
+    return { x: isFirstVisualSlot ? width - tileW : 0, y: height / 2 - tileH / 2 };
+  };
+
+  const anchorFor = (pos: string, width: number, height: number): { x: number; y: number } => {
+    const seam = seamAnchorFor(pos, width, height);
+    if (seam) return seam;
+    return { x: width / 2 - tileW / 2, y: height / 2 - tileH / 2 };
+  };
 
   if (productKind === "hoodie" && isHoodiePocketPanel(position)) {
     const source = getHoodiePocketTransformSourcePosition(position, panels);
@@ -1671,6 +1727,23 @@ export function PatternCustomizer({
       if (firstPanel) setActivePanel(firstPanel);
     },
     [panelPositions, svgImages],
+  );
+
+  // When Sync Sides is on for a hoodie pattern preview, close the centre gap
+  // between the two paired panels so the shared tile grid visually meets at
+  // the seam (matches OPTION C). All preview layout / hit-test paths use this
+  // override so drag positions stay consistent with what's drawn.
+  const previewPairCenterGapPx = useMemo<number | null>(
+    () =>
+      productKind === "hoodie" && mode === "pattern" && syncSidesMode ? 0 : null,
+    [productKind, mode, syncSidesMode],
+  );
+
+  // Centralised preview layout so render + drag + hit-test always agree.
+  const getPreviewCompositeLayout = useCallback(
+    (view: HoodiePanelView) =>
+      buildCompositeLayout(view, panelPositions, svgImages, previewPairCenterGapPx),
+    [panelPositions, svgImages, previewPairCenterGapPx],
   );
 
   useEffect(() => {
@@ -2036,6 +2109,12 @@ export function PatternCustomizer({
         const alloverScaleKey = canonicalTransformPanelId(activePanel, syncSidesMode, panelPositions, productKind);
         const alloverScalePct = alloverScaleKey ? (perPanelTransforms[alloverScaleKey]?.scalePct ?? 100) : 100;
 
+        // For hoodie Sync Sides we use a shared tile grid anchored at the seam
+        // (OPTION C). Both panels of a pair must therefore shift in the SAME
+        // direction when the user drags — inverting dx on the left panel would
+        // break tile continuity at the seam.
+        const skipSyncDxInversion = productKind === "hoodie" && syncSidesMode;
+
         const resolvePatternTransform = (position: string): { t: PanelTransform; mirrorX: boolean; renderKey: string } => {
           const placeKey =
             productKind === "hoodie" && isHoodiePocketPanel(position)
@@ -2053,7 +2132,10 @@ export function PatternCustomizer({
             !!syncTarget &&
             syncTarget !== placeKey &&
             placeKey.toLowerCase().includes("left");
-          const syncedT = isSyncedLeftPanel ? { ...syncT, dxPx: -syncT.dxPx } : syncT;
+          const syncedT =
+            isSyncedLeftPanel && !skipSyncDxInversion
+              ? { ...syncT, dxPx: -syncT.dxPx }
+              : syncT;
           const sourceT = sourcePos ? (perPanelTransforms[sourcePos] || baseT) : null;
           const rawT = sourceT || (syncTarget ? syncedT : baseT);
           return {
@@ -2062,6 +2144,15 @@ export function PatternCustomizer({
             renderKey: sourcePos || placeKey,
           };
         };
+
+        // Snap-force true geometric centre on the back: compensate for any
+        // transparent padding asymmetry in the motif so a tile lands with its
+        // visible content centred on slot.w/2.
+        const motifVis = getSvgVisibleBounds(img);
+        const motifNatW = img.naturalWidth || img.width || 1;
+        const motifNatH = img.naturalHeight || img.height || 1;
+        const motifCxNorm = motifVis ? (motifVis.x + motifVis.w / 2) / motifNatW : 0.5;
+        const motifCyNorm = motifVis ? (motifVis.y + motifVis.h / 2) / motifNatH : 0.5;
 
         for (const slot of slots) {
           const sx = offX + slot.x * scl;
@@ -2080,7 +2171,28 @@ export function PatternCustomizer({
           // ignored here — saved values from earlier designs (e.g. front +3, hood −23) were
           // silently shifting the pattern on top of the new per-panel transform model.
           void activePatternOffsetX;
-          const baseAnchor = getPreviewPatternAnchorForSlot(slot, slots, productKind, tileWScreen, tileHScreen);
+          const useSyncAnchor =
+            productKind === "hoodie" && syncSidesMode && slots.length === 2;
+          let baseAnchor = getPreviewPatternAnchorForSlot(
+            slot,
+            slots,
+            productKind,
+            tileWScreen,
+            tileHScreen,
+            useSyncAnchor,
+          );
+          // Snap-force back-panel centring: shift anchor so motif visible
+          // centre lands on slot centre regardless of motif padding.
+          if (
+            productKind === "hoodie" &&
+            getPanelGroup(slot.position) === "back" &&
+            slots.length === 1
+          ) {
+            baseAnchor = {
+              x: sw / 2 - motifCxNorm * tileWScreen,
+              y: sh / 2 - motifCyNorm * tileHScreen,
+            };
+          }
           const tileAnchorX = baseAnchor.x + t.dxPx;
           const tileAnchorY = baseAnchor.y + t.dyPx;
           const renderArtwork = shouldRenderPanelArtworkForMode(renderKey, "pattern");
@@ -2141,7 +2253,7 @@ export function PatternCustomizer({
       };
 
       if (productKind === "hoodie") {
-        const { compositeW, compositeH, slots } = buildCompositeLayout(activeView, panelPositions, svgImages);
+        const { compositeW, compositeH, slots } = getPreviewCompositeLayout(activeView);
         drawSlots(slots, compositeW, compositeH);
       } else {
         const linearGapExtra = productKind === "leggings" ? seamBleedPx : 0;
@@ -2149,7 +2261,7 @@ export function PatternCustomizer({
         drawSlots(slots, compositeW, compositeH);
       }
     },
-    [productKind, panelPositions, activeView, svgImages, bgColor, activePatternTileInches, patternType, mirrorMode, syncSidesMode, activePatternOffsetX, seamBleedPx, activePanel, perPanelTransforms, applyAllover, shouldRenderPanelArtworkForMode],
+    [productKind, panelPositions, activeView, svgImages, bgColor, activePatternTileInches, patternType, mirrorMode, syncSidesMode, activePatternOffsetX, seamBleedPx, activePanel, perPanelTransforms, applyAllover, shouldRenderPanelArtworkForMode, getPreviewCompositeLayout],
   );
 
   // ── Preview canvas render (after paint callbacks exist) ─────────────────
@@ -2167,7 +2279,7 @@ export function PatternCustomizer({
     if (panelPositions.length > 0 && (mode === "place" || mode === "pattern")) {
       const layout =
         productKind === "hoodie"
-          ? buildCompositeLayout(activeView, panelPositions, svgImages)
+          ? getPreviewCompositeLayout(activeView)
           : buildLinearPanelsLayout(panelPositions, productKind === "leggings" ? seamBleedPx : 0);
       canvasH = computePanelCanvasHeight(px, layout, productKind, panelPositions);
     }
@@ -2281,7 +2393,7 @@ export function PatternCustomizer({
       if (mode !== "place" && mode !== "pattern") return;
       const hit =
         productKind === "hoodie"
-          ? hitTestHoodiePlacePanel(e.clientX, e.clientY, canvas, activeView, panelPositions, svgImages)
+          ? hitTestHoodiePlacePanel(e.clientX, e.clientY, canvas, activeView, panelPositions, svgImages, previewPairCenterGapPx)
           : hitTestLinearPlacePanel(
               e.clientX,
               e.clientY,
@@ -2320,7 +2432,7 @@ export function PatternCustomizer({
       const touch = e.touches[0];
       const hit =
         productKind === "hoodie"
-          ? hitTestHoodiePlacePanel(touch.clientX, touch.clientY, canvas, activeView, panelPositions, svgImages)
+          ? hitTestHoodiePlacePanel(touch.clientX, touch.clientY, canvas, activeView, panelPositions, svgImages, previewPairCenterGapPx)
           : hitTestLinearPlacePanel(
               touch.clientX,
               touch.clientY,
@@ -2644,7 +2756,16 @@ export function PatternCustomizer({
                 !!syncTarget &&
                 syncTarget !== placeKey &&
                 placeKey.toLowerCase().includes("left");
-              const syncedT = isSyncedLeftPanel ? { ...syncT, dxPx: -syncT.dxPx } : syncT;
+              // Hoodie sync sides uses a SHARED tile grid (OPTION C). To keep the
+              // continuous-grid illusion intact when dragging, both visually-paired
+              // panels should slide in the SAME horizontal direction. For all other
+              // products (and Place mode mirroring) we still invert the left dx so
+              // a symmetrical mirror is preserved.
+              const skipSyncDxInversion = productKind === "hoodie" && syncSidesMode;
+              const syncedT =
+                isSyncedLeftPanel && !skipSyncDxInversion
+                  ? { ...syncT, dxPx: -syncT.dxPx }
+                  : syncT;
               const sourceT = sourcePos ? (perPanelTransforms[sourcePos] || baseT) : null;
               const rawT = sourceT || (syncTarget ? syncedT : baseT);
               return {
@@ -2760,7 +2881,7 @@ export function PatternCustomizer({
               // ignored — see preview render note. Saved values from older designs were silently
               // shifting Printify output on top of the new per-panel transform model.
               void panelPatternSpec.offsetX;
-              const baseAnchor = getExportPatternAnchorForPanel(
+              let baseAnchor = getExportPatternAnchorForPanel(
                 p.position,
                 outW,
                 outH,
@@ -2769,7 +2890,25 @@ export function PatternCustomizer({
                 productKind,
                 panelPositions,
                 scaleRatio,
+                syncSidesMode,
               );
+              // Snap-force back-panel centring on export so the printed back
+              // matches the preview: tile motif's visible centre lands on the
+              // panel's geometric centre regardless of motif transparent padding.
+              if (
+                productKind === "hoodie" &&
+                getPanelGroup(p.position) === "back"
+              ) {
+                const motifVis = getSvgVisibleBounds(motifImage);
+                const motifNatW = motifImage.naturalWidth || motifImage.width || 1;
+                const motifNatH = motifImage.naturalHeight || motifImage.height || 1;
+                const motifCxNorm = motifVis ? (motifVis.x + motifVis.w / 2) / motifNatW : 0.5;
+                const motifCyNorm = motifVis ? (motifVis.y + motifVis.h / 2) / motifNatH : 0.5;
+                baseAnchor = {
+                  x: outW / 2 - motifCxNorm * tileWPrint,
+                  y: outH / 2 - motifCyNorm * tileHPrint,
+                };
+              }
               const dxPrintPx = nudgeHoodieSeamExportDx(
                 productKind,
                 getHoodiePocketNudgeKey(p.position, panelPositions),
