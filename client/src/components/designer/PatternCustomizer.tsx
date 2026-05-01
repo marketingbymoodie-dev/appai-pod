@@ -86,6 +86,11 @@ const PREVIEW_INCHES = 6;
 /** Printify DPI for AOP panels */
 const PRINT_DPI = 150;
 
+/** Default vertical shift (inches) applied to the hoodie pocket pattern so its
+ * tile phase roughly lines up with the front panel at the sewn-on Y position.
+ * User tunable via the "Pocket pattern height" slider in Pattern mode. */
+const DEFAULT_HOODIE_POCKET_PATTERN_HEIGHT_INCHES = -3.5;
+
 /** Safe-print margin in inches (Printify standard sew allowance). */
 const SAFE_AREA_INCHES = 0.25;
 
@@ -156,6 +161,13 @@ function isHoodieTrimPanel(position: string): boolean {
 
 function isHoodiePocketPanel(position: string): boolean {
   return position.toLowerCase().includes("pocket");
+}
+
+/** Zip-up hoodie waistband panel (single wide strip across the bottom, with
+ * the zip running through its horizontal centre). Needs tile-grid continuity
+ * with the front panels at the zip seam — same idea as the pockets. */
+function isHoodieWaistbandPanel(position: string): boolean {
+  return position.toLowerCase().includes("waistband");
 }
 
 function isPrimaryHoodieArtworkPanel(position: string): boolean {
@@ -1463,6 +1475,16 @@ function getExportPatternAnchorForPanel(
     }
   }
 
+  if (productKind === "hoodie" && isHoodieWaistbandPanel(position)) {
+    // Single wide waistband panel. The zip runs through the horizontal centre
+    // (x = outW/2) of the panel, and the left/right fronts above anchor a
+    // tile boundary on that same seam when Sync Sides is on. Put a tile
+    // boundary on x = outW/2 here too so the pattern on the waistband is
+    // continuous with the fronts at the zip seam. Y is panel-centred (the
+    // waistband is thin enough that a vertical phase slider is overkill).
+    return { x: outW / 2 - tileW, y: outH / 2 - tileH / 2 };
+  }
+
   return anchorFor(position, outW, outH);
 }
 
@@ -1580,7 +1602,7 @@ export function PatternCustomizer({
   });
   const [applyAllover, setApplyAllover] = useState(initialPlacement?.applyAllover ?? true);
   const [hoodiePocketPatternHeightInches, setHoodiePocketPatternHeightInches] = useState(
-    initialPlacement?.hoodiePocketPatternHeightInches ?? 0,
+    initialPlacement?.hoodiePocketPatternHeightInches ?? DEFAULT_HOODIE_POCKET_PATTERN_HEIGHT_INCHES,
   );
   const [patternOffsetX, setPatternOffsetX] = useState(initialPlacement?.patternOffsetX ?? 0);
   const [hoodiePatternSpecs, setHoodiePatternSpecs] = useState<Partial<Record<HoodiePanelView, HoodiePatternSpec>>>(
@@ -3541,10 +3563,10 @@ export function PatternCustomizer({
             onClick={handleApply}
             disabled={isLoading}
             size="sm"
-            className="w-full shrink-0 overflow-hidden"
+            className={`w-full shrink-0 ${isLoading ? "" : "shimmer-btn"}`}
           >
-            {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            <span className={isLoading ? "" : "shimmer-text-white"}>Apply to Mockups</span>
+            {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin relative z-10" />}
+            <span className="relative z-10">Apply to Mockups</span>
           </Button>
 
           {mode === "pattern" && (
@@ -3742,23 +3764,6 @@ export function PatternCustomizer({
                 )}
 
               {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
-                <div>
-                  <Label className="text-xs">
-                    Artwork scale: {patternScalePct}%
-                    {applyAllover ? " (all panels)" : ""}
-                  </Label>
-                  <Slider
-                    value={[patternScalePct]}
-                    onValueChange={v => updatePatternPanelScale(transformEditPanelId, v[0])}
-                    min={20}
-                    max={200}
-                    step={5}
-                    className={sliderTrackClass}
-                  />
-                </div>
-              )}
-
-              {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
                 <button
                   type="button"
                   onClick={() => resetPatternPanelTransform(transformEditPanelId)}
@@ -3769,8 +3774,8 @@ export function PatternCustomizer({
               )}
 
               <p className="text-[10px] text-muted-foreground leading-snug px-0.5">
-                Drag the pattern on the panel to place it. Tile size controls repeat size; Artwork scale fine-tunes panel size
-                {applyAllover ? " across every panel." : " on the selected panel."}
+                Drag the pattern on the panel to place it. Tile size controls
+                repeat size{applyAllover ? " across every panel." : " on the selected panel."}
               </p>
 
               {productKind === "hoodie" && (activeView === "front" || activeView === "hood") && (

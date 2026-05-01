@@ -365,6 +365,35 @@
   opacity: 0.9;
 }
 
+/* Button shine / shimmer overlay. Adds a soft white gradient that sweeps
+   across the button every few seconds. Leaves the underlying bg + text
+   untouched (text should be wrapped in a z-indexed span to stay on top). */
+@keyframes shimmer-btn-sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(120%); }
+}
+.shimmer-btn {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer-btn::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    rgba(255,255,255,0) 30%,
+    rgba(255,255,255,0.55) 50%,
+    rgba(255,255,255,0) 70%
+  );
+  animation: shimmer-btn-sweep 2.8s ease-in-out infinite;
+  z-index: 0;
+}
+
 /* ── Radix UI scroll-lock override (iframe context) ─────────────────────── */
 /* Radix UI adds overflow:hidden to body when a Select/Dialog opens.         */
 /* In an iframe this breaks scrolling inside the dropdown AND the parent.    */
