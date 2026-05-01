@@ -870,7 +870,7 @@ export default function EmbedDesign() {
   const [showPatternStep, setShowPatternStep] = useState(false);
   const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
   const [aopPatternUrl, setAopPatternUrl] = useState<string | null>(null);
-  const [printOnBack, setPrintOnBack] = useState(false);
+  const [printPlacement, setPrintPlacement] = useState<"front" | "back" | "both">("front");
   // Persisted PatternCustomizer settings — survive close/reopen of the overlay
   const [aopPatternSettings, setAopPatternSettings] = useState<{
     tilesAcross: number;
@@ -1967,7 +1967,7 @@ export default function EmbedDesign() {
     patternUrl?: string,
     mirrorLegs?: boolean,
     panelUrls?: { position: string; dataUrl: string }[],
-    printOnBackOverride?: boolean
+    printPlacementOverride?: "front" | "back" | "both"
   ) => {
     // Guard: never call the mockup endpoint without a real design image.
     if (!designImageUrl) {
@@ -2036,7 +2036,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printOnBack: !productTypeConfig?.isAllOverPrint ? (printOnBackOverride ?? printOnBack) : undefined,
+        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2049,7 +2049,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printOnBack: !productTypeConfig?.isAllOverPrint ? (printOnBackOverride ?? printOnBack) : undefined,
+        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2063,7 +2063,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printOnBack: !productTypeConfig?.isAllOverPrint ? (printOnBackOverride ?? printOnBack) : undefined,
+        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2233,7 +2233,7 @@ export default function EmbedDesign() {
         }
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printOnBack, productTypeConfig?.isAllOverPrint]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, productTypeConfig?.isAllOverPrint]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -5105,35 +5105,6 @@ export default function EmbedDesign() {
               </div>
             )}
             <div className="space-y-4 mt-4">
-              {!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups && (
-                <div className="flex items-center justify-between gap-2 rounded-md border px-3 py-2">
-                  <Label htmlFor="print-on-back-toggle" className="text-sm cursor-pointer">
-                    Print on back
-                  </Label>
-                  <Switch
-                    id="print-on-back-toggle"
-                    checked={printOnBack}
-                    onCheckedChange={(checked) => {
-                      setPrintOnBack(checked);
-                      if (generatedDesign?.imageUrl && productTypeConfig && selectedSize && !productTypeConfig.isAllOverPrint) {
-                        fetchPrintifyMockups(
-                          toAbsoluteImageUrl(generatedDesign.imageUrl),
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || 'default',
-                          transform.scale,
-                          transform.x,
-                          transform.y,
-                          undefined,
-                          undefined,
-                          undefined,
-                          checked
-                        );
-                      }
-                    }}
-                  />
-                </div>
-              )}
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
@@ -5432,15 +5403,56 @@ export default function EmbedDesign() {
                   </div>
                 )}
 
-                {/* Frame Color (full width if no style selector, otherwise second column) */}
-                {frameColorObjects.length > 0 && (
+                {(frameColorObjects.length > 0 || (!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups)) && (
                   <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
-                    <FrameColorSelector
-                      frameColors={frameColorObjects}
-                      selectedFrameColor={selectedFrameColor}
-                      onFrameColorChange={setSelectedFrameColor}
-                      colorLabel={productTypeConfig?.colorLabel || "Color"}
-                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {frameColorObjects.length > 0 && (
+                        <FrameColorSelector
+                          frameColors={frameColorObjects}
+                          selectedFrameColor={selectedFrameColor}
+                          onFrameColorChange={setSelectedFrameColor}
+                          colorLabel={productTypeConfig?.colorLabel || "Color"}
+                        />
+                      )}
+                      {!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups && (
+                        <div>
+                          <Label htmlFor="print-placement-select" className="text-xs font-medium uppercase tracking-wide">
+                            Print Side
+                          </Label>
+                          <Select
+                            value={printPlacement}
+                            onValueChange={(value) => {
+                              const nextPlacement = value as "front" | "back" | "both";
+                              setPrintPlacement(nextPlacement);
+                              if (generatedDesign?.imageUrl && productTypeConfig && selectedSize && !productTypeConfig.isAllOverPrint) {
+                                fetchPrintifyMockups(
+                                  toAbsoluteImageUrl(generatedDesign.imageUrl),
+                                  productTypeConfig.id,
+                                  selectedSize,
+                                  selectedFrameColor || "default",
+                                  transform.scale,
+                                  transform.x,
+                                  transform.y,
+                                  undefined,
+                                  undefined,
+                                  undefined,
+                                  nextPlacement,
+                                );
+                              }
+                            }}
+                          >
+                            <SelectTrigger id="print-placement-select" className="h-10">
+                              <SelectValue placeholder="Select print side" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="front">Print on Front</SelectItem>
+                              <SelectItem value="back">Print on Back</SelectItem>
+                              <SelectItem value="both">Print Both Sides</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

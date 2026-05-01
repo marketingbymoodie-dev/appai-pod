@@ -45,6 +45,7 @@ export interface MockupRequest {
   x?: number;
   y?: number;
   doubleSided?: boolean;
+  printPlacement?: "front" | "back" | "both";
   wrapAround?: boolean;
   wrapDirection?: "horizontal" | "vertical";
   aopPositions?: { position: string; width: number; height: number }[];
@@ -276,6 +277,7 @@ async function createTemporaryProduct(
   x: number = 0,
   y: number = 0,
   doubleSided: boolean = false,
+  printPlacement: "front" | "back" | "both" | undefined = undefined,
   aopPositions?: { position: string; width: number; height: number }[],
   mirroredImageId?: string,
   panelImageIds?: Map<string, string>
@@ -319,8 +321,11 @@ async function createTemporaryProduct(
       placeholders.push({ position: pos.position, images: [entry] });
     }
   } else {
-    placeholders.push({ position: "front", images: [imageEntry] });
-    if (doubleSided) {
+    const placement = printPlacement ?? (doubleSided ? "both" : "front");
+    if (placement === "front" || placement === "both") {
+      placeholders.push({ position: "front", images: [imageEntry] });
+    }
+    if (placement === "back" || placement === "both") {
       placeholders.push({ position: "back", images: [imageEntry] });
     }
   }
@@ -481,6 +486,7 @@ export async function generatePrintifyMockup(
     x = 0,
     y = 0,
     doubleSided = false,
+    printPlacement,
     wrapAround = false,
   } = request;
 
@@ -753,6 +759,7 @@ export async function generatePrintifyMockup(
       x,
       y,
       doubleSided,
+      request.aopPositions && request.aopPositions.length > 0 ? undefined : printPlacement,
       request.aopPositions,
       undefined,
       panelImageIds

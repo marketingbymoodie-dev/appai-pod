@@ -7093,7 +7093,7 @@ ${textEdgeRestrictions}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -7244,9 +7244,14 @@ ${textEdgeRestrictions}
 
       // ========== GENERATE MOCKUP ==========
       const resolvedDoubleSided = resolveDoubleSided(productType);
+      const effectivePrintPlacement = !productType.isAllOverPrint
+        ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"
+          ? printPlacement
+          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided ? "both" : "front")))
+        : undefined;
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
-        : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
+        : effectivePrintPlacement === "both";
       const resolvedWrapAround = resolveWrapAround(productType);
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { jobId, cached } = await enqueueMockupJob({
@@ -7260,6 +7265,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
+        printPlacement: effectivePrintPlacement,
         wrapAround: resolvedWrapAround,
         wrapDirection: resolvedWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
@@ -7269,7 +7275,7 @@ ${textEdgeRestrictions}
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printOnBack: effectiveDoubleSided },
+        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -13252,7 +13258,7 @@ ${textEdgeRestrictions}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -13320,9 +13326,14 @@ ${textEdgeRestrictions}
         ? JSON.parse(productType.placeholderPositions as string)
         : undefined;
       const resolvedDoubleSided = resolveDoubleSided(productType);
+      const effectivePrintPlacement = !productType.isAllOverPrint
+        ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"
+          ? printPlacement
+          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided ? "both" : "front")))
+        : undefined;
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
-        : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
+        : effectivePrintPlacement === "both";
 
       console.log("[Mockup Generate] AOP:", !!aopPositions, "positions:", aopPositions?.length, "mirrorLegs:", !!mirrorLegs, "imageUrl:", absoluteImageUrl.substring(0, 80));
 
@@ -13338,6 +13349,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
+        printPlacement: effectivePrintPlacement,
         wrapAround: resolveWrapAround(productType),
         wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions,
@@ -13345,7 +13357,7 @@ ${textEdgeRestrictions}
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       }, {
         correlationId,
-        cacheParts: { userId, productTypeId: productType.id, sizeId, colorId, printOnBack: effectiveDoubleSided },
+        cacheParts: { userId, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log("[Mockup Generate] Result:", { jobId, queued: !cached, success: cached?.success, mockups: cached?.mockupImages?.length });
@@ -13361,7 +13373,7 @@ ${textEdgeRestrictions}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -13459,9 +13471,14 @@ ${textEdgeRestrictions}
       console.log("[Shopify Mockup] Generating mockup for:", { productTypeId, sizeId, colorId, variantId: targetVariantId });
 
       const resolvedDoubleSided = resolveDoubleSided(productType);
+      const effectivePrintPlacement = !productType.isAllOverPrint
+        ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"
+          ? printPlacement
+          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided ? "both" : "front")))
+        : undefined;
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
-        : (typeof printOnBack === "boolean" ? printOnBack : resolvedDoubleSided);
+        : effectivePrintPlacement === "both";
       const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const { jobId, cached } = await enqueueMockupJob({
         blueprintId: productType.printifyBlueprintId,
@@ -13474,6 +13491,7 @@ ${textEdgeRestrictions}
         x: x !== undefined ? (x - 50) / 50 : 0,
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
+        printPlacement: effectivePrintPlacement,
         wrapAround: resolveWrapAround(productType),
         wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
@@ -13483,7 +13501,7 @@ ${textEdgeRestrictions}
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printOnBack: effectiveDoubleSided },
+        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log("[Shopify Mockup] Generated result:", { jobId, queued: !cached, success: cached?.success, mockupCount: cached?.mockupUrls?.length });
