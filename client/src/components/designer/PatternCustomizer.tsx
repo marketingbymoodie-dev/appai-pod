@@ -1763,6 +1763,11 @@ export function PatternCustomizer({
       const group = getPanelGroup(position);
       if (group === "hood") return hoodieSeamBleedPx.hood ?? seamBleedPx;
       if (group === "front") return hoodieSeamBleedPx.front ?? seamBleedPx;
+      // Waistband: shares the zip seam with the fronts (the zip continues
+      // through the waistband centre). Reuse the front nudge so the pattern
+      // on the waistband pulls away from the zip the same amount as the
+      // fronts do, keeping visual continuity at the zip.
+      if (isHoodieWaistbandPanel(position)) return hoodieSeamBleedPx.front ?? seamBleedPx;
       return seamBleedPx;
     },
     [hoodieSeamBleedPx.front, hoodieSeamBleedPx.hood, productKind, seamBleedPx],
@@ -2983,7 +2988,32 @@ export function PatternCustomizer({
               const anchorX = baseAnchor.x + dxPrintPx;
               const anchorY = baseAnchor.y + t.dyPx * renderScale;
               if (shouldRenderPanelArtworkForMode(renderKey, "pattern")) {
-                drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, anchorX, anchorY);
+                if (productKind === "hoodie" && isHoodieWaistbandPanel(p.position)) {
+                  // Waistband: split-render into left/right halves so the seam
+                  // nudge pulls the pattern AWAY from the zip symmetrically on
+                  // both halves, matching the gap the fronts create at the zip.
+                  //   left half  (viewer's left, below front_right) → +nudge
+                  //   right half (viewer's right, below front_left) → -nudge
+                  // (sign convention matches nudgeHoodieSeamExportDx.)
+                  const waistbandNudge = getSeamBleedForPanel(p.position);
+                  const baseDx = t.dxPx * renderScale;
+                  const leftAnchorX  = baseAnchor.x + baseDx + waistbandNudge;
+                  const rightAnchorX = baseAnchor.x + baseDx - waistbandNudge;
+                  ctx.save();
+                  ctx.beginPath();
+                  ctx.rect(0, 0, outW / 2, outH);
+                  ctx.clip();
+                  drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, leftAnchorX, anchorY);
+                  ctx.restore();
+                  ctx.save();
+                  ctx.beginPath();
+                  ctx.rect(outW / 2, 0, outW / 2, outH);
+                  ctx.clip();
+                  drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, rightAnchorX, anchorY);
+                  ctx.restore();
+                } else {
+                  drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, anchorX, anchorY);
+                }
               }
               let outForUpload: HTMLCanvasElement = canvas;
               if (mirrorX) {
@@ -3563,10 +3593,10 @@ export function PatternCustomizer({
             onClick={handleApply}
             disabled={isLoading}
             size="sm"
-            className={`w-full shrink-0 ${isLoading ? "" : "shimmer-btn"}`}
+            className="w-full shrink-0 bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50"
           >
-            {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin relative z-10" />}
-            <span className="relative z-10">Apply to Mockups</span>
+            {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            <span className="shimmer-text-white">Apply to Mockups</span>
           </Button>
 
           {mode === "pattern" && (
