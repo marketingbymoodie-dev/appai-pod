@@ -13667,6 +13667,13 @@ ${textEdgeRestrictions}
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
     const { installation } = resolved;
+    if (!installation.merchantId) {
+      return res.status(400).json({ error: "Shopify installation is not linked to a merchant" });
+    }
+    const merchant = await storage.getMerchant(installation.merchantId);
+    if (!merchant) {
+      return res.status(400).json({ error: "Merchant not found for Shopify installation" });
+    }
     const shop: string = installation.shopDomain;
 
     const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices } = req.body as {
@@ -13702,8 +13709,9 @@ ${textEdgeRestrictions}
 
     // If a productTypeId is provided but no shopify product exists yet, auto-send it to Shopify as a draft.
     let resolvedBaseProductId = baseProductId;
+    let ptForSync: any | undefined;
     if (!baseVariantId && !baseProductId && incomingProductTypeId) {
-      const ptForSync = await storage.getProductType(incomingProductTypeId);
+      ptForSync = await storage.getProductType(incomingProductTypeId);
       if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
 
       if (ptForSync.shopifyProductId) {
