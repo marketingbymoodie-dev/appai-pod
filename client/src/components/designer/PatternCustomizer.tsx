@@ -114,6 +114,7 @@ const DEFAULT_HOODIE_FRONT_SEAM_BLEED_PX = -10;
 const PREVIOUS_HOODIE_FRONT_SEAM_BLEEDS = new Set([0, 70]);
 const PREVIOUS_HOODIE_HOOD_SEAM_BLEEDS = new Set([120, -70]);
 const DEFAULT_HOODIE_HOOD_SEAM_BLEED_PX = -90;
+const DEFAULT_HOODIE_WAISTBAND_SEAM_BLEED_PX = 10;
 
 /** Max long-edge for AOP panels sent to Printify mockup API (fast upload). */
 const MAX_PANEL_MOCKUP_PX = 1100;
@@ -1763,11 +1764,9 @@ export function PatternCustomizer({
       const group = getPanelGroup(position);
       if (group === "hood") return hoodieSeamBleedPx.hood ?? seamBleedPx;
       if (group === "front") return hoodieSeamBleedPx.front ?? seamBleedPx;
-      // Waistband: shares the zip seam with the fronts (the zip continues
-      // through the waistband centre). Reuse the front nudge so the pattern
-      // on the waistband pulls away from the zip the same amount as the
-      // fronts do, keeping visual continuity at the zip.
-      if (isHoodieWaistbandPanel(position)) return hoodieSeamBleedPx.front ?? seamBleedPx;
+      // Waistband: shares the zip seam with the fronts, but uses its own
+      // test nudge so we can tune it without moving the main front panels.
+      if (isHoodieWaistbandPanel(position)) return DEFAULT_HOODIE_WAISTBAND_SEAM_BLEED_PX;
       return seamBleedPx;
     },
     [hoodieSeamBleedPx.front, hoodieSeamBleedPx.hood, productKind, seamBleedPx],
