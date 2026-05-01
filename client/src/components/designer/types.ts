@@ -80,6 +80,8 @@ export interface AopPlacementSettings {
   hoodiePatternSpecs?: Partial<Record<"front" | "back" | "hood", { tileInches: number; offsetX: number }>>;
   /** When true, hoodie accent panels receive the front pattern instead of solid background. */
   applyAllover?: boolean;
+  /** Vertical shift (inches) applied to the pocket pattern anchor so the pocket tile phase lines up with the front panel at the seam-sewn position. Positive shifts the tile down, negative shifts up. */
+  hoodiePocketPatternHeightInches?: number;
   /** Last active editor mode — restores the correct tab when re-editing. */
   lastMode?: "pattern" | "single" | "place";
   /** Pattern controls restored when re-editing AOP designs. */

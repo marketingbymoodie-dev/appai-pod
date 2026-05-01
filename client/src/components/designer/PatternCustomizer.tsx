@@ -374,7 +374,13 @@ export function getDefaultPanelRenderConfig(
     if (isHoodiePocketPanel(position)) {
       return { enabled: true, mode: "artwork" };
     }
-    if (group === "front" || group === "back" || group === "hood") {
+    // Back defaults to OFF in Place mode (users may not realise they have a
+    // back print). Pattern mode still prints the back when Apply Allover is
+    // on (shouldRenderPanelArtworkForMode overrides enabled for allover).
+    if (group === "back") {
+      return { enabled: false, mode: "solid" };
+    }
+    if (group === "front" || group === "hood") {
       return { enabled: true, mode: "artwork" };
     }
   }
@@ -1414,6 +1420,7 @@ function getExportPatternAnchorForPanel(
   panels: Array<{ position: string; width: number; height: number }>,
   scaleRatio: number,
   syncSides = false,
+  pocketPatternHeightInches = 0,
 ): { x: number; y: number } {
   const seamAnchorFor = (pos: string, width: number, height: number): { x: number; y: number } | null => {
     if (!syncSides || productKind !== "hoodie") return null;
@@ -1447,7 +1454,12 @@ function getExportPatternAnchorForPanel(
       // on the pocket's own zip-seam edge. Previously we passed the source panel's
       // chest dimensions, which put the anchor far outside the smaller pocket
       // canvas and produced an arbitrary tile-grid phase at the seam.
-      return anchorFor(source, outW, outH);
+      const anchor = anchorFor(source, outW, outH);
+      // Apply the user-tuned Pocket Pattern Height: shifts the pocket's tile-grid
+      // vertical phase so pocket rows can be dialled to line up with the front
+      // pattern at the sewn-on Y position on the garment.
+      const yShift = pocketPatternHeightInches * PRINT_DPI * scaleRatio;
+      return { x: anchor.x, y: anchor.y + yShift };
     }
   }
 
@@ -1567,6 +1579,9 @@ export function PatternCustomizer({
     return kind === "leggings";
   });
   const [applyAllover, setApplyAllover] = useState(initialPlacement?.applyAllover ?? true);
+  const [hoodiePocketPatternHeightInches, setHoodiePocketPatternHeightInches] = useState(
+    initialPlacement?.hoodiePocketPatternHeightInches ?? 0,
+  );
   const [patternOffsetX, setPatternOffsetX] = useState(initialPlacement?.patternOffsetX ?? 0);
   const [hoodiePatternSpecs, setHoodiePatternSpecs] = useState<Partial<Record<HoodiePanelView, HoodiePatternSpec>>>(
     () => ({
@@ -2574,12 +2589,13 @@ export function PatternCustomizer({
       patternOffsetX: activePatternOffsetX,
       hoodiePatternSpecs,
       applyAllover,
+      hoodiePocketPatternHeightInches,
       lastMode: mode,
       patternType,
       tileInches,
       bgColor,
     });
-  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, hoodieSeamBleedPx, syncSidesMode, activePatternOffsetX, mode, patternType, tileInches, bgColor]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, hoodieSeamBleedPx, syncSidesMode, activePatternOffsetX, mode, patternType, tileInches, bgColor, hoodiePocketPatternHeightInches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -2917,6 +2933,7 @@ export function PatternCustomizer({
                 panelPositions,
                 scaleRatio,
                 syncSidesMode,
+                hoodiePocketPatternHeightInches,
               );
               // Snap-force back-panel centring on export so the printed back
               // matches the preview: tile motif's visible centre lands on the
@@ -2994,6 +3011,7 @@ export function PatternCustomizer({
               patternOffsetX: activePatternOffsetX,
               hoodiePatternSpecs,
               applyAllover,
+              hoodiePocketPatternHeightInches,
               lastMode: mode,
               patternType,
               tileInches: productKind === "hoodie" ? getPatternSpecForView("front").tileInches : tileInches,
@@ -3037,6 +3055,7 @@ export function PatternCustomizer({
             patternOffsetX: activePatternOffsetX,
             hoodiePatternSpecs,
             applyAllover,
+            hoodiePocketPatternHeightInches,
             lastMode: mode,
             patternType,
             tileInches,
@@ -3359,6 +3378,7 @@ export function PatternCustomizer({
           patternOffsetX: activePatternOffsetX,
           hoodiePatternSpecs,
           applyAllover,
+          hoodiePocketPatternHeightInches,
           lastMode: mode,
           patternType,
           tileInches,
@@ -3401,6 +3421,57 @@ export function PatternCustomizer({
   /** Radix Slider: Root > Track (span) > Range; Thumb is sibling span — no data-slot. */
   const sliderTrackClass =
     "mt-1 [&>span:first-child]:rounded-full [&>span:first-child]:ring-2 [&>span:first-child]:ring-foreground/35 [&>span:first-child]:bg-muted-foreground/25 dark:[&>span:first-child]:bg-muted-foreground/40 [&>span:first-child>span]:bg-foreground [&>span:last-child]:border-2 [&>span:last-child]:border-foreground [&>span:last-child]:bg-background";
+
+  // Shared colour-selector block rendered above Tile size (Pattern mode) and
+  // above Artwork scale (Place on Item mode). Originally lived at the bottom
+  // of the control panel; users asked to have colour up-top for quick access.
+  const backgroundSelectorBlock = (
+    <div>
+      <Label className="text-xs">Background</Label>
+      <div className="flex gap-1.5 mt-1 items-stretch">
+        <Select
+          value={bgColor === "" ? "transparent" : bgColor}
+          onValueChange={v => setBgColor(v === "transparent" ? "" : v)}
+        >
+          <SelectTrigger className="h-9 text-xs min-w-0 flex-1 border-foreground/20">
+            <SelectValue placeholder="Select" />
+          </SelectTrigger>
+          <SelectContent>
+            {BG_PRESETS.map(p => (
+              <SelectItem key={p.value} value={p.value} className="text-xs">
+                {p.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <button
+          type="button"
+          title="Pick colour from screen"
+          aria-label="Pick colour from screen"
+          onClick={async () => {
+            if (!("EyeDropper" in window)) return;
+            try {
+              // @ts-expect-error EyeDropper is not yet in TS lib
+              const result = await new window.EyeDropper().open();
+              setBgColor(result.sRGBHex);
+            } catch {
+              // cancelled or unsupported
+            }
+          }}
+          className="h-9 w-9 shrink-0 flex items-center justify-center rounded border-2 border-foreground/25 bg-background hover:border-foreground/50 transition-colors"
+        >
+          <Pipette className="w-4 h-4 text-muted-foreground" />
+        </button>
+        <input
+          type="color"
+          aria-label="Custom background colour"
+          value={bgColor === "" ? "#ffffff" : bgColor}
+          onChange={e => setBgColor(e.target.value)}
+          className="w-9 h-9 shrink-0 rounded border-2 border-foreground/25 cursor-pointer bg-background"
+        />
+      </div>
+    </div>
+  );
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
@@ -3473,7 +3544,7 @@ export function PatternCustomizer({
             className="w-full shrink-0 overflow-hidden"
           >
             {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            Apply to Mockups
+            <span className={isLoading ? "" : "shimmer-text-white"}>Apply to Mockups</span>
           </Button>
 
           {mode === "pattern" && (
@@ -3524,13 +3595,13 @@ export function PatternCustomizer({
                     <button
                       type="button"
                       onClick={() => setApplyAllover((v) => !v)}
-                      className={`mt-5 h-9 shrink-0 rounded-md border px-3 text-xs font-medium transition-colors ${
+                      className={`mt-5 h-9 shrink-0 rounded-md border-2 px-3 text-xs font-medium transition-colors ${
                         applyAllover
                           ? "bg-foreground text-background border-foreground"
-                          : "bg-background text-muted-foreground border-border hover:border-foreground/40"
+                          : "bg-background text-muted-foreground border-foreground/60 hover:border-foreground/80"
                       }`}
                     >
-                      Apply Allover
+                      <span className={applyAllover ? "" : "strike-diagonal"}>Apply Allover</span>
                     </button>
                   )}
                 </div>
@@ -3542,6 +3613,9 @@ export function PatternCustomizer({
                   </p>
                 )}
               </div>
+
+              {backgroundSelectorBlock}
+
               <div>
                 <Label className="text-xs">Tile size: {activePatternTileInches.toFixed(2)}"</Label>
                 <Slider
@@ -3554,27 +3628,47 @@ export function PatternCustomizer({
                 />
               </div>
 
-              {activePanel && (
-                <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
-                  <Label htmlFor="pattern-panel-artwork-enabled" className="text-xs cursor-pointer">
-                    Artwork enabled
+              {productKind === "hoodie" && panelPositions.some(p => isHoodiePocketPanel(p.position)) ? (
+                <div>
+                  <Label className="text-xs">
+                    Pocket pattern height: {hoodiePocketPatternHeightInches > 0 ? "+" : ""}
+                    {hoodiePocketPatternHeightInches.toFixed(2)}"
                   </Label>
-                  <Switch
-                    id="pattern-panel-artwork-enabled"
-                    checked={shouldRenderPanelArtwork(activePanel)}
-                    onCheckedChange={(v) =>
-                      setPanelRenderConfig((prev) => ({
-                        ...prev,
-                        [activePanel]: {
-                          ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
-                          enabled: v,
-                          mode: v ? "artwork" : "solid",
-                        },
-                      }))
-                    }
-                    className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                  <Slider
+                    value={[hoodiePocketPatternHeightInches]}
+                    onValueChange={v => setHoodiePocketPatternHeightInches(v[0])}
+                    min={-10}
+                    max={10}
+                    step={0.25}
+                    className={sliderTrackClass}
                   />
+                  <p className="mt-1 text-[10px] text-muted-foreground leading-snug">
+                    Shifts the pocket pattern up or down so it lines up with the front panel at the sewn-on position.
+                  </p>
                 </div>
+              ) : (
+                activePanel && (
+                  <div className="flex items-center justify-between gap-2 rounded-md border-2 border-foreground/30 px-2 py-1.5 bg-background">
+                    <Label htmlFor="pattern-panel-artwork-enabled" className="text-xs cursor-pointer">
+                      Artwork enabled
+                    </Label>
+                    <Switch
+                      id="pattern-panel-artwork-enabled"
+                      checked={shouldRenderPanelArtwork(activePanel)}
+                      onCheckedChange={(v) =>
+                        setPanelRenderConfig((prev) => ({
+                          ...prev,
+                          [activePanel]: {
+                            ...(prev[activePanel] || getDefaultPanelRenderConfig(activePanel, productKind, aopTemplateId)),
+                            enabled: v,
+                            mode: v ? "artwork" : "solid",
+                          },
+                        }))
+                      }
+                      className="shrink-0 border-2 border-foreground/35 data-[state=checked]:bg-foreground data-[state=unchecked]:bg-muted-foreground/30"
+                    />
+                  </div>
+                )
               )}
 
               {productKind === "hoodie" &&
@@ -3778,6 +3872,8 @@ export function PatternCustomizer({
                   </div>
                 )}
 
+              {backgroundSelectorBlock}
+
               {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
                 <div>
                   <Label className="text-xs">Artwork scale: {activePanelT.scalePct}%</Label>
@@ -3898,52 +3994,6 @@ export function PatternCustomizer({
               )}
             </>
           )}
-
-          <div>
-            <Label className="text-xs">Background</Label>
-            <div className="flex gap-1.5 mt-1 items-stretch">
-              <Select
-                value={bgColor === "" ? "transparent" : bgColor}
-                onValueChange={v => setBgColor(v === "transparent" ? "" : v)}
-              >
-                <SelectTrigger className="h-9 text-xs min-w-0 flex-1 border-foreground/20">
-                  <SelectValue placeholder="Select" />
-                </SelectTrigger>
-                <SelectContent>
-                  {BG_PRESETS.map(p => (
-                    <SelectItem key={p.value} value={p.value} className="text-xs">
-                      {p.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <button
-                type="button"
-                title="Pick colour from screen"
-                aria-label="Pick colour from screen"
-                onClick={async () => {
-                  if (!("EyeDropper" in window)) return;
-                  try {
-                    // @ts-expect-error EyeDropper is not yet in TS lib
-                    const result = await new window.EyeDropper().open();
-                    setBgColor(result.sRGBHex);
-                  } catch {
-                    // cancelled or unsupported
-                  }
-                }}
-                className="h-9 w-9 shrink-0 flex items-center justify-center rounded border-2 border-foreground/25 bg-background hover:border-foreground/50 transition-colors"
-              >
-                <Pipette className="w-4 h-4 text-muted-foreground" />
-              </button>
-              <input
-                type="color"
-                aria-label="Custom background colour"
-                value={bgColor === "" ? "#ffffff" : bgColor}
-                onChange={e => setBgColor(e.target.value)}
-                className="w-9 h-9 shrink-0 rounded border-2 border-foreground/25 cursor-pointer bg-background"
-              />
-            </div>
-          </div>
 
           {mode === "place" && productKind !== "hoodie" && panelPositions.length > 0 && (
             <div className="flex flex-wrap gap-1.5">

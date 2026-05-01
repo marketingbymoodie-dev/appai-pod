@@ -345,6 +345,26 @@
   animation: shimmer-sweep 3s linear infinite;
 }
 
+/* Diagonal strike-through used to signal a toggle-button is OFF. Uses
+   currentColor so it inherits the button's text colour automatically. */
+.strike-diagonal {
+  position: relative;
+}
+.strike-diagonal::after {
+  content: "";
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 50%;
+  height: 1.5px;
+  background: currentColor;
+  transform: translateY(-50%) rotate(-14deg);
+  transform-origin: center;
+  pointer-events: none;
+  border-radius: 2px;
+  opacity: 0.9;
+}
+
 /* ── Radix UI scroll-lock override (iframe context) ─────────────────────── */
 /* Radix UI adds overflow:hidden to body when a Select/Dialog opens.         */
 /* In an iframe this breaks scrolling inside the dropdown AND the parent.    */
