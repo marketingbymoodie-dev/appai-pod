@@ -805,7 +805,7 @@ export default function AdminProducts() {
         </Dialog>
 
         <Dialog open={providerSelectionOpen} onOpenChange={setProviderSelectionOpen}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Select Print Provider</DialogTitle>
             </DialogHeader>
@@ -818,14 +818,25 @@ export default function AdminProducts() {
               )}
 
               {selectedBlueprint && (
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">Supabase size chart preview</Label>
-                  {selectedBlueprintSizeChartLoading ? (
-                    <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
-                  ) : (
-                    <SizeChartTable chart={selectedBlueprintSizeChart} compact />
-                  )}
-                </div>
+                <details className="group rounded-md border bg-background">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium">
+                    <span>Size chart preview</span>
+                    <span className="text-xs text-muted-foreground">
+                      {selectedBlueprintSizeChartLoading
+                        ? "Loading..."
+                        : selectedBlueprintSizeChart
+                          ? "Available"
+                          : "Unavailable"}
+                    </span>
+                  </summary>
+                  <div className="border-t p-3">
+                    {selectedBlueprintSizeChartLoading ? (
+                      <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
+                    ) : (
+                      <SizeChartTable chart={selectedBlueprintSizeChart} compact />
+                    )}
+                  </div>
+                </details>
               )}
 
               <div className="space-y-1">
