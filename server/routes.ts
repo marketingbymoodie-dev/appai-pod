@@ -8135,6 +8135,116 @@ ${textEdgeRestrictions}
     }
   });
 
+  app.get("/api/storefront/credits/status", async (req: Request, res: Response) => {
+    try {
+      const { customerId, shop } = req.query;
+      if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
+        return res.status(400).json({ error: "customerId and shop are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const customer = isOtpCustomer
+        ? await storage.getCustomer(customerId)
+        : await storage.getOrCreateShopifyCustomer(shop, customerId);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      return res.json({
+        ok: true,
+        customerId: customer.id,
+        credits: customer.credits,
+        freeGenerationsUsed: customer.freeGenerationsUsed,
+      });
+    } catch (error: any) {
+      console.error("[Storefront Credits] status error:", error);
+      res.status(500).json({ error: "Failed to fetch credit status" });
+    }
+  });
+
+  app.post("/api/storefront/credits/purchase", async (req: Request, res: Response) => {
+    try {
+      const { customerId, shop, package: creditPackage, returnUrl } = req.body;
+      if (!customerId || !shop) {
+        return res.status(400).json({ error: "customerId and shop are required" });
+      }
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      if (!stripe) {
+        return res.status(503).json({ error: "Payments not configured. Please add STRIPE_SECRET_KEY to Railway." });
+      }
+
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+
+      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const customer = isOtpCustomer
+        ? await storage.getCustomer(customerId)
+        : await storage.getOrCreateShopifyCustomer(shop, customerId);
+      if (!customer) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+
+      let creditsToAdd = 0;
+      let priceInCents = 0;
+      if ((creditPackage || "10") === "10") {
+        creditsToAdd = 10;
+        priceInCents = 100;
+      } else {
+        return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
+      }
+
+      const appUrl = (process.env.APP_URL || `https://${req.headers.host}`).replace(/\/$/, "");
+      const fallbackUrl = `${appUrl}/embed-design?shop=${encodeURIComponent(shop)}`;
+      const safeReturnUrl = typeof returnUrl === "string" && /^https?:\/\//i.test(returnUrl) ? returnUrl : fallbackUrl;
+      const separator = safeReturnUrl.includes("?") ? "&" : "?";
+
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: `${creditsToAdd} AI Generation Credits`,
+                description: "Credits for generating custom AI artwork",
+              },
+              unit_amount: priceInCents,
+            },
+            quantity: 1,
+          },
+        ],
+        mode: "payment",
+        success_url: `${safeReturnUrl}${separator}credits=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
+        customer_email: (customer as any).email || undefined,
+        metadata: {
+          customerId: customer.id,
+          creditsToAdd: creditsToAdd.toString(),
+          shop,
+        },
+      });
+
+      if (session.url) {
+        return res.json({ url: session.url });
+      }
+      return res.status(500).json({ error: "Failed to create checkout session" });
+    } catch (error: any) {
+      console.error("[Storefront Credits] purchase error:", error);
+      res.status(500).json({ error: error.message || "Failed to initiate credit purchase" });
+    }
+  });
+
   // ==================== STOREFRONT DESIGN SKU (SHADOW SKU FOR CHECKOUT) ====================
   // Creates or reuses a hidden Shopify product+variant with the mockup as its image.
   // The storefront adds this shadow variant to cart so checkout renders the exact mockup.

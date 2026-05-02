@@ -848,6 +848,8 @@ export default function EmbedDesign() {
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponError, setCouponError] = useState<string | null>(null);
   const [couponSuccess, setCouponSuccess] = useState<string | null>(null);
+  const [creditsPopoverOpen, setCreditsPopoverOpen] = useState(false);
+  const [creditsPurchaseLoading, setCreditsPurchaseLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
@@ -893,6 +895,7 @@ export default function EmbedDesign() {
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
   const bgRemovedLoadedDesignsRef = useRef<Set<string>>(new Set());
+  const creditsReturnHandledRef = useRef(false);
   // Stores the per-panel rasters from the most recent Place/Pattern Apply so Retry can reproduce them.
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   // Ensures quick successive AOP edits do not let an older mockup response overwrite the latest one.
@@ -2603,7 +2606,12 @@ export default function EmbedDesign() {
         if (!jobRes.ok) {
           if (jobData.error === 'FREE_LIMIT_REACHED') {
             setFreeLimitReached(true);
+            setCreditsPopoverOpen(true);
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
+          }
+          if (jobData.error === 'INSUFFICIENT_CREDITS') {
+            setCreditsPopoverOpen(true);
+            throw new Error(jobData.message || "You've run out of credits. Purchase more to continue.");
           }
           if (jobData.error === 'GALLERY_FULL') {
             setShowGalleryFullModal(true);
@@ -2897,9 +2905,66 @@ export default function EmbedDesign() {
     }
   };
 
+  const handleBuyMoreCredits = async () => {
+    if (!storefrontCustomerId) {
+      setCreditsPopoverOpen(false);
+      setLoginError("Please sign in before purchasing more artwork credits.");
+      toast({
+        title: "Sign in required",
+        description: "Sign in first, then you can purchase more artwork credits.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!shopDomain) {
+      toast({
+        title: "Shop missing",
+        description: "Reload the customizer and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setCreditsPurchaseLoading(true);
+    try {
+      const res = await safeFetch(`${API_BASE}/api/storefront/credits/purchase`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customerId: storefrontCustomerId,
+          shop: shopDomain,
+          package: "10",
+          returnUrl: window.location.href,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.url) {
+        throw new Error(data.error || "Could not start checkout");
+      }
+      try {
+        window.top!.location.href = data.url;
+      } catch {
+        window.location.href = data.url;
+      }
+    } catch (err: any) {
+      toast({
+        title: "Checkout failed",
+        description: err?.message || "Could not start credit checkout.",
+        variant: "destructive",
+      });
+    } finally {
+      setCreditsPurchaseLoading(false);
+    }
+  };
+
   const handleGenerate = async () => {
     const activePresetForCheck = filteredStylePresets.find(p => p.id === selectedPreset);
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
+
+    if ((isShopify || isStorefront) && customer && credits <= 0) {
+      setCreditsPopoverOpen(true);
+      return;
+    }
 
     // Pre-check: block generation immediately if gallery is full
     if (savedDesigns.length >= galleryLimit) {
@@ -4452,6 +4517,40 @@ export default function EmbedDesign() {
   const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
   const credits = customer?.credits ?? 0;
   useEffect(() => {
+    if (!isStorefront || creditsReturnHandledRef.current || !storefrontCustomerId || !shopDomain) return;
+    const params = new URLSearchParams(window.location.search);
+    const creditsStatus = params.get("credits");
+    if (creditsStatus !== "success" && creditsStatus !== "cancelled") return;
+
+    creditsReturnHandledRef.current = true;
+    if (creditsStatus === "cancelled") {
+      toast({ title: "Checkout cancelled", description: "No credits were added." });
+      return;
+    }
+
+    toast({ title: "Payment complete", description: "Refreshing your artwork credits..." });
+    window.setTimeout(() => {
+      safeFetch(`${API_BASE}/api/storefront/credits/status?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (!data.ok) return;
+          setCustomer((prev) => {
+            const next = {
+              ...(prev || { id: storefrontCustomerId, isLoggedIn: true }),
+              id: storefrontCustomerId,
+              credits: data.credits || 0,
+              freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed,
+              isLoggedIn: true,
+            };
+            try { localStorage.setItem('appai_customer', JSON.stringify(next)); } catch {}
+            return next;
+          });
+        })
+        .catch(() => {});
+    }, 1500);
+  }, [isStorefront, storefrontCustomerId, shopDomain, toast]);
+
+  useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
@@ -5220,7 +5319,7 @@ export default function EmbedDesign() {
                         }
                         handleGenerate();
                       }}
-                      disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || freeLimitReached || credits <= 0}
+                      disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
@@ -5290,7 +5389,7 @@ export default function EmbedDesign() {
                           if (customer) return '0 artworks remaining';
                           return '10 free artworks';
                         })()}
-                        <Popover>
+                        <Popover open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
                           <PopoverTrigger asChild>
                             <button type="button" className="inline-flex items-center" aria-label="Pricing info">
                               <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
@@ -5301,6 +5400,22 @@ export default function EmbedDesign() {
                             <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
                             <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
                             <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="w-full"
+                              onClick={handleBuyMoreCredits}
+                              disabled={creditsPurchaseLoading}
+                            >
+                              {creditsPurchaseLoading ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                  Opening Checkout...
+                                </>
+                              ) : (
+                                "More Credits"
+                              )}
+                            </Button>
                           </PopoverContent>
                         </Popover>
                       </p>
