@@ -2928,17 +2928,39 @@ export default function EmbedDesign() {
     }
 
     setCreditsPurchaseLoading(true);
-    const currentUrl = window.location.href;
-    const checkoutReturnUrl = currentUrl.includes("admin.shopify.com")
-      ? `https://${shopDomain}/apps/appai/s/designer${window.location.search || `?shop=${encodeURIComponent(shopDomain)}`}`
-      : currentUrl;
+
+    // Persist the exact storefront customerId BEFORE navigating away so we can
+    // recover it after Stripe redirects us back to the designer page. We never
+    // rely on logged_in_customer_id from Shopify — the app proxy omits it.
+    try {
+      localStorage.setItem('appai_customer_id', storefrontCustomerId);
+      localStorage.setItem('appai_credits_pending_customer_id', storefrontCustomerId);
+      sessionStorage.setItem('appai_credits_pending_customer_id', storefrontCustomerId);
+    } catch {}
+
+    // Build a clean storefront-proxy return URL (never admin.shopify.com).
+    // Preserve useful query params (product/variant/etc) from the current URL
+    // so the designer re-opens in the same context after checkout.
+    const returnUrl = new URL(`https://${shopDomain}/apps/appai/s/designer`);
+    try {
+      const currentQuery = new URLSearchParams(window.location.search);
+      currentQuery.forEach((value, key) => {
+        if (!value) return;
+        if (key === 'credits' || key === 'session_id' || key === 'customerId' || key === 'shop') return;
+        returnUrl.searchParams.set(key, value);
+      });
+    } catch {}
+    returnUrl.searchParams.set('shop', shopDomain);
+    returnUrl.searchParams.set('customerId', storefrontCustomerId);
+
     const params = new URLSearchParams({
       customerId: storefrontCustomerId,
       shop: shopDomain,
       package: "10",
-      returnUrl: checkoutReturnUrl,
+      returnUrl: returnUrl.toString(),
     });
     const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
+    console.log('[More Credits] redirecting to checkout for customerId', storefrontCustomerId);
     try {
       window.top!.location.href = checkoutUrl;
     } catch {
@@ -4507,7 +4529,7 @@ export default function EmbedDesign() {
   const isLoggedIn = customer?.isLoggedIn ?? !!storefrontCustomerId;
   const credits = customer?.credits ?? 0;
   useEffect(() => {
-    if (!isStorefront || creditsReturnHandledRef.current || !storefrontCustomerId || !shopDomain) return;
+    if (!isStorefront || creditsReturnHandledRef.current || !shopDomain) return;
     const params = new URLSearchParams(window.location.search);
     const creditsStatus = params.get("credits");
     if (creditsStatus !== "success" && creditsStatus !== "cancelled") return;
@@ -4515,29 +4537,96 @@ export default function EmbedDesign() {
     creditsReturnHandledRef.current = true;
     if (creditsStatus === "cancelled") {
       toast({ title: "Checkout cancelled", description: "No credits were added." });
+      // Clean URL so a manual reload does not re-trigger this flow
+      try {
+        const cleaned = new URL(window.location.href);
+        cleaned.searchParams.delete('credits');
+        cleaned.searchParams.delete('session_id');
+        window.history.replaceState({}, document.title, cleaned.toString());
+      } catch {}
       return;
     }
 
+    // Resolve the customerId deterministically — Shopify app proxy omits
+    // logged_in_customer_id, so we cannot rely on it. Order of preference:
+    //   1. ?customerId= query string we attached to the success_url
+    //   2. sessionStorage / localStorage marker saved before redirect
+    //   3. current storefrontCustomerId state (hydrated from localStorage)
+    let resolvedCustomerId: string | null = params.get("customerId");
+    if (!resolvedCustomerId) {
+      try { resolvedCustomerId = sessionStorage.getItem('appai_credits_pending_customer_id'); } catch {}
+    }
+    if (!resolvedCustomerId) {
+      try { resolvedCustomerId = localStorage.getItem('appai_credits_pending_customer_id'); } catch {}
+    }
+    if (!resolvedCustomerId) {
+      try { resolvedCustomerId = localStorage.getItem('appai_customer_id'); } catch {}
+    }
+    if (!resolvedCustomerId) resolvedCustomerId = storefrontCustomerId;
+
+    if (!resolvedCustomerId) {
+      console.warn('[Credits Return] no customerId available after Stripe redirect');
+      return;
+    }
+
+    // Keep app state + localStorage aligned with whichever ID we recovered.
+    try {
+      localStorage.setItem('appai_customer_id', resolvedCustomerId);
+      localStorage.removeItem('appai_credits_pending_customer_id');
+      sessionStorage.removeItem('appai_credits_pending_customer_id');
+    } catch {}
+    if (resolvedCustomerId !== storefrontCustomerId) {
+      setStorefrontCustomerId(resolvedCustomerId);
+    }
+
+    console.log('[Credits Return] refreshing status for customerId', resolvedCustomerId);
     toast({ title: "Payment complete", description: "Refreshing your artwork credits..." });
-    window.setTimeout(() => {
-      safeFetch(`${API_BASE}/api/storefront/credits/status?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(storefrontCustomerId)}`)
+
+    const refreshCredits = () => {
+      const statusUrl = `${API_BASE}/api/storefront/credits/status?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(resolvedCustomerId!)}`;
+      safeFetch(statusUrl)
         .then((res) => res.json())
         .then((data) => {
-          if (!data.ok) return;
+          if (!data || data.ok === false) {
+            console.warn('[Credits Return] status response not ok', data);
+            return;
+          }
+          console.log('[Credits Return] new balance', data.credits);
           setCustomer((prev) => {
             const next = {
-              ...(prev || { id: storefrontCustomerId, isLoggedIn: true }),
-              id: storefrontCustomerId,
-              credits: data.credits || 0,
+              ...(prev || { id: resolvedCustomerId!, isLoggedIn: true }),
+              id: resolvedCustomerId!,
+              credits: typeof data.credits === 'number' ? data.credits : (prev?.credits ?? 0),
               freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed,
               isLoggedIn: true,
             };
             try { localStorage.setItem('appai_customer', JSON.stringify(next)); } catch {}
             return next;
           });
+          toast({
+            title: 'Credits added',
+            description: `You now have ${data.credits ?? 0} artwork credit${(data.credits ?? 0) === 1 ? '' : 's'}.`,
+          });
         })
-        .catch(() => {});
-    }, 1500);
+        .catch((err) => {
+          console.error('[Credits Return] status fetch failed', err);
+        });
+    };
+
+    // Refresh once immediately, then again shortly after — the Stripe webhook
+    // may land a moment after the browser redirect, so a short retry avoids
+    // a stale zero-balance.
+    refreshCredits();
+    window.setTimeout(refreshCredits, 2500);
+    window.setTimeout(refreshCredits, 6000);
+
+    // Strip the credits/session_id params so refreshes do not re-trigger.
+    try {
+      const cleaned = new URL(window.location.href);
+      cleaned.searchParams.delete('credits');
+      cleaned.searchParams.delete('session_id');
+      window.history.replaceState({}, document.title, cleaned.toString());
+    } catch {}
   }, [isStorefront, storefrontCustomerId, shopDomain, toast]);
 
   useEffect(() => {

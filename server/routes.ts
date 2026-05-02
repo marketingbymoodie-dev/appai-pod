@@ -44,6 +44,49 @@ const objectStorage = new ObjectStorageService();
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" }) : null;
 
 /**
+ * Build a storefront app-proxy designer URL for Stripe's success_url / cancel_url.
+ *
+ * Hard guarantees:
+ *   - Host is always `{shop}/apps/appai/s/designer` (never admin.shopify.com).
+ *   - `shop` and `customerId` are always present as query params.
+ *   - Query params from the caller-supplied returnUrl are preserved (product,
+ *     variantId, etc.), except admin-session or credits/session markers.
+ *
+ * Even if the caller passes an admin.shopify.com URL, a junk URL, or nothing,
+ * we fall back to `https://{shop}/apps/appai/s/designer?shop=...&customerId=...`.
+ */
+function buildStorefrontCreditReturnUrl(
+  shop: string,
+  storefrontCustomerId: string,
+  rawReturnUrl: string | undefined,
+): string {
+  const base = new URL(`https://${shop}/apps/appai/s/designer`);
+  try {
+    if (rawReturnUrl && /^https?:\/\//i.test(rawReturnUrl)) {
+      const parsed = new URL(rawReturnUrl);
+      parsed.searchParams.forEach((value, key) => {
+        const lower = key.toLowerCase();
+        if (
+          lower === "credits" ||
+          lower === "session_id" ||
+          lower === "customerid" ||
+          lower === "shop" ||
+          lower === "session" ||
+          lower === "hmac" ||
+          lower === "host" ||
+          lower === "embedded" ||
+          lower === "id_token"
+        ) return;
+        base.searchParams.set(key, value);
+      });
+    }
+  } catch {}
+  base.searchParams.set("shop", shop);
+  base.searchParams.set("customerId", storefrontCustomerId);
+  return base.toString();
+}
+
+/**
  * Wrap an async Express handler so rejected promises are forwarded to next(err)
  * instead of crashing the process with an unhandled rejection.
  */
@@ -8087,7 +8130,7 @@ ${textEdgeRestrictions}
       if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
         return res.status(400).json({ error: "customerId and shop are required" });
       }
-      console.log("[Storefront Credits] status check", { customerId, shop });
+      console.log("[Credits Status] checking customerId", customerId, "shop", shop);
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).json({ error: "Invalid shop domain" });
       }
@@ -8101,9 +8144,11 @@ ${textEdgeRestrictions}
         ? await storage.getCustomer(customerId)
         : await storage.getOrCreateShopifyCustomer(shop, customerId);
       if (!customer) {
+        console.warn("[Credits Status] customer not found for", customerId);
         return res.status(404).json({ error: "Customer not found" });
       }
 
+      console.log("[Credits Status] returning balance", customer.credits, "for customerId", customer.id);
       return res.json({
         ok: true,
         requestedCustomerId: customerId,
@@ -8112,7 +8157,7 @@ ${textEdgeRestrictions}
         freeGenerationsUsed: customer.freeGenerationsUsed,
       });
     } catch (error: any) {
-      console.error("[Storefront Credits] status error:", error);
+      console.error("[Credits Status] error:", error);
       res.status(500).json({ error: "Failed to fetch credit status" });
     }
   });
@@ -8153,12 +8198,12 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
       }
 
-      const fallbackUrl = `https://${shop}/apps/appai/s/designer?shop=${encodeURIComponent(shop)}`;
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = /^https?:\/\//i.test(rawReturnUrl) && !rawReturnUrl.includes("admin.shopify.com")
-        ? rawReturnUrl
-        : fallbackUrl;
+      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, storefrontCustomerId, rawReturnUrl);
+      // safeReturnUrl always includes "?shop=...&customerId=...", so use & here.
       const separator = safeReturnUrl.includes("?") ? "&" : "?";
+
+      console.log("[Credits Purchase] session for customerId", storefrontCustomerId, "returnUrl", safeReturnUrl);
 
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -8193,7 +8238,7 @@ ${textEdgeRestrictions}
       }
       return res.status(500).json({ error: "Failed to create checkout session" });
     } catch (error: any) {
-      console.error("[Storefront Credits] purchase error:", error);
+      console.error("[Credits Purchase] error:", error);
       res.status(500).json({ error: error.message || "Failed to initiate credit purchase" });
     }
   });
@@ -8234,11 +8279,11 @@ ${textEdgeRestrictions}
         return res.status(400).send("Invalid credit package");
       }
 
-      const fallbackUrl = `https://${shop}/apps/appai/s/designer?shop=${encodeURIComponent(shop)}`;
-      const safeReturnUrl = typeof returnUrl === "string" && /^https?:\/\//i.test(returnUrl) && !returnUrl.includes("admin.shopify.com")
-        ? returnUrl
-        : fallbackUrl;
+      const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
+      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, storefrontCustomerId, rawReturnUrl);
       const separator = safeReturnUrl.includes("?") ? "&" : "?";
+
+      console.log("[Credits Purchase] GET redirect session for customerId", storefrontCustomerId, "returnUrl", safeReturnUrl);
 
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -8273,7 +8318,7 @@ ${textEdgeRestrictions}
       }
       return res.redirect(303, session.url);
     } catch (error: any) {
-      console.error("[Storefront Credits] purchase redirect error:", error);
+      console.error("[Credits Purchase] GET redirect error:", error);
       return res.status(500).send(error.message || "Failed to initiate credit purchase");
     }
   });
