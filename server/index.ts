@@ -7,6 +7,7 @@ import fs from "fs";
 import crypto from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { registerStripeWebhook } from "./stripe-webhook";
 import { createServer } from "http";
 
 // Cross-environment directory resolution.
@@ -172,6 +173,9 @@ app.use(cookieParser());
 
 // Static assets (non-build scripts)
 app.use("/scripts", express.static(path.resolve(process.cwd(), "public/scripts")));
+
+// Stripe must see the raw request body, so register this before express.json().
+registerStripeWebhook(app);
 
 // Body parsing
 app.use(

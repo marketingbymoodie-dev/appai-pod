@@ -1128,60 +1128,6 @@ export async function registerRoutes(
   const serverStartTime = Date.now();
   let dbReady = false;
 
-  // Stripe Webhook to handle successful payments (must be registered before other body parsers)
-  app.post("/api/webhooks/stripe", express.raw({ type: "application/json" }), async (req: Request, res: Response) => {
-    const sig = req.headers["stripe-signature"];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-    if (!stripe || !sig || !webhookSecret) {
-      console.error("[Stripe Webhook] Error: Missing configuration", { hasStripe: !!stripe, hasSig: !!sig, hasSecret: !!webhookSecret });
-      return res.status(400).send("Webhook Error: Missing configuration");
-    }
-
-    let event;
-    try {
-      event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
-    } catch (err: any) {
-      console.error(`[Stripe Webhook] Error: ${err.message}`);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object as Stripe.Checkout.Session;
-      const { customerId, creditsToAdd } = session.metadata || {};
-
-      if (customerId && creditsToAdd) {
-        const customer = await storage.getCustomer(customerId);
-        if (customer) {
-          const amount = parseInt(creditsToAdd);
-          const priceInCents = session.amount_total || 0;
-          
-          // Update customer
-          const newCredits = customer.credits + amount;
-          const newTotalSpent = parseFloat(customer.totalSpent) + (priceInCents / 100);
-          
-          await storage.updateCustomer(customer.id, {
-            credits: newCredits,
-            totalSpent: newTotalSpent.toFixed(2),
-          });
-
-          // Log transaction
-          await storage.createCreditTransaction({
-            customerId: customer.id,
-            type: "purchase",
-            amount,
-            priceInCents,
-            description: `Purchased ${amount} credits via Stripe`,
-          });
-
-          console.log(`[Stripe Webhook] Credited ${amount} to customer ${customerId}`);
-        }
-      }
-    }
-
-    res.json({ received: true });
-  });
-
   // SVG Proxy to bypass CORS issues for AOP patterns
   app.get("/api/proxy-svg", asyncHandler(async (req: Request, res: Response) => {
     const url = req.query.url as string;
