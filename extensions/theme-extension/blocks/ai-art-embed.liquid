@@ -1780,10 +1780,14 @@
 .ai-art-studio-embed {
   padding: 2rem 0;
   margin: 2rem 0;
+  position: relative;
+  z-index: 0;
 }
 
 .ai-art-studio-embed__wrapper {
   max-width: 100%;
+  position: relative;
+  z-index: 0;
 }
 
 .ai-art-studio-embed__heading,
@@ -1801,6 +1805,7 @@
   overflow: hidden;
   background: #fafafa;
   position: relative;
+  z-index: 0;
 }
 
 .ai-art-studio-embed__loading {
@@ -1813,6 +1818,7 @@
   text-align: center;
   background: #fafafa;
   z-index: 10;
+  pointer-events: none;
 }
 
 .ai-art-studio-embed__spinner {

@@ -125,6 +125,8 @@
   .ai-art-studio-block {
     padding: 2rem 0;
     margin: 2rem 0;
+    position: relative;
+    z-index: 0;
   }
 
   .ai-art-studio__heading {
@@ -150,6 +152,7 @@
     overflow: hidden;
     background: #fafafa;
     position: relative;
+    z-index: 0;
   }
 
   .ai-art-studio__container iframe {
@@ -164,6 +167,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     text-align: center;
+    pointer-events: none;
   }
 
   .ai-art-studio__spinner {
