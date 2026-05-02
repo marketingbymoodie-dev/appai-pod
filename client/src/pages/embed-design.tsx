@@ -5457,9 +5457,9 @@ export default function EmbedDesign() {
                               <SelectValue placeholder="Select print side" />
                             </SelectTrigger>
                             <SelectContent position="popper">
-                              <SelectItem value="front">Print on Front</SelectItem>
-                              <SelectItem value="back">Print on Back</SelectItem>
-                              <SelectItem value="both">Print Both Sides</SelectItem>
+                              <SelectItem value="front">Print on Front Only</SelectItem>
+                              <SelectItem value="back">Print on Back Only</SelectItem>
+                              <SelectItem value="both">Print on Both Sides</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>

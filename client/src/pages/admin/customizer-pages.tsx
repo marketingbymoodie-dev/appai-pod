@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useRef, useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -25,7 +25,7 @@ import {
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
-  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2,
+  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
@@ -89,6 +89,36 @@ function slugify(str: string): string {
   return str.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+function plainTextFromHtml(value: string | null | undefined): string {
+  if (!value) return "";
+  const withoutBreaks = value.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|h[1-6])>/gi, "\n");
+  const withoutTags = withoutBreaks.replace(/<[^>]*>/g, " ");
+  const doc = typeof document !== "undefined" ? document.createElement("textarea") : null;
+  if (doc) {
+    doc.innerHTML = withoutTags;
+    return doc.value.replace(/\n\s+/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  return withoutTags.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+}
+
+async function uploadPlaceholderFile(file: File): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+  const res = await fetch("/api/uploads/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataUrl, name: file.name }),
+  });
+  if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+  const data = await res.json();
+  const objectPath = data.objectPath as string;
+  return objectPath?.startsWith("/") ? `${window.location.origin}${objectPath}` : objectPath;
+}
+
 const PLAN_DISPLAY: Record<string, string> = {
   trial: "Trial",
   starter: "Starter",
@@ -112,6 +142,8 @@ export default function AdminCustomizerPages() {
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
   const [editCustomPlaceholder, setEditCustomPlaceholder] = useState("");
+  const [uploadingPlaceholder, setUploadingPlaceholder] = useState(false);
+  const placeholderUploadRef = useRef<HTMLInputElement>(null);
 
   // Hub URL (fallback for disabled pages)
   const [hubUrl, setHubUrl] = useState("");
@@ -199,7 +231,7 @@ export default function AdminCustomizerPages() {
   useEffect(() => {
     if (!editTarget || !editBlank) return;
     const images = editBlank.baseMockupImages || {};
-    setEditDescription(editBlank.description || "");
+    setEditDescription(plainTextFromHtml(editBlank.description));
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, 3)));
     setEditCustomPlaceholder("");
@@ -397,6 +429,29 @@ export default function AdminCustomizerPages() {
       }
       return next;
     });
+  }
+
+  async function handlePlaceholderUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(file.type)) {
+      toast({ title: "Unsupported image", description: "Upload a PNG, JPG, or WebP image.", variant: "destructive" });
+      event.target.value = "";
+      return;
+    }
+    setUploadingPlaceholder(true);
+    try {
+      const url = await uploadPlaceholderFile(file);
+      setEditCustomPlaceholder(url);
+      setEditPrimaryPlaceholder(url);
+      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, 3)));
+      toast({ title: "Placeholder uploaded", description: "The uploaded image is selected as the primary placeholder." });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err?.message || "Could not upload placeholder image.", variant: "destructive" });
+    } finally {
+      setUploadingPlaceholder(false);
+      event.target.value = "";
+    }
   }
 
   function resetForm() {
@@ -1530,13 +1585,19 @@ export default function AdminCustomizerPages() {
                 {(() => {
                   const images = editBlank.baseMockupImages || {};
                   const available = [
+                    images.primary ? { url: images.primary, label: "Current primary image", source: "current" } : null,
+                    images.front ? { url: images.front, label: "Front placeholder", position: "front", source: "stored" } : null,
+                    images.lifestyle ? { url: images.lifestyle, label: "Lifestyle placeholder", position: "lifestyle", source: "stored" } : null,
+                    ...(images.gallery || []).map((url, index) => ({ url, label: `Current gallery image ${index + 1}`, source: "gallery" })),
                     ...(images.available || []),
                     ...(images.custom || []).map((url) => ({ url, label: "Custom image", source: "custom" })),
-                  ].filter((img, index, arr) => img.url && arr.findIndex((x) => x.url === img.url) === index);
+                    editCustomPlaceholder ? { url: editCustomPlaceholder, label: "Uploaded custom image", source: "custom" } : null,
+                  ].filter((img): img is { url: string; label: string; position?: string; source?: string } => !!img?.url)
+                    .filter((img, index, arr) => arr.findIndex((x) => x.url === img.url) === index);
                   if (available.length === 0) {
                     return (
                       <p className="rounded-md border p-3 text-sm text-muted-foreground">
-                        No placeholder images are stored yet. Add a custom URL below, or refresh images from the Products admin page.
+                        No placeholder images are stored yet. Upload a custom image, or refresh images from the Products admin page.
                       </p>
                     );
                   }
@@ -1546,7 +1607,12 @@ export default function AdminCustomizerPages() {
                         const isPrimary = editPrimaryPlaceholder === img.url;
                         const isGallery = editGalleryPlaceholders.has(img.url);
                         return (
-                          <div key={`${img.url}-${index}`} className={`rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}>
+                          <div key={`${img.url}-${index}`} className={`relative rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}>
+                            {isPrimary && (
+                              <span className="absolute right-2 top-2 rounded bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground shadow">
+                                Current
+                              </span>
+                            )}
                             <button
                               type="button"
                               className="block w-full overflow-hidden rounded bg-muted"
@@ -1581,24 +1647,24 @@ export default function AdminCustomizerPages() {
                     </div>
                   );
                 })()}
-                <div className="flex gap-2">
-                  <Input
-                    value={editCustomPlaceholder}
-                    onChange={(e) => setEditCustomPlaceholder(e.target.value)}
-                    placeholder="https://... custom placeholder image"
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={placeholderUploadRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    className="hidden"
+                    onChange={handlePlaceholderUpload}
                   />
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => {
-                      const url = editCustomPlaceholder.trim();
-                      if (!url) return;
-                      setEditPrimaryPlaceholder(url);
-                      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, 3)));
-                    }}
+                    onClick={() => placeholderUploadRef.current?.click()}
+                    disabled={uploadingPlaceholder}
                   >
-                    Use URL
+                    {uploadingPlaceholder ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                    Upload Custom Image
                   </Button>
+                  <span className="text-xs text-muted-foreground">PNG, JPG, or WebP</span>
                 </div>
               </div>
 
