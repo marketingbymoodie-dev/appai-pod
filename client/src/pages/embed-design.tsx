@@ -373,6 +373,8 @@ function xhrFetch(url: string, options: RequestInit = {}): Promise<Response> {
 const _isStorefrontIframe = typeof window !== 'undefined' &&
   window.location.pathname.startsWith('/apps/appai/s/');
 
+const DIRECT_APP_API_BASE = "https://appai-pod-production.up.railway.app";
+
 /**
  * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
  * is broken by Shopify's service worker) and window.fetch everywhere else.
@@ -2927,7 +2929,7 @@ export default function EmbedDesign() {
 
     setCreditsPurchaseLoading(true);
     try {
-      const res = await safeFetch(`${API_BASE}/api/storefront/credits/purchase`, {
+      const res = await window.fetch(`${DIRECT_APP_API_BASE}/api/storefront/credits/purchase`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2937,7 +2939,10 @@ export default function EmbedDesign() {
           returnUrl: window.location.href,
         }),
       });
-      const data = await res.json();
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json")
+        ? await res.json()
+        : { error: (await res.text()).slice(0, 160) || "Credit checkout returned an unexpected response." };
       if (!res.ok || !data.url) {
         throw new Error(data.error || "Could not start checkout");
       }
@@ -5304,6 +5309,10 @@ export default function EmbedDesign() {
                     /* ── Generate state ── */
                     <Button
                       onClick={() => {
+                        if ((isShopify || isStorefront) && customer && credits <= 0) {
+                          setCreditsPopoverOpen(true);
+                          return;
+                        }
                         if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
                           alert("Please select a style before generating");
                           return;
