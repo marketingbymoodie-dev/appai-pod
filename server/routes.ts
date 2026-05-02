@@ -8121,6 +8121,7 @@ ${textEdgeRestrictions}
       if (!customerId || !shop) {
         return res.status(400).json({ error: "customerId and shop are required" });
       }
+      const storefrontCustomerId = String(customerId);
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).json({ error: "Invalid shop domain" });
       }
@@ -8133,10 +8134,10 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
       const customer = isOtpCustomer
-        ? await storage.getCustomer(customerId)
-        : await storage.getOrCreateShopifyCustomer(shop, customerId);
+        ? await storage.getCustomer(storefrontCustomerId)
+        : await storage.getOrCreateShopifyCustomer(shop, storefrontCustomerId);
       if (!customer) {
         return res.status(404).json({ error: "Customer not found" });
       }
@@ -8175,9 +8176,10 @@ ${textEdgeRestrictions}
         cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
         customer_email: (customer as any).email || undefined,
         metadata: {
-          customerId: customer.id,
-          creditsToAdd: creditsToAdd.toString(),
+          customerId: storefrontCustomerId,
           shop,
+          credits: creditsToAdd.toString(),
+          type: "credit_purchase",
         },
       });
 
@@ -8197,6 +8199,7 @@ ${textEdgeRestrictions}
       if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
         return res.status(400).send("customerId and shop are required");
       }
+      const storefrontCustomerId = customerId;
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).send("Invalid shop domain");
       }
@@ -8209,10 +8212,10 @@ ${textEdgeRestrictions}
         return res.status(403).send("Shop not authorized");
       }
 
-      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
       const customer = isOtpCustomer
-        ? await storage.getCustomer(customerId)
-        : await storage.getOrCreateShopifyCustomer(shop, customerId);
+        ? await storage.getCustomer(storefrontCustomerId)
+        : await storage.getOrCreateShopifyCustomer(shop, storefrontCustomerId);
       if (!customer) {
         return res.status(404).send("Customer not found");
       }
@@ -8251,9 +8254,10 @@ ${textEdgeRestrictions}
         cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
         customer_email: (customer as any).email || undefined,
         metadata: {
-          customerId: customer.id,
-          creditsToAdd: creditsToAdd.toString(),
+          customerId: storefrontCustomerId,
           shop,
+          credits: creditsToAdd.toString(),
+          type: "credit_purchase",
         },
       });
 

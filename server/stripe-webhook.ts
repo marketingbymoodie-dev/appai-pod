@@ -24,12 +24,14 @@ export function registerStripeWebhook(app: Express) {
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
-      const { customerId, creditsToAdd } = session.metadata || {};
+      console.log("[Stripe Webhook] session metadata", session.metadata);
+      const customerId = session.metadata?.customerId;
+      const credits = session.metadata?.credits || session.metadata?.creditsToAdd;
 
-      if (customerId && creditsToAdd) {
+      if (customerId && credits) {
         const customer = await storage.getCustomer(customerId);
         if (customer) {
-          const amount = parseInt(creditsToAdd, 10);
+          const amount = parseInt(credits, 10);
           const priceInCents = session.amount_total || 0;
           const newCredits = customer.credits + amount;
           const newTotalSpent = parseFloat(customer.totalSpent) + priceInCents / 100;
