@@ -9,9 +9,19 @@ automatically_update_urls_on_dev = true
 [webhooks]
 api_version = "2026-01"
 
-[[webhooks.subscriptions]]
-topics = [ "orders/paid" ]
-uri = "/shopify/webhooks/orders-paid"
+# orders/paid is required to debit the credit ledger after a redeemed
+# Function discount. It carries protected customer data (email, address,
+# customer GID) so it cannot be declared here until the app is approved
+# for "Protected Customer Data" access in the Partners Dashboard.
+# Once approved, re-add:
+#
+# [[webhooks.subscriptions]]
+# topics = [ "orders/paid" ]
+# uri = "/shopify/webhooks/orders-paid"
+#
+# The handler in server/routes.ts is already live and idempotent, so the
+# moment the subscription is re-enabled, redemption debits + audit rows
+# resume automatically.
 
 [access_scopes]
 # write_content required for creating/updating Shopify Pages via Admin API
