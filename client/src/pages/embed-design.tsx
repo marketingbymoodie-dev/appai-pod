@@ -64,7 +64,7 @@ interface ProductTypeConfig {
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
   frameColors: Array<{ id: string; name: string; hex: string }>;
   hasPrintifyMockups?: boolean;
-  baseMockupImages?: Record<string, string>;
+  baseMockupImages?: Record<string, any>;
   isAllOverPrint?: boolean;
   aopTemplateId?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
@@ -3885,6 +3885,17 @@ export default function EmbedDesign() {
         if (t.fontFamily) {
           root.setProperty('--font-sans', t.fontFamily);
         }
+        if (t.inputFontFamily) {
+          root.setProperty('--appai-control-font-family', t.inputFontFamily);
+        }
+        if (t.inputFontSize) {
+          root.setProperty('--appai-control-font-size', t.inputFontSize);
+        } else if (t.fontSize) {
+          root.setProperty('--appai-control-font-size', t.fontSize);
+        }
+        if (t.inputFontWeight) {
+          root.setProperty('--appai-control-font-weight', t.inputFontWeight);
+        }
         if (t.headingFontFamily && t.headingFontFamily !== t.fontFamily) {
           root.setProperty('--font-heading', t.headingFontFamily);
         }
@@ -5416,8 +5427,8 @@ export default function EmbedDesign() {
                         />
                       )}
                       {!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups && (
-                        <div>
-                          <Label htmlFor="print-placement-select" className="text-xs font-medium uppercase tracking-wide">
+                        <div className="space-y-2">
+                          <Label htmlFor="print-placement-select" className="uppercase">
                             Print Side
                           </Label>
                           <Select
@@ -5442,10 +5453,10 @@ export default function EmbedDesign() {
                               }
                             }}
                           >
-                            <SelectTrigger id="print-placement-select" className="h-10">
+                            <SelectTrigger id="print-placement-select" className="h-11">
                               <SelectValue placeholder="Select print side" />
                             </SelectTrigger>
-                            <SelectContent>
+                            <SelectContent position="popper">
                               <SelectItem value="front">Print on Front</SelectItem>
                               <SelectItem value="back">Print on Back</SelectItem>
                               <SelectItem value="both">Print Both Sides</SelectItem>
@@ -5825,7 +5836,12 @@ export default function EmbedDesign() {
                       designerType={productTypeConfig?.designerType || "generic"}
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
-                      blankImageUrl={productTypeConfig?.baseMockupImages?.front || null}
+                      blankImageUrl={
+                        productTypeConfig?.baseMockupImages?.primary ||
+                        productTypeConfig?.baseMockupImages?.front ||
+                        productTypeConfig?.baseMockupImages?.gallery?.[0] ||
+                        null
+                      }
                       aspectRatio={productTypeConfig?.aspectRatio}
                     />
                   );

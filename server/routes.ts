@@ -7657,7 +7657,7 @@ ${textEdgeRestrictions}
           try { frameColors = JSON.parse(pt.frameColors as string || "[]"); } catch (_) {}
           try {
             const imgs = JSON.parse(pt.baseMockupImages as string || "{}");
-            primaryMockupImage = (Object.values(imgs)[0] as string) || null;
+            primaryMockupImage = imgs.primary || imgs.front || imgs.gallery?.[0] || imgs.lifestyle || null;
           } catch (_) {}
 
           const variants = Object.keys(variantMap)
@@ -10793,11 +10793,159 @@ ${textEdgeRestrictions}
     }
   });
 
+  type PlaceholderImageOption = {
+    url: string;
+    label: string;
+    position?: string;
+    source?: "blueprint" | "provider" | "placeholder";
+  };
+
+  function extractPrintifyImageUrl(img: any): string | undefined {
+    if (typeof img === "string") return img;
+    if (img && typeof img === "object") return img.src || img.url;
+    return undefined;
+  }
+
+  function addPlaceholderOption(
+    list: PlaceholderImageOption[],
+    seen: Set<string>,
+    url: string | undefined,
+    label: string,
+    position?: string,
+    source?: PlaceholderImageOption["source"],
+  ) {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    list.push({ url, label, position, source });
+  }
+
+  async function fetchPrintifyPlaceholderOptions(
+    apiToken: string,
+    blueprintId: number,
+    providerId: number,
+  ): Promise<PlaceholderImageOption[]> {
+    const images: PlaceholderImageOption[] = [];
+    const seen = new Set<string>();
+    const headers = {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    };
+
+    const blueprintResponse = await fetchWithRetry(
+      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}.json`,
+      { headers },
+      2,
+      1000,
+    );
+    if (blueprintResponse.ok) {
+      const blueprintData = await blueprintResponse.json();
+      (blueprintData.images || []).forEach((img: any, index: number) => {
+        addPlaceholderOption(images, seen, extractPrintifyImageUrl(img), `Catalog image ${index + 1}`, undefined, "blueprint");
+      });
+    }
+
+    const providerResponse = await fetchWithRetry(
+      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}.json`,
+      { headers },
+      2,
+      1000,
+    );
+    if (providerResponse.ok) {
+      const providerData = await providerResponse.json();
+      addPlaceholderOption(images, seen, extractPrintifyImageUrl(providerData.image), "Provider image", undefined, "provider");
+    }
+
+    const variantsResponse = await fetchWithRetry(
+      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      { headers },
+      2,
+      1000,
+    );
+    if (variantsResponse.ok) {
+      const variantsData = await variantsResponse.json();
+      const variants = variantsData.variants || variantsData || [];
+      const firstVariant = variants[0];
+      const variantId = firstVariant?.variant_id || firstVariant?.id;
+      if (variantId) {
+        const placeholderResponse = await fetchWithRetry(
+          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variantId}/placeholders.json`,
+          { headers },
+          2,
+          1000,
+        );
+        if (placeholderResponse.ok) {
+          const placeholderData = await placeholderResponse.json();
+          const placeholders = placeholderData.placeholders || placeholderData || [];
+          for (const placeholder of placeholders) {
+            const position = String(placeholder.position || "placeholder");
+            const placeholderImages = placeholder.images || [];
+            placeholderImages.forEach((img: any, index: number) => {
+              addPlaceholderOption(
+                images,
+                seen,
+                extractPrintifyImageUrl(img),
+                `${position.replace(/_/g, " ")}${placeholderImages.length > 1 ? ` ${index + 1}` : ""}`,
+                position,
+                "placeholder",
+              );
+            });
+          }
+        }
+      }
+    }
+
+    return images;
+  }
+
+  function buildBaseMockupImagesFromOptions(
+    available: PlaceholderImageOption[],
+    primaryUrl?: string,
+    galleryUrls?: string[],
+    customUrls?: string[],
+  ) {
+    const byPosition = (name: string) =>
+      available.find((img) => (img.position || "").toLowerCase() === name || (img.position || "").toLowerCase().includes(name))?.url;
+    const firstUrl = available[0]?.url;
+    const detectedFront = byPosition("front") || firstUrl;
+    const front = primaryUrl || detectedFront;
+    const lifestyle = available.find((img) => img.source === "blueprint" && img.url !== front)?.url || available.find((img) => img.url !== front)?.url;
+    const uniqueGallery = Array.from(new Set((galleryUrls || []).filter(Boolean))).slice(0, 3);
+    const uniqueCustom = Array.from(new Set((customUrls || []).filter(Boolean))).slice(0, 3);
+    return {
+      ...(front ? { front } : {}),
+      ...(lifestyle ? { lifestyle } : {}),
+      ...(front ? { primary: front } : {}),
+      gallery: uniqueGallery.length > 0 ? uniqueGallery : (front ? [front] : []),
+      custom: uniqueCustom,
+      available,
+    };
+  }
+
+  // GET available placeholder images before importing a Printify product.
+  app.get("/api/admin/printify/blueprints/:blueprintId/providers/:providerId/placeholders", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+      if (!merchant.printifyApiToken) return res.status(400).json({ error: "Printify API token not configured" });
+
+      const blueprintId = parseInt(req.params.blueprintId);
+      const providerId = parseInt(req.params.providerId);
+      if (!blueprintId || !providerId) return res.status(400).json({ error: "Invalid blueprint or provider ID" });
+
+      const images = await fetchPrintifyPlaceholderOptions(merchant.printifyApiToken, blueprintId, providerId);
+      res.json({ images });
+    } catch (error) {
+      console.error("Error fetching Printify placeholder images:", error);
+      res.status(500).json({ error: "Failed to fetch placeholder images" });
+    }
+  });
+
   // Import a Printify blueprint as a product type
   app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { blueprintId, name, description, selectedSizeIds, selectedColorIds } = req.body;
+      const { blueprintId, name, description, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant) {
@@ -11443,56 +11591,26 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Fetch base mockup images (placeholder images) from the first variant
-      // This gives us product preview images before any design is applied
-      let baseMockupImages: { front?: string; lifestyle?: string; variantImages?: Record<string, string> } = {};
-      const firstVariant = variants[0];
-      if (firstVariant?.id) {
-        try {
-          // Fetch variant placeholder images from Printify
-          const placeholderResponse = await fetchWithRetry(
-            `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${firstVariant.id}/placeholders.json`,
-            {
-              headers: {
-                "Authorization": `Bearer ${merchant.printifyApiToken}`,
-                "Content-Type": "application/json"
-              }
-            },
-            2,
-            1000
-          );
-          
-          if (placeholderResponse.ok) {
-            const placeholderData = await placeholderResponse.json();
-            console.log(`Placeholder API response for blueprint ${blueprintId}, variant ${firstVariant.id}:`, JSON.stringify(placeholderData).slice(0, 500));
-            
-            const placeholders = placeholderData.placeholders || placeholderData || [];
-            
-            // Find front and lifestyle images
-            for (const placeholder of placeholders) {
-              const position = (placeholder.position || "").toLowerCase();
-              const images = placeholder.images || [];
-              
-              if (images.length > 0) {
-                const imgUrl = images[0].src || images[0].url;
-                if (position === "front" || position.includes("front")) {
-                  baseMockupImages.front = imgUrl;
-                } else if (position === "lifestyle" || position.includes("lifestyle")) {
-                  baseMockupImages.lifestyle = imgUrl;
-                } else if (!baseMockupImages.front) {
-                  // Use first available position as front if no explicit front
-                  baseMockupImages.front = imgUrl;
-                }
-              }
-            }
-            console.log(`Fetched base mockup images for blueprint ${blueprintId}:`, Object.keys(baseMockupImages));
-          } else {
-            console.warn(`Placeholder API returned ${placeholderResponse.status} for blueprint ${blueprintId}`);
-          }
-        } catch (e) {
-          console.warn("Could not fetch base mockup placeholders:", e);
-        }
+      let availablePlaceholderImages: PlaceholderImageOption[] = [];
+      try {
+        availablePlaceholderImages = await fetchPrintifyPlaceholderOptions(
+          merchant.printifyApiToken,
+          parseInt(blueprintId),
+          providerId,
+        );
+        console.log(`Fetched ${availablePlaceholderImages.length} placeholder image options for blueprint ${blueprintId}`);
+      } catch (e) {
+        console.warn("Could not fetch base mockup placeholders:", e);
       }
+      const selectedPrimaryUrl = typeof placeholderPrimaryUrl === "string" ? placeholderPrimaryUrl : undefined;
+      const selectedGalleryUrls = Array.isArray(placeholderGalleryUrls) ? placeholderGalleryUrls.map(String) : undefined;
+      const selectedCustomUrls = Array.isArray(customPlaceholderUrls) ? customPlaceholderUrls.map(String) : undefined;
+      const baseMockupImages = buildBaseMockupImagesFromOptions(
+        availablePlaceholderImages,
+        selectedPrimaryUrl,
+        selectedGalleryUrls,
+        selectedCustomUrls,
+      );
 
       // Detect product type FIRST to determine sizeType
       // This is more reliable than checking dimensions since some dimensional products
@@ -11960,122 +12078,20 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Product type is not linked to Printify" });
       }
 
-      // Helper to extract URL from image entry (handles both string and object formats)
-      const extractImageUrl = (img: any): string | undefined => {
-        if (typeof img === 'string') return img;
-        if (img && typeof img === 'object') return img.src || img.url;
-        return undefined;
-      };
-
-      let baseMockupImages: { front?: string; lifestyle?: string } = {};
-
-      // First, fetch blueprint details which contains product images
-      const blueprintResponse = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
+      const existingImages = typeof productType.baseMockupImages === "string"
+        ? JSON.parse(productType.baseMockupImages || "{}")
+        : productType.baseMockupImages || {};
+      const availablePlaceholderImages = await fetchPrintifyPlaceholderOptions(
+        merchant.printifyApiToken,
+        productType.printifyBlueprintId,
+        productType.printifyProviderId,
       );
-
-      if (blueprintResponse.ok) {
-        const blueprintData = await blueprintResponse.json();
-        const images = blueprintData.images || [];
-        
-        // Blueprint images are product mockups - use first as front, second as lifestyle if available
-        if (images.length > 0) {
-          baseMockupImages.front = extractImageUrl(images[0]);
-        }
-        if (images.length > 1) {
-          baseMockupImages.lifestyle = extractImageUrl(images[1]);
-        }
-      }
-
-      // If no images from blueprint, try print provider specific endpoint
-      if (!baseMockupImages.front) {
-        const providerResponse = await fetch(
-          `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}.json`,
-          {
-            headers: {
-              "Authorization": `Bearer ${merchant.printifyApiToken}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-
-        if (providerResponse.ok) {
-          const providerData = await providerResponse.json();
-          // Provider data may have location-specific images
-          if (providerData.image) {
-            baseMockupImages.front = extractImageUrl(providerData.image);
-          }
-        }
-      }
-
-      // Also fetch placeholder data for print-area/safe-zone information
-      const variantsResponse = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants.json`,
-        {
-          headers: {
-            "Authorization": `Bearer ${merchant.printifyApiToken}`,
-            "Content-Type": "application/json"
-          }
-        }
+      const baseMockupImages = buildBaseMockupImagesFromOptions(
+        availablePlaceholderImages,
+        existingImages.primary,
+        existingImages.gallery,
+        existingImages.custom,
       );
-
-      if (variantsResponse.ok) {
-        const variantsData = await variantsResponse.json();
-        const variants = variantsData.variants || [];
-        
-        if (variants.length > 0) {
-          const firstVariant = variants[0];
-          const variantId = firstVariant.variant_id || firstVariant.id;
-          
-          if (variantId) {
-            const placeholderResponse = await fetch(
-              `https://api.printify.com/v1/catalog/blueprints/${productType.printifyBlueprintId}/print_providers/${productType.printifyProviderId}/variants/${variantId}/placeholders.json`,
-              {
-                headers: {
-                  "Authorization": `Bearer ${merchant.printifyApiToken}`,
-                  "Content-Type": "application/json"
-                }
-              }
-            );
-
-            if (placeholderResponse.ok) {
-              const placeholderData = await placeholderResponse.json();
-              const placeholders = placeholderData.placeholders || [];
-              
-              // Fallback: If no images from blueprint/provider, try to extract from placeholder images
-              if (!baseMockupImages.front || !baseMockupImages.lifestyle) {
-                for (const placeholder of placeholders) {
-                  const position = placeholder.position?.toLowerCase() || "";
-                  const images = placeholder.images || [];
-                  
-                  if (images.length > 0) {
-                    const imgUrl = extractImageUrl(images[0]);
-                    if (imgUrl) {
-                      if (!baseMockupImages.front && (position === "front" || position.includes("front"))) {
-                        baseMockupImages.front = imgUrl;
-                      } else if (!baseMockupImages.lifestyle && (position === "lifestyle" || position.includes("lifestyle"))) {
-                        baseMockupImages.lifestyle = imgUrl;
-                      } else if (!baseMockupImages.front) {
-                        // Use first available image as front if no specific position match yet
-                        baseMockupImages.front = imgUrl;
-                      } else if (!baseMockupImages.lifestyle) {
-                        // Use subsequent image as lifestyle if front is already set
-                        baseMockupImages.lifestyle = imgUrl;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
 
       // Check if we found any images
       if (!baseMockupImages.front && !baseMockupImages.lifestyle) {
@@ -12887,7 +12903,7 @@ ${textEdgeRestrictions}
 
     // Strategy 3: upload the stored mockup image URL (Printify CDN)
     const mockupUrl: string | undefined =
-      baseMockupImages.front || baseMockupImages.lifestyle || (Object.values(baseMockupImages)[0] as string | undefined);
+      baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
     if (mockupUrl) {
       console.log(`[Printify Costs] Strategy 3a — upload product mockup URL: ${mockupUrl.slice(0, 80)}`);
       const uploadedId = await uploadPublicImageToPrintify(apiToken, mockupUrl);
@@ -14184,6 +14200,66 @@ ${textEdgeRestrictions}
       updates.baseProductPrice = v.price ?? "";
     }
 
+    const productTypeId = dbPage.productTypeId ? Number(dbPage.productTypeId) : null;
+    const linkedProductType = productTypeId ? await storage.getProductType(productTypeId) : undefined;
+    if (linkedProductType && linkedProductType.merchantId !== installation.merchantId) {
+      return res.status(403).json({ error: "Product type does not belong to this merchant" });
+    }
+
+    if (req.body.description !== undefined) {
+      if (!linkedProductType) return res.status(400).json({ error: "No linked product type found for this page" });
+      const description = String(req.body.description || "").trim();
+      await storage.updateProductType(linkedProductType.id, { description });
+
+      if (dbPage.baseProductId) {
+        const cleanDescription = description
+          .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
+          .replace(/<[^>]*>/g, " ")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&amp;/g, "&")
+          .replace(/\s+/g, " ")
+          .trim();
+        await shopifyApiCall(
+          shop,
+          installation.accessToken,
+          `products/${dbPage.baseProductId}.json`,
+          {
+            method: "PUT",
+            body: JSON.stringify({
+              product: {
+                id: dbPage.baseProductId,
+                body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
+              },
+            }),
+          },
+        );
+      }
+    }
+
+    if (req.body.baseMockupImages !== undefined) {
+      if (!linkedProductType) return res.status(400).json({ error: "No linked product type found for this page" });
+      const currentImages = typeof linkedProductType.baseMockupImages === "string"
+        ? JSON.parse(linkedProductType.baseMockupImages || "{}")
+        : linkedProductType.baseMockupImages || {};
+      const incomingImages = req.body.baseMockupImages || {};
+      const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 3) : (currentImages.custom || []);
+      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 3) : (currentImages.gallery || []);
+      const primary = typeof incomingImages.primary === "string" && incomingImages.primary ? incomingImages.primary : currentImages.primary;
+      const nextImages = {
+        ...currentImages,
+        primary,
+        front: primary || currentImages.front,
+        gallery,
+        custom,
+        available,
+      };
+      await storage.updateProductType(linkedProductType.id, {
+        baseMockupImages: JSON.stringify(nextImages),
+      });
+    }
+
     // Sync title to Shopify page if changed
     if (updates.title && dbPage.shopifyPageId) {
       await shopifyApiCall(
@@ -14483,6 +14559,10 @@ ${textEdgeRestrictions}
           printifyBlueprintId: pt.printifyBlueprintId ?? null,
           printifyProviderId: pt.printifyProviderId ?? null,
           printifyVariantLabels: pvLabels,
+          description: pt.description ?? "",
+          baseMockupImages: typeof pt.baseMockupImages === "string"
+            ? JSON.parse(pt.baseMockupImages || "{}")
+            : (pt.baseMockupImages || {}),
           variants: dbVariants,
         });
       }

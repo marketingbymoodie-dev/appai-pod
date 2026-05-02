@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,7 +25,7 @@ import {
 import {
   Globe, LayoutTemplate, Loader2, Plus, ExternalLink, Trash2,
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
-  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory,
+  CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
@@ -72,6 +73,15 @@ interface Blank {
   printifyBlueprintId?: number | null;
   printifyProviderId?: number | null;
   printifyVariantLabels?: Record<string, string>;
+  description?: string | null;
+  baseMockupImages?: {
+    primary?: string;
+    front?: string;
+    lifestyle?: string;
+    gallery?: string[];
+    custom?: string[];
+    available?: Array<{ url: string; label: string; position?: string; source?: string }>;
+  };
   variants: BlankVariant[];
 }
 
@@ -94,9 +104,14 @@ export default function AdminCustomizerPages() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
+  const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesMap, setSyncPricesMap] = useState<Record<string, string>>({});
   const [syncPricesLoading, setSyncPricesLoading] = useState(false);
   const [syncMarkupPercent, setSyncMarkupPercent] = useState(60);
+  const [editDescription, setEditDescription] = useState("");
+  const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
+  const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
+  const [editCustomPlaceholder, setEditCustomPlaceholder] = useState("");
 
   // Hub URL (fallback for disabled pages)
   const [hubUrl, setHubUrl] = useState("");
@@ -161,7 +176,7 @@ export default function AdminCustomizerPages() {
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
-    enabled: createOpen || !!syncPricesTarget,
+    enabled: createOpen || !!syncPricesTarget || !!editTarget,
   });
 
   // Costs query for the Sync Prices dialog — uses the page's productTypeId
@@ -172,6 +187,23 @@ export default function AdminCustomizerPages() {
              b.productId === syncPricesTarget.baseProductId
     ) ?? null;
   }, [syncPricesTarget, blanksData]);
+
+  const editBlank = useMemo(() => {
+    if (!editTarget || !blanksData?.blanks) return null;
+    return blanksData.blanks.find(
+      (b) => b.productTypeId === editTarget.productTypeId ||
+             b.productId === editTarget.baseProductId
+    ) ?? null;
+  }, [editTarget, blanksData]);
+
+  useEffect(() => {
+    if (!editTarget || !editBlank) return;
+    const images = editBlank.baseMockupImages || {};
+    setEditDescription(editBlank.description || "");
+    setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
+    setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, 3)));
+    setEditCustomPlaceholder("");
+  }, [editTarget?.id, editBlank?.productTypeId]);
 
   const { data: syncCostsData, isLoading: syncCostsLoading } = useQuery<{
     costs: Record<string, number>;
@@ -282,6 +314,33 @@ export default function AdminCustomizerPages() {
     onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  const editMutation = useMutation({
+    mutationFn: async () => {
+      if (!editTarget) throw new Error("No customizer page selected");
+      const custom = [
+        ...(editBlank?.baseMockupImages?.custom || []),
+        editCustomPlaceholder.trim(),
+      ].filter(Boolean).slice(0, 3);
+      const res = await apiRequest("PATCH", `/api/appai/customizer-pages/${editTarget.id}`, {
+        description: editDescription,
+        baseMockupImages: {
+          primary: editPrimaryPlaceholder,
+          gallery: Array.from(editGalleryPlaceholders),
+          custom,
+        },
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
+      setEditTarget(null);
+      setEditCustomPlaceholder("");
+      toast({ title: "Customizer updated", description: "Description and placeholder settings were saved." });
+    },
+    onError: (err: any) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       if (!id) throw new Error("Missing page ID");
@@ -326,6 +385,18 @@ export default function AdminCustomizerPages() {
     } finally {
       setSyncPricesLoading(false);
     }
+  }
+
+  function toggleEditGalleryPlaceholder(url: string) {
+    setEditGalleryPlaceholders((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) {
+        next.delete(url);
+      } else if (next.size < 3) {
+        next.add(url);
+      }
+      return next;
+    });
   }
 
   function resetForm() {
@@ -1356,6 +1427,14 @@ export default function AdminCustomizerPages() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            title="Edit page settings"
+                            onClick={() => setEditTarget(page)}
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             title="Sync prices to Shopify"
                             onClick={() => {
                               setSyncPricesTarget(page);
@@ -1411,6 +1490,131 @@ export default function AdminCustomizerPages() {
           </>
         )}
       </div>
+
+      {/* Edit customizer page dialog */}
+      <Dialog open={!!editTarget} onOpenChange={(v) => { if (!v) setEditTarget(null); }}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Edit2 className="h-5 w-5" />
+              Edit Customizer — {editTarget?.title}
+            </DialogTitle>
+          </DialogHeader>
+          {blanksLoading ? (
+            <Skeleton className="h-64 w-full" />
+          ) : !editBlank ? (
+            <p className="rounded-md border p-3 text-sm text-muted-foreground">
+              Product settings could not be loaded for this page.
+            </p>
+          ) : (
+            <div className="space-y-5 pt-2">
+              <div className="space-y-2">
+                <Label htmlFor="edit-description">Product Description</Label>
+                <Textarea
+                  id="edit-description"
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  rows={5}
+                  placeholder="Describe this custom product..."
+                />
+                <p className="text-xs text-muted-foreground">
+                  Saved locally and synced to the linked Shopify product description.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Placeholder Images</Label>
+                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to 3 gallery images</span>
+                </div>
+                {(() => {
+                  const images = editBlank.baseMockupImages || {};
+                  const available = [
+                    ...(images.available || []),
+                    ...(images.custom || []).map((url) => ({ url, label: "Custom image", source: "custom" })),
+                  ].filter((img, index, arr) => img.url && arr.findIndex((x) => x.url === img.url) === index);
+                  if (available.length === 0) {
+                    return (
+                      <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                        No placeholder images are stored yet. Add a custom URL below, or refresh images from the Products admin page.
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2">
+                      {available.map((img, index) => {
+                        const isPrimary = editPrimaryPlaceholder === img.url;
+                        const isGallery = editGalleryPlaceholders.has(img.url);
+                        return (
+                          <div key={`${img.url}-${index}`} className={`rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}>
+                            <button
+                              type="button"
+                              className="block w-full overflow-hidden rounded bg-muted"
+                              onClick={() => setEditPrimaryPlaceholder(img.url)}
+                            >
+                              <img src={img.url} alt={img.label} className="h-28 w-full object-cover" />
+                            </button>
+                            <p className="truncate text-xs font-medium">{img.label}</p>
+                            <div className="flex items-center justify-between gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant={isPrimary ? "default" : "outline"}
+                                className="h-7 px-2 text-xs"
+                                onClick={() => setEditPrimaryPlaceholder(img.url)}
+                              >
+                                Primary
+                              </Button>
+                              <label className="flex items-center gap-1 text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={isGallery}
+                                  disabled={!isGallery && editGalleryPlaceholders.size >= 3}
+                                  onChange={() => toggleEditGalleryPlaceholder(img.url)}
+                                />
+                                Gallery
+                              </label>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+                <div className="flex gap-2">
+                  <Input
+                    value={editCustomPlaceholder}
+                    onChange={(e) => setEditCustomPlaceholder(e.target.value)}
+                    placeholder="https://... custom placeholder image"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      const url = editCustomPlaceholder.trim();
+                      if (!url) return;
+                      setEditPrimaryPlaceholder(url);
+                      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, 3)));
+                    }}
+                  >
+                    Use URL
+                  </Button>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setEditTarget(null)} disabled={editMutation.isPending}>
+                  Cancel
+                </Button>
+                <Button onClick={() => editMutation.mutate()} disabled={editMutation.isPending}>
+                  {editMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                  Save Changes
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Sync Prices dialog */}
       <Dialog open={!!syncPricesTarget} onOpenChange={(v) => { if (!v) { setSyncPricesTarget(null); setSyncPricesMap({}); } }}>

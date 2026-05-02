@@ -69,6 +69,13 @@ interface PrintifyProvider {
   fulfillment_countries?: string[];
 }
 
+interface PlaceholderImageOption {
+  url: string;
+  label: string;
+  position?: string;
+  source?: string;
+}
+
 export default function AdminProducts() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
@@ -79,6 +86,8 @@ export default function AdminProducts() {
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
   const [providerLocationFilter, setProviderLocationFilter] = useState("");
+  const [placeholderPrimaryUrl, setPlaceholderPrimaryUrl] = useState("");
+  const [placeholderGalleryUrls, setPlaceholderGalleryUrls] = useState<Set<string>>(new Set());
   
   // Variant selection step
   const [variantSelectionOpen, setVariantSelectionOpen] = useState(false);
@@ -128,6 +137,19 @@ export default function AdminProducts() {
     enabled: !!selectedBlueprint && providerSelectionOpen,
   });
 
+  const { data: placeholderOptionsData, isLoading: placeholderOptionsLoading } = useQuery<{ images: PlaceholderImageOption[] }>({
+    queryKey: ["/api/admin/printify/placeholders", selectedBlueprint?.id, selectedProvider?.id],
+    queryFn: async () => {
+      if (!selectedBlueprint || !selectedProvider) return { images: [] };
+      const response = await fetch(`/api/admin/printify/blueprints/${selectedBlueprint.id}/providers/${selectedProvider.id}/placeholders`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Failed to fetch placeholder images");
+      return response.json();
+    },
+    enabled: !!selectedBlueprint && !!selectedProvider && variantSelectionOpen,
+  });
+
   const { data: allProviders } = useQuery<PrintifyProvider[]>({
     queryKey: ["/api/admin/printify/providers"],
     queryFn: async () => {
@@ -174,6 +196,8 @@ export default function AdminProducts() {
       providerId?: number;
       selectedSizeIds?: string[];
       selectedColorIds?: string[];
+      placeholderPrimaryUrl?: string;
+      placeholderGalleryUrls?: string[];
     }) => {
       const response = await apiRequest("POST", "/api/admin/printify/import", data);
       return response.json();
@@ -187,6 +211,8 @@ export default function AdminProducts() {
       setSelectedProvider(null);
       setSelectedSizeIds(new Set());
       setSelectedColorIds(new Set());
+      setPlaceholderPrimaryUrl("");
+      setPlaceholderGalleryUrls(new Set());
       setAvailableSizes([]);
       setAvailableColors([]);
       setBlueprintSearch("");
@@ -461,6 +487,8 @@ export default function AdminProducts() {
   const handleProceedToVariants = async () => {
     setProviderSelectionOpen(false);
     setVariantSelectionOpen(true);
+    setPlaceholderPrimaryUrl("");
+    setPlaceholderGalleryUrls(new Set());
     await loadVariantData();
   };
 
@@ -475,6 +503,8 @@ export default function AdminProducts() {
       providerId: selectedProvider?.id,
       selectedSizeIds: Array.from(selectedSizeIds),
       selectedColorIds: Array.from(selectedColorIds),
+      placeholderPrimaryUrl: placeholderPrimaryUrl || undefined,
+      placeholderGalleryUrls: Array.from(placeholderGalleryUrls),
     });
   };
   
@@ -497,6 +527,18 @@ export default function AdminProducts() {
         next.delete(colorId);
       } else {
         next.add(colorId);
+      }
+      return next;
+    });
+  };
+
+  const togglePlaceholderGalleryUrl = (url: string) => {
+    setPlaceholderGalleryUrls(prev => {
+      const next = new Set(prev);
+      if (next.has(url)) {
+        next.delete(url);
+      } else if (next.size < 3) {
+        next.add(url);
       }
       return next;
     });
@@ -575,7 +617,7 @@ export default function AdminProducts() {
               const mockupImages = typeof pt.baseMockupImages === 'string' 
                 ? JSON.parse(pt.baseMockupImages || "{}") 
                 : pt.baseMockupImages || {};
-              const productImage = mockupImages.front || mockupImages.lifestyle;
+              const productImage = mockupImages.primary || mockupImages.front || mockupImages.gallery?.[0] || mockupImages.lifestyle;
               
               return (
                 <Card key={pt.id} data-testid={`card-product-${pt.id}`}>
@@ -1044,6 +1086,66 @@ export default function AdminProducts() {
                       </div>
                     </div>
                   )}
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium">Placeholder Images</Label>
+                      <span className="text-xs text-muted-foreground">
+                        Choose 1 primary and up to 3 gallery images
+                      </span>
+                    </div>
+                    {placeholderOptionsLoading ? (
+                      <div className="flex items-center gap-2 rounded-md border p-3 text-sm text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading available placeholders...
+                      </div>
+                    ) : (placeholderOptionsData?.images?.length ?? 0) > 0 ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-64 overflow-y-auto border rounded-md p-2">
+                        {placeholderOptionsData!.images.map((img, index) => {
+                          const isPrimary = (placeholderPrimaryUrl || placeholderOptionsData!.images[0]?.url) === img.url;
+                          const isGallery = placeholderGalleryUrls.has(img.url);
+                          return (
+                            <div key={`${img.url}-${index}`} className={`rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}>
+                              <button
+                                type="button"
+                                className="block w-full overflow-hidden rounded bg-muted"
+                                onClick={() => setPlaceholderPrimaryUrl(img.url)}
+                                title="Use as primary placeholder"
+                              >
+                                <img src={img.url} alt={img.label} className="h-24 w-full object-cover" />
+                              </button>
+                              <div className="space-y-1">
+                                <p className="truncate text-xs font-medium">{img.label}</p>
+                                <div className="flex items-center justify-between gap-2">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant={isPrimary ? "default" : "outline"}
+                                    className="h-7 px-2 text-xs"
+                                    onClick={() => setPlaceholderPrimaryUrl(img.url)}
+                                  >
+                                    Primary
+                                  </Button>
+                                  <label className="flex items-center gap-1 text-xs">
+                                    <Checkbox
+                                      checked={isGallery}
+                                      disabled={!isGallery && placeholderGalleryUrls.size >= 3}
+                                      onCheckedChange={() => togglePlaceholderGalleryUrl(img.url)}
+                                    />
+                                    Gallery
+                                  </label>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                        No placeholder images were returned by Printify. The product can still be imported.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
               

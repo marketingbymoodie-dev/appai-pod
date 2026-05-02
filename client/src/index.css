@@ -46,6 +46,9 @@
   --font-sans: Open Sans, sans-serif;
   --font-serif: Georgia, serif;
   --font-mono: Menlo, monospace;
+  --appai-control-font-family: var(--font-sans);
+  --appai-control-font-size: 14px;
+  --appai-control-font-weight: 400;
   --radius: .5rem;
   --shadow-2xs: 0px 2px 0px 0px hsl(262 83% 58% / 0.00);
   --shadow-xs: 0px 2px 0px 0px hsl(262 83% 58% / 0.00);
@@ -172,6 +175,16 @@
 
   body {
     @apply font-sans antialiased bg-background text-foreground;
+  }
+
+  button,
+  input,
+  textarea,
+  [role="combobox"],
+  [data-radix-select-item] {
+    font-family: var(--appai-control-font-family, var(--font-sans));
+    font-size: var(--appai-control-font-size, inherit);
+    font-weight: var(--appai-control-font-weight, inherit);
   }
 }
 
