@@ -1,0 +1,20 @@
+query Input {
+  cart {
+    buyerIdentity {
+      customer {
+        id
+        metafield(namespace: "$app:credits", key: "off_entitled_cents") {
+          value
+        }
+      }
+    }
+    cost {
+      subtotalAmount {
+        amount
+      }
+    }
+    lines {
+      id
+    }
+  }
+}

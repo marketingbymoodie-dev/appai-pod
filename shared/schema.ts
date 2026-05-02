@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, serial, integer, timestamp, boolean, decimal, json } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, serial, integer, timestamp, boolean, decimal, json, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -26,6 +26,98 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({
 });
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
+
+// Stable customer identity aliases. Every storefront identifier (Shopify
+// customer id, OTP email, anonymous session) resolves to one internal customer.
+export const customerAliases = pgTable("customer_aliases", {
+  id: serial("id").primaryKey(),
+  customerId: varchar("customer_id").notNull(),
+  aliasType: text("alias_type").notNull(), // shopify | otp_email | anon_session
+  aliasValue: text("alias_value").notNull(),
+  shop: text("shop"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("customer_aliases_alias_unique").on(table.aliasType, table.aliasValue, table.shop),
+  index("customer_aliases_customer_idx").on(table.customerId),
+]);
+
+export const insertCustomerAliasSchema = createInsertSchema(customerAliases).omit({
+  id: true,
+  createdAt: true,
+});
+export type CustomerAlias = typeof customerAliases.$inferSelect;
+export type InsertCustomerAlias = z.infer<typeof insertCustomerAliasSchema>;
+
+// Materialized credit balance. The ledger remains authoritative for audit, this
+// table makes reads and atomic debits simple.
+export const creditBalances = pgTable("credit_balances", {
+  customerId: varchar("customer_id").primaryKey(),
+  credits: integer("credits").notNull().default(0),
+  freeGenerationsUsed: integer("free_generations_used").notNull().default(0),
+  discountEntitlementCents: integer("discount_entitlement_cents").notNull().default(0),
+  version: integer("version").notNull().default(0),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertCreditBalanceSchema = createInsertSchema(creditBalances);
+export type CreditBalance = typeof creditBalances.$inferSelect;
+export type InsertCreditBalance = z.infer<typeof insertCreditBalanceSchema>;
+
+// Append-only credit ledger. Every mutation must have a stable idempotency key.
+export const creditLedger = pgTable("credit_ledger", {
+  id: serial("id").primaryKey(),
+  customerId: varchar("customer_id").notNull(),
+  deltaCredits: integer("delta_credits").notNull(),
+  deltaEntitlementCents: integer("delta_entitlement_cents").notNull().default(0),
+  reason: text("reason").notNull(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  externalRef: text("external_ref"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("credit_ledger_customer_created_idx").on(table.customerId, table.createdAt),
+]);
+
+export const insertCreditLedgerSchema = createInsertSchema(creditLedger).omit({
+  id: true,
+  createdAt: true,
+});
+export type CreditLedger = typeof creditLedger.$inferSelect;
+export type InsertCreditLedger = z.infer<typeof insertCreditLedgerSchema>;
+
+export const stripeEvents = pgTable("stripe_events", {
+  stripeEventId: text("stripe_event_id").primaryKey(),
+  type: text("type").notNull(),
+  outcome: text("outcome"),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+});
+
+export const insertStripeEventSchema = createInsertSchema(stripeEvents).omit({
+  receivedAt: true,
+});
+export type StripeEvent = typeof stripeEvents.$inferSelect;
+export type InsertStripeEvent = z.infer<typeof insertStripeEventSchema>;
+
+export const orderDiscountClaims = pgTable("order_discount_claims", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull(),
+  shopifyOrderId: text("shopify_order_id").unique(),
+  shop: text("shop").notNull(),
+  entitlementCents: integer("entitlement_cents").notNull(),
+  status: text("status").notNull().default("pending"), // pending | applied | reversed
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("order_discount_claims_customer_idx").on(table.customerId),
+]);
+
+export const insertOrderDiscountClaimSchema = createInsertSchema(orderDiscountClaims).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type OrderDiscountClaim = typeof orderDiscountClaims.$inferSelect;
+export type InsertOrderDiscountClaim = z.infer<typeof insertOrderDiscountClaimSchema>;
 
 // Merchant settings
 export const merchants = pgTable("merchants", {

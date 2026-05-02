@@ -1,0 +1,19 @@
+api_version = "2025-10"
+
+[[extensions]]
+
+uid = "85fe3e82-f944-f35c-5181-b6435d66b234b9d9103b"
+
+type = "function"
+name = "AppAI Credit Buyer Discount"
+handle = "appai-credit-buyer-discount"
+description = "Applies the AppAI one-time $1 benefit for customers who bought artwork credits."
+
+  [[extensions.targeting]]
+  target = "cart.lines.discounts.generate.run"
+  input_query = "src/run.graphql"
+  export = "run"
+
+  [extensions.build]
+  command = ""
+  path = "dist/function.wasm"

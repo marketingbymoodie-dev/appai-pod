@@ -1,10 +1,11 @@
 import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import { storage } from "./storage";
+import { ensureCreditDiscountActivated } from "./credit-discount-activation";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
-const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory";
+const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders";
 
 export async function registerCartScript(shop: string, accessToken: string): Promise<void> {
   const appUrl = getAppUrl();
@@ -323,6 +324,12 @@ if (res.locals.shopify?.session?.shop) {
       }
 
       await registerCartScript(shop, access_token);
+
+      // Idempotently create the AppAI Credit Buyer automatic discount (Function-backed).
+      // Best-effort — if the function isn't deployed yet, this is a no-op.
+      ensureCreditDiscountActivated(shop, access_token).catch((err) =>
+        console.warn(`[shopify/callback] credit discount activation failed for ${shop}:`, err?.message),
+      );
 
       res.clearCookie("shopify_state");
       res.clearCookie("shopify_merchant");

@@ -52,6 +52,67 @@ const DATA_MIGRATIONS: string[] = [
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)
      AND (aop_template_id IS NULL OR aop_template_id = '')`,
+  // Backfill materialized balances from the legacy customer columns.
+  `INSERT INTO credit_balances (
+      customer_id,
+      credits,
+      free_generations_used,
+      discount_entitlement_cents,
+      version,
+      updated_at
+    )
+    SELECT
+      id,
+      COALESCE(credits, 0),
+      COALESCE(free_generations_used, 0),
+      0,
+      0,
+      NOW()
+    FROM customers
+    ON CONFLICT (customer_id) DO NOTHING`,
+  // Backfill identity aliases from legacy user_id values.
+  `INSERT INTO customer_aliases (customer_id, alias_type, alias_value, shop)
+    SELECT
+      id,
+      'shopify',
+      split_part(user_id, ':', 4),
+      split_part(user_id, ':', 2) || ':' || split_part(user_id, ':', 3)
+    FROM customers
+    WHERE user_id LIKE 'shopify:%:%'
+    ON CONFLICT DO NOTHING`,
+  `INSERT INTO customer_aliases (customer_id, alias_type, alias_value, shop)
+    SELECT
+      id,
+      'otp_email',
+      split_part(user_id, ':', 4),
+      split_part(user_id, ':', 2) || ':' || split_part(user_id, ':', 3)
+    FROM customers
+    WHERE user_id LIKE 'email:%:%'
+    ON CONFLICT DO NOTHING`,
+  // Replay legacy credit transactions into the append-only ledger with stable
+  // synthetic idempotency keys. This is only for audit/history; balances are
+  // backfilled from customers above to preserve the currently visible state.
+  `INSERT INTO credit_ledger (
+      customer_id,
+      delta_credits,
+      delta_entitlement_cents,
+      reason,
+      idempotency_key,
+      external_ref,
+      metadata,
+      created_at
+    )
+    SELECT
+      customer_id,
+      amount,
+      CASE WHEN type = 'purchase' AND amount > 0 THEN LEAST(100, COALESCE(price_in_cents, 0)) ELSE 0 END,
+      type,
+      'legacy:credit_transaction:' || id,
+      CASE WHEN order_id IS NULL THEN NULL ELSE 'legacy_order:' || order_id END,
+      jsonb_build_object('description', description, 'priceInCents', price_in_cents),
+      created_at
+    FROM credit_transactions
+    ON CONFLICT (idempotency_key) DO NOTHING`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────
@@ -162,6 +223,97 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "customer_aliases",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "customer_aliases" (
+        "id"          SERIAL PRIMARY KEY,
+        "customer_id" VARCHAR NOT NULL,
+        "alias_type"  TEXT NOT NULL,
+        "alias_value" TEXT NOT NULL,
+        "shop"        TEXT,
+        "created_at"  TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "credit_balances",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "credit_balances" (
+        "customer_id"                 VARCHAR PRIMARY KEY,
+        "credits"                     INTEGER NOT NULL DEFAULT 0 CHECK ("credits" >= 0),
+        "free_generations_used"       INTEGER NOT NULL DEFAULT 0 CHECK ("free_generations_used" >= 0),
+        "discount_entitlement_cents"  INTEGER NOT NULL DEFAULT 0 CHECK ("discount_entitlement_cents" >= 0),
+        "version"                     INTEGER NOT NULL DEFAULT 0,
+        "updated_at"                  TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "credit_ledger",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "credit_ledger" (
+        "id"                       SERIAL PRIMARY KEY,
+        "customer_id"              VARCHAR NOT NULL,
+        "delta_credits"            INTEGER NOT NULL,
+        "delta_entitlement_cents"  INTEGER NOT NULL DEFAULT 0,
+        "reason"                   TEXT NOT NULL,
+        "idempotency_key"          TEXT NOT NULL UNIQUE,
+        "external_ref"             TEXT,
+        "metadata"                 JSONB,
+        "created_at"               TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "stripe_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "stripe_events" (
+        "stripe_event_id" TEXT PRIMARY KEY,
+        "type"            TEXT NOT NULL,
+        "outcome"         TEXT,
+        "received_at"     TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "order_discount_claims",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "order_discount_claims" (
+        "id"                  VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "customer_id"         VARCHAR NOT NULL,
+        "shopify_order_id"    TEXT UNIQUE,
+        "shop"                TEXT NOT NULL,
+        "entitlement_cents"   INTEGER NOT NULL,
+        "status"              TEXT NOT NULL DEFAULT 'pending',
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+];
+
+const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "customer_aliases_alias_unique",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "customer_aliases_alias_unique"
+      ON "customer_aliases" ("alias_type", "alias_value", COALESCE("shop", ''))`,
+  },
+  {
+    name: "customer_aliases_customer_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "customer_aliases_customer_idx"
+      ON "customer_aliases" ("customer_id")`,
+  },
+  {
+    name: "credit_ledger_customer_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "credit_ledger_customer_created_idx"
+      ON "credit_ledger" ("customer_id", "created_at")`,
+  },
+  {
+    name: "order_discount_claims_customer_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "order_discount_claims_customer_idx"
+      ON "order_discount_claims" ("customer_id")`,
+  },
 ];
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -184,7 +336,18 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
-  // 2) Add columns
+  // 2) Add indexes
+  for (const m of INDEX_MIGRATIONS) {
+    try {
+      await pool.query(m.sql);
+      applied++;
+    } catch (err: any) {
+      errors++;
+      console.error(`${tag} FAILED creating index ${m.name}: ${err.message ?? err}`);
+    }
+  }
+
+  // 3) Add columns
   for (const m of COLUMN_MIGRATIONS) {
     try {
       await pool.query(
@@ -197,7 +360,7 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
-  // 3) Data migrations (safe re-runs)
+  // 4) Data migrations (safe re-runs)
   for (const sql of DATA_MIGRATIONS) {
     try {
       const r = await pool.query(sql);
@@ -212,7 +375,7 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
-  const total = TABLE_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length;
+  const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length;
   console.log(`${tag} Done. total=${total} applied=${applied} errors=${errors}`);
   if (errors > 0) {
     console.error(`${tag} WARNING: ${errors} statement(s) failed — some routes may be degraded.`);

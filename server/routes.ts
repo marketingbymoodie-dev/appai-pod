@@ -9,6 +9,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import sharp from "sharp";
+import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
@@ -19,6 +20,7 @@ import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, ty
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
+import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
 import type { CustomizerPage } from "@shared/schema";
@@ -84,6 +86,59 @@ function buildStorefrontCreditReturnUrl(
   base.searchParams.set("shop", shop);
   base.searchParams.set("customerId", storefrontCustomerId);
   return base.toString();
+}
+
+const STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+
+function getIdentitySecret(): string {
+  return process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET || process.env.STRIPE_SECRET_KEY || "appai-dev-identity-secret";
+}
+
+function signStorefrontIdentityToken(customerId: string, shop: string): string {
+  return jwt.sign(
+    { sub: customerId, shop, typ: "storefront_identity" },
+    getIdentitySecret(),
+    { expiresIn: STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS },
+  );
+}
+
+function verifyStorefrontIdentityToken(req: Request): { customerId: string; shop?: string } | null {
+  const auth = req.headers.authorization || "";
+  if (!auth.toLowerCase().startsWith("bearer ")) return null;
+  try {
+    const payload = jwt.verify(auth.slice("bearer ".length), getIdentitySecret()) as jwt.JwtPayload;
+    if (!payload?.sub || payload.typ !== "storefront_identity") return null;
+    return { customerId: String(payload.sub), shop: typeof payload.shop === "string" ? payload.shop : undefined };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveStorefrontCustomerIdentity(args: { shop: string; customerId?: string | null; shopifyCustomerId?: string | null; anonSessionId?: string | null }) {
+  if (args.customerId) {
+    const existing = await storage.getCustomer(args.customerId);
+    if (existing) {
+      await storage.ensureCustomerBalance(existing.id);
+      return existing;
+    }
+  }
+  if (args.shopifyCustomerId) {
+    return storage.resolveOrCreateCustomerAlias({
+      aliasType: "shopify",
+      aliasValue: String(args.shopifyCustomerId),
+      shop: args.shop,
+      legacyUserId: `shopify:${args.shop}:${args.shopifyCustomerId}`,
+    } as any);
+  }
+  if (args.anonSessionId) {
+    return storage.resolveOrCreateCustomerAlias({
+      aliasType: "anon_session",
+      aliasValue: String(args.anonSessionId),
+      shop: args.shop,
+      legacyUserId: `anon:${args.shop}:${args.anonSessionId}`,
+    } as any);
+  }
+  throw new Error("No storefront identity provided");
 }
 
 /**
@@ -5940,18 +5995,8 @@ ${textEdgeRestrictions}
 
       const FREE_GENERATION_LIMIT = 10;
 
-      // If customer is logged in, check their credits and free generations
-      if (customerId) {
-        const customer = await storage.getOrCreateShopifyCustomer(shop as string, customerId as string);
-
-        if (customer.credits > 0) {
-          await storage.decrementCreditsIfAvailable(customer.id);
-        } else if (customer.freeGenerationsUsed < FREE_GENERATION_LIMIT) {
-          await storage.updateCustomer(customer.id, { freeGenerationsUsed: customer.freeGenerationsUsed + 1 });
-        } else {
-          return res.status(403).json({ error: "FREE_LIMIT_REACHED", message: "You have used all 10 of your free generations. Please purchase more credits to continue." });
-        }
-      } else if (sessionId) {
+      // Read-only status endpoint. Generation is responsible for consumption.
+      if (!customerId && sessionId) {
         // Anonymous session limit
         const count = await storage.countSessionGenerations(shop as string, sessionId as string);
         if (count >= FREE_GENERATION_LIMIT) {
@@ -5965,9 +6010,16 @@ ${textEdgeRestrictions}
       let creditsRemaining = 0;
 
       if (customerId) {
-        const customer = await storage.getOrCreateShopifyCustomer(shop as string, customerId as string);
-        generationsUsed = customer.freeGenerationsUsed || 0;
-        creditsRemaining = customer.credits || 0;
+        const rawCustomerId = String(customerId);
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCustomerId);
+        const customer = await resolveStorefrontCustomerIdentity({
+          shop: String(shop),
+          customerId: isInternalCustomer ? rawCustomerId : null,
+          shopifyCustomerId: isInternalCustomer ? null : rawCustomerId,
+        });
+        const balance = await storage.ensureCustomerBalance(customer.id);
+        generationsUsed = balance.freeGenerationsUsed || 0;
+        creditsRemaining = balance.credits || 0;
       } else if (sessionId) {
         generationsUsed = await storage.countSessionGenerations(shop as string, sessionId as string);
       }
@@ -8057,15 +8109,52 @@ ${textEdgeRestrictions}
       );
 
       console.log(`[OTP] Verified ${emailNorm} for shop ${shop}, customer ${customer.id}`);
+      await storage.ensureCustomerBalance(customer.id);
+      await storage.addCustomerAlias(customer.id, { aliasType: "otp_email", aliasValue: emailNorm, shop });
+      const balance = await storage.getCreditBalance(customer.id);
       res.json({
         ok: true,
         customerId: customer.id,
-        credits: customer.credits,
-        freeGenerationsUsed: customer.freeGenerationsUsed,
+        identityToken: signStorefrontIdentityToken(customer.id, shop),
+        credits: balance?.credits ?? customer.credits,
+        freeGenerationsUsed: balance?.freeGenerationsUsed ?? customer.freeGenerationsUsed,
+        discountEntitlementCents: balance?.discountEntitlementCents ?? 0,
       });
     } catch (error: any) {
       console.error("[OTP] verify-otp error:", error);
       res.status(500).json({ error: "Failed to verify OTP" });
+    }
+  });
+
+  app.post("/api/storefront/identity/bootstrap", async (req: Request, res: Response) => {
+    try {
+      const { shop, customerId, shopifyCustomerId, anonSessionId } = req.body || {};
+      if (!shop || typeof shop !== "string") return res.status(400).json({ error: "shop is required" });
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
+        return res.status(400).json({ error: "Invalid shop domain" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) return res.status(403).json({ error: "Shop not authorized" });
+
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      const customer = await resolveStorefrontCustomerIdentity({
+        shop,
+        customerId: tokenIdentity?.shop === shop ? tokenIdentity.customerId : (typeof customerId === "string" ? customerId : null),
+        shopifyCustomerId: typeof shopifyCustomerId === "string" ? shopifyCustomerId : null,
+        anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
+      });
+      const balance = await storage.ensureCustomerBalance(customer.id);
+      return res.json({
+        ok: true,
+        customerId: customer.id,
+        identityToken: signStorefrontIdentityToken(customer.id, shop),
+        credits: balance.credits,
+        freeGenerationsUsed: balance.freeGenerationsUsed,
+        discountEntitlementCents: balance.discountEntitlementCents,
+      });
+    } catch (error: any) {
+      console.error("[Storefront Identity] bootstrap error:", error);
+      return res.status(500).json({ error: "Failed to bootstrap storefront identity" });
     }
   });
 
@@ -8097,8 +8186,19 @@ ${textEdgeRestrictions}
       if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
         return res.status(400).json({ error: "Coupon has reached maximum uses" });
       }
-      await storage.updateCustomer(customer.id, {
-        credits: customer.credits + coupon.creditAmount,
+      const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
+      if (redemption) {
+        const balance = await storage.ensureCustomerBalance(customer.id);
+        return res.json({ ok: true, creditsAdded: 0, newBalance: balance.credits, alreadyRedeemed: true });
+      }
+      const ledgerResult = await storage.applyCreditLedgerEntry({
+        customerId: customer.id,
+        deltaCredits: coupon.creditAmount,
+        deltaEntitlementCents: 0,
+        reason: "coupon",
+        idempotencyKey: `coupon:${coupon.id}:${customer.id}`,
+        externalRef: String(coupon.id),
+        metadata: { code: coupon.code },
       });
       await storage.createCouponRedemption({
         couponId: coupon.id,
@@ -8115,8 +8215,8 @@ ${textEdgeRestrictions}
       });
       res.json({
         ok: true,
-        creditsAdded: coupon.creditAmount,
-        newBalance: customer.credits + coupon.creditAmount,
+        creditsAdded: ledgerResult.inserted ? coupon.creditAmount : 0,
+        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
       });
     } catch (error: any) {
       console.error("[Storefront Coupon] redeem error:", error);
@@ -8139,22 +8239,28 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-      const customer = isOtpCustomer
-        ? await storage.getCustomer(customerId)
-        : await storage.getOrCreateShopifyCustomer(shop, customerId);
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      const customer = await resolveStorefrontCustomerIdentity({
+        shop,
+        customerId: tokenIdentity?.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? customerId : null),
+        shopifyCustomerId: isInternalCustomer ? null : customerId,
+      });
       if (!customer) {
         console.warn("[Credits Status] customer not found for", customerId);
         return res.status(404).json({ error: "Customer not found" });
       }
+      const balance = await storage.ensureCustomerBalance(customer.id);
 
-      console.log("[Credits Status] returning balance", customer.credits, "for customerId", customer.id);
+      console.log("[Credits Status] returning balance", balance.credits, "for customerId", customer.id);
       return res.json({
         ok: true,
         requestedCustomerId: customerId,
         customerId: customer.id,
-        credits: customer.credits,
-        freeGenerationsUsed: customer.freeGenerationsUsed,
+        identityToken: signStorefrontIdentityToken(customer.id, shop),
+        credits: balance.credits,
+        freeGenerationsUsed: balance.freeGenerationsUsed,
+        discountEntitlementCents: balance.discountEntitlementCents,
       });
     } catch (error: any) {
       console.error("[Credits Status] error:", error);
@@ -8181,10 +8287,13 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
-      const customer = isOtpCustomer
-        ? await storage.getCustomer(storefrontCustomerId)
-        : await storage.getOrCreateShopifyCustomer(shop, storefrontCustomerId);
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      const customer = await resolveStorefrontCustomerIdentity({
+        shop,
+        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? storefrontCustomerId : null),
+        shopifyCustomerId: isInternalCustomer ? null : storefrontCustomerId,
+      });
       if (!customer) {
         return res.status(404).json({ error: "Customer not found" });
       }
@@ -8199,11 +8308,12 @@ ${textEdgeRestrictions}
       }
 
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, storefrontCustomerId, rawReturnUrl);
+      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
       // safeReturnUrl always includes "?shop=...&customerId=...", so use & here.
       const separator = safeReturnUrl.includes("?") ? "&" : "?";
+      const idempotencyKey = crypto.randomUUID();
 
-      console.log("[Credits Purchase] session for customerId", storefrontCustomerId, "returnUrl", safeReturnUrl);
+      console.log("[Credits Purchase] session for customerId", customer.id, "returnUrl", safeReturnUrl);
 
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -8225,11 +8335,15 @@ ${textEdgeRestrictions}
         cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
         customer_email: (customer as any).email || undefined,
         metadata: {
-          customerId: storefrontCustomerId,
+          customerId: customer.id,
+          internal_customer_id: customer.id,
+          idempotency_key: idempotencyKey,
           shop,
           credits: creditsToAdd.toString(),
+          entitlement_cents: "100",
           type: "credit_purchase",
           returnUrl: safeReturnUrl,
+          legacy_customer_id: storefrontCustomerId,
         },
       });
 
@@ -8262,10 +8376,13 @@ ${textEdgeRestrictions}
         return res.status(403).send("Shop not authorized");
       }
 
-      const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
-      const customer = isOtpCustomer
-        ? await storage.getCustomer(storefrontCustomerId)
-        : await storage.getOrCreateShopifyCustomer(shop, storefrontCustomerId);
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storefrontCustomerId);
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      const customer = await resolveStorefrontCustomerIdentity({
+        shop,
+        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? storefrontCustomerId : null),
+        shopifyCustomerId: isInternalCustomer ? null : storefrontCustomerId,
+      });
       if (!customer) {
         return res.status(404).send("Customer not found");
       }
@@ -8280,10 +8397,11 @@ ${textEdgeRestrictions}
       }
 
       const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
-      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, storefrontCustomerId, rawReturnUrl);
+      const safeReturnUrl = buildStorefrontCreditReturnUrl(shop, customer.id, rawReturnUrl);
       const separator = safeReturnUrl.includes("?") ? "&" : "?";
+      const idempotencyKey = crypto.randomUUID();
 
-      console.log("[Credits Purchase] GET redirect session for customerId", storefrontCustomerId, "returnUrl", safeReturnUrl);
+      console.log("[Credits Purchase] GET redirect session for customerId", customer.id, "returnUrl", safeReturnUrl);
 
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
@@ -8305,11 +8423,15 @@ ${textEdgeRestrictions}
         cancel_url: `${safeReturnUrl}${separator}credits=cancelled`,
         customer_email: (customer as any).email || undefined,
         metadata: {
-          customerId: storefrontCustomerId,
+          customerId: customer.id,
+          internal_customer_id: customer.id,
+          idempotency_key: idempotencyKey,
           shop,
           credits: creditsToAdd.toString(),
+          entitlement_cents: "100",
           type: "credit_purchase",
           returnUrl: safeReturnUrl,
+          legacy_customer_id: storefrontCustomerId,
         },
       });
 
@@ -8320,6 +8442,64 @@ ${textEdgeRestrictions}
     } catch (error: any) {
       console.error("[Credits Purchase] GET redirect error:", error);
       return res.status(500).send(error.message || "Failed to initiate credit purchase");
+    }
+  });
+
+  app.post("/shopify/webhooks/orders-paid", async (req: Request, res: Response) => {
+    try {
+      const shop = req.headers["x-shopify-shop-domain"] as string;
+      const order = req.body || {};
+      const orderId = order.admin_graphql_api_id || order.id;
+      console.log("[Shopify Orders Paid] received", { shop, orderId });
+      const shopifyCustomerId = order.customer?.admin_graphql_api_id || order.customer?.id;
+      const discountApplications = Array.isArray(order.discount_applications) ? order.discount_applications : [];
+      const appaiDiscountApplied = discountApplications.some((discount: any) =>
+        String(discount.title || discount.code || discount.description || "").toLowerCase().includes("appai")
+      );
+      const totalDiscountCents = Math.round(Number.parseFloat(String(order.total_discounts || "0")) * 100);
+      if (shop && shopifyCustomerId && appaiDiscountApplied && totalDiscountCents > 0) {
+        const customer = await resolveStorefrontCustomerIdentity({
+          shop,
+          shopifyCustomerId: String(shopifyCustomerId).replace("gid://shopify/Customer/", ""),
+        });
+        const debitCents = Math.min(100, totalDiscountCents);
+        const result = await storage.applyCreditLedgerEntry({
+          customerId: customer.id,
+          deltaCredits: 0,
+          deltaEntitlementCents: -debitCents,
+          reason: "order_redemption",
+          idempotencyKey: `shopify-order-paid:${orderId}`,
+          externalRef: String(orderId),
+          metadata: { shop, totalDiscountCents, discountApplications },
+        });
+        // Always attempt the claim row (idempotent on shopify_order_id) so we
+        // have an audit trail even if a duplicate webhook is replayed.
+        const claimResult = await storage.recordOrderDiscountClaim({
+          customerId: customer.id,
+          shopifyOrderId: String(orderId),
+          shop,
+          entitlementCents: debitCents,
+          status: "applied",
+        });
+        if (result.inserted) {
+          console.log("[Shopify Orders Paid] debited entitlement", {
+            customerId: customer.id,
+            orderId,
+            debitCents,
+            claimInserted: claimResult.inserted,
+          });
+          await syncCreditEntitlementMetafield(customer.id);
+        } else {
+          console.log("[Shopify Orders Paid] duplicate ledger entry, skipping debit", {
+            customerId: customer.id,
+            orderId,
+          });
+        }
+      }
+      return res.status(200).send("OK");
+    } catch (error: any) {
+      console.error("[Shopify Orders Paid] error:", error);
+      return res.status(200).send("OK");
     }
   });
 

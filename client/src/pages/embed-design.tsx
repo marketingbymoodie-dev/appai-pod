@@ -840,6 +840,50 @@ export default function EmbedDesign() {
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
     try { return localStorage.getItem('appai_customer_id') || null; } catch { return null; }
   });
+  const [storefrontIdentityToken, setStorefrontIdentityToken] = useState<string | null>(() => {
+    try { return localStorage.getItem('appai_identity_token') || null; } catch { return null; }
+  });
+
+  useEffect(() => {
+    if (!isStorefront || !shopDomain || !anonSessionId) return;
+    const shopifyCustomerId = searchParams.get("customerId") || null;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
+
+    safeFetch(`${API_BASE}/api/storefront/identity/bootstrap`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        shop: shopDomain,
+        customerId: storefrontCustomerId,
+        shopifyCustomerId,
+        anonSessionId,
+      }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data?.ok || !data.customerId) return;
+        setStorefrontCustomerId(data.customerId);
+        setStorefrontIdentityToken(data.identityToken || null);
+        setCustomer((prev) => {
+          const next = {
+            ...(prev || { id: data.customerId, isLoggedIn: !!shopifyCustomerId }),
+            id: data.customerId,
+            credits: data.credits ?? prev?.credits ?? 0,
+            freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed ?? 0,
+            isLoggedIn: prev?.isLoggedIn ?? !!shopifyCustomerId,
+          };
+          try {
+            localStorage.setItem('appai_customer_id', data.customerId);
+            if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
+            localStorage.setItem('appai_customer', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+      })
+      .catch((err) => console.warn('[EmbedDesign] identity bootstrap failed', err));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStorefront, shopDomain, anonSessionId]);
   const [savedDesigns, setSavedDesigns] = useState<Array<{id: string; artworkUrl: string; mockupUrls?: string[]; designState?: Record<string, any> | null; prompt: string; stylePreset?: string | null; size?: string | null; frameColor?: string | null; baseTitle: string | null; pageHandle: string | null; productTypeId: string | null; customerId?: string | null; createdAt: string}>>([]);
   const [showGalleryFullModal, setShowGalleryFullModal] = useState(false);
   const [savedDesignsLoading, setSavedDesignsLoading] = useState(false);
@@ -2599,7 +2643,7 @@ export default function EmbedDesign() {
         const postStart = Date.now();
         const fetchPromise = safeFetch(endpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-Req-Id": reqId },
+          headers: { ...storefrontJsonHeaders(), "X-Req-Id": reqId },
           body: JSON.stringify(payload),
         });
         const jobRes = await raceTimeout(fetchPromise, 60_000, 'POST /generate');
@@ -2905,6 +2949,12 @@ export default function EmbedDesign() {
       setReferencePreviews([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const storefrontJsonHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
+    return headers;
   };
 
   const handleBuyMoreCredits = async () => {
@@ -4584,12 +4634,18 @@ export default function EmbedDesign() {
 
     const refreshCredits = () => {
       const statusUrl = `${API_BASE}/api/storefront/credits/status?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(resolvedCustomerId!)}`;
-      safeFetch(statusUrl)
+      const headers: Record<string, string> = {};
+      if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
+      safeFetch(statusUrl, { headers })
         .then((res) => res.json())
         .then((data) => {
           if (!data || data.ok === false) {
             console.warn('[Credits Return] status response not ok', data);
             return;
+          }
+          if (data.identityToken) {
+            setStorefrontIdentityToken(data.identityToken);
+            try { localStorage.setItem('appai_identity_token', data.identityToken); } catch {}
           }
           console.log('[Credits Return] new balance', data.credits);
           setCustomer((prev) => {
@@ -4627,7 +4683,7 @@ export default function EmbedDesign() {
       cleaned.searchParams.delete('session_id');
       window.history.replaceState({}, document.title, cleaned.toString());
     } catch {}
-  }, [isStorefront, storefrontCustomerId, shopDomain, toast]);
+  }, [isStorefront, storefrontCustomerId, storefrontIdentityToken, shopDomain, toast]);
 
   useEffect(() => {
     if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
@@ -4962,10 +5018,12 @@ export default function EmbedDesign() {
                                         if (data.ok) {
                                           const newCustomerId = data.customerId;
                                           setStorefrontCustomerId(newCustomerId);
+                                          if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
                                           setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
                                           setGalleryLimit(data.galleryLimit || 10);
                                           try {
                                             localStorage.setItem('appai_customer_id', newCustomerId);
+                                            if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
                                             localStorage.setItem('appai_otp_email', otpEmail.trim());
                                             localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId }));
                                           } catch {}
@@ -5010,10 +5068,12 @@ export default function EmbedDesign() {
                                       if (data.ok) {
                                         const newCustomerId = data.customerId;
                                         setStorefrontCustomerId(newCustomerId);
+                                        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
                                         setCustomer({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true });
                                         setGalleryLimit(data.galleryLimit || 10);
                                         try {
                                           localStorage.setItem('appai_customer_id', newCustomerId);
+                                          if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
                                           localStorage.setItem('appai_otp_email', otpEmail.trim());
                                           localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId }));
                                         } catch {}
