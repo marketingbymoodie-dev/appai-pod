@@ -2928,38 +2928,19 @@ export default function EmbedDesign() {
     }
 
     setCreditsPurchaseLoading(true);
+    const params = new URLSearchParams({
+      customerId: storefrontCustomerId,
+      shop: shopDomain,
+      package: "10",
+      returnUrl: window.location.href,
+    });
+    const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
     try {
-      const res = await window.fetch(`${DIRECT_APP_API_BASE}/api/storefront/credits/purchase`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerId: storefrontCustomerId,
-          shop: shopDomain,
-          package: "10",
-          returnUrl: window.location.href,
-        }),
-      });
-      const contentType = res.headers.get("content-type") || "";
-      const data = contentType.includes("application/json")
-        ? await res.json()
-        : { error: (await res.text()).slice(0, 160) || "Credit checkout returned an unexpected response." };
-      if (!res.ok || !data.url) {
-        throw new Error(data.error || "Could not start checkout");
-      }
-      try {
-        window.top!.location.href = data.url;
-      } catch {
-        window.location.href = data.url;
-      }
-    } catch (err: any) {
-      toast({
-        title: "Checkout failed",
-        description: err?.message || "Could not start credit checkout.",
-        variant: "destructive",
-      });
-    } finally {
-      setCreditsPurchaseLoading(false);
+      window.top!.location.href = checkoutUrl;
+    } catch {
+      window.location.href = checkoutUrl;
     }
+    window.setTimeout(() => setCreditsPurchaseLoading(false), 8000);
   };
 
   const handleGenerate = async () => {
