@@ -8087,6 +8087,7 @@ ${textEdgeRestrictions}
       if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
         return res.status(400).json({ error: "customerId and shop are required" });
       }
+      console.log("[Storefront Credits] status check", { customerId, shop });
       if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(shop)) {
         return res.status(400).json({ error: "Invalid shop domain" });
       }
@@ -8105,6 +8106,7 @@ ${textEdgeRestrictions}
 
       return res.json({
         ok: true,
+        requestedCustomerId: customerId,
         customerId: customer.id,
         credits: customer.credits,
         freeGenerationsUsed: customer.freeGenerationsUsed,
@@ -8151,9 +8153,11 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Invalid credit package. Currently only '10' is supported." });
       }
 
-      const appUrl = (process.env.APP_URL || `https://${req.headers.host}`).replace(/\/$/, "");
-      const fallbackUrl = `${appUrl}/embed-design?shop=${encodeURIComponent(shop)}`;
-      const safeReturnUrl = typeof returnUrl === "string" && /^https?:\/\//i.test(returnUrl) ? returnUrl : fallbackUrl;
+      const fallbackUrl = `https://${shop}/apps/appai/s/designer?shop=${encodeURIComponent(shop)}`;
+      const rawReturnUrl = typeof returnUrl === "string" ? returnUrl : "";
+      const safeReturnUrl = /^https?:\/\//i.test(rawReturnUrl) && !rawReturnUrl.includes("admin.shopify.com")
+        ? rawReturnUrl
+        : fallbackUrl;
       const separator = safeReturnUrl.includes("?") ? "&" : "?";
 
       const session = await stripe.checkout.sessions.create({
@@ -8180,6 +8184,7 @@ ${textEdgeRestrictions}
           shop,
           credits: creditsToAdd.toString(),
           type: "credit_purchase",
+          returnUrl: safeReturnUrl,
         },
       });
 
@@ -8229,9 +8234,10 @@ ${textEdgeRestrictions}
         return res.status(400).send("Invalid credit package");
       }
 
-      const appUrl = (process.env.APP_URL || `https://${req.headers.host}`).replace(/\/$/, "");
-      const fallbackUrl = `${appUrl}/embed-design?shop=${encodeURIComponent(shop)}`;
-      const safeReturnUrl = typeof returnUrl === "string" && /^https?:\/\//i.test(returnUrl) ? returnUrl : fallbackUrl;
+      const fallbackUrl = `https://${shop}/apps/appai/s/designer?shop=${encodeURIComponent(shop)}`;
+      const safeReturnUrl = typeof returnUrl === "string" && /^https?:\/\//i.test(returnUrl) && !returnUrl.includes("admin.shopify.com")
+        ? returnUrl
+        : fallbackUrl;
       const separator = safeReturnUrl.includes("?") ? "&" : "?";
 
       const session = await stripe.checkout.sessions.create({
@@ -8258,6 +8264,7 @@ ${textEdgeRestrictions}
           shop,
           credits: creditsToAdd.toString(),
           type: "credit_purchase",
+          returnUrl: safeReturnUrl,
         },
       });
 

@@ -2928,11 +2928,15 @@ export default function EmbedDesign() {
     }
 
     setCreditsPurchaseLoading(true);
+    const currentUrl = window.location.href;
+    const checkoutReturnUrl = currentUrl.includes("admin.shopify.com")
+      ? `https://${shopDomain}/apps/appai/s/designer${window.location.search || `?shop=${encodeURIComponent(shopDomain)}`}`
+      : currentUrl;
     const params = new URLSearchParams({
       customerId: storefrontCustomerId,
       shop: shopDomain,
       package: "10",
-      returnUrl: window.location.href,
+      returnUrl: checkoutReturnUrl,
     });
     const checkoutUrl = `${DIRECT_APP_API_BASE}/api/storefront/credits/purchase?${params.toString()}`;
     try {

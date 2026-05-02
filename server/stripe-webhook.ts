@@ -24,9 +24,10 @@ export function registerStripeWebhook(app: Express) {
 
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
-      console.log("[Stripe Webhook] session metadata", session.metadata);
+      console.log("[Stripe Webhook] metadata", session.metadata);
       const customerId = session.metadata?.customerId;
-      const credits = session.metadata?.credits || session.metadata?.creditsToAdd;
+      const credits = session.metadata?.credits;
+      console.log("[Stripe Webhook] Crediting customerId", customerId);
 
       if (customerId && credits) {
         const customer = await storage.getCustomer(customerId);
