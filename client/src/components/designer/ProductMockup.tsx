@@ -324,6 +324,8 @@ export function ProductMockup({
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const touchDragTimerRef = useRef<number | null>(null);
+  const touchPendingRef = useRef(false);
 
   // Track loading state when switching between composite mockup images (carousel).
   const [mockupImageLoading, setMockupImageLoading] = useState(false);
@@ -381,6 +383,72 @@ export function ProductMockup({
     isDraggingRef.current = false;
     containerRef.current = null;
   }, []);
+
+  const clearTouchDragTimer = useCallback(() => {
+    if (touchDragTimerRef.current !== null) {
+      window.clearTimeout(touchDragTimerRef.current);
+      touchDragTimerRef.current = null;
+    }
+  }, []);
+
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      if (!imageUrl || !enableDrag || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      clearTouchDragTimer();
+      touchPendingRef.current = true;
+      isDraggingRef.current = false;
+      dragStartRef.current = { x: touch.clientX, y: touch.clientY };
+      containerRef.current = e.currentTarget;
+      touchDragTimerRef.current = window.setTimeout(() => {
+        if (!touchPendingRef.current) return;
+        isDraggingRef.current = true;
+        touchDragTimerRef.current = null;
+      }, 320);
+    },
+    [imageUrl, enableDrag, clearTouchDragTimer],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      if (!touchPendingRef.current || !containerRef.current || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      if (!isDraggingRef.current) {
+        const moveX = Math.abs(touch.clientX - dragStartRef.current.x);
+        const moveY = Math.abs(touch.clientY - dragStartRef.current.y);
+        if (moveX > 8 || moveY > 8) {
+          clearTouchDragTimer();
+          touchPendingRef.current = false;
+          containerRef.current = null;
+        }
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = containerRef.current.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const dx = touch.clientX - dragStartRef.current.x;
+      const dy = touch.clientY - dragStartRef.current.y;
+      if (dx === 0 && dy === 0) return;
+      const deltaX = (dx / rect.width) * 100;
+      const deltaY = (dy / rect.height) * 100;
+      onTransformChange({
+        ...transform,
+        x: Math.max(0, Math.min(100, transform.x + deltaX)),
+        y: Math.max(0, Math.min(100, transform.y + deltaY)),
+      });
+      dragStartRef.current = { x: touch.clientX, y: touch.clientY };
+    },
+    [transform, onTransformChange, clearTouchDragTimer],
+  );
+
+  const handleTouchEnd = useCallback(() => {
+    clearTouchDragTimer();
+    touchPendingRef.current = false;
+    isDraggingRef.current = false;
+    containerRef.current = null;
+  }, [clearTouchDragTimer]);
 
   const getProductStyles = () => {
     switch (designerType) {
@@ -580,12 +648,16 @@ export function ProductMockup({
   return (
     <div
       className={`relative rounded-md w-full h-full ${isDragActive ? "cursor-move select-none" : ""}`}
-      style={{ touchAction: isDragActive ? "none" : "pan-y" }}
+      style={{ touchAction: "pan-y" }}
       {...(isDragActive ? {
         onMouseDown: handleMouseDown,
         onMouseMove: handleMouseMove,
         onMouseUp: handleMouseUp,
         onMouseLeave: handleMouseUp,
+        onTouchStart: handleTouchStart,
+        onTouchMove: handleTouchMove,
+        onTouchEnd: handleTouchEnd,
+        onTouchCancel: handleTouchEnd,
       } : {})}
       data-testid="product-mockup"
     >

@@ -982,12 +982,12 @@ export default function DesignPage() {
   const styleSelector = (
     <div className="space-y-2">
       <Label className="text-sm font-medium">
-        Style{" "}
+        Art Style{" "}
         <span className="text-xs text-muted-foreground ml-1">({styleCategory === "apparel" ? "Apparel Artwork" : "Decor Artwork"})</span>
       </Label>
       <Select value={selectedStyle} onValueChange={setSelectedStyle}>
         <SelectTrigger data-testid="select-style" className="h-9">
-          <SelectValue placeholder="Choose a style" />
+          <SelectValue placeholder="Choose an art style" />
         </SelectTrigger>
         <SelectContent>
           {filteredStyles.map((style) => (

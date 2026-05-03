@@ -84,6 +84,8 @@ export interface AopPlacementSettings {
   hoodiePocketPatternHeightInches?: number;
   /** Last active editor mode — restores the correct tab when re-editing. */
   lastMode?: "pattern" | "single" | "place";
+  /** Last active hoodie editor view — keeps fine-tuning on the panel the user was editing. */
+  activeView?: "front" | "back" | "hood";
   /** Pattern controls restored when re-editing AOP designs. */
   patternType?: "grid" | "brick" | "half";
   tileInches?: number;

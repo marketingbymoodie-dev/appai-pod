@@ -752,6 +752,12 @@ export default function EmbedDesign() {
 
   // Ref for the artwork column — used to auto-scroll on mobile after generation
   const artworkColumnRef = useRef<HTMLDivElement | null>(null);
+  const scrollArtworkIntoViewOnMobile = useCallback((delayMs = 0) => {
+    if (typeof window === 'undefined' || window.innerWidth >= 768) return;
+    window.setTimeout(() => {
+      artworkColumnRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, delayMs);
+  }, []);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
@@ -1676,6 +1682,7 @@ export default function EmbedDesign() {
         sendMockupsToParent([]);
       }
     }
+    scrollArtworkIntoViewOnMobile(150);
 
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
@@ -2823,12 +2830,8 @@ export default function EmbedDesign() {
       initialTransformRef.current = newTransform;
       setLoginError(null);
 
-      // Auto-scroll to artwork column on mobile after generation completes
-      if (typeof window !== 'undefined' && window.innerWidth < 768 && artworkColumnRef.current) {
-        setTimeout(() => {
-          artworkColumnRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 300);
-      }
+      // Keep the finished result in view on mobile after generation completes.
+      scrollArtworkIntoViewOnMobile(300);
 
       // Persist design state to sessionStorage so refresh doesn't lose it
       try {
@@ -3063,7 +3066,7 @@ export default function EmbedDesign() {
     
     // Validate required fields
     if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-      alert("Please select a style before generating");
+      alert("Please select an art style before generating");
       return;
     }
     if (printSizes.length > 0 && selectedSize === "") {
@@ -3146,6 +3149,7 @@ export default function EmbedDesign() {
         sessionId: isStorefront ? anonSessionId : undefined,
         customerId: storefrontCustomerId || undefined,
       });
+      scrollArtworkIntoViewOnMobile(50);
     } catch (err: any) {
       console.error('[Generate] Mutation trigger failed:', err);
       toast({
@@ -4763,6 +4767,214 @@ export default function EmbedDesign() {
     !atcMockupsReady
   );
 
+  const renderPrimaryAction = (className = "", testIdSuffix = "") => {
+    const withSuffix = (id: string) => testIdSuffix ? `${id}-${testIdSuffix}` : id;
+
+    return (
+      <div className={`flex-1 min-w-0 ${className}`}>
+        {(isShopify || isStorefront) && generatedDesign ? (
+          addedToCart ? (
+            <Button
+              className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
+              onClick={() => { window.parent.location.href = '/cart'; }}
+              data-testid={withSuffix("button-view-cart")}
+            >
+              <CheckCircle className="w-5 h-5 mr-2" />
+              Added to Cart — View Cart
+            </Button>
+          ) : (
+            <Button
+              onClick={() => {
+                if (mockupsStale) {
+                  if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                    if (generatedDesign?.imageUrl) {
+                      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+                      setShowPatternStep(true);
+                    }
+                    return;
+                  }
+                  if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+                    setMockupError(null);
+                    setMockupFailed(false);
+                    setPrintifyMockups([]);
+                    setPrintifyMockupImages([]);
+                    setSelectedMockupIndex(0);
+                    setMockupsStale(false);
+                    mockupColorCacheRef.current = {};
+                    currentMockupColorRef.current = '';
+                    fetchPrintifyMockups(
+                      toAbsoluteImageUrl(generatedDesign.imageUrl),
+                      productTypeConfig.id,
+                      selectedSize,
+                      selectedFrameColor || 'default',
+                      transform.scale,
+                      transform.x,
+                      transform.y,
+                      productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                      aopPlacementSettings?.mirrorMode,
+                      productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                    );
+                  }
+                } else {
+                  handleAddToCart();
+                }
+              }}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+              className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid={withSuffix("button-add-to-cart")}
+            >
+              {isAddingToCart ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  <span className="shimmer-text-white">Adding to Cart...</span>
+                </>
+              ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  <span className="shimmer-text-white">Refreshing Mockups…</span>
+                </>
+              ) : mockupsStale ? (
+                <>
+                  <RefreshCcw className="w-5 h-5 mr-2" />
+                  <span className="shimmer-text-white">Refresh Mockups to Continue</span>
+                </>
+              ) : productTypeConfig?.isAllOverPrint && !aopPatternUrl ? (
+                <span className="shimmer-text-white">Apply Pattern to Continue</span>
+              ) : (
+                <>
+                  <ShoppingCart className="w-5 h-5 mr-2" />
+                  <span className="shimmer-text-white">Add to Cart</span>
+                </>
+              )}
+            </Button>
+          )
+        ) : (
+          <Button
+            onClick={() => {
+              if ((isShopify || isStorefront) && customer && credits <= 0) {
+                setCreditsPopoverOpen(true);
+                return;
+              }
+              if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+                alert("Please select an art style before generating");
+                return;
+              }
+              const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+              if (activePreset?.options?.required && selectedStyleOption === "") {
+                alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+                return;
+              }
+              if (printSizes.length > 0 && selectedSize === "") {
+                alert("Please select a size before generating");
+                return;
+              }
+              handleGenerate();
+            }}
+            disabled={!!effectiveLoadDesignId || (!prompt.trim() && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending}
+            className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
+            data-testid={withSuffix("button-generate")}
+          >
+            {generateMutation.isPending ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                <span className="shimmer-text-white">Generating...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4 mr-2" />
+                <span className="shimmer-text-white">Generate Artwork</span>
+              </>
+            )}
+          </Button>
+        )}
+        {(isShopify || isStorefront) && generatedDesign ? (
+          <div className="mt-1 flex flex-col items-center gap-1">
+            {variantError && (
+              <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-variant-error-atc")}>{variantError}</p>
+            )}
+            {isStorefront && bridgeError && (
+              <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-bridge-error")}>{bridgeError}</p>
+            )}
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+              onClick={() => {
+                setGeneratedDesign(null);
+                lastAopPanelUrlsRef.current = null;
+                setDesignSource(null);
+                setAddedToCart(false);
+                loadDesignAppliedRef.current = false;
+                setBridgeLoadDesignId('');
+                setReferenceImages([]);
+                setReferencePreviews([]);
+                if (fileInputRef.current) fileInputRef.current.value = '';
+                setSelectedPreset('');
+                setSelectedStyleOption('');
+                setSelectedSize('');
+                setSelectedFrameColor('');
+                try {
+                  const stateKey = `aiart:design:${shopDomain || 'local'}:${productHandle || 'unknown'}`;
+                  sessionStorage.removeItem(stateKey);
+                } catch (_) {}
+                const url = new URL(window.location.href);
+                url.searchParams.delete('loadDesignId');
+                window.history.replaceState({}, '', url.toString());
+                try {
+                  const parentUrl = new URL(window.parent.location.href);
+                  parentUrl.searchParams.delete('loadDesignId');
+                  window.parent.history.replaceState({}, '', parentUrl.toString());
+                } catch (_) {}
+              }}
+            >
+              <Plus className="w-3 h-3" />
+              Start Fresh Design
+            </button>
+          </div>
+        ) : (
+          (isShopify || isStorefront) && (
+            <p className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+              {(() => {
+                if (storefrontCustomerId && credits > 0) return `${credits} artwork${credits !== 1 ? 's' : ''} remaining`;
+                if (credits > 0) return `${credits} free artwork${credits !== 1 ? 's' : ''}`;
+                if (customer) return '0 artworks remaining';
+                return '10 free artworks';
+              })()}
+              <Popover open={creditsPopoverOpen} onOpenChange={setCreditsPopoverOpen}>
+                <PopoverTrigger asChild>
+                  <button type="button" className="inline-flex items-center" aria-label="Pricing info">
+                    <Info className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="text-sm space-y-2 w-72" side="bottom" align="start">
+                  <p className="font-medium">Artwork Credits</p>
+                  <p className="text-muted-foreground">You get 10 free AI-generated artworks to try.</p>
+                  <p className="text-muted-foreground">After that, it&apos;s just $1 for 10 more credits.</p>
+                  <p className="text-muted-foreground">Credits are fully refunded when you complete a physical product purchase!</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="w-full"
+                    onClick={handleBuyMoreCredits}
+                    disabled={creditsPurchaseLoading}
+                  >
+                    {creditsPurchaseLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Opening Checkout...
+                      </>
+                    ) : (
+                      "More Credits"
+                    )}
+                  </Button>
+                </PopoverContent>
+              </Popover>
+            </p>
+          )
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className={`p-3 sm:p-4 ${isEmbedded || isStorefront ? "bg-transparent" : "bg-background min-h-screen"}`}>
       {/* Guide box shimmer + title shimmer animations */}
@@ -5387,7 +5599,7 @@ export default function EmbedDesign() {
               {/* Row 1: Generate/AddToCart + Upload side-by-side */}
               <div className="flex flex-col sm:flex-row gap-2">
                 {/* Primary action button — left, wider: Generate OR Add to Cart */}
-                <div className="flex-1 min-w-0">
+                <div className="hidden md:block flex-1 min-w-0">
                   {(isShopify || isStorefront) && generatedDesign ? (
                     /* ── Add to Cart state ── */
                     addedToCart ? (
@@ -5477,7 +5689,7 @@ export default function EmbedDesign() {
                           return;
                         }
                         if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                          alert("Please select a style before generating");
+                          alert("Please select an art style before generating");
                           return;
                         }
                         const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
@@ -5503,7 +5715,7 @@ export default function EmbedDesign() {
                       ) : (
                         <>
                           <Sparkles className="w-4 h-4 mr-2" />
-                          <span className="shimmer-text-white">Generate Design</span>
+                          <span className="shimmer-text-white">Generate Artwork</span>
                         </>
                       )}
                     </Button>
@@ -5668,7 +5880,7 @@ export default function EmbedDesign() {
                 </div>
               </div>
 
-              {/* Style + Size side-by-side on desktop, stacked on mobile */}
+              {/* Art Style + Size side-by-side on desktop, stacked on mobile */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {/* Style Selection */}
                 {showPresetsParam && filteredStylePresets.length > 0 && (
@@ -5679,7 +5891,7 @@ export default function EmbedDesign() {
                       onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
                     />
                     {selectedPreset === "" && (
-                      <p className="text-xs text-muted-foreground">Please select a style before generating</p>
+                      <p className="text-xs text-muted-foreground">Please select an art style before generating</p>
                     )}
                   </div>
                 )}
@@ -5783,7 +5995,7 @@ export default function EmbedDesign() {
                       })}
                     </div>
                     {activePreset.options.required && selectedStyleOption === "" && (
-                      <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose a style option to continue</p>
+                      <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose an art style option to continue</p>
                     )}
                   </div>
                 );
@@ -5801,8 +6013,8 @@ export default function EmbedDesign() {
                 if (!previewUrl) return null;
                 return (
                   <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
-                    <img src={previewUrl} alt="Style reference" className="w-10 h-10 rounded object-cover" />
-                    <span className="text-xs text-muted-foreground">Style reference — AI will use this as visual inspiration</span>
+                    <img src={previewUrl} alt="Art style reference" className="w-10 h-10 rounded object-cover" />
+                    <span className="text-xs text-muted-foreground">Art style reference — AI will use this as visual inspiration</span>
                   </div>
                 );
               })()}
@@ -5860,6 +6072,7 @@ export default function EmbedDesign() {
                   }}
                   className="min-h-[80px]"
                 />
+                {renderPrimaryAction("md:hidden", "mobile")}
               </div>
                 );
               })()}

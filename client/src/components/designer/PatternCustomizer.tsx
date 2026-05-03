@@ -1630,7 +1630,11 @@ export function PatternCustomizer({
   );
 
   // Active view for hoodie (front / back / hood)
-  const [activeView, setActiveView] = useState<HoodiePanelView>("front");
+  const [activeView, setActiveView] = useState<HoodiePanelView>(
+    initialPlacement?.activeView === "back" || initialPlacement?.activeView === "hood"
+      ? initialPlacement.activeView
+      : "front",
+  );
 
   const inferredLayoutKind = panelPositions.length > 0 ? detectProductKind(panelPositions) : "generic";
   const fromTemplate = resolveAopLayoutKind(aopTemplateId, inferredLayoutKind);
@@ -2431,10 +2435,18 @@ export function PatternCustomizer({
     startDy: number;
     panel: string;
   }>({ active: false, startClientX: 0, startClientY: 0, startDx: 0, startDy: 0, panel: "" });
+  const touchDragTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const clearTouchDragTimer = () => {
+      if (touchDragTimerRef.current !== null) {
+        window.clearTimeout(touchDragTimerRef.current);
+        touchDragTimerRef.current = null;
+      }
+    };
 
     const getEditablePanelForDrag = (panel: string): string => {
       if (!panel) return panel;
@@ -2511,19 +2523,35 @@ export function PatternCustomizer({
       setActivePanel(hit);
       const editPanel = getEditablePanelForDrag(hit);
       const t = perPanelTransforms[editPanel] || { dxPx: 0, dyPx: 0, scalePct: 100 };
+      clearTouchDragTimer();
       dragRef.current = {
-        active: true,
+        active: false,
         startClientX: touch.clientX,
         startClientY: touch.clientY,
         startDx: t.dxPx,
         startDy: t.dyPx,
         panel: editPanel,
       };
+      touchDragTimerRef.current = window.setTimeout(() => {
+        dragRef.current.active = true;
+        touchDragTimerRef.current = null;
+      }, 320);
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (!dragRef.current.active || e.touches.length !== 1) return;
+      if (!dragRef.current.panel || e.touches.length !== 1) return;
       const touch = e.touches[0];
+      if (!dragRef.current.active) {
+        const moveX = Math.abs(touch.clientX - dragRef.current.startClientX);
+        const moveY = Math.abs(touch.clientY - dragRef.current.startClientY);
+        if (moveX > 8 || moveY > 8) {
+          clearTouchDragTimer();
+          dragRef.current.active = false;
+          dragRef.current.panel = "";
+        }
+        return;
+      }
+      e.preventDefault();
       const invertX = shouldFlipLeggingsLegSlot(productKind, dragRef.current.panel);
       const clientDx = touch.clientX - dragRef.current.startClientX;
       const rawDx = dragRef.current.startDx + (invertX ? -clientDx : clientDx);
@@ -2532,20 +2560,29 @@ export function PatternCustomizer({
       updatePanelTransform(dragRef.current.panel, { dxPx, dyPx });
     };
 
+    const onTouchEnd = () => {
+      clearTouchDragTimer();
+      dragRef.current.active = false;
+      dragRef.current.panel = "";
+    };
+
     canvas.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup",   onMouseUp);
     canvas.addEventListener("touchstart", onTouchStart, { passive: true });
     canvas.addEventListener("touchmove",  onTouchMove,  { passive: false });
-    window.addEventListener("touchend",   onMouseUp);
+    window.addEventListener("touchend",   onTouchEnd);
+    window.addEventListener("touchcancel", onTouchEnd);
 
     return () => {
+      clearTouchDragTimer();
       canvas.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup",   onMouseUp);
       canvas.removeEventListener("touchstart", onTouchStart);
       canvas.removeEventListener("touchmove",  onTouchMove);
-      window.removeEventListener("touchend",   onMouseUp);
+      window.removeEventListener("touchend",   onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
     };
   }, [activePanel, mode, perPanelTransforms, mirrorMode, syncSidesMode, productKind, activeView, panelPositions, svgImages, seamBleedPx]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2617,11 +2654,12 @@ export function PatternCustomizer({
       applyAllover,
       hoodiePocketPatternHeightInches,
       lastMode: mode,
+      activeView,
       patternType,
       tileInches,
       bgColor,
     });
-  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, hoodieSeamBleedPx, syncSidesMode, activePatternOffsetX, mode, patternType, tileInches, bgColor, hoodiePocketPatternHeightInches]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [perPanelTransforms, panelRenderConfig, activePanel, mirrorMode, seamBleedPx, hoodieSeamBleedPx, syncSidesMode, activePatternOffsetX, mode, activeView, patternType, tileInches, bgColor, hoodiePocketPatternHeightInches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep embed / parent in sync with pattern controls (tiles, type, background)
   useEffect(() => {
@@ -3065,6 +3103,7 @@ export function PatternCustomizer({
               applyAllover,
               hoodiePocketPatternHeightInches,
               lastMode: mode,
+              activeView,
               patternType,
               tileInches: productKind === "hoodie" ? getPatternSpecForView("front").tileInches : tileInches,
               bgColor,
@@ -3109,6 +3148,7 @@ export function PatternCustomizer({
             applyAllover,
             hoodiePocketPatternHeightInches,
             lastMode: mode,
+            activeView,
             patternType,
             tileInches,
             bgColor,
@@ -3432,6 +3472,7 @@ export function PatternCustomizer({
           applyAllover,
           hoodiePocketPatternHeightInches,
           lastMode: mode,
+          activeView,
           patternType,
           tileInches,
           bgColor,
@@ -3473,6 +3514,7 @@ export function PatternCustomizer({
   /** Radix Slider: Root > Track (span) > Range; Thumb is sibling span — no data-slot. */
   const sliderTrackClass =
     "mt-1 [&>span:first-child]:rounded-full [&>span:first-child]:ring-2 [&>span:first-child]:ring-foreground/35 [&>span:first-child]:bg-muted-foreground/25 dark:[&>span:first-child]:bg-muted-foreground/40 [&>span:first-child>span]:bg-foreground [&>span:last-child]:border-2 [&>span:last-child]:border-foreground [&>span:last-child]:bg-background";
+  const canUseEyeDropper = typeof window !== "undefined" && "EyeDropper" in window;
 
   // Shared colour-selector block rendered above Tile size (Pattern mode) and
   // above Artwork scale (Place on Item mode). Originally lived at the bottom
@@ -3498,10 +3540,11 @@ export function PatternCustomizer({
         </Select>
         <button
           type="button"
-          title="Pick colour from screen"
+          title={canUseEyeDropper ? "Pick colour from screen" : "Screen colour picker is not supported on this device"}
           aria-label="Pick colour from screen"
+          disabled={!canUseEyeDropper}
           onClick={async () => {
-            if (!("EyeDropper" in window)) return;
+            if (!canUseEyeDropper) return;
             try {
               // @ts-expect-error EyeDropper is not yet in TS lib
               const result = await new window.EyeDropper().open();
@@ -3510,20 +3553,56 @@ export function PatternCustomizer({
               // cancelled or unsupported
             }
           }}
-          className="h-9 w-9 shrink-0 flex items-center justify-center rounded border-2 border-foreground/25 bg-background hover:border-foreground/50 transition-colors"
+          className="h-9 w-9 shrink-0 flex items-center justify-center rounded border-2 border-foreground/25 bg-background hover:border-foreground/50 transition-colors disabled:opacity-35 disabled:cursor-not-allowed"
         >
           <Pipette className="w-4 h-4 text-muted-foreground" />
         </button>
-        <input
-          type="color"
-          aria-label="Custom background colour"
-          value={bgColor === "" ? "#ffffff" : bgColor}
-          onChange={e => setBgColor(e.target.value)}
-          className="w-9 h-9 shrink-0 rounded border-2 border-foreground/25 cursor-pointer bg-background"
-        />
+        <label className="h-9 min-w-[4.25rem] shrink-0 rounded border-2 border-foreground/25 bg-background cursor-pointer flex items-center justify-center gap-1.5 px-2 text-[10px] font-medium">
+          <span
+            className="h-4 w-4 rounded border border-foreground/30"
+            style={{ backgroundColor: bgColor === "" || bgColor === "transparent" ? "#ffffff" : bgColor }}
+          />
+          Custom
+          <input
+            type="color"
+            aria-label="Custom background colour"
+            value={bgColor === "" || bgColor === "transparent" ? "#ffffff" : bgColor}
+            onChange={e => setBgColor(e.target.value)}
+            className="sr-only"
+          />
+        </label>
       </div>
     </div>
   );
+
+  const tileSizeControl = mode === "pattern" ? (
+    <div>
+      <Label className="text-xs">Tile size: {activePatternTileInches.toFixed(2)}"</Label>
+      <Slider
+        value={[activePatternTileInches]}
+        onValueChange={v => setActivePatternTileInches(Math.max(MIN_TILE_INCHES, Math.min(6, v[0])))}
+        min={MIN_TILE_INCHES}
+        max={6}
+        step={0.25}
+        className={sliderTrackClass}
+      />
+    </div>
+  ) : null;
+
+  const artworkScaleControl =
+    mode === "place" && activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) ? (
+      <div>
+        <Label className="text-xs">Artwork scale: {activePanelT.scalePct}%</Label>
+        <Slider
+          value={[activePanelT.scalePct]}
+          onValueChange={v => updatePanelTransform(transformEditPanelId, { scalePct: v[0] })}
+          min={20}
+          max={200}
+          step={5}
+          className={sliderTrackClass}
+        />
+      </div>
+    ) : null;
 
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
@@ -3543,11 +3622,11 @@ export function PatternCustomizer({
           >
             <canvas
               ref={canvasRef}
-              className="absolute inset-0 w-full h-full touch-none"
+              className="absolute inset-0 w-full h-full"
               style={{
                 cursor: mode === "place" || mode === "pattern" ? "grab" : "default",
                 display: "block",
-                touchAction: "none",
+                touchAction: "pan-y",
               }}
             />
           </div>
@@ -3598,6 +3677,9 @@ export function PatternCustomizer({
             {isLoading && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             <span className="shimmer-text-white">Apply to Mockups</span>
           </Button>
+
+          {tileSizeControl}
+          {artworkScaleControl}
 
           {mode === "pattern" && (
             <>
@@ -3667,18 +3749,6 @@ export function PatternCustomizer({
               </div>
 
               {backgroundSelectorBlock}
-
-              <div>
-                <Label className="text-xs">Tile size: {activePatternTileInches.toFixed(2)}"</Label>
-                <Slider
-                  value={[activePatternTileInches]}
-                  onValueChange={v => setActivePatternTileInches(Math.max(MIN_TILE_INCHES, Math.min(6, v[0])))}
-                  min={MIN_TILE_INCHES}
-                  max={6}
-                  step={0.25}
-                  className={sliderTrackClass}
-                />
-              </div>
 
               {productKind === "hoodie" && panelPositions.some(p => isHoodiePocketPanel(p.position)) ? (
                 <div>
@@ -3908,20 +3978,6 @@ export function PatternCustomizer({
                 )}
 
               {backgroundSelectorBlock}
-
-              {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
-                <div>
-                  <Label className="text-xs">Artwork scale: {activePanelT.scalePct}%</Label>
-                  <Slider
-                    value={[activePanelT.scalePct]}
-                    onValueChange={v => updatePanelTransform(transformEditPanelId, { scalePct: v[0] })}
-                    min={20}
-                    max={200}
-                    step={5}
-                    className={sliderTrackClass}
-                  />
-                </div>
-              )}
 
               {activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) && (
                 <button

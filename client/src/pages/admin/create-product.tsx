@@ -955,10 +955,10 @@ export default function AdminCreateProduct() {
                   </div>
                 </div>
 
-                {/* Style selector with Decor/Apparel tabs */}
+                {/* Art style selector with Decor/Apparel tabs */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label>Style</Label>
+                    <Label>Art Style</Label>
                     <div className="flex gap-1">
                       <Button
                         type="button"
@@ -982,7 +982,7 @@ export default function AdminCreateProduct() {
                   </div>
                   <Select value={selectedStyle} onValueChange={(v) => { setSelectedStyle(v); setSelectedStyleOption(""); }}>
                     <SelectTrigger data-testid="select-style">
-                      <SelectValue placeholder="Choose a style" />
+                      <SelectValue placeholder="Choose an art style" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">No Style</SelectItem>
@@ -1026,7 +1026,7 @@ export default function AdminCreateProduct() {
                   );
                 })()}
 
-                {/* Style base image preview */}
+                {/* Art style base image preview */}
                 {(() => {
                   const activeStyle = filteredStyles.find(s => s.id === selectedStyle);
                   let previewUrl: string | undefined;
@@ -1038,8 +1038,8 @@ export default function AdminCreateProduct() {
                   if (!previewUrl) return null;
                   return (
                     <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
-                      <img src={previewUrl} alt="Style reference" className="w-10 h-10 rounded object-cover" />
-                      <span className="text-xs text-muted-foreground">Style reference — AI will use this as visual inspiration</span>
+                      <img src={previewUrl} alt="Art style reference" className="w-10 h-10 rounded object-cover" />
+                      <span className="text-xs text-muted-foreground">Art style reference — AI will use this as visual inspiration</span>
                     </div>
                   );
                 })()}

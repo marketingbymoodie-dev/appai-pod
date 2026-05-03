@@ -23,10 +23,10 @@ export function StyleSelector({
 }: StyleSelectorProps) {
   return (
     <div className="space-y-2">
-      {showLabel && <Label>Style</Label>}
+      {showLabel && <Label>Art Style</Label>}
       <Select value={selectedStyle} onValueChange={onStyleChange}>
         <SelectTrigger data-testid="select-style" className="h-11">
-          <SelectValue placeholder="Choose a style" />
+          <SelectValue placeholder="Choose an art style" />
         </SelectTrigger>
         <SelectContent>
           {stylePresets.map((style) => (
