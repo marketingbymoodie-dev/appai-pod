@@ -53,6 +53,13 @@ interface GeneratedDesign {
   prompt: string;
 }
 
+const DEFAULT_AOP_PATTERN_SETTINGS: {
+  tilesAcross: number;
+  tileInches: number;
+  pattern: "grid" | "brick" | "half";
+  bgColor: string;
+} = { tilesAcross: 4, tileInches: 1.5, pattern: "grid", bgColor: "#ffffff" };
+
 interface ProductTypeConfig {
   id: number;
   name: string;
@@ -866,12 +873,16 @@ export default function EmbedDesign() {
         setStorefrontCustomerId(data.customerId);
         setStorefrontIdentityToken(data.identityToken || null);
         setCustomer((prev) => {
+          const isKnownLoggedInCustomer =
+            prev?.isLoggedIn === true ||
+            !!prev?.email ||
+            !!shopifyCustomerId;
           const next = {
             ...(prev || { id: data.customerId, isLoggedIn: !!shopifyCustomerId }),
             id: data.customerId,
             credits: data.credits ?? prev?.credits ?? 0,
             freeGenerationsUsed: data.freeGenerationsUsed ?? prev?.freeGenerationsUsed ?? 0,
-            isLoggedIn: prev?.isLoggedIn ?? !!shopifyCustomerId,
+            isLoggedIn: isKnownLoggedInCustomer,
           };
           try {
             localStorage.setItem('appai_customer_id', data.customerId);
@@ -899,7 +910,7 @@ export default function EmbedDesign() {
   const [activeTab, setActiveTab] = useState<"generate" | "import">("generate");
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
-  const [designSource, setDesignSource] = useState<"ai" | "upload" | "kittl">("ai");
+  const [designSource, setDesignSource] = useState<"ai" | "upload" | "kittl" | null>("ai");
   const importFileInputRef = useRef<HTMLInputElement>(null);
   const customUploadInputRef = useRef<HTMLInputElement>(null);
   
@@ -926,7 +937,7 @@ export default function EmbedDesign() {
     tileInches: number;
     pattern: "grid" | "brick" | "half";
     bgColor: string;
-  }>({ tilesAcross: 4, tileInches: 1.5, pattern: "grid", bgColor: "#ffffff" });
+  }>(DEFAULT_AOP_PATTERN_SETTINGS);
   // Persisted Place on Item placement — survive close/reopen
   const [aopPlacementSettings, setAopPlacementSettings] = useState<AopPlacementSettings | undefined>(undefined);
 
@@ -1579,6 +1590,7 @@ export default function EmbedDesign() {
     const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
     const absUrl = abs(imageUrl);
     if (!absUrl) return;
+    lastAopPanelUrlsRef.current = null;
     setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
@@ -1703,6 +1715,16 @@ export default function EmbedDesign() {
       // Clear current design state to prevent "takeover" while loading a new saved design
       setGeneratedDesign(null);
       setDesignSource(null);
+      setShowPatternStep(false);
+      setAopPendingMotifUrl(null);
+      setAopPatternUrl(null);
+      setAopPlacementSettings(undefined);
+      setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+      lastAopPanelUrlsRef.current = null;
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
+      setMockupsStale(false);
     }
   }, [effectiveLoadDesignId]);
 
@@ -4885,8 +4907,9 @@ export default function EmbedDesign() {
                         onClick={() => {
                           setCustomer(null);
                           setStorefrontCustomerId(null);
+                          setStorefrontIdentityToken(null);
                           setOtpEmail('');
-                          try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
+                          try { localStorage.removeItem('appai_customer_id'); localStorage.removeItem('appai_identity_token'); localStorage.removeItem('appai_otp_email'); localStorage.removeItem('appai_customer'); } catch {}
                           setShowSavedDesigns(false);
                           setShowCouponInput(false);
                         }}
@@ -5031,7 +5054,7 @@ export default function EmbedDesign() {
                                             localStorage.setItem('appai_customer_id', newCustomerId);
                                             if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
                                             localStorage.setItem('appai_otp_email', otpEmail.trim());
-                                            localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId }));
+                                            localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true }));
                                           } catch {}
                                           setShowOtpLogin(false);
                                           setOtpStep('email');
@@ -5081,7 +5104,7 @@ export default function EmbedDesign() {
                                           localStorage.setItem('appai_customer_id', newCustomerId);
                                           if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
                                           localStorage.setItem('appai_otp_email', otpEmail.trim());
-                                          localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId }));
+                                          localStorage.setItem('appai_customer', JSON.stringify({ email: otpEmail.trim(), id: newCustomerId, credits: data.credits || 0, freeGenerationsUsed: data.freeGenerationsUsed ?? 0, isLoggedIn: true }));
                                         } catch {}
                                         setShowOtpLogin(false);
                                         setOtpStep('email');
@@ -5870,7 +5893,7 @@ export default function EmbedDesign() {
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
               <PatternCustomizer
-                key={`aop-pc-${productTypeConfig?.id ?? 0}-${patternPanelPositions.length}`}
+                key={`aop-pc-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}-${patternPanelPositions.length}`}
                 motifUrl={aopPendingMotifUrl}
                 aopTemplateId={productTypeConfig?.aopTemplateId ?? null}
                 productWidth={patternPanelPositions.reduce((max: number, p: { width: number }) => Math.max(max, p.width), 2000)}

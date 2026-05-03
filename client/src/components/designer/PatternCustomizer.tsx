@@ -2998,15 +2998,16 @@ export function PatternCustomizer({
                   const baseDx = t.dxPx * renderScale;
                   const leftAnchorX  = baseAnchor.x + baseDx + waistbandNudge;
                   const rightAnchorX = baseAnchor.x + baseDx - waistbandNudge;
+                  const seamX = Math.floor(outW / 2);
                   ctx.save();
                   ctx.beginPath();
-                  ctx.rect(0, 0, outW / 2, outH);
+                  ctx.rect(0, 0, seamX + 1, outH);
                   ctx.clip();
                   drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, leftAnchorX, anchorY);
                   ctx.restore();
                   ctx.save();
                   ctx.beginPath();
-                  ctx.rect(outW / 2, 0, outW / 2, outH);
+                  ctx.rect(Math.max(0, seamX - 1), 0, outW - seamX + 1, outH);
                   ctx.clip();
                   drawTiledMotifInRect(ctx, motifImage, 0, 0, outW, outH, tileInchesEff, patternType, pxPerInch, rightAnchorX, anchorY);
                   ctx.restore();
