@@ -6204,34 +6204,36 @@ ${textEdgeRestrictions}
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
 
-      // Credit/limit check is handled in the block below (single deduction)
+      // Credit/limit check is handled in the block below (single deduction).
+      // Store the internal customer id on the job so status polling reads the
+      // same ledger-backed balance that generation consumed from.
       let customer: any = null;
+      let resolvedJobCustomerId: string | null = null;
 
       if (customerId) {
-        // Determine if this is an OTP customer (internal UUID) or Shopify-native customer (numeric ID).
-        // OTP customers are already in the DB by their internal UUID; Shopify-native customers are
-        // looked up/created via getOrCreateShopifyCustomer using their Shopify numeric ID.
-        const isOtpCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-        if (isOtpCustomer) {
-          customer = await storage.getCustomer(customerId);
-          if (!customer) {
-            console.warn(P, reqId, `OTP customer ${customerId} not found in DB`);
-          }
-        } else {
-          customer = await storage.getOrCreateShopifyCustomer(shop, customerId);
-        }
+        const tokenIdentity = verifyStorefrontIdentityToken(req);
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+        customer = await resolveStorefrontCustomerIdentity({
+          shop,
+          customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? customerId : null),
+          shopifyCustomerId: isInternalCustomer ? null : customerId,
+        }).catch((err) => {
+          console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
+          return null;
+        });
         
         if (customer) {
-          // If customer has credits, use them first
-          if (customer.credits > 0) {
-            console.log(P, reqId, `customer ${customerId} has ${customer.credits} credits, deducting 1`);
-            const updated = await storage.decrementCreditsIfAvailable(customer.id);
-            if (!updated) {
+          resolvedJobCustomerId = customer.id;
+          const balance = await storage.ensureCustomerBalance(customer.id);
+          if (balance.credits > 0) {
+            console.log(P, reqId, `customer ${customer.id} has ${balance.credits} ledger credits, deducting 1`);
+            const result = await storage.consumePaidCredit(customer.id, `storefront-generation:${reqId}`, reqId.toString());
+            if (!result.consumed) {
               return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits. Purchase more to continue." });
             }
           } else {
             // No credits, check free limit
-            const freeUsed = customer.freeGenerationsUsed || 0;
+            const freeUsed = balance.freeGenerationsUsed || 0;
             if (freeUsed >= FREE_GENERATION_LIMIT) {
               return res.status(403).json({
                 error: "FREE_LIMIT_REACHED",
@@ -6240,9 +6242,16 @@ ${textEdgeRestrictions}
                 limit: FREE_GENERATION_LIMIT,
               });
             }
-            // Increment free usage
-            await storage.updateCustomer(customer.id, { freeGenerationsUsed: freeUsed + 1 });
-            console.log(P, reqId, `customer ${customerId} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
+            const result = await storage.consumeFreeGeneration(customer.id, `storefront-free-generation:${reqId}`, reqId.toString());
+            if (!result.consumed) {
+              return res.status(403).json({
+                error: "FREE_LIMIT_REACHED",
+                message: "You've used all 10 free generations. Purchase credits to continue.",
+                generationsUsed: freeUsed,
+                limit: FREE_GENERATION_LIMIT,
+              });
+            }
+            console.log(P, reqId, `customer ${customer.id} used free generation ${freeUsed + 1}/${FREE_GENERATION_LIMIT}`);
           }
         }
       } else if (sessionId) {
@@ -6576,7 +6585,7 @@ ${textEdgeRestrictions}
       const job = await withTimeout(storage.createGenerationJob({
         shop,
         sessionId: sessionId ?? null,
-        customerId: customerId ?? null,
+        customerId: resolvedJobCustomerId,
         status: "pending",
         prompt,
         userPrompt: rawUserPrompt ?? null,
@@ -6764,11 +6773,8 @@ ${textEdgeRestrictions}
       if (job.status === "complete") {
         let creditsRemaining = 0;
         if (job.customerId) {
-          const isOtpCust = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(job.customerId);
-          const cust = isOtpCust
-            ? await storage.getCustomer(job.customerId)
-            : await storage.getOrCreateShopifyCustomer(shop, job.customerId);
-          creditsRemaining = cust?.credits ?? 0;
+          const balance = await storage.ensureCustomerBalance(job.customerId);
+          creditsRemaining = balance.credits;
         } else if (job.sessionId) {
           const count = await storage.countSessionGenerations(shop, job.sessionId);
           creditsRemaining = Math.max(0, 10 - count);
@@ -8233,7 +8239,7 @@ ${textEdgeRestrictions}
 
   app.get("/api/storefront/credits/status", async (req: Request, res: Response) => {
     try {
-      const { customerId, shop } = req.query;
+      const { customerId, shop, session_id: stripeSessionId, sessionId } = req.query;
       if (!customerId || !shop || typeof customerId !== "string" || typeof shop !== "string") {
         return res.status(400).json({ error: "customerId and shop are required" });
       }
@@ -8258,16 +8264,81 @@ ${textEdgeRestrictions}
         return res.status(404).json({ error: "Customer not found" });
       }
       const balance = await storage.ensureCustomerBalance(customer.id);
+      let finalBalance = balance;
 
-      console.log("[Credits Status] returning balance", balance.credits, "for customerId", customer.id);
+      const checkoutSessionId = typeof stripeSessionId === "string"
+        ? stripeSessionId
+        : (typeof sessionId === "string" ? sessionId : null);
+      if (checkoutSessionId && stripe) {
+        try {
+          const session = await stripe.checkout.sessions.retrieve(checkoutSessionId);
+          const sessionCustomerId = session.metadata?.internal_customer_id || session.metadata?.customerId;
+          const sessionShop = session.metadata?.shop;
+          if (
+            session.payment_status === "paid" &&
+            sessionCustomerId === customer.id &&
+            sessionShop === shop
+          ) {
+            const credits = Number.parseInt(session.metadata?.credits || "0", 10);
+            const entitlementCents = Number.parseInt(session.metadata?.entitlement_cents || "100", 10);
+            if (Number.isFinite(credits) && credits > 0) {
+              const ledgerResult = await storage.applyCreditLedgerEntry({
+                customerId: customer.id,
+                deltaCredits: credits,
+                deltaEntitlementCents: Math.min(100, Math.max(0, entitlementCents || 0)),
+                reason: "purchase",
+                idempotencyKey: session.metadata?.idempotency_key || `stripe:session:${session.id}`,
+                externalRef: session.id,
+                metadata: {
+                  source: "credits-status-fallback",
+                  paymentIntent: typeof session.payment_intent === "string" ? session.payment_intent : null,
+                  priceInCents: session.amount_total || 0,
+                },
+              });
+              if (ledgerResult.inserted) {
+                await storage.createCreditTransaction({
+                  customerId: customer.id,
+                  type: "purchase",
+                  amount: credits,
+                  priceInCents: session.amount_total || 0,
+                  description: `Purchased ${credits} credits via Stripe`,
+                });
+                await syncCreditEntitlementMetafield(customer.id).catch((err) =>
+                  console.warn("[Credits Status] entitlement metafield sync failed", err),
+                );
+              }
+              finalBalance = ledgerResult.balance || finalBalance;
+              console.log("[Credits Status] Stripe fallback", {
+                sessionId: session.id,
+                customerId: customer.id,
+                inserted: ledgerResult.inserted,
+                credits: finalBalance.credits,
+              });
+            }
+          } else {
+            console.warn("[Credits Status] Stripe fallback ignored session mismatch", {
+              checkoutSessionId,
+              requestedCustomerId: customer.id,
+              sessionCustomerId,
+              requestedShop: shop,
+              sessionShop,
+              paymentStatus: session.payment_status,
+            });
+          }
+        } catch (err: any) {
+          console.warn("[Credits Status] Stripe fallback failed", { checkoutSessionId, error: err?.message });
+        }
+      }
+
+      console.log("[Credits Status] returning balance", finalBalance.credits, "for customerId", customer.id);
       return res.json({
         ok: true,
         requestedCustomerId: customerId,
         customerId: customer.id,
         identityToken: signStorefrontIdentityToken(customer.id, shop),
-        credits: balance.credits,
-        freeGenerationsUsed: balance.freeGenerationsUsed,
-        discountEntitlementCents: balance.discountEntitlementCents,
+        credits: finalBalance.credits,
+        freeGenerationsUsed: finalBalance.freeGenerationsUsed,
+        discountEntitlementCents: finalBalance.discountEntitlementCents,
       });
     } catch (error: any) {
       console.error("[Credits Status] error:", error);

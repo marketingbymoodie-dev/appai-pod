@@ -113,6 +113,17 @@ const DATA_MIGRATIONS: string[] = [
       created_at
     FROM credit_transactions
     ON CONFLICT (idempotency_key) DO NOTHING`,
+  // Repair balances affected by legacy decrement-only paths that lowered
+  // customers.credits without lowering credit_balances.credits. Purchases and
+  // coupon grants dual-write both columns, so the legacy column being lower is
+  // a strong signal that credits were already consumed.
+  `UPDATE credit_balances cb
+    SET credits = c.credits,
+        updated_at = NOW(),
+        version = cb.version + 1
+    FROM customers c
+    WHERE cb.customer_id = c.id
+      AND c.credits < cb.credits`,
 ];
 
 // ── Table creation ─────────────────────────────────────────────────────────────

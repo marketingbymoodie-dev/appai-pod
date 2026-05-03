@@ -4632,8 +4632,14 @@ export default function EmbedDesign() {
     console.log('[Credits Return] refreshing status for customerId', resolvedCustomerId);
     toast({ title: "Payment complete", description: "Refreshing your artwork credits..." });
 
+    const checkoutSessionId = params.get("session_id");
     const refreshCredits = () => {
-      const statusUrl = `${API_BASE}/api/storefront/credits/status?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(resolvedCustomerId!)}`;
+      const statusParams = new URLSearchParams({
+        shop: shopDomain,
+        customerId: resolvedCustomerId!,
+      });
+      if (checkoutSessionId) statusParams.set("session_id", checkoutSessionId);
+      const statusUrl = `${API_BASE}/api/storefront/credits/status?${statusParams.toString()}`;
       const headers: Record<string, string> = {};
       if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
       safeFetch(statusUrl, { headers })

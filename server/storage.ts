@@ -215,16 +215,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async decrementCreditsIfAvailable(customerId: string): Promise<Customer | null> {
-    const [updated] = await db
-      .update(customers)
-      .set({ 
-        credits: sql`${customers.credits} - 1`,
-        totalGenerations: sql`${customers.totalGenerations} + 1`,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(customers.id, customerId), sql`${customers.credits} > 0`))
-      .returning();
-    return updated || null;
+    const result = await this.consumePaidCredit(
+      customerId,
+      `legacy-decrement:${customerId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      "legacy-decrementCreditsIfAvailable",
+    );
+    if (!result.consumed) return null;
+    return this.getCustomer(customerId).then((customer) => customer || null);
   }
 
   async ensureCustomerBalance(customerId: string): Promise<CreditBalance> {

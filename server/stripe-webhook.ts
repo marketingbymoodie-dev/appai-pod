@@ -57,13 +57,15 @@ export function registerStripeWebhook(app: Express) {
             },
           });
 
-          await storage.createCreditTransaction({
-            customerId: customer.id,
-            type: "purchase",
-            amount,
-            priceInCents,
-            description: `Purchased ${amount} credits via Stripe`,
-          });
+          if (result.inserted) {
+            await storage.createCreditTransaction({
+              customerId: customer.id,
+              type: "purchase",
+              amount,
+              priceInCents,
+              description: `Purchased ${amount} credits via Stripe`,
+            });
+          }
 
           await storage.markStripeEventOutcome(event.id, result.inserted ? "processed" : "duplicate-ledger");
           if (result.inserted) {
