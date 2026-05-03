@@ -9,6 +9,18 @@ automatically_update_urls_on_dev = true
 [webhooks]
 api_version = "2026-01"
 
+[[webhooks.subscriptions]]
+topics = [ "customers/data_request" ]
+uri = "/shopify/webhooks/customers-data-request"
+
+[[webhooks.subscriptions]]
+topics = [ "customers/redact" ]
+uri = "/shopify/webhooks/customers-redact"
+
+[[webhooks.subscriptions]]
+topics = [ "shop/redact" ]
+uri = "/shopify/webhooks/shop-redact"
+
 # orders/paid is required to debit the credit ledger after a redeemed
 # Function discount. It carries protected customer data (email, address,
 # customer GID) so it cannot be declared here until the app is approved

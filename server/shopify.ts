@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import crypto from "crypto";
 import { storage } from "./storage";
 import { ensureCreditDiscountActivated } from "./credit-discount-activation";
+import { registerShopifyGdprRoutes } from "./shopify-gdpr";
 
 const SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY || "";
 const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
@@ -180,6 +181,7 @@ export async function shopifyApiCall(
 
 export function registerShopifyRoutes(app: Express): void {
   console.log(`[shopify] OAuth scopes configured: ${SHOPIFY_SCOPES}`);
+  registerShopifyGdprRoutes(app);
 
   if (!SHOPIFY_API_KEY || !SHOPIFY_API_SECRET) {
     console.log("Shopify OAuth disabled - SHOPIFY_API_KEY/SECRET not configured");

@@ -21,6 +21,7 @@ import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
+import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
 import type { CustomizerPage } from "@shared/schema";
@@ -1225,6 +1226,12 @@ export async function registerRoutes(
   // Track server start time and DB readiness
   const serverStartTime = Date.now();
   let dbReady = false;
+
+  app.get("/privacy", (_req: Request, res: Response) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.send(privacyPolicyHtml);
+  });
 
   // SVG Proxy to bypass CORS issues for AOP patterns
   app.get("/api/proxy-svg", asyncHandler(async (req: Request, res: Response) => {
