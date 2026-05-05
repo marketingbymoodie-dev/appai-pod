@@ -2798,7 +2798,7 @@ export function PatternCustomizer({
     return canvasToUploadDataUrl(canvas, pixelCap);
   }
 
-  function buildSolidPanelDataUrl(color: string): string {
+  function buildSolidPanelDataUrl(color?: string): string {
     const outW = SOLID_PANEL_LONG_EDGE_PX;
     const outH = SOLID_PANEL_LONG_EDGE_PX;
     const canvas = document.createElement("canvas");
@@ -2806,9 +2806,15 @@ export function PatternCustomizer({
     canvas.height = outH;
     const ctx = canvas.getContext("2d");
     if (!ctx) return canvas.toDataURL("image/png");
-    ctx.fillStyle = color || "#ffffff";
-    ctx.fillRect(0, 0, outW, outH);
-    return canvas.toDataURL("image/jpeg", 0.5);
+    if (color && color !== "transparent") {
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, outW, outH);
+      return canvas.toDataURL("image/jpeg", 0.5);
+    }
+    // Transparent trim panels let the selected garment colour show through in
+    // Printify mockups. A white JPEG here creates visible bands on hoodie
+    // waistbands, cuffs, and neckline/hood trim.
+    return canvas.toDataURL("image/png");
   }
 
   function applyPanelRenderOverrides(
@@ -2819,7 +2825,7 @@ export function PatternCustomizer({
       if (shouldRenderPanelArtworkForMode(entry.position, exportMode)) return entry;
       return {
         position: entry.position,
-        dataUrl: buildSolidPanelDataUrl(panelFillColor),
+        dataUrl: buildSolidPanelDataUrl(bgColor),
       };
     });
   }
@@ -2962,7 +2968,7 @@ export function PatternCustomizer({
             for (const p of panelPositions) {
               if (patternCompositeCovered.has(p.position)) continue;
               if (!shouldRenderPanelArtworkForMode(p.position, "pattern")) {
-                urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(panelFillColor) });
+                urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(bgColor) });
                 continue;
               }
               const scaleRatio = Math.min(1, pixelCap / Math.max(p.width, p.height));
@@ -3173,8 +3179,8 @@ export function PatternCustomizer({
             continue;
           }
           if (!shouldRenderPanelArtworkForMode(leftPos, "place") || !shouldRenderPanelArtworkForMode(rightPos, "place")) {
-            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(panelFillColor) });
-            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(panelFillColor) });
+            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(bgColor) });
+            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(bgColor) });
             compositeCovered.add(rightPos);
             compositeCovered.add(leftPos);
             continue;
@@ -3357,7 +3363,7 @@ export function PatternCustomizer({
         for (const p of panelPositions) {
         if (compositeCovered.has(p.position)) continue;
         if (!shouldRenderPanelArtworkForMode(p.position, "place")) {
-          panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(panelFillColor) });
+          panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(bgColor) });
           continue;
         }
 
