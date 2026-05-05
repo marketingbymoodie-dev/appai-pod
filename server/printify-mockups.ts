@@ -312,6 +312,11 @@ async function createTemporaryProduct(
         };
         placeholders.push({ position: pos.position, images: [panelEntry] });
         continue;
+      } else if (panelImageIds && panelImageIds.size > 0) {
+        // Per-panel AOP requests may intentionally omit transparent/inactive trim
+        // panels. Omitting the placeholder lets Printify show the garment colour
+        // instead of compositing a white/transparent uploaded image on top.
+        continue;
       } else if (isRightPanel && mirroredImageId) {
         useImageId = mirroredImageId;
       } else {
@@ -709,7 +714,7 @@ export async function generatePrintifyMockup(
         };
       }
 
-      const expectedPositions = new Set((request.aopPositions ?? []).map((pos) => pos.position));
+      const expectedPositions = new Set(request.panelUrls.map((panel) => panel.position));
       const missingPositions = Array.from(expectedPositions).filter((position) => !panelImageIds.has(position));
       if (expectedPositions.size > 0 && missingPositions.length > 0) {
         return {

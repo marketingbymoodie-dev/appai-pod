@@ -2821,8 +2821,9 @@ export function PatternCustomizer({
     urls: { position: string; dataUrl: string }[],
     exportMode: EditorMode,
   ): { position: string; dataUrl: string }[] {
-    return urls.map((entry) => {
+    return urls.flatMap((entry) => {
       if (shouldRenderPanelArtworkForMode(entry.position, exportMode)) return entry;
+      if (!bgColor || bgColor === "transparent") return [];
       return {
         position: entry.position,
         dataUrl: buildSolidPanelDataUrl(bgColor),
@@ -2968,6 +2969,7 @@ export function PatternCustomizer({
             for (const p of panelPositions) {
               if (patternCompositeCovered.has(p.position)) continue;
               if (!shouldRenderPanelArtworkForMode(p.position, "pattern")) {
+                if (!bgColor || bgColor === "transparent") continue;
                 urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(bgColor) });
                 continue;
               }
@@ -3179,6 +3181,11 @@ export function PatternCustomizer({
             continue;
           }
           if (!shouldRenderPanelArtworkForMode(leftPos, "place") || !shouldRenderPanelArtworkForMode(rightPos, "place")) {
+            if (!bgColor || bgColor === "transparent") {
+              compositeCovered.add(rightPos);
+              compositeCovered.add(leftPos);
+              continue;
+            }
             panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(bgColor) });
             panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(bgColor) });
             compositeCovered.add(rightPos);
@@ -3363,6 +3370,7 @@ export function PatternCustomizer({
         for (const p of panelPositions) {
         if (compositeCovered.has(p.position)) continue;
         if (!shouldRenderPanelArtworkForMode(p.position, "place")) {
+          if (!bgColor || bgColor === "transparent") continue;
           panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(bgColor) });
           continue;
         }
