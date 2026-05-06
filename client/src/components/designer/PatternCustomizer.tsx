@@ -3347,9 +3347,10 @@ export function PatternCustomizer({
               mCtx.fillStyle = bgColor;
               mCtx.fillRect(0, 0, cLW, cH);
             }
-            // Draw from motifImage at the right panel transform (unflipped) — this produces
-            // the same visual result as (right flipped) flipped again = unflipped.
-            mCtx.drawImage(flipR, 0, 0, cLW, cH);
+            // Use the unflipped right crop for the left panel. Sending flipR here
+            // applies the leg-slot flip only once, which breaks Mirror mode when
+            // seam bleed routes leggings through this composite export path.
+            mCtx.drawImage(cropR, 0, 0, cLW, cH);
             panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
           } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
