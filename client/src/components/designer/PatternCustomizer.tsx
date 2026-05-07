@@ -241,7 +241,11 @@ function getAdaptiveMockupPanelPx(): number {
 }
 
 /** Encode AOP panels: compact JPEG for mockups, PNG for persisted print assets. */
-function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOCKUP_PX): string {
+function canvasToUploadDataUrl(
+  canvas: HTMLCanvasElement,
+  maxDim = MAX_PANEL_MOCKUP_PX,
+  mockupFlattenColor = "#ffffff",
+): string {
   let w = canvas.width;
   let h = canvas.height;
   const isPrintAsset = maxDim > MAX_PANEL_MOCKUP_PX;
@@ -252,7 +256,7 @@ function canvasToUploadDataUrl(canvas: HTMLCanvasElement, maxDim = MAX_PANEL_MOC
     flattened.height = source.height;
     const fctx = flattened.getContext("2d");
     if (!fctx) return source.toDataURL("image/jpeg", 0.92);
-    fctx.fillStyle = "#ffffff";
+    fctx.fillStyle = mockupFlattenColor;
     fctx.fillRect(0, 0, flattened.width, flattened.height);
     fctx.drawImage(source, 0, 0);
     return flattened.toDataURL("image/jpeg", 0.92);
@@ -1528,6 +1532,8 @@ interface PatternCustomizerProps {
   productTypeConfig?: { placeholderPositions?: Array<{ position: string; width: number; height: number }> };
   /** When set, overrides inferred hoodie/leggings/generic layout (see `aopTemplates/registry`). */
   aopTemplateId?: string | null;
+  /** Selected garment colour. Used to flatten transparent mockup pixels so Printify does not show white print-area strips. */
+  garmentColorHex?: string | null;
 }
 
 export function PatternCustomizer({
@@ -1550,6 +1556,7 @@ export function PatternCustomizer({
   isLoading: externalLoading,
   productTypeConfig,
   aopTemplateId,
+  garmentColorHex,
 }: PatternCustomizerProps) {
   // Resolve panel positions from either direct prop or productTypeConfig
   const panelPositions = panelPositionsProp || productTypeConfig?.placeholderPositions || [];
@@ -1642,6 +1649,16 @@ export function PatternCustomizer({
   const productKind: AopLayoutKind =
     inferredLayoutKind === "hoodie" && fromTemplate === "leggings" ? "hoodie" : fromTemplate;
   const panelFillColor = bgColor && bgColor !== "transparent" ? bgColor : "#ffffff";
+  const mockupFlattenColor =
+    bgColor && bgColor !== "transparent"
+      ? bgColor
+      : garmentColorHex || "#ffffff";
+  const inactivePanelFillColor =
+    bgColor && bgColor !== "transparent"
+      ? bgColor
+      : productKind === "hoodie"
+        ? garmentColorHex || undefined
+        : undefined;
 
   const getEffectivePanelConfig = useCallback(
     (position: string): PanelRenderConfig =>
@@ -2792,10 +2809,10 @@ export function PatternCustomizer({
       fx.translate(outW, 0);
       fx.scale(-1, 1);
       fx.drawImage(canvas, 0, 0);
-      return canvasToUploadDataUrl(flipped, pixelCap);
+      return canvasToUploadDataUrl(flipped, pixelCap, mockupFlattenColor);
     }
 
-    return canvasToUploadDataUrl(canvas, pixelCap);
+    return canvasToUploadDataUrl(canvas, pixelCap, mockupFlattenColor);
   }
 
   function buildSolidPanelDataUrl(color?: string): string {
@@ -2823,11 +2840,13 @@ export function PatternCustomizer({
   ): { position: string; dataUrl: string }[] {
     return urls.flatMap((entry) => {
       if (shouldRenderPanelArtworkForMode(entry.position, exportMode)) return entry;
-      if (!bgColor || bgColor === "transparent") return [];
-      return {
-        position: entry.position,
-        dataUrl: buildSolidPanelDataUrl(bgColor),
-      };
+      if (inactivePanelFillColor) {
+        return {
+          position: entry.position,
+          dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor),
+        };
+      }
+      return [];
     });
   }
 
@@ -2949,16 +2968,16 @@ export function PatternCustomizer({
                   const cropR = document.createElement("canvas");
                   cropR.width = outWR; cropR.height = outHR;
                   cropR.getContext("2d")!.drawImage(comp, 0, 0, outWR, outHR, 0, 0, outWR, outHR);
-                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap) });
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap, mockupFlattenColor) });
 
                   const cropL = document.createElement("canvas");
                   cropL.width = outWL; cropL.height = outHL;
                   cropL.getContext("2d")!.drawImage(comp, outWR, 0, outWL, outHL, 0, 0, outWL, outHL);
-                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap) });
+                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap, mockupFlattenColor) });
                 } else {
                   const rightExport = renderPanel(outWR, outHR, true);
-                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap) });
-                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap) });
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap, mockupFlattenColor) });
+                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap, mockupFlattenColor) });
                 }
 
                 patternCompositeCovered.add(rightPos);
@@ -2969,8 +2988,8 @@ export function PatternCustomizer({
             for (const p of panelPositions) {
               if (patternCompositeCovered.has(p.position)) continue;
               if (!shouldRenderPanelArtworkForMode(p.position, "pattern")) {
-                if (!bgColor || bgColor === "transparent") continue;
-                urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(bgColor) });
+                if (!inactivePanelFillColor) continue;
+                urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
                 continue;
               }
               const scaleRatio = Math.min(1, pixelCap / Math.max(p.width, p.height));
@@ -3082,7 +3101,7 @@ export function PatternCustomizer({
                 fx.drawImage(canvas, 0, 0);
                 outForUpload = flipped;
               }
-              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap) });
+              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap, mockupFlattenColor) });
             }
             return urls;
           };
@@ -3135,7 +3154,7 @@ export function PatternCustomizer({
           ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
         }
         drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, tileInches, patternType, PRINT_DPI);
-        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096);
+        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096, mockupFlattenColor);
         await onApply(tiledDataUrl, {
           mode,
           patternType,
@@ -3181,13 +3200,13 @@ export function PatternCustomizer({
             continue;
           }
           if (!shouldRenderPanelArtworkForMode(leftPos, "place") || !shouldRenderPanelArtworkForMode(rightPos, "place")) {
-            if (!bgColor || bgColor === "transparent") {
+            if (!inactivePanelFillColor) {
               compositeCovered.add(rightPos);
               compositeCovered.add(leftPos);
               continue;
             }
-            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(bgColor) });
-            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(bgColor) });
+            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
+            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
             compositeCovered.add(rightPos);
             compositeCovered.add(leftPos);
             continue;
@@ -3246,7 +3265,7 @@ export function PatternCustomizer({
           cropRight.width  = cRW;
           cropRight.height = cH;
           cropRight.getContext("2d")!.drawImage(compositeCanvas, 0, 0, cRW, cH, 0, 0, cRW, cH);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap, mockupFlattenColor) });
 
           // Crop left panel (or mirror-flip if mirrorMode)
           const cropLeft = document.createElement("canvas");
@@ -3262,7 +3281,7 @@ export function PatternCustomizer({
           } else {
             ctxL.drawImage(compositeCanvas, cRW, 0, cLW, cH, 0, 0, cLW, cH);
           }
-          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap) });
+          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap, mockupFlattenColor) });
 
           compositeCovered.add(rightPos);
           compositeCovered.add(leftPos);
@@ -3332,7 +3351,7 @@ export function PatternCustomizer({
           const frCtx = flipR.getContext("2d")!;
           frCtx.translate(cRW, 0); frCtx.scale(-1, 1);
           frCtx.drawImage(cropR, 0, 0);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap, mockupFlattenColor) });
 
           // Left panel: handle all three modes explicitly.
           if (mirrorMode) {
@@ -3351,7 +3370,7 @@ export function PatternCustomizer({
             // applies the leg-slot flip only once, which breaks Mirror mode when
             // seam bleed routes leggings through this composite export path.
             mCtx.drawImage(cropR, 0, 0, cLW, cH);
-            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
+            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor) });
           } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
             const dataUrl = await exportPanelImage(leftDef, motifImage, symT, pixelCap);
@@ -3371,8 +3390,8 @@ export function PatternCustomizer({
         for (const p of panelPositions) {
         if (compositeCovered.has(p.position)) continue;
         if (!shouldRenderPanelArtworkForMode(p.position, "place")) {
-          if (!bgColor || bgColor === "transparent") continue;
-          panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(bgColor) });
+          if (!inactivePanelFillColor) continue;
+          panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
           continue;
         }
 
@@ -3429,7 +3448,7 @@ export function PatternCustomizer({
               mCtx.fillRect(0, 0, outW, outH);
             }
             drawArtworkInSlot(mCtx, motifImage, 0, 0, outW, outH, mirrorDrawT, false);
-            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap) });
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor) });
             continue;
           }
         }
@@ -3499,7 +3518,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, inactivePanelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 

@@ -2435,11 +2435,11 @@ export default function EmbedDesign() {
       !productTypeConfig?.frameColors?.length
     ) return;
 
-    // AOP: skip background prefetch if we have no panel data — sending without panels
-    // causes the server to use the raw design image on all positions, resulting in black
-    // or incorrectly-rendered mockups for secondary colours.
-    if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
-      console.log('[Mockups] Background prefetch skipped — AOP product with no panel data cached');
+    // AOP panel rasters are colour-specific because transparent mockup pixels
+    // are flattened to the selected garment colour. Regenerate on colour change
+    // instead of caching mismatched background-colour mockups.
+    if (productTypeConfig?.isAllOverPrint) {
+      console.log('[Mockups] Background prefetch skipped — AOP panel rasters are color-specific');
       return;
     }
 
@@ -6117,6 +6117,7 @@ export default function EmbedDesign() {
                 }
                 panelPositions={patternPanelPositions}
                 panelFlatLayImages={patternFlatLayImages}
+                garmentColorHex={selectedFrameColorConfig?.hex ?? null}
                 fetchFn={patternFetchFn}
                 initialTilesAcross={aopPatternSettings.tilesAcross}
                 initialTileInches={aopPatternSettings.tileInches}
