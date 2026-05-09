@@ -245,6 +245,7 @@ function canvasToUploadDataUrl(
   canvas: HTMLCanvasElement,
   maxDim = MAX_PANEL_MOCKUP_PX,
   mockupFlattenColor = "#ffffff",
+  preserveExactColor = false,
 ): string {
   let w = canvas.width;
   let h = canvas.height;
@@ -259,6 +260,7 @@ function canvasToUploadDataUrl(
     fctx.fillStyle = mockupFlattenColor;
     fctx.fillRect(0, 0, flattened.width, flattened.height);
     fctx.drawImage(source, 0, 0);
+    if (preserveExactColor) return flattened.toDataURL("image/png");
     return flattened.toDataURL("image/jpeg", 0.92);
   };
   if (w <= 0 || h <= 0) return encode(canvas);
@@ -1076,6 +1078,33 @@ function drawMaskedSlot(
     return;
   }
 
+  const buildSolidMask = (): HTMLCanvasElement => {
+    const mask = document.createElement("canvas");
+    mask.width = iw;
+    mask.height = ih;
+    const maskCtx = mask.getContext("2d")!;
+    if (preserveSvgAspect) {
+      drawImageUniformInRect(maskCtx, svgImg, 0, 0, iw, ih, getSvgVisibleBounds(svgImg));
+    } else {
+      maskCtx.drawImage(svgImg, 0, 0, iw, ih);
+    }
+    try {
+      const imageData = maskCtx.getImageData(0, 0, iw, ih);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const alpha = data[i + 3];
+        data[i] = 0;
+        data[i + 1] = 0;
+        data[i + 2] = 0;
+        data[i + 3] = alpha > 8 ? 255 : 0;
+      }
+      maskCtx.putImageData(imageData, 0, 0);
+    } catch {
+      // If a browser blocks pixel access, fall back to the raw SVG alpha mask.
+    }
+    return mask;
+  };
+
   // Render fill + artwork into an offscreen canvas, then mask to SVG alpha.
   const off = document.createElement("canvas");
   off.width = iw;
@@ -1088,13 +1117,11 @@ function drawMaskedSlot(
   drawContent(offCtx);
   offCtx.restore();
 
-  // Clip to garment silhouette via SVG alpha.
+  // Clip to the garment silhouette, but make the mask itself fully opaque.
+  // The SVG preview art contains semi-transparent fabric shading; using that
+  // alpha directly makes selected background colours look washed out.
   offCtx.globalCompositeOperation = "destination-in";
-  if (preserveSvgAspect) {
-    drawImageUniformInRect(offCtx, svgImg, 0, 0, iw, ih, getSvgVisibleBounds(svgImg));
-  } else {
-    offCtx.drawImage(svgImg, 0, 0, iw, ih);
-  }
+  offCtx.drawImage(buildSolidMask(), 0, 0);
   offCtx.globalCompositeOperation = "source-over";
 
   // Composite masked result onto main canvas.
@@ -1111,7 +1138,7 @@ function drawMaskedSlot(
   // Overlay SVG detail lines at low opacity for visible panel edges.
   if (!flipHorizontal) {
     ctx.save();
-    ctx.globalAlpha = 0.4;
+    ctx.globalAlpha = preserveSvgAspect ? 0.14 : 0.25;
     if (preserveSvgAspect) {
       drawImageUniformInRect(ctx, svgImg, sx, sy, sw, sh, getSvgVisibleBounds(svgImg));
     } else {
@@ -1653,6 +1680,10 @@ export function PatternCustomizer({
     bgColor && bgColor !== "transparent"
       ? bgColor
       : garmentColorHex || "#ffffff";
+  const preserveExactPanelColor = Boolean(
+    (bgColor && bgColor !== "transparent") ||
+    (productKind === "hoodie" && garmentColorHex),
+  );
   const getInactivePanelFillColor = useCallback(
     (position: string): string | undefined => {
       if (productKind === "hoodie") {
@@ -2812,10 +2843,10 @@ export function PatternCustomizer({
       fx.translate(outW, 0);
       fx.scale(-1, 1);
       fx.drawImage(canvas, 0, 0);
-      return canvasToUploadDataUrl(flipped, pixelCap, mockupFlattenColor);
+      return canvasToUploadDataUrl(flipped, pixelCap, mockupFlattenColor, preserveExactPanelColor);
     }
 
-    return canvasToUploadDataUrl(canvas, pixelCap, mockupFlattenColor);
+    return canvasToUploadDataUrl(canvas, pixelCap, mockupFlattenColor, preserveExactPanelColor);
   }
 
   function buildSolidPanelDataUrl(color?: string): string {
@@ -2829,7 +2860,7 @@ export function PatternCustomizer({
     if (color && color !== "transparent") {
       ctx.fillStyle = color;
       ctx.fillRect(0, 0, outW, outH);
-      return canvas.toDataURL("image/jpeg", 0.5);
+      return canvas.toDataURL("image/png");
     }
     // Transparent trim panels let the selected garment colour show through in
     // Printify mockups. A white JPEG here creates visible bands on hoodie
@@ -2972,16 +3003,16 @@ export function PatternCustomizer({
                   const cropR = document.createElement("canvas");
                   cropR.width = outWR; cropR.height = outHR;
                   cropR.getContext("2d")!.drawImage(comp, 0, 0, outWR, outHR, 0, 0, outWR, outHR);
-                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap, mockupFlattenColor) });
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropR, outWR, outHR), pixelCap, mockupFlattenColor, preserveExactPanelColor) });
 
                   const cropL = document.createElement("canvas");
                   cropL.width = outWL; cropL.height = outHL;
                   cropL.getContext("2d")!.drawImage(comp, outWR, 0, outWL, outHL, 0, 0, outWL, outHL);
-                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap, mockupFlattenColor) });
+                  urls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(flipCanvas(cropL, outWL, outHL), pixelCap, mockupFlattenColor, preserveExactPanelColor) });
                 } else {
                   const rightExport = renderPanel(outWR, outHR, true);
-                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap, mockupFlattenColor) });
-                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap, mockupFlattenColor) });
+                  urls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(rightExport, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
+                  urls.push({ position: leftPos,  dataUrl: canvasToUploadDataUrl(flipCanvas(rightExport, outWL, outHL), pixelCap, mockupFlattenColor, preserveExactPanelColor) });
                 }
 
                 patternCompositeCovered.add(rightPos);
@@ -3106,7 +3137,7 @@ export function PatternCustomizer({
                 fx.drawImage(canvas, 0, 0);
                 outForUpload = flipped;
               }
-              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap, mockupFlattenColor) });
+              urls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(outForUpload, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
             }
             return urls;
           };
@@ -3159,7 +3190,7 @@ export function PatternCustomizer({
           ctx.fillRect(0, 0, TILE_OUT, TILE_OUT);
         }
         drawTiledMotifInRect(ctx, motifImage, 0, 0, TILE_OUT, TILE_OUT, tileInches, patternType, PRINT_DPI);
-        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096, mockupFlattenColor);
+        const tiledDataUrl = canvasToUploadDataUrl(canvas, 4096, mockupFlattenColor, preserveExactPanelColor);
         await onApply(tiledDataUrl, {
           mode,
           patternType,
@@ -3272,7 +3303,7 @@ export function PatternCustomizer({
           cropRight.width  = cRW;
           cropRight.height = cH;
           cropRight.getContext("2d")!.drawImage(compositeCanvas, 0, 0, cRW, cH, 0, 0, cRW, cH);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap, mockupFlattenColor) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(cropRight, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
 
           // Crop left panel (or mirror-flip if mirrorMode)
           const cropLeft = document.createElement("canvas");
@@ -3288,7 +3319,7 @@ export function PatternCustomizer({
           } else {
             ctxL.drawImage(compositeCanvas, cRW, 0, cLW, cH, 0, 0, cLW, cH);
           }
-          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap, mockupFlattenColor) });
+          panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(cropLeft, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
 
           compositeCovered.add(rightPos);
           compositeCovered.add(leftPos);
@@ -3358,7 +3389,7 @@ export function PatternCustomizer({
           const frCtx = flipR.getContext("2d")!;
           frCtx.translate(cRW, 0); frCtx.scale(-1, 1);
           frCtx.drawImage(cropR, 0, 0);
-          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap, mockupFlattenColor) });
+          panelUrls.push({ position: rightPos, dataUrl: canvasToUploadDataUrl(flipR, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
 
           // Left panel: handle all three modes explicitly.
           if (mirrorMode) {
@@ -3377,7 +3408,7 @@ export function PatternCustomizer({
             // applies the leg-slot flip only once, which breaks Mirror mode when
             // seam bleed routes leggings through this composite export path.
             mCtx.drawImage(cropR, 0, 0, cLW, cH);
-            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor) });
+            panelUrls.push({ position: leftPos, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
           } else if (syncSidesMode) {
             const symT: PanelTransform = { ...tRight, dxPx: -tRight.dxPx };
             const dataUrl = await exportPanelImage(leftDef, motifImage, symT, pixelCap);
@@ -3456,7 +3487,7 @@ export function PatternCustomizer({
               mCtx.fillRect(0, 0, outW, outH);
             }
             drawArtworkInSlot(mCtx, motifImage, 0, 0, outW, outH, mirrorDrawT, false);
-            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor) });
+            panelUrls.push({ position: p.position, dataUrl: canvasToUploadDataUrl(mirrorCanvas, pixelCap, mockupFlattenColor, preserveExactPanelColor) });
             continue;
           }
         }
@@ -3526,7 +3557,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, getInactivePanelFillColor, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, getInactivePanelFillColor, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, preserveExactPanelColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
