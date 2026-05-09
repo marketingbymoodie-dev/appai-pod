@@ -33,6 +33,7 @@ const ON_PERSON_FRONT_LABELS = Array.from(
 );
 
 const PREFERRED_LABELS: string[] = [...LEGGINGS_STYLE_PRIORITY, ...ON_PERSON_FRONT_LABELS];
+const AOP_FLAT_LAY_LABELS = ["front", "back"] as const;
 
 export interface MockupRequest {
   blueprintId: number;
@@ -559,34 +560,39 @@ export function normalizeMockupCameraLabel(raw: string): string {
   }
 }
 
-function selectPreferredViews(images: MockupImage[]): MockupImage[] {
+function selectPreferredViews(images: MockupImage[], frontBackOnly = false): MockupImage[] {
   const selected: MockupImage[] = [];
   const seenUrls = new Set<string>();
   const annotated = images.map((img) => ({
     ...img,
     norm: normalizeMockupCameraLabel(img.label),
   }));
+  const preferredLabels = frontBackOnly ? AOP_FLAT_LAY_LABELS : PREFERRED_LABELS;
+  const maxViews = frontBackOnly ? AOP_FLAT_LAY_LABELS.length : MAX_MOCKUP_VIEWS;
 
-  for (const pref of PREFERRED_LABELS) {
+  for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
     const match = annotated.find((img) => img.norm === prefNorm && !seenUrls.has(img.url));
     if (match) {
       selected.push({ url: match.url, label: match.label });
       seenUrls.add(match.url);
-      if (selected.length >= MAX_MOCKUP_VIEWS) break;
+      if (selected.length >= maxViews) break;
     }
   }
 
   if (selected.length === 0 && images.length > 0) {
-    return images.slice(0, MAX_MOCKUP_VIEWS);
+    return images.slice(0, maxViews);
   }
 
   return selected;
 }
 
 /** Test hook: same logic as internal mockup picker. */
-export function pickPreferredMockupViews(images: { url: string; label: string }[]): { url: string; label: string }[] {
-  return selectPreferredViews(images);
+export function pickPreferredMockupViews(
+  images: { url: string; label: string }[],
+  frontBackOnly = false,
+): { url: string; label: string }[] {
+  return selectPreferredViews(images, frontBackOnly);
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
@@ -994,7 +1000,7 @@ export async function generatePrintifyMockup(
       );
     }
 
-    const selected = selectPreferredViews(mockupData.images);
+    const selected = selectPreferredViews(mockupData.images, isAop);
 
     return {
       success: true,

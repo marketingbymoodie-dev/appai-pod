@@ -412,6 +412,17 @@ describe("Mockup camera_label preference", () => {
     expect(picked.length).toBe(1);
     expect(picked[0].label).toBe("front");
   });
+
+  it("limits AOP-style mockups to front and back flat lays", () => {
+    const images = [
+      { url: "https://x.example/person.png", label: "front person" },
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/side.png", label: "Front Side" },
+      { url: "https://x.example/front.png", label: "front" },
+    ];
+
+    expect(pickPreferredMockupViews(images, true).map((p) => p.label)).toEqual(["front", "back"]);
+  });
 });
 
 describe("extractBase64FromDataUrl", () => {
