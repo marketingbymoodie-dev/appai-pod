@@ -1653,12 +1653,15 @@ export function PatternCustomizer({
     bgColor && bgColor !== "transparent"
       ? bgColor
       : garmentColorHex || "#ffffff";
-  const inactivePanelFillColor =
-    bgColor && bgColor !== "transparent"
-      ? bgColor
-      : productKind === "hoodie"
-        ? garmentColorHex || undefined
-        : undefined;
+  const getInactivePanelFillColor = useCallback(
+    (position: string): string | undefined => {
+      if (productKind === "hoodie") {
+        return isHoodieTrimPanel(position) ? garmentColorHex || undefined : undefined;
+      }
+      return bgColor && bgColor !== "transparent" ? bgColor : undefined;
+    },
+    [bgColor, garmentColorHex, productKind],
+  );
 
   const getEffectivePanelConfig = useCallback(
     (position: string): PanelRenderConfig =>
@@ -2840,6 +2843,7 @@ export function PatternCustomizer({
   ): { position: string; dataUrl: string }[] {
     return urls.flatMap((entry) => {
       if (shouldRenderPanelArtworkForMode(entry.position, exportMode)) return entry;
+      const inactivePanelFillColor = getInactivePanelFillColor(entry.position);
       if (inactivePanelFillColor) {
         return {
           position: entry.position,
@@ -2988,6 +2992,7 @@ export function PatternCustomizer({
             for (const p of panelPositions) {
               if (patternCompositeCovered.has(p.position)) continue;
               if (!shouldRenderPanelArtworkForMode(p.position, "pattern")) {
+                const inactivePanelFillColor = getInactivePanelFillColor(p.position);
                 if (!inactivePanelFillColor) continue;
                 urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
                 continue;
@@ -3200,13 +3205,15 @@ export function PatternCustomizer({
             continue;
           }
           if (!shouldRenderPanelArtworkForMode(leftPos, "place") || !shouldRenderPanelArtworkForMode(rightPos, "place")) {
-            if (!inactivePanelFillColor) {
+            const rightFillColor = getInactivePanelFillColor(rightPos);
+            const leftFillColor = getInactivePanelFillColor(leftPos);
+            if (!rightFillColor || !leftFillColor) {
               compositeCovered.add(rightPos);
               compositeCovered.add(leftPos);
               continue;
             }
-            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
-            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
+            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(rightFillColor) });
+            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(leftFillColor) });
             compositeCovered.add(rightPos);
             compositeCovered.add(leftPos);
             continue;
@@ -3390,6 +3397,7 @@ export function PatternCustomizer({
         for (const p of panelPositions) {
         if (compositeCovered.has(p.position)) continue;
         if (!shouldRenderPanelArtworkForMode(p.position, "place")) {
+          const inactivePanelFillColor = getInactivePanelFillColor(p.position);
           if (!inactivePanelFillColor) continue;
           panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
           continue;
@@ -3518,7 +3526,7 @@ export function PatternCustomizer({
       setApplyLoading(false);
     }
   }, [mode, motifImage, motifUrl, panelPositions, patternType, tileInches, bgColor,
-      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, inactivePanelFillColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
+      perPanelTransforms, panelRenderConfig, mirrorMode, syncSidesMode, seamBleedPx, hoodieSeamBleedPx, patternOffsetX, hoodiePatternSpecs, applyAllover, getPatternSpecForPanel, getPatternSpecForView, getSeamBleedForPanel, getInactivePanelFillColor, svgImages, productKind, aopTemplateId, onApply, previewPx, panelFillColor, mockupFlattenColor, shouldRenderPanelArtwork, shouldRenderPanelArtworkForMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Panel list for controls ────────────────────────────────────────────────
 
