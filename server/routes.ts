@@ -7147,7 +7147,7 @@ ${textEdgeRestrictions}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -7327,6 +7327,7 @@ ${textEdgeRestrictions}
           : undefined,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+        bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
         cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
@@ -13720,7 +13721,7 @@ ${textEdgeRestrictions}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -13817,6 +13818,7 @@ ${textEdgeRestrictions}
         aopPositions,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+        bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
         cacheParts: { userId, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
@@ -13835,7 +13837,7 @@ ${textEdgeRestrictions}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -13961,6 +13963,7 @@ ${textEdgeRestrictions}
           : undefined,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
+        bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
         cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },

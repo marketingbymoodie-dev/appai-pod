@@ -53,6 +53,15 @@ export interface MockupRequest {
   panelUrls?: { position: string; dataUrl: string }[];
   /** Legacy: mirror flag. Client now bakes mirror into panelUrls so server-side handling is a no-op. */
   mirrorLegs?: boolean;
+  /**
+   * Hex (#RRGGBB) the user picked as the AOP background colour. When the
+   * blueprint placeholder list (aopPositions) contains positions the client
+   * doesn't render (e.g. inner hood, collar/yoke, placket trim on a zip
+   * hoodie), the server synthesises a small solid PNG of this colour and
+   * uses it for those missing placeholders so they don't render as the
+   * default white garment template.
+   */
+  bgColor?: string;
 }
 
 export interface MockupImage {
@@ -169,6 +178,46 @@ function normalizeImageUrl(url: string): string {
   return url;
 }
 
+/**
+ * Synthesise a small solid-colour PNG (1024×1024) and upload it to Printify
+ * so the temp product can use it as a fallback for any blueprint placeholder
+ * the client didn't supply a per-panel image for. Cached by hex so repeated
+ * mockup requests with the same bgColor reuse the upload.
+ */
+async function getOrCreateSolidColorImageId(
+  hexColor: string,
+  apiToken: string,
+): Promise<string | null> {
+  const m = hexColor.match(/^#?([0-9a-fA-F]{6})$/);
+  if (!m) return null;
+  const hex = m[1].toLowerCase();
+  const cacheKey = `solid:${hex}`;
+  prunePrintifyImageCache();
+  const cached = printifyImageCache.get(cacheKey);
+  if (cached) return cached.ref.id;
+
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  let buf: Buffer;
+  try {
+    buf = await sharp({
+      create: { width: 1024, height: 1024, channels: 4, background: { r, g, b, alpha: 1 } },
+    }).png().toBuffer();
+  } catch (err) {
+    console.warn(`[Printify Solid Fill] sharp synth failed for #${hex}:`, err);
+    return null;
+  }
+
+  const result = await uploadImageToPrintify(buf, apiToken);
+  if (!result) return null;
+  printifyImageCache.set(cacheKey, {
+    ref: { id: result.id, width: result.width, height: result.height, bufLen: buf.length },
+    ts: Date.now(),
+  });
+  return result.id;
+}
+
 async function uploadImageToPrintify(
   imageUrlOrBuffer: string | Buffer,
   apiToken: string
@@ -280,7 +329,15 @@ async function createTemporaryProduct(
   printPlacement: "front" | "back" | "both" | undefined = undefined,
   aopPositions?: { position: string; width: number; height: number }[],
   mirroredImageId?: string,
-  panelImageIds?: Map<string, string>
+  panelImageIds?: Map<string, string>,
+  /**
+   * Image id of a solid-colour PNG matching the user's picked bgColor. Used to
+   * fill any aopPosition the client didn't supply a panel image for, so
+   * blueprint-only placeholders (e.g. inner hood / collar yoke / placket on
+   * zip hoodies) render the same colour as the rest of the garment instead
+   * of the default white template.
+   */
+  inactivePanelFillImageId?: string,
 ): Promise<{ productId: string } | { error: string }> {
   const printifyX = 0.5 + x * 0.5;
   const printifyY = 0.5 + y * 0.5;
@@ -313,9 +370,23 @@ async function createTemporaryProduct(
         placeholders.push({ position: pos.position, images: [panelEntry] });
         continue;
       } else if (panelImageIds && panelImageIds.size > 0) {
-        // Per-panel AOP requests may intentionally omit transparent/inactive trim
-        // panels. Omitting the placeholder lets Printify show the garment colour
-        // instead of compositing a white/transparent uploaded image on top.
+        // The blueprint's placeholder list (aopPositions) can include positions
+        // the client doesn't render — e.g. inner hood / collar yoke / placket
+        // strips on zip hoodies. If the user picked a bgColor we fill those
+        // missing placeholders with a solid bgColor PNG so the mockup doesn't
+        // expose the default white garment template through them.
+        if (inactivePanelFillImageId) {
+          const fillEntry = {
+            id: inactivePanelFillImageId,
+            x: 0.5,
+            y: 0.5,
+            scale: 1,
+            angle: 0,
+          };
+          placeholders.push({ position: pos.position, images: [fillEntry] });
+        }
+        // Without a fallback id (no bgColor picked) we still omit the
+        // placeholder so Printify shows the garment colour for trim regions.
         continue;
       } else if (isRightPanel && mirroredImageId) {
         useImageId = mirroredImageId;
@@ -753,6 +824,28 @@ export async function generatePrintifyMockup(
       }
     }
 
+    // If the user picked a bgColor and we're rendering an AOP product, synth a
+    // solid-colour PNG and upload it once so any blueprint placeholder the
+    // client didn't supply (e.g. inner hood / collar yoke / placket on zip
+    // hoodies) renders bgColor instead of the default white garment template.
+    let inactivePanelFillImageId: string | undefined;
+    if (
+      isAop &&
+      panelImageIds.size > 0 &&
+      typeof request.bgColor === "string" &&
+      /^#?[0-9a-fA-F]{6}$/.test(request.bgColor)
+    ) {
+      const id = await getOrCreateSolidColorImageId(request.bgColor, printifyApiToken);
+      if (id) {
+        inactivePanelFillImageId = id;
+        console.log(
+          `[Printify AOP] Inactive-panel fill ready (bgColor=${request.bgColor}, imageId=${id}) — covers blueprint-only placeholders`,
+        );
+      } else {
+        console.warn(`[Printify AOP] Failed to upload solid bgColor fill (${request.bgColor})`);
+      }
+    }
+
     const createResult = await createTemporaryProduct(
       printifyShopId,
       blueprintId,
@@ -767,7 +860,8 @@ export async function generatePrintifyMockup(
       request.aopPositions && request.aopPositions.length > 0 ? undefined : printPlacement,
       request.aopPositions,
       undefined,
-      panelImageIds
+      panelImageIds,
+      inactivePanelFillImageId,
     );
 
     if ("error" in createResult) {

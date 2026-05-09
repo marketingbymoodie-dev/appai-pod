@@ -71,6 +71,10 @@ function buildRequestCacheKey(request: MockupRequest, cacheParts?: Record<string
     wrapDirection: request.wrapDirection,
     mirrorLegs: request.mirrorLegs,
     aopPositions: request.aopPositions,
+    // Different bgColors produce different blueprint-fill panels, so two
+    // requests with identical panelUrls but different bgColor must not share
+    // a cached mockup result.
+    bgColor: request.bgColor,
     panelHashes,
     cacheParts,
   };

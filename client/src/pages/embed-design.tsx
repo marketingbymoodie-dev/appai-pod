@@ -2109,6 +2109,19 @@ export default function EmbedDesign() {
         : isShopify
           ? `${API_BASE}/api/shopify/mockup`
           : `${API_BASE}/api/mockup/generate`;
+      // bgColor of the AOP background (only sent if user picked a hex). The
+      // server uses it to fill any blueprint placeholder the client doesn't
+      // render — e.g. inner hood / collar yoke / placket trim on zip hoodies
+      // — so those regions don't show the default white garment template.
+      const aopBgColor = productTypeConfig?.isAllOverPrint
+        ? (() => {
+            const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
+            return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
+              ? candidate
+              : undefined;
+          })()
+        : undefined;
+
       const payload: Record<string, unknown> = isStorefront ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -2122,6 +2135,7 @@ export default function EmbedDesign() {
         x: clampedX,
         y: clampedY,
         shop: shopDomain,
+        bgColor: aopBgColor,
       } : isShopify ? {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -2136,6 +2150,7 @@ export default function EmbedDesign() {
         y: clampedY,
         shop: shopDomain,
         sessionToken,
+        bgColor: aopBgColor,
       } : {
         productTypeId: ptId,
         designImageUrl: hostedUrl,
@@ -2148,6 +2163,7 @@ export default function EmbedDesign() {
         scale: clampedScale,
         x: clampedX,
         y: clampedY,
+        bgColor: aopBgColor,
       };
 
       setMockupError(null);
@@ -2312,7 +2328,7 @@ export default function EmbedDesign() {
         }
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, productTypeConfig?.isAllOverPrint]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
