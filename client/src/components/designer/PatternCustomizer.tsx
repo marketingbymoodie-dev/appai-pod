@@ -1041,6 +1041,13 @@ function drawMaskedSlot(
   flipHorizontal = false,
   preserveSvgAspect = false,
   localContentCoords = false,
+  /**
+   * When true, the user has picked an explicit background colour and wants it
+   * rendered at 100% in the preview. We skip the SVG fabric overlay
+   * (which would otherwise tint the panel by 14–25%); silhouette outline +
+   * dashed safe-area are still drawn separately by drawPanelSilhouetteOverlay.
+   */
+  skipFabricOverlay = false,
 ): void {
   const iw = Math.max(1, Math.round(sw));
   const ih = Math.max(1, Math.round(sh));
@@ -1136,9 +1143,12 @@ function drawMaskedSlot(
   }
 
   // Overlay SVG detail lines at low opacity for visible panel edges.
-  if (!flipHorizontal) {
+  // When the user has picked an opaque bgColor, skip this entirely so the
+  // chosen colour renders at a true 100% — silhouette outline + dashed
+  // safe-area are still drawn by drawPanelSilhouetteOverlay so guides remain.
+  if (!flipHorizontal && !skipFabricOverlay) {
     ctx.save();
-    ctx.globalAlpha = preserveSvgAspect ? 0.14 : 0.25;
+    ctx.globalAlpha = preserveSvgAspect ? 0.08 : 0.14;
     if (preserveSvgAspect) {
       drawImageUniformInRect(ctx, svgImg, sx, sy, sw, sh, getSvgVisibleBounds(svgImg));
     } else {
@@ -1686,10 +1696,18 @@ export function PatternCustomizer({
   );
   const getInactivePanelFillColor = useCallback(
     (position: string): string | undefined => {
+      // User-picked background colour wins for ALL inactive panels (front,
+      // sleeves, waistband, cuffs, hood, …). Without this, hoodie non-trim
+      // panels were omitted entirely and trim panels rendered as the garment
+      // colour, so a picked bgColor only appeared on the panels that had
+      // active artwork (back / hood) and was missing on every inactive panel.
+      if (bgColor && bgColor !== "transparent") return bgColor;
+      // No bgColor picked → fall back to garment colour for hoodie trim only,
+      // so trim doesn't render as white over a coloured hoodie.
       if (productKind === "hoodie") {
         return isHoodieTrimPanel(position) ? garmentColorHex || undefined : undefined;
       }
-      return bgColor && bgColor !== "transparent" ? bgColor : undefined;
+      return undefined;
     },
     [bgColor, garmentColorHex, productKind],
   );
@@ -2128,7 +2146,7 @@ export function PatternCustomizer({
             if (renderArtwork) {
               drawArtworkInSlot(offCtx, img, 0, 0, sw, sh, effectiveT, mirrorTarget);
             }
-          }, false, true, true);
+          }, false, true, true, Boolean(bgColor && bgColor !== "transparent"));
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, false, false, false, true);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
@@ -2197,7 +2215,7 @@ export function PatternCustomizer({
             if (renderArtwork) {
               drawArtworkInSlot(offCtx, img, 0, 0, sw, sh, effectiveT, doMirror);
             }
-          }, flipSlot, false, true);
+          }, flipSlot, false, true, Boolean(bgColor && bgColor !== "transparent"));
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, false);
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
@@ -2363,7 +2381,7 @@ export function PatternCustomizer({
                 tileAnchorY,
               );
             }
-          }, flipSlot, productKind === "hoodie", true);
+          }, flipSlot, productKind === "hoodie", true, Boolean(bgColor && bgColor !== "transparent"));
           drawPanelSilhouetteOverlay(ctx, svgImg, safeImg, sx, sy, sw, sh, safeInset, flipSlot, false, flipSlot, productKind === "hoodie");
           drawActiveBorder(ctx, sx, sy, sw, sh, slot.position === activePanel);
           if (slot.position === activePanel) drawSnapGuides(ctx, sx, sy, sw, sh);
