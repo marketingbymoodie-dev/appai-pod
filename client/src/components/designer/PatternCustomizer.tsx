@@ -2867,9 +2867,23 @@ export function PatternCustomizer({
     return canvasToUploadDataUrl(canvas, pixelCap, mockupFlattenColor, preserveExactPanelColor);
   }
 
-  function buildSolidPanelDataUrl(color?: string): string {
-    const outW = SOLID_PANEL_LONG_EDGE_PX;
-    const outH = SOLID_PANEL_LONG_EDGE_PX;
+  function buildSolidPanelDataUrl(
+    color?: string,
+    position?: string,
+    pixelCap = MAX_PANEL_MOCKUP_PX,
+  ): string {
+    const panelDef = position
+      ? panelPositions.find((p) => p.position === position)
+      : undefined;
+    const scaleRatio = panelDef
+      ? Math.min(1, pixelCap / Math.max(panelDef.width, panelDef.height))
+      : 1;
+    const outW = panelDef
+      ? Math.max(1, Math.round(panelDef.width * scaleRatio))
+      : SOLID_PANEL_LONG_EDGE_PX;
+    const outH = panelDef
+      ? Math.max(1, Math.round(panelDef.height * scaleRatio))
+      : SOLID_PANEL_LONG_EDGE_PX;
     const canvas = document.createElement("canvas");
     canvas.width = outW;
     canvas.height = outH;
@@ -2896,7 +2910,7 @@ export function PatternCustomizer({
       if (inactivePanelFillColor) {
         return {
           position: entry.position,
-          dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor),
+          dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor, entry.position),
         };
       }
       return [];
@@ -3043,7 +3057,7 @@ export function PatternCustomizer({
               if (!shouldRenderPanelArtworkForMode(p.position, "pattern")) {
                 const inactivePanelFillColor = getInactivePanelFillColor(p.position);
                 if (!inactivePanelFillColor) continue;
-                urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
+                urls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor, p.position, pixelCap) });
                 continue;
               }
               const scaleRatio = Math.min(1, pixelCap / Math.max(p.width, p.height));
@@ -3261,8 +3275,8 @@ export function PatternCustomizer({
               compositeCovered.add(leftPos);
               continue;
             }
-            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(rightFillColor) });
-            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(leftFillColor) });
+            panelUrls.push({ position: rightPos, dataUrl: buildSolidPanelDataUrl(rightFillColor, rightPos, pixelCap) });
+            panelUrls.push({ position: leftPos, dataUrl: buildSolidPanelDataUrl(leftFillColor, leftPos, pixelCap) });
             compositeCovered.add(rightPos);
             compositeCovered.add(leftPos);
             continue;
@@ -3448,7 +3462,7 @@ export function PatternCustomizer({
         if (!shouldRenderPanelArtworkForMode(p.position, "place")) {
           const inactivePanelFillColor = getInactivePanelFillColor(p.position);
           if (!inactivePanelFillColor) continue;
-          panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor) });
+          panelUrls.push({ position: p.position, dataUrl: buildSolidPanelDataUrl(inactivePanelFillColor, p.position, pixelCap) });
           continue;
         }
 
