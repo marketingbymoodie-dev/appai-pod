@@ -105,6 +105,59 @@ const PRINTIFY_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const PRINTIFY_IMAGE_CACHE_LIMIT = 200;
 const printifyImageCache = new Map<string, CachedPrintifyImageRef>();
 
+// Per-variant placeholder cache. Printify's blueprint placeholder list is the
+// source of truth — the DB's productType.placeholderPositions can be missing
+// trim positions (waistband / cuffs / inner hood / collar yoke) for a given
+// blueprint. Fetching once per variant (cached for 24h) lets the bgColor
+// fallback cover ALL placeholder positions, so a picked colour shows on
+// every region of the garment in the mockup.
+type BlueprintPlaceholder = { position: string; width: number; height: number };
+type CachedPlaceholders = { positions: BlueprintPlaceholder[]; ts: number };
+const BLUEPRINT_PLACEHOLDER_TTL_MS = 24 * 60 * 60 * 1000;
+const blueprintPlaceholderCache = new Map<string, CachedPlaceholders>();
+
+async function getBlueprintVariantPlaceholders(
+  blueprintId: number,
+  providerId: number,
+  variantId: number,
+  apiToken: string,
+): Promise<BlueprintPlaceholder[] | null> {
+  const cacheKey = `${blueprintId}:${providerId}:${variantId}`;
+  const now = Date.now();
+  const cached = blueprintPlaceholderCache.get(cacheKey);
+  if (cached && now - cached.ts < BLUEPRINT_PLACEHOLDER_TTL_MS) {
+    return cached.positions;
+  }
+  try {
+    const res = await fetch(
+      `${PRINTIFY_API_BASE}/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+      { headers: { Authorization: `Bearer ${apiToken}` } },
+    );
+    if (!res.ok) {
+      console.warn(`[Printify Blueprint] variants.json ${res.status} for ${blueprintId}/${providerId}`);
+      return null;
+    }
+    const data = (await res.json()) as { variants?: Array<{ id: number; placeholders?: BlueprintPlaceholder[] }> };
+    const variant = data.variants?.find((v) => v.id === variantId);
+    const positions = (variant?.placeholders ?? [])
+      .filter((p) => p && typeof p.position === "string")
+      .map((p) => ({
+        position: p.position,
+        width: typeof p.width === "number" ? p.width : 0,
+        height: typeof p.height === "number" ? p.height : 0,
+      }));
+    if (positions.length === 0) {
+      console.warn(`[Printify Blueprint] No placeholders found for variant ${variantId} (blueprint ${blueprintId})`);
+      return null;
+    }
+    blueprintPlaceholderCache.set(cacheKey, { positions, ts: now });
+    return positions;
+  } catch (err) {
+    console.warn(`[Printify Blueprint] Fetch error for ${blueprintId}/${providerId}/${variantId}:`, err);
+    return null;
+  }
+}
+
 function hashBuffer(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
@@ -846,6 +899,41 @@ export async function generatePrintifyMockup(
       }
     }
 
+    // Merge the DB's placeholderPositions list with Printify's actual variant
+    // placeholders. The DB list can be incomplete (e.g. zip hoodie missing
+    // waistband_external / *_cuff_external / inner hood positions), and any
+    // placeholder we don't include in print_areas[].placeholders renders the
+    // default white garment template — which is what produces the visible
+    // white bands. Discovering the live list and filling the missing ones with
+    // the bgColor solid PNG closes that gap.
+    let effectiveAopPositions = request.aopPositions;
+    if (isAop && inactivePanelFillImageId) {
+      const discovered = await getBlueprintVariantPlaceholders(
+        blueprintId,
+        providerId,
+        variantId,
+        printifyApiToken,
+      );
+      if (discovered && discovered.length > 0) {
+        const seen = new Set((request.aopPositions ?? []).map((p) => p.position));
+        const merged = [...(request.aopPositions ?? [])];
+        const added: string[] = [];
+        for (const p of discovered) {
+          if (!seen.has(p.position)) {
+            merged.push(p);
+            seen.add(p.position);
+            added.push(p.position);
+          }
+        }
+        if (added.length > 0) {
+          console.log(
+            `[Printify AOP] Augmented aopPositions with ${added.length} blueprint-only placeholder(s): ${added.join(", ")}`,
+          );
+        }
+        effectiveAopPositions = merged;
+      }
+    }
+
     const createResult = await createTemporaryProduct(
       printifyShopId,
       blueprintId,
@@ -857,8 +945,8 @@ export async function generatePrintifyMockup(
       x,
       y,
       doubleSided,
-      request.aopPositions && request.aopPositions.length > 0 ? undefined : printPlacement,
-      request.aopPositions,
+      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : printPlacement,
+      effectiveAopPositions,
       undefined,
       panelImageIds,
       inactivePanelFillImageId,
