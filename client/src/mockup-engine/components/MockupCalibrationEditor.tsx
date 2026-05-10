@@ -21,7 +21,7 @@ import type {
   MockupViewCalibration,
 } from "../types/mockupTypes";
 import { downloadJson, loadArtworkPanelsFromStorage, loadCalibrationFromStorage, saveArtworkPanelsToStorage, saveCalibrationToStorage } from "../utils/calibrationStorage";
-import { fileToDataUrl, filesToNamedDataUrls } from "../utils/imageLoader";
+import { fileToDataUrl, filesToNamedDataUrls, loadImage } from "../utils/imageLoader";
 
 type DragState =
   | { type: "panel"; panelId: string; start: MockupPoint; original: MockupPanelPlacement }
@@ -252,8 +252,28 @@ export function MockupCalibrationEditor() {
   async function uploadViewImage(field: "baseImageUrl" | "referenceImageUrl" | "shadowOverlayUrl" | "highlightOverlayUrl", file?: File) {
     if (!file) return;
     const url = await fileToDataUrl(file);
-    updateActiveView((view) => ({ ...view, [field]: url }));
-    setStatus(`${field} loaded.`);
+    let naturalSize: { width: number; height: number } | null = null;
+    if (field === "baseImageUrl" || (field === "referenceImageUrl" && !activeView?.baseImageUrl)) {
+      try {
+        const image = await loadImage(url);
+        naturalSize = {
+          width: image.naturalWidth || image.width,
+          height: image.naturalHeight || image.height,
+        };
+      } catch {
+        naturalSize = null;
+      }
+    }
+    updateActiveView((view) => ({
+      ...view,
+      [field]: url,
+      ...(naturalSize && naturalSize.width > 0 && naturalSize.height > 0 ? naturalSize : {}),
+    }));
+    setStatus(
+      naturalSize
+        ? `${field} loaded. Canvas resized to ${naturalSize.width} × ${naturalSize.height}.`
+        : `${field} loaded.`,
+    );
   }
 
   async function uploadArtwork(files: FileList | null) {
