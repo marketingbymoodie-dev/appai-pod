@@ -47,6 +47,7 @@ async function main() {
       panels: panelsResult.rows,
       printAreasPayload: run.print_areas_payload,
       printifyMockupUrls: run.printify_mockup_urls,
+      exportUrl: run.export_url || null,
     };
 
     const json = JSON.stringify(output, null, hasFlag("pretty") ? 2 : 0);

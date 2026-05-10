@@ -772,6 +772,7 @@ export const aopCalibrationRuns = pgTable("aop_calibration_runs", {
   printifyProductId: text("printify_product_id"),
   printifyMockupUrls: jsonb("printify_mockup_urls"),
   printAreasPayload: jsonb("print_areas_payload"),
+  exportUrl: text("export_url"),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

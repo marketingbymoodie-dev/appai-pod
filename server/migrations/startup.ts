@@ -43,6 +43,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
   { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "aop_template_id",             type: "TEXT" },
+  { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -316,6 +317,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "printify_product_id"  TEXT,
         "printify_mockup_urls" JSONB,
         "print_areas_payload"  JSONB,
+        "export_url"           TEXT,
         "error"                TEXT,
         "created_at"           TIMESTAMP DEFAULT NOW() NOT NULL,
         "updated_at"           TIMESTAMP DEFAULT NOW() NOT NULL

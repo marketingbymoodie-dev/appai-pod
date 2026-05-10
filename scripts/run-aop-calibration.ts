@@ -9,6 +9,7 @@ import { enqueueMockupJob, getMockupJob } from "../server/mockup-jobs";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const LOCAL_OUTPUT_DIR = path.join(process.cwd(), "tmp", "aop-calibration");
+const CALIBRATION_BUCKET = "aop-calibration";
 
 type ProductTypeRow = {
   id: number;
@@ -81,6 +82,7 @@ async function ensureTables(pool: pg.Pool) {
       "printify_product_id"  TEXT,
       "printify_mockup_urls" JSONB,
       "print_areas_payload"  JSONB,
+      "export_url"           TEXT,
       "error"                TEXT,
       "created_at"           TIMESTAMP DEFAULT NOW() NOT NULL,
       "updated_at"           TIMESTAMP DEFAULT NOW() NOT NULL
@@ -98,6 +100,7 @@ async function ensureTables(pool: pg.Pool) {
       "created_at"            TIMESTAMP DEFAULT NOW() NOT NULL
     )
   `);
+  await pool.query(`ALTER TABLE "aop_calibration_runs" ADD COLUMN IF NOT EXISTS "export_url" TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS "aop_calibration_runs_product_type_idx" ON "aop_calibration_runs" ("product_type_id")`);
   await pool.query(`CREATE INDEX IF NOT EXISTS "aop_calibration_runs_created_idx" ON "aop_calibration_runs" ("created_at")`);
   await pool.query(`CREATE INDEX IF NOT EXISTS "aop_calibration_panels_run_idx" ON "aop_calibration_panels" ("run_id")`);
@@ -269,30 +272,82 @@ async function generateCalibrationPanelPng(placeholder: Placeholder, sizeLabel: 
 
 async function uploadCalibrationFile(params: {
   buffer: Buffer;
-  filename: string;
+  objectPath: string;
   contentType: string;
 }): Promise<string> {
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
-  const bucket = process.env.SUPABASE_DESIGNS_BUCKET || "designs";
 
   if (supabaseUrl && supabaseKey) {
     const supabase = createClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const { error } = await supabase.storage.from(bucket).upload(params.filename, params.buffer, {
+    const { error } = await supabase.storage.from(CALIBRATION_BUCKET).upload(params.objectPath, params.buffer, {
       contentType: params.contentType,
-      upsert: true,
+      upsert: false,
     });
-    if (error) throw new Error(`Supabase upload failed: ${error.message}`);
-    const { data } = supabase.storage.from(bucket).getPublicUrl(params.filename);
+    if (error) {
+      throw new Error(
+        `Supabase calibration upload failed for bucket "${CALIBRATION_BUCKET}" path "${params.objectPath}": ${error.message}. ` +
+        `Create a public Supabase Storage bucket named "${CALIBRATION_BUCKET}" manually if it does not exist.`,
+      );
+    }
+    const { data } = supabase.storage.from(CALIBRATION_BUCKET).getPublicUrl(params.objectPath);
     return data.publicUrl;
   }
 
-  const localPath = path.join(LOCAL_OUTPUT_DIR, params.filename);
+  console.warn(
+    `[run-aop-calibration] SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY not configured; writing calibration artifact locally instead of bucket "${CALIBRATION_BUCKET}".`,
+  );
+  const localPath = path.join(LOCAL_OUTPUT_DIR, params.objectPath);
   await fs.mkdir(path.dirname(localPath), { recursive: true });
+  try {
+    await fs.access(localPath);
+    throw new Error(`Refusing to overwrite existing local calibration artifact: ${localPath}`);
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   await fs.writeFile(localPath, params.buffer);
   return localPath;
+}
+
+function sanitizeObjectName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "artifact";
+}
+
+async function uploadMockupImagesToCalibrationBucket(
+  runId: string,
+  mockupImages: Array<{ url: string; label?: string }> | undefined,
+): Promise<string[]> {
+  if (!mockupImages?.length) return [];
+
+  const uploadedUrls: string[] = [];
+  for (let i = 0; i < mockupImages.length; i++) {
+    const image = mockupImages[i];
+    if (!image?.url) continue;
+    try {
+      const response = await fetch(image.url);
+      if (!response.ok) throw new Error(`fetch ${response.status}`);
+      const input = Buffer.from(await response.arrayBuffer());
+      const png = await sharp(input).png().toBuffer();
+      const viewName = sanitizeObjectName(image.label || `view_${i + 1}`);
+      const publicUrl = await uploadCalibrationFile({
+        buffer: png,
+        objectPath: `runs/${runId}/mockups/${viewName}.png`,
+        contentType: "image/png",
+      });
+      uploadedUrls.push(publicUrl);
+    } catch (error: any) {
+      console.warn(`[run-aop-calibration] Could not store mockup image "${image.url}" in calibration bucket:`, error?.message || error);
+      uploadedUrls.push(image.url);
+    }
+  }
+  return uploadedUrls;
 }
 
 async function waitForMockupJob(jobId: string): Promise<NonNullable<ReturnType<typeof getMockupJob>>> {
@@ -407,13 +462,15 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
     const panelUrls: { position: string; dataUrl: string }[] = [];
 
     for (const placeholder of placeholders) {
-      const safePanelKey = placeholder.position.replace(/[^a-z0-9_-]+/gi, "_");
-      const filename = `aop-calibration/${runId}/${safePanelKey}-${placeholder.width}x${placeholder.height}.png`;
+      const safePanelKey = sanitizeObjectName(placeholder.position);
+      const objectPath = `runs/${runId}/panels/${safePanelKey}.png`;
       const buffer = await generateCalibrationPanelPng(placeholder, sizeLabel);
-      const calibrationImageUrl = await uploadCalibrationFile({ buffer, filename, contentType: "image/png" });
+      const calibrationImageUrl = await uploadCalibrationFile({ buffer, objectPath, contentType: "image/png" });
       const dataUrl = bufferToPngDataUrl(buffer);
       const placement = {
         placeholderRaw: placeholder.raw || null,
+        storageBucket: CALIBRATION_BUCKET,
+        storagePath: objectPath,
         pipeline: "enqueueMockupJob -> generatePrintifyMockup",
       };
 
@@ -478,12 +535,13 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
       throw new Error(finalJob.error || `Mockup job ${jobId} failed.`);
     }
 
-    const mockupUrls = finalJob.mockupUrls || [];
+    const mockupUrls = await uploadMockupImagesToCalibrationBucket(runId, finalJob.mockupImages);
+    const persistedMockupUrls = mockupUrls.length > 0 ? mockupUrls : (finalJob.mockupUrls || []);
     await pool.query(
       `UPDATE aop_calibration_runs
        SET printify_product_id = $2, printify_mockup_urls = $3, print_areas_payload = $4, status = 'completed', updated_at = NOW()
        WHERE id = $1`,
-      [runId, printifyProductId, JSON.stringify(mockupUrls), JSON.stringify(capturedPrintAreasPayload)],
+      [runId, printifyProductId, JSON.stringify(persistedMockupUrls), JSON.stringify(capturedPrintAreasPayload)],
     );
 
     return {
@@ -495,7 +553,8 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
       size: variantSize || null,
       printifyProductId,
       mockupJobId: jobId,
-      mockupUrlCount: mockupUrls.length,
+      mockupUrlCount: persistedMockupUrls.length,
+      mockupUrls: persistedMockupUrls,
       panelCount: panelRecords.length,
       status: "completed",
     };
@@ -522,10 +581,40 @@ async function main() {
       results.push(await runOne(pool, product));
     }
 
-    const outPath = argValue("out") || path.join(LOCAL_OUTPUT_DIR, `run-summary-${crypto.randomUUID()}.json`);
-    const output = { results: results.map((result) => ({ ...result, jsonExportPath: outPath })) };
+    const firstRunId = results[0]?.runId || crypto.randomUUID();
+    const outPath = argValue("out") || path.join(LOCAL_OUTPUT_DIR, `run-summary-${firstRunId}.json`);
+    const initialOutput = { results };
+    const initialJson = JSON.stringify(initialOutput, null, hasFlag("pretty") ? 2 : 0);
+    let exportUrl: string | null = null;
+    try {
+      exportUrl = await uploadCalibrationFile({
+        buffer: Buffer.from(initialJson, "utf8"),
+        objectPath: `runs/${firstRunId}/export.json`,
+        contentType: "application/json",
+      });
+      await pool.query(
+        `UPDATE aop_calibration_runs SET export_url = $2, updated_at = NOW() WHERE id = $1`,
+        [firstRunId, exportUrl],
+      );
+    } catch (error: any) {
+      console.warn(`[run-aop-calibration] Could not upload export JSON to "${CALIBRATION_BUCKET}" bucket:`, error?.message || error);
+    }
+
+    const output = {
+      results: results.map((result) => ({
+        ...result,
+        jsonExportPath: outPath,
+        exportUrl: result.runId === firstRunId ? exportUrl : null,
+      })),
+    };
     const json = JSON.stringify(output, null, hasFlag("pretty") ? 2 : 0);
     await fs.mkdir(path.dirname(outPath), { recursive: true });
+    try {
+      await fs.access(outPath);
+      throw new Error(`Refusing to overwrite existing local export: ${outPath}`);
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error;
+    }
     await fs.writeFile(outPath, json, "utf8");
     console.log(json);
     console.error(`\n[run-aop-calibration] Wrote ${outPath}`);
