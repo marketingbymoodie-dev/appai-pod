@@ -63,6 +63,15 @@ export interface MockupRequest {
    * default white garment template.
    */
   bgColor?: string;
+  /**
+   * Internal-only metadata used by calibration/debug scripts. The storefront
+   * route does not pass this, so customer mockup behavior is unchanged.
+   */
+  internalProductTitle?: string;
+  internalProductDescription?: string;
+  internalProductTags?: string[];
+  onPrintifyProductPayload?: (payload: unknown) => void;
+  onPrintifyProductCreated?: (productId: string) => void;
 }
 
 export interface MockupImage {
@@ -392,6 +401,13 @@ async function createTemporaryProduct(
    * of the default white template.
    */
   inactivePanelFillImageId?: string,
+  internalOptions?: {
+    title?: string;
+    description?: string;
+    tags?: string[];
+    onPayload?: (payload: unknown) => void;
+    onCreated?: (productId: string) => void;
+  },
 ): Promise<{ productId: string } | { error: string }> {
   const printifyX = 0.5 + x * 0.5;
   const printifyY = 0.5 + y * 0.5;
@@ -461,13 +477,15 @@ async function createTemporaryProduct(
   }
 
   const requestBody = {
-    title: `Mockup Preview - ${Date.now()}`,
-    description: "Temporary product for mockup generation",
+    title: internalOptions?.title || `Mockup Preview - ${Date.now()}`,
+    description: internalOptions?.description || "Temporary product for mockup generation",
     blueprint_id: blueprintId,
     print_provider_id: providerId,
     variants: [{ id: variantId, price: 100, is_enabled: true }],
     print_areas: [{ variant_ids: [variantId], placeholders }],
+    ...(internalOptions?.tags?.length ? { tags: internalOptions.tags } : {}),
   };
+  internalOptions?.onPayload?.(requestBody);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -497,6 +515,7 @@ async function createTemporaryProduct(
         };
       }
       const product = await response.json();
+      internalOptions?.onCreated?.(String(product.id));
       return { productId: product.id };
     } catch (error: any) {
       if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
@@ -956,6 +975,13 @@ export async function generatePrintifyMockup(
       undefined,
       panelImageIds,
       inactivePanelFillImageId,
+      {
+        title: request.internalProductTitle,
+        description: request.internalProductDescription,
+        tags: request.internalProductTags,
+        onPayload: request.onPrintifyProductPayload,
+        onCreated: request.onPrintifyProductCreated,
+      },
     );
 
     if ("error" in createResult) {

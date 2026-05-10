@@ -5,6 +5,7 @@ import path from "node:path";
 import pg from "pg";
 import sharp from "sharp";
 import { createClient } from "@supabase/supabase-js";
+import { enqueueMockupJob, getMockupJob } from "../server/mockup-jobs";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const LOCAL_OUTPUT_DIR = path.join(process.cwd(), "tmp", "aop-calibration");
@@ -31,13 +32,6 @@ type Placeholder = {
   raw?: unknown;
 };
 
-type PrintifyImage = {
-  id: string;
-  file_name?: string;
-  width?: number;
-  height?: number;
-};
-
 function argValue(name: string): string | undefined {
   const flag = `--${name}`;
   const idx = process.argv.indexOf(flag);
@@ -58,6 +52,10 @@ function parseJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function bufferToPngDataUrl(buffer: Buffer): string {
+  return `data:image/png;base64,${buffer.toString("base64")}`;
 }
 
 function makePool(): pg.Pool {
@@ -191,6 +189,33 @@ function pickVariant(variantsData: any, variantSize?: string): { id: number; tit
   return { id, title: selected.title, raw: selected };
 }
 
+function pickVariantFromProductType(product: ProductTypeRow, variantSize?: string): { id: number; providerId: number; key: string; raw: any } | null {
+  const variantMap = parseJson<Record<string, any>>(product.variant_map, {});
+  const entries = Object.entries(variantMap);
+  if (entries.length === 0) return null;
+
+  const sizeId = variantSize || "default";
+  const preferredKeys = [
+    `${sizeId}:default`,
+    `${sizeId}:`,
+    `default:default`,
+  ];
+  const match = preferredKeys
+    .map((key) => [key, variantMap[key]] as const)
+    .find(([, value]) => value?.printifyVariantId) ||
+    entries.find(([key, value]) => key.startsWith(`${sizeId}:`) && value?.printifyVariantId) ||
+    entries.find(([, value]) => value?.printifyVariantId);
+
+  if (!match) return null;
+  const [key, value] = match;
+  return {
+    id: Number(value.printifyVariantId),
+    providerId: Number(value.providerId || product.printify_provider_id),
+    key,
+    raw: value,
+  };
+}
+
 function escapeSvg(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -270,32 +295,15 @@ async function uploadCalibrationFile(params: {
   return localPath;
 }
 
-async function uploadImageToPrintify(buffer: Buffer, token: string, filename: string): Promise<PrintifyImage> {
-  return printifyRequest<PrintifyImage>("/uploads/images.json", token, {
-    method: "POST",
-    body: JSON.stringify({
-      file_name: filename,
-      contents: buffer.toString("base64"),
-    }),
-  });
-}
-
-async function pollMockups(token: string, shopId: string, productId: string): Promise<{ urls: string[]; images: any[] }> {
-  for (let attempt = 1; attempt <= 12; attempt++) {
-    const product = await printifyRequest<any>(`/shops/${shopId}/products/${productId}.json`, token);
-    const images = Array.isArray(product.images) ? product.images : [];
-    const urls = images.map((image: any) => image.src).filter(Boolean);
-    if (urls.length > 0) return { urls, images };
-    await new Promise((resolve) => setTimeout(resolve, Math.min(5000, 1000 * attempt)));
+async function waitForMockupJob(jobId: string): Promise<NonNullable<ReturnType<typeof getMockupJob>>> {
+  const started = Date.now();
+  const timeoutMs = 150_000;
+  while (Date.now() - started < timeoutMs) {
+    const job = getMockupJob(jobId);
+    if (job && (job.status === "done" || job.status === "failed")) return job as any;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  return { urls: [], images: [] };
-}
-
-async function deletePrintifyProduct(token: string, shopId: string, productId: string) {
-  await fetch(`${PRINTIFY_API_BASE}/shops/${shopId}/products/${productId}.json`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  }).catch(() => undefined);
+  throw new Error(`Mockup job ${jobId} did not finish within ${Math.round(timeoutMs / 1000)}s.`);
 }
 
 async function loadProducts(pool: pg.Pool): Promise<ProductTypeRow[]> {
@@ -350,7 +358,6 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
   const token = product.printify_api_token || process.env.PRINTIFY_API_TOKEN;
   const shopId = product.printify_shop_id || process.env.PRINTIFY_SHOP_ID;
   const variantSize = argValue("variantSize");
-  const cleanup = hasFlag("cleanup");
   const sizeLabel = variantSize || "default";
 
   if (!blueprintId || !providerId) throw new Error(`Product type ${product.id} is missing Printify blueprint/provider ids.`);
@@ -376,14 +383,16 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
       `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
       token,
     );
-    const variant = pickVariant(variantsData, variantSize);
+    const mappedVariant = pickVariantFromProductType(product, variantSize);
+    const variant = mappedVariant || pickVariant(variantsData, variantSize);
+    const effectiveProviderId = mappedVariant?.providerId || providerId;
     await pool.query(
-      `UPDATE aop_calibration_runs SET variant_id = $2, updated_at = NOW() WHERE id = $1`,
-      [runId, variant.id],
+      `UPDATE aop_calibration_runs SET variant_id = $2, provider_id = $3, updated_at = NOW() WHERE id = $1`,
+      [runId, variant.id, effectiveProviderId],
     );
 
     const placeholdersResponse = await printifyRequest<any>(
-      `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variant.id}/placeholders.json`,
+      `/catalog/blueprints/${blueprintId}/print_providers/${effectiveProviderId}/variants/${variant.id}/placeholders.json`,
       token,
     );
     const rawPlaceholders = Array.isArray(placeholdersResponse?.placeholders)
@@ -395,19 +404,17 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
     if (placeholders.length === 0) throw new Error("No placeholder dimensions found from Printify or product_types.placeholder_positions.");
 
     const panelRecords = [];
-    const printifyPlaceholders = [];
+    const panelUrls: { position: string; dataUrl: string }[] = [];
 
     for (const placeholder of placeholders) {
       const safePanelKey = placeholder.position.replace(/[^a-z0-9_-]+/gi, "_");
       const filename = `aop-calibration/${runId}/${safePanelKey}-${placeholder.width}x${placeholder.height}.png`;
       const buffer = await generateCalibrationPanelPng(placeholder, sizeLabel);
       const calibrationImageUrl = await uploadCalibrationFile({ buffer, filename, contentType: "image/png" });
-      const printifyImage = await uploadImageToPrintify(buffer, token, path.basename(filename));
-      const imagePlacement = { id: printifyImage.id, x: 0.5, y: 0.5, scale: 1, angle: 0 };
+      const dataUrl = bufferToPngDataUrl(buffer);
       const placement = {
-        printifyImage,
-        printifyImagePlacement: imagePlacement,
         placeholderRaw: placeholder.raw || null,
+        pipeline: "enqueueMockupJob -> generatePrintifyMockup",
       };
 
       await pool.query(
@@ -417,64 +424,80 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
       );
 
       panelRecords.push({ ...placeholder, calibrationImageUrl, placement });
-      printifyPlaceholders.push({ position: placeholder.position, images: [imagePlacement] });
+      panelUrls.push({ position: placeholder.position, dataUrl });
     }
 
-    const printAreasPayload = [{
-      variant_ids: [variant.id],
-      placeholders: printifyPlaceholders,
-    }];
     await pool.query(
       `UPDATE aop_calibration_runs
-       SET print_areas_payload = $2, status = 'printify_product_creating', updated_at = NOW()
+       SET status = 'mockups_requested', updated_at = NOW()
        WHERE id = $1`,
-      [runId, JSON.stringify(printAreasPayload)],
+      [runId],
     );
 
-    const productPayload = {
-      title: `INTERNAL CALIBRATION / DO NOT PUBLISH - ${product.name} - ${new Date().toISOString()}`,
-      description: `Internal AOP calibration capture run ${runId}. Do not publish. Safe draft used for mockup mapping only.`,
-      blueprint_id: blueprintId,
-      print_provider_id: providerId,
-      variants: [{ id: variant.id, price: 100, is_enabled: true }],
-      print_areas: printAreasPayload,
-      tags: ["INTERNAL_CALIBRATION", "DO_NOT_PUBLISH", "APPAI"],
-    };
-
-    const printifyProduct = await printifyRequest<any>(`/shops/${shopId}/products.json`, token, {
-      method: "POST",
-      body: JSON.stringify(productPayload),
+    let capturedPrintAreasPayload: unknown = null;
+    let printifyProductId: string | null = null;
+    const correlationId = `aop_calibration_${runId}`;
+    const { jobId, cached } = await enqueueMockupJob({
+      blueprintId,
+      providerId: effectiveProviderId,
+      variantId: variant.id,
+      imageUrl: panelUrls[0]?.dataUrl || "data:image/png;base64,",
+      printifyApiToken: token,
+      printifyShopId: shopId,
+      scale: 1,
+      x: 0,
+      y: 0,
+      doubleSided: true,
+      wrapAround: false,
+      aopPositions: placeholders.map(({ position, width, height }) => ({ position, width, height })),
+      panelUrls,
+      internalProductTitle: `INTERNAL CALIBRATION DO NOT PUBLISH - ${product.name} - ${runId}`,
+      internalProductDescription: `Internal AOP calibration capture run ${runId}. Temporary Printify product for mockup mapping only; do not publish.`,
+      internalProductTags: ["INTERNAL_CALIBRATION", "DO_NOT_PUBLISH", "APPAI"],
+      onPrintifyProductPayload: (payload) => {
+        capturedPrintAreasPayload = (payload as any)?.print_areas || null;
+      },
+      onPrintifyProductCreated: (productId) => {
+        printifyProductId = productId;
+      },
+    }, {
+      correlationId,
+      cacheParts: {
+        calibrationRunId: runId,
+        productTypeId: product.id,
+        sizeId: variantSize || "default",
+        variantKey: mappedVariant?.key || null,
+      },
     });
-    const printifyProductId = String(printifyProduct.id);
+
+    const finalJob = cached
+      ? { status: "done", mockupUrls: cached.mockupUrls, mockupImages: cached.mockupImages, error: cached.error, source: cached.source }
+      : await waitForMockupJob(jobId);
+
+    if (finalJob.status !== "done") {
+      throw new Error(finalJob.error || `Mockup job ${jobId} failed.`);
+    }
+
+    const mockupUrls = finalJob.mockupUrls || [];
     await pool.query(
       `UPDATE aop_calibration_runs
-       SET printify_product_id = $2, status = 'mockups_requested', updated_at = NOW()
+       SET printify_product_id = $2, printify_mockup_urls = $3, print_areas_payload = $4, status = 'completed', updated_at = NOW()
        WHERE id = $1`,
-      [runId, printifyProductId],
-    );
-
-    const mockups = await pollMockups(token, shopId, printifyProductId);
-    if (cleanup) await deletePrintifyProduct(token, shopId, printifyProductId);
-
-    const finalStatus = cleanup ? "completed_cleanup_deleted" : "completed";
-    await pool.query(
-      `UPDATE aop_calibration_runs
-       SET printify_mockup_urls = $2, status = $3, updated_at = NOW()
-       WHERE id = $1`,
-      [runId, JSON.stringify(mockups.urls), finalStatus],
+      [runId, printifyProductId, JSON.stringify(mockupUrls), JSON.stringify(capturedPrintAreasPayload)],
     );
 
     return {
       runId,
       productTypeId: product.id,
       blueprintId,
-      providerId,
+      providerId: effectiveProviderId,
       variantId: variant.id,
       size: variantSize || null,
       printifyProductId,
-      mockupUrlCount: mockups.urls.length,
+      mockupJobId: jobId,
+      mockupUrlCount: mockupUrls.length,
       panelCount: panelRecords.length,
-      status: finalStatus,
+      status: "completed",
     };
   } catch (error: any) {
     await pool.query(
@@ -499,8 +522,9 @@ async function main() {
       results.push(await runOne(pool, product));
     }
 
-    const json = JSON.stringify({ results }, null, hasFlag("pretty") ? 2 : 0);
     const outPath = argValue("out") || path.join(LOCAL_OUTPUT_DIR, `run-summary-${crypto.randomUUID()}.json`);
+    const output = { results: results.map((result) => ({ ...result, jsonExportPath: outPath })) };
+    const json = JSON.stringify(output, null, hasFlag("pretty") ? 2 : 0);
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     await fs.writeFile(outPath, json, "utf8");
     console.log(json);

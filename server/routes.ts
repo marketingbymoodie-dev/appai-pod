@@ -6002,6 +6002,42 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Internal debug: list registered API routes in the running Express process.
+  app.get("/api/debug/routes", isAuthenticated, async (_req: Request, res: Response) => {
+    try {
+      const router = (app as any)._router || (app as any).router;
+      const routes: Array<{ method: string; path: string }> = [];
+
+      const visitLayer = (layer: any) => {
+        if (layer?.route?.path && layer.route.methods) {
+          for (const method of Object.keys(layer.route.methods)) {
+            if (!layer.route.methods[method]) continue;
+            const pathValue = Array.isArray(layer.route.path)
+              ? layer.route.path.join(",")
+              : String(layer.route.path);
+            if (pathValue.startsWith("/api/")) {
+              routes.push({ method: method.toUpperCase(), path: pathValue });
+            }
+          }
+        }
+        if (Array.isArray(layer?.handle?.stack)) {
+          for (const child of layer.handle.stack) visitLayer(child);
+        }
+      };
+
+      for (const layer of router?.stack || []) visitLayer(layer);
+
+      routes.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`));
+      return res.json({
+        count: routes.length,
+        routes,
+      });
+    } catch (error) {
+      console.error("[Debug Routes] failed:", error);
+      return res.status(500).json({ error: "Failed to list registered routes" });
+    }
+  });
+
   // Proxy Printify panel SVGs so the storefront iframe can fetch them without CORS/taint issues
   // (PatternCustomizer uses fetch + blob → Image for masking; cross-origin SVG often fails.)
   app.get("/api/storefront/panel-svg", asyncHandler(async (req: Request, res: Response) => {
