@@ -1,0 +1,465 @@
+{
+  "productType": "zip_hoodie_aop",
+  "provider": "printify",
+  "blueprintId": "",
+  "printProviderId": "",
+  "version": "0.1.0",
+  "views": {
+    "front_flat": {
+      "id": "front_flat",
+      "name": "Front zipped hoodie",
+      "width": 1200,
+      "height": 1500,
+      "baseImageUrl": "",
+      "referenceImageUrl": "",
+      "shadowOverlayUrl": "",
+      "highlightOverlayUrl": "",
+      "guides": [
+        {
+          "id": "front_zipper_center",
+          "type": "line",
+          "name": "Vertical zipper/body center line",
+          "locked": false,
+          "opacity": 0.85,
+          "points": [{ "x": 600, "y": 210 }, { "x": 600, "y": 1390 }],
+          "notes": "Body zipper center. Do not extend this onto the hood."
+        },
+        {
+          "id": "front_shoulder_line",
+          "type": "line",
+          "name": "Shoulder line guide",
+          "locked": false,
+          "opacity": 0.65,
+          "points": [{ "x": 260, "y": 360 }, { "x": 940, "y": 360 }]
+        }
+      ],
+      "panels": [
+        {
+          "id": "front_body_left",
+          "name": "Front body left",
+          "artworkPanelName": "front_body_left",
+          "preset": "front_body_left",
+          "x": 345,
+          "y": 640,
+          "width": 320,
+          "height": 720,
+          "rotation": 0,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 10,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "front_body_right",
+          "name": "Front body right",
+          "artworkPanelName": "front_body_right",
+          "preset": "front_body_right",
+          "x": 535,
+          "y": 640,
+          "width": 320,
+          "height": 720,
+          "rotation": 0,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 11,
+          "locked": false,
+          "visible": true
+        }
+      ]
+    },
+    "front_hood_up_45": {
+      "id": "front_hood_up_45",
+      "name": "Hood-up 45-degree front/side",
+      "width": 1200,
+      "height": 1500,
+      "baseImageUrl": "",
+      "referenceImageUrl": "",
+      "shadowOverlayUrl": "",
+      "highlightOverlayUrl": "",
+      "guides": [
+        {
+          "id": "hood_body_zipper_center",
+          "type": "line",
+          "name": "Vertical zipper/body center line",
+          "locked": false,
+          "opacity": 0.85,
+          "points": [{ "x": 605, "y": 610 }, { "x": 650, "y": 1400 }],
+          "notes": "Body zipper only. Hood artwork should split around the hood opening, not follow this line up the hood."
+        },
+        {
+          "id": "hood_opening_left",
+          "type": "curve",
+          "name": "Hood opening left guide",
+          "locked": false,
+          "opacity": 0.9,
+          "points": [{ "x": 505, "y": 210 }, { "x": 430, "y": 405 }, { "x": 505, "y": 590 }],
+          "notes": "Align the left half of the face motif to this opening hem."
+        },
+        {
+          "id": "hood_opening_right",
+          "type": "curve",
+          "name": "Hood opening right guide",
+          "locked": false,
+          "opacity": 0.9,
+          "points": [{ "x": 690, "y": 215 }, { "x": 790, "y": 405 }, { "x": 705, "y": 590 }],
+          "notes": "Align the right half of the face motif to this opening hem."
+        },
+        {
+          "id": "front_neckline_arc",
+          "type": "arc",
+          "name": "Neckline arc guide",
+          "locked": false,
+          "opacity": 0.75,
+          "points": [{ "x": 500, "y": 585 }, { "x": 610, "y": 655 }, { "x": 720, "y": 585 }],
+          "notes": "Motif should wrap around the wearer neck opening."
+        },
+        {
+          "id": "front_hood_shoulder_line",
+          "type": "line",
+          "name": "Shoulder line guide",
+          "locked": false,
+          "opacity": 0.6,
+          "points": [{ "x": 260, "y": 650 }, { "x": 980, "y": 680 }]
+        }
+      ],
+      "panels": [
+        {
+          "id": "hood_left_opening",
+          "name": "Hood left opening",
+          "artworkPanelName": "hood_left_opening",
+          "preset": "hood_left_opening",
+          "x": 365,
+          "y": 205,
+          "width": 245,
+          "height": 440,
+          "rotation": -9,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 30,
+          "locked": false,
+          "visible": true,
+          "perspectiveCorners": {
+            "topLeft": { "x": 415, "y": 220 },
+            "topRight": { "x": 600, "y": 250 },
+            "bottomRight": { "x": 540, "y": 635 },
+            "bottomLeft": { "x": 360, "y": 555 }
+          },
+          "seamAnchor": {
+            "x": 505,
+            "y": 590,
+            "description": "Split starts near zipped-up neckline point."
+          },
+          "snapAnchors": [
+            { "id": "left_hem_top", "x": 505, "y": 210, "guideId": "hood_opening_left", "description": "Upper hood opening hem" },
+            { "id": "left_hem_neck", "x": 505, "y": 590, "guideId": "front_neckline_arc", "description": "Neckline split point" }
+          ],
+          "notes": "Place the left half of the pug/dog face here, following the face/hood opening profile."
+        },
+        {
+          "id": "hood_right_opening",
+          "name": "Hood right opening",
+          "artworkPanelName": "hood_right_opening",
+          "preset": "hood_right_opening",
+          "x": 600,
+          "y": 210,
+          "width": 260,
+          "height": 440,
+          "rotation": 10,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 31,
+          "locked": false,
+          "visible": true,
+          "perspectiveCorners": {
+            "topLeft": { "x": 600, "y": 250 },
+            "topRight": { "x": 790, "y": 225 },
+            "bottomRight": { "x": 855, "y": 555 },
+            "bottomLeft": { "x": 680, "y": 640 }
+          },
+          "seamAnchor": {
+            "x": 705,
+            "y": 590,
+            "description": "Right half begins at the same neckline split."
+          },
+          "snapAnchors": [
+            { "id": "right_hem_top", "x": 690, "y": 215, "guideId": "hood_opening_right", "description": "Upper hood opening hem" },
+            { "id": "right_hem_neck", "x": 705, "y": 590, "guideId": "front_neckline_arc", "description": "Neckline split point" }
+          ],
+          "notes": "Place the right half of the face motif here. Keep zipper visual confined to body."
+        },
+        {
+          "id": "front_neckline_collar",
+          "name": "Front neckline collar",
+          "artworkPanelName": "front_neckline_collar",
+          "preset": "front_neckline_collar",
+          "x": 470,
+          "y": 545,
+          "width": 310,
+          "height": 180,
+          "rotation": 0,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 0.92,
+          "zIndex": 29,
+          "locked": false,
+          "visible": true,
+          "notes": "Use this to wrap colour/motif around the neck opening."
+        },
+        {
+          "id": "front_hood_body_left",
+          "name": "Front body left",
+          "artworkPanelName": "front_body_left",
+          "preset": "front_body_left",
+          "x": 350,
+          "y": 705,
+          "width": 310,
+          "height": 650,
+          "rotation": -2,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 12,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "front_hood_body_right",
+          "name": "Front body right",
+          "artworkPanelName": "front_body_right",
+          "preset": "front_body_right",
+          "x": 570,
+          "y": 700,
+          "width": 315,
+          "height": 655,
+          "rotation": 3,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 13,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "zipper_mask_area",
+          "name": "Body zipper mask area",
+          "artworkPanelName": "",
+          "preset": "zipper_mask_area",
+          "x": 595,
+          "y": 650,
+          "width": 58,
+          "height": 730,
+          "rotation": 3,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 0.35,
+          "zIndex": 90,
+          "locked": false,
+          "visible": false,
+          "notes": "Calibration guide only. Keep zipper on the body and out of hood artwork."
+        }
+      ]
+    },
+    "back_flat": {
+      "id": "back_flat",
+      "name": "Back view",
+      "width": 1200,
+      "height": 1500,
+      "baseImageUrl": "",
+      "referenceImageUrl": "",
+      "shadowOverlayUrl": "",
+      "highlightOverlayUrl": "",
+      "guides": [
+        {
+          "id": "back_center_line",
+          "type": "line",
+          "name": "Back center line guide",
+          "locked": false,
+          "opacity": 0.85,
+          "points": [{ "x": 600, "y": 180 }, { "x": 600, "y": 1390 }]
+        },
+        {
+          "id": "back_shoulder_line",
+          "type": "line",
+          "name": "Shoulder line guide",
+          "locked": false,
+          "opacity": 0.6,
+          "points": [{ "x": 260, "y": 390 }, { "x": 940, "y": 390 }]
+        }
+      ],
+      "panels": [
+        {
+          "id": "back_main",
+          "name": "Back main",
+          "artworkPanelName": "back_main",
+          "preset": "back_main",
+          "x": 320,
+          "y": 395,
+          "width": 560,
+          "height": 790,
+          "rotation": 0,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 10,
+          "locked": false,
+          "visible": true,
+          "notes": "Large central placement for back artwork."
+        },
+        {
+          "id": "back_hood_left_visible",
+          "name": "Back hood left visible",
+          "artworkPanelName": "back_hood_left_visible",
+          "preset": "back_hood_left_visible",
+          "x": 420,
+          "y": 180,
+          "width": 210,
+          "height": 250,
+          "rotation": -8,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 20,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "back_hood_right_visible",
+          "name": "Back hood right visible",
+          "artworkPanelName": "back_hood_right_visible",
+          "preset": "back_hood_right_visible",
+          "x": 585,
+          "y": 180,
+          "width": 215,
+          "height": 250,
+          "rotation": 8,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 21,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "sleeve_left_back",
+          "name": "Sleeve left back",
+          "artworkPanelName": "sleeve_left_back",
+          "preset": "sleeve_left_back",
+          "x": 110,
+          "y": 455,
+          "width": 230,
+          "height": 650,
+          "rotation": 7,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 9,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "sleeve_right_back",
+          "name": "Sleeve right back",
+          "artworkPanelName": "sleeve_right_back",
+          "preset": "sleeve_right_back",
+          "x": 860,
+          "y": 455,
+          "width": 230,
+          "height": 650,
+          "rotation": -7,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 9,
+          "locked": false,
+          "visible": true
+        }
+      ]
+    },
+    "back_side_45": {
+      "id": "back_side_45",
+      "name": "Rear/side view",
+      "width": 1200,
+      "height": 1500,
+      "baseImageUrl": "",
+      "referenceImageUrl": "",
+      "shadowOverlayUrl": "",
+      "highlightOverlayUrl": "",
+      "guides": [
+        {
+          "id": "back_side_center",
+          "type": "line",
+          "name": "Back center line guide",
+          "locked": false,
+          "opacity": 0.7,
+          "points": [{ "x": 640, "y": 220 }, { "x": 690, "y": 1390 }]
+        },
+        {
+          "id": "back_side_shoulder",
+          "type": "line",
+          "name": "Shoulder line guide",
+          "locked": false,
+          "opacity": 0.6,
+          "points": [{ "x": 290, "y": 430 }, { "x": 930, "y": 370 }]
+        }
+      ],
+      "panels": [
+        {
+          "id": "back_side_main",
+          "name": "Back main angled",
+          "artworkPanelName": "back_main",
+          "preset": "back_main",
+          "x": 365,
+          "y": 405,
+          "width": 520,
+          "height": 790,
+          "rotation": 5,
+          "scaleX": 0.92,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 10,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "back_side_hood_left",
+          "name": "Back hood left visible",
+          "artworkPanelName": "back_hood_left_visible",
+          "preset": "back_hood_left_visible",
+          "x": 455,
+          "y": 185,
+          "width": 220,
+          "height": 255,
+          "rotation": -2,
+          "scaleX": 1,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 20,
+          "locked": false,
+          "visible": true
+        },
+        {
+          "id": "back_side_hood_right",
+          "name": "Back hood right visible",
+          "artworkPanelName": "back_hood_right_visible",
+          "preset": "back_hood_right_visible",
+          "x": 615,
+          "y": 190,
+          "width": 190,
+          "height": 245,
+          "rotation": 14,
+          "scaleX": 0.88,
+          "scaleY": 1,
+          "opacity": 1,
+          "zIndex": 21,
+          "locked": false,
+          "visible": true
+        }
+      ]
+    }
+  }
+}
