@@ -7,10 +7,14 @@ function sanitizeFilename(filename: string): string {
   return `${cleaned || "appai-artwork"}.png`;
 }
 
-function triggerDownload(url: string, filename: string) {
+function triggerDownload(url: string, filename: string, openInNewTab = false) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = sanitizeFilename(filename);
+  if (openInNewTab) {
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+  }
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -24,20 +28,9 @@ export async function downloadImageFromUrl(url: string, filename = "appai-artwor
     return;
   }
 
-  try {
-    const response = await fetch(url, { mode: "cors", credentials: "omit" });
-    if (!response.ok) throw new Error(`Image request failed: ${response.status}`);
-    const blob = await response.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    try {
-      triggerDownload(objectUrl, filename);
-    } finally {
-      URL.revokeObjectURL(objectUrl);
-    }
-  } catch (error) {
-    // Cross-origin image hosts can block fetch even when <img> display works.
-    // Opening the image directly still gives the user a browser save option.
-    window.open(url, "_blank", "noopener,noreferrer");
-    throw error;
-  }
+  // Most generated images live on Supabase/public object URLs. Fetching them
+  // from the storefront can be blocked by CORS, and a delayed fallback popup
+  // can then be blocked by the browser. Click the URL synchronously instead:
+  // same-origin/proxy URLs can download, cross-origin URLs visibly open.
+  triggerDownload(url, filename, true);
 }
