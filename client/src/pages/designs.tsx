@@ -6,8 +6,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { Link, useLocation } from "wouter";
-import { ArrowLeft, Trash2, ShoppingCart, Plus, Image, Pencil, Loader2, X, ZoomIn, Copy } from "lucide-react";
+import { ArrowLeft, Trash2, ShoppingCart, Plus, Image, Pencil, Loader2, X, ZoomIn, Copy, Download } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -37,6 +38,29 @@ export default function DesignsPage() {
   const [total, setTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selectedDesign, setSelectedDesign] = useState<DesignWithProductType | null>(null);
+
+  const handleDownloadArtwork = useCallback(async (design: DesignWithProductType) => {
+    if (!design.generatedImageUrl) {
+      toast({
+        title: "No artwork available",
+        description: "This saved design does not have an artwork image.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      await downloadImageFromUrl(design.generatedImageUrl, `${design.productTypeName || "appai"}-${design.id}-artwork.png`);
+      toast({
+        title: "Artwork download started",
+        description: "Use this file in the mockup calibration page.",
+      });
+    } catch {
+      toast({
+        title: "Opened artwork in a new tab",
+        description: "Your browser blocked direct download, so save the image from the new tab.",
+      });
+    }
+  }, [toast]);
 
   const { data: customer, isLoading: customerLoading } = useQuery<Customer>({
     queryKey: ["/api/customer"],
@@ -221,6 +245,17 @@ export default function DesignsPage() {
                       </Button>
                     </div>
                     <div className="flex gap-2 mt-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => void handleDownloadArtwork(design)}
+                        disabled={!design.generatedImageUrl}
+                        data-testid={`button-download-artwork-${design.id}`}
+                      >
+                        <Download className="h-4 w-4 mr-1" />
+                        Artwork
+                      </Button>
                       <Button variant="outline" size="sm" className="flex-1" data-testid={`button-order-${design.id}`}>
                         <ShoppingCart className="h-4 w-4 mr-1" />
                         Order
@@ -311,6 +346,17 @@ export default function DesignsPage() {
                   <span>{selectedDesign.size}</span>
                   <span className="capitalize">{selectedDesign.frameColor} frame</span>
                 </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => void handleDownloadArtwork(selectedDesign)}
+                  disabled={!selectedDesign.generatedImageUrl}
+                  data-testid="button-download-modal-artwork"
+                >
+                  <Download className="h-4 w-4 mr-1" />
+                  Download Artwork
+                </Button>
               </div>
             </div>
           )}

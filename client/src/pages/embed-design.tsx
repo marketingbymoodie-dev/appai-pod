@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
+import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -11,7 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import SizeChartTable from "@/components/SizeChartTable";
@@ -3930,6 +3931,29 @@ export default function EmbedDesign() {
     }
   };
 
+  const handleDownloadArtwork = useCallback(async (imageUrl: string | null | undefined, filename?: string) => {
+    if (!imageUrl) {
+      toast({
+        title: "No artwork available",
+        description: "Load a saved design or generate artwork first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      await downloadImageFromUrl(toAbsoluteImageUrl(imageUrl), filename || "appai-artwork.png");
+      toast({
+        title: "Artwork download started",
+        description: "Use this file as an artwork panel in the calibration page.",
+      });
+    } catch {
+      toast({
+        title: "Opened artwork in a new tab",
+        description: "Your browser blocked direct download, so save the image from the new tab.",
+      });
+    }
+  }, [toast]);
+
   useEffect(() => {
     const DB = debugBridge;
     if (DB) console.log('[Bridge Debug] Setting up bridge listeners, isStorefront:', isStorefront);
@@ -5521,6 +5545,17 @@ export default function EmbedDesign() {
                                 >
                                   <X className="w-3 h-3" />
                                 </button>
+                                <button
+                                  className="absolute top-1 left-1 z-10 w-7 h-7 rounded-full bg-black/60 text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100 transition-opacity hover:bg-black/80"
+                                  title="Download artwork"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const artworkUrl = d.artworkUrl || d.imageUrl || d.generatedImageUrl;
+                                    void handleDownloadArtwork(artworkUrl, `${d.baseTitle || d.prompt || d.id || "saved-design"}-artwork.png`);
+                                  }}
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                             ))}
                           </div>
@@ -6497,6 +6532,17 @@ export default function EmbedDesign() {
                     <Button
                       variant="outline"
                       size="sm"
+                      onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
+                      disabled={!generatedDesign?.imageUrl}
+                      data-testid="button-download-artwork"
+                      className="shrink-0"
+                    >
+                      <Download className="w-4 h-4 mr-1" />
+                      <span className="text-xs">Download Artwork</span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={handleShare}
                       disabled={isSharing || !generatedDesign?.imageUrl}
                       data-testid="button-share"
@@ -6533,6 +6579,17 @@ export default function EmbedDesign() {
                 >
                   <RefreshCw className="w-4 h-4 mr-1" />
                   <span className="text-xs">Edit Pattern</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleDownloadArtwork(generatedDesign?.imageUrl, `${productTitle || "appai"}-artwork.png`)}
+                  disabled={!generatedDesign?.imageUrl}
+                  data-testid="button-download-artwork-aop"
+                  className="shrink-0"
+                >
+                  <Download className="w-4 h-4 mr-1" />
+                  <span className="text-xs">Download Artwork</span>
                 </Button>
                 <Button
                   variant="outline"
