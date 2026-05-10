@@ -14,6 +14,14 @@ const PANEL_PRESETS: MockupPanelPreset[] = [
   "back_hood_right_visible",
   "sleeve_left_back",
   "sleeve_right_back",
+  "front_sleeve_left_main",
+  "front_sleeve_left_fold_top",
+  "front_sleeve_left_fold_under",
+  "front_sleeve_left_cuff",
+  "front_sleeve_right_main",
+  "front_sleeve_right_fold_top",
+  "front_sleeve_right_fold_under",
+  "front_sleeve_right_cuff",
   "zipper_mask_area",
   "custom",
 ];
@@ -28,6 +36,9 @@ type PanelControlsProps = {
   onDuplicatePanel: (panelId: string) => void;
   onDeletePanel: (panelId: string) => void;
   onNudgeZIndex: (panelId: string, direction: "up" | "down") => void;
+  onAssignArtworkToSelected: (artworkPanelName: string) => void;
+  onAssignArtworkToVisible: (artworkPanelName: string) => void;
+  onUploadMask: (panelId: string, file?: File) => void;
 };
 
 function numeric(value: string, fallback: number) {
@@ -70,6 +81,9 @@ export function PanelControls({
   onDuplicatePanel,
   onDeletePanel,
   onNudgeZIndex,
+  onAssignArtworkToSelected,
+  onAssignArtworkToVisible,
+  onUploadMask,
 }: PanelControlsProps) {
   const selectedPanel = panels.find((panel) => panel.id === selectedPanelId) ?? panels[0] ?? null;
   const firstArtworkName = artworkPanels[0]?.name ?? "";
@@ -142,6 +156,17 @@ export function PanelControls({
             <Input value={selectedPanel.name} onChange={(event) => onUpdatePanel(selectedPanel.id, { name: event.target.value })} />
           </Label>
 
+          {artworkPanels.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2">
+              <Button variant="outline" size="sm" onClick={() => onAssignArtworkToSelected(firstArtworkName)}>
+                Assign First Artwork
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => onAssignArtworkToVisible(firstArtworkName)}>
+                Assign To Visible
+              </Button>
+            </div>
+          ) : null}
+
           <div className="grid grid-cols-2 gap-2">
             <Label className="space-y-1 text-xs">
               <span>Artwork panel</span>
@@ -183,6 +208,30 @@ export function PanelControls({
             <NumberField label="Opacity" value={selectedPanel.opacity} step={0.05} onChange={(opacity) => onUpdatePanel(selectedPanel.id, { opacity })} />
             <NumberField label="Scale X" value={selectedPanel.scaleX} step={0.05} onChange={(scaleX) => onUpdatePanel(selectedPanel.id, { scaleX })} />
             <NumberField label="Scale Y" value={selectedPanel.scaleY} step={0.05} onChange={(scaleY) => onUpdatePanel(selectedPanel.id, { scaleY })} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Label className="space-y-1 text-xs">
+              <span>Panel bg color</span>
+              <Input
+                type="color"
+                value={selectedPanel.bgColor && /^#[0-9a-fA-F]{6}$/.test(selectedPanel.bgColor) ? selectedPanel.bgColor : "#ffffff"}
+                onChange={(event) => onUpdatePanel(selectedPanel.id, { bgColor: event.target.value })}
+              />
+            </Label>
+            <NumberField
+              label="Bg opacity"
+              value={selectedPanel.bgOpacity ?? 1}
+              step={0.05}
+              onChange={(bgOpacity) => onUpdatePanel(selectedPanel.id, { bgOpacity })}
+            />
+            <Button variant="outline" size="sm" onClick={() => onUpdatePanel(selectedPanel.id, { bgColor: undefined })}>
+              Clear Bg
+            </Button>
+            <Label className="space-y-1 text-xs">
+              <span>Panel mask</span>
+              <Input type="file" accept="image/*" onChange={(event) => onUploadMask(selectedPanel.id, event.target.files?.[0])} />
+            </Label>
           </div>
 
           <div className="grid grid-cols-2 gap-2">

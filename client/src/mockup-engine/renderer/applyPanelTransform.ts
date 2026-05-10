@@ -13,8 +13,8 @@ function centerOfPanel(panel: MockupPanelPlacement): MockupPoint {
 
 function drawRegularPanel(
   ctx: CanvasRenderingContext2D,
-  image: HTMLImageElement,
   panel: MockupPanelPlacement,
+  drawContent: (target: CanvasRenderingContext2D, width: number, height: number, masked: boolean) => void,
   maskImage?: HTMLImageElement,
 ) {
   const width = panel.width * panel.scaleX;
@@ -32,13 +32,13 @@ function drawRegularPanel(
     offscreen.height = Math.max(1, Math.round(height));
     const offCtx = offscreen.getContext("2d");
     if (offCtx) {
-      offCtx.drawImage(image, 0, 0, offscreen.width, offscreen.height);
+      drawContent(offCtx, offscreen.width, offscreen.height, true);
       offCtx.globalCompositeOperation = "destination-in";
       offCtx.drawImage(maskImage, 0, 0, offscreen.width, offscreen.height);
       ctx.drawImage(offscreen, -width / 2, -height / 2, width, height);
     }
   } else {
-    ctx.drawImage(image, -width / 2, -height / 2, width, height);
+    drawContent(ctx, width, height, false);
   }
 
   ctx.restore();
@@ -142,5 +142,36 @@ export function applyPanelTransform(
     drawPerspectivePanel(ctx, image, panel);
     return;
   }
-  drawRegularPanel(ctx, image, panel, options.maskImage);
+  drawRegularPanel(ctx, panel, (target, width, height, masked) => {
+    target.drawImage(image, masked ? 0 : -width / 2, masked ? 0 : -height / 2, width, height);
+  }, options.maskImage);
+}
+
+export function applyPanelFill(
+  ctx: CanvasRenderingContext2D,
+  panel: MockupPanelPlacement,
+  color: string,
+  options: DrawPanelOptions = {},
+) {
+  if (!panel.visible || !color || color === "transparent") return;
+  if (panel.perspectiveCorners) {
+    const { topLeft, topRight, bottomRight, bottomLeft } = panel.perspectiveCorners;
+    ctx.save();
+    ctx.globalAlpha = panel.bgOpacity ?? panel.opacity;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(topLeft.x, topLeft.y);
+    ctx.lineTo(topRight.x, topRight.y);
+    ctx.lineTo(bottomRight.x, bottomRight.y);
+    ctx.lineTo(bottomLeft.x, bottomLeft.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+  const opacity = panel.bgOpacity ?? panel.opacity;
+  drawRegularPanel(ctx, { ...panel, opacity }, (target, width, height, masked) => {
+    target.fillStyle = color;
+    target.fillRect(masked ? 0 : -width / 2, masked ? 0 : -height / 2, width, height);
+  }, options.maskImage);
 }

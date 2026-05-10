@@ -29,6 +29,14 @@ export type MockupPanelPreset =
   | "back_hood_right_visible"
   | "sleeve_left_back"
   | "sleeve_right_back"
+  | "front_sleeve_left_main"
+  | "front_sleeve_left_fold_top"
+  | "front_sleeve_left_fold_under"
+  | "front_sleeve_left_cuff"
+  | "front_sleeve_right_main"
+  | "front_sleeve_right_fold_top"
+  | "front_sleeve_right_fold_under"
+  | "front_sleeve_right_cuff"
   | "zipper_mask_area"
   | "custom";
 
@@ -48,6 +56,8 @@ export type MockupPanelPlacement = {
   zIndex: number;
   locked: boolean;
   visible: boolean;
+  bgColor?: string;
+  bgOpacity?: number;
   maskUrl?: string;
   perspectiveCorners?: {
     topLeft: MockupPoint;
@@ -70,6 +80,18 @@ export type MockupPanelPlacement = {
   notes?: string;
 };
 
+export type MockupReferenceTransform = {
+  fitMode: "contain" | "cover" | "stretch" | "manual";
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number;
+  opacity: number;
+};
+
 export type MockupViewCalibration = {
   id: string;
   name: string;
@@ -77,6 +99,7 @@ export type MockupViewCalibration = {
   height: number;
   baseImageUrl?: string;
   referenceImageUrl?: string;
+  referenceTransform?: MockupReferenceTransform;
   shadowOverlayUrl?: string;
   highlightOverlayUrl?: string;
   guides: MockupGuide[];

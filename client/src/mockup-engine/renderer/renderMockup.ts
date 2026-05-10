@@ -1,6 +1,6 @@
-import type { ArtworkPanelAsset, MockupGuide, MockupPanelPlacement, MockupViewCalibration } from "../types/mockupTypes";
+import type { ArtworkPanelAsset, MockupGuide, MockupPanelPlacement, MockupReferenceTransform, MockupViewCalibration } from "../types/mockupTypes";
 import { loadImage } from "../utils/imageLoader";
-import { applyPanelTransform } from "./applyPanelTransform";
+import { applyPanelFill, applyPanelTransform } from "./applyPanelTransform";
 
 export type RenderMockupOptions = {
   artworkPanels: ArtworkPanelAsset[];
@@ -21,6 +21,64 @@ async function getCachedImage(src: string | undefined, cache: ImageCache): Promi
   const image = await loadImage(src);
   cache.set(src, image);
   return image;
+}
+
+function getReferenceTransform(
+  image: HTMLImageElement,
+  view: MockupViewCalibration,
+  opacity: number,
+): Required<MockupReferenceTransform> {
+  const transform = view.referenceTransform;
+  const fitMode = transform?.fitMode ?? "contain";
+  const imageRatio = image.width / image.height;
+  const viewRatio = view.width / view.height;
+  let width = transform?.width ?? view.width;
+  let height = transform?.height ?? view.height;
+  let x = transform?.x ?? 0;
+  let y = transform?.y ?? 0;
+
+  if (fitMode === "contain" || fitMode === "cover") {
+    const scale =
+      fitMode === "contain"
+        ? imageRatio > viewRatio ? view.width / image.width : view.height / image.height
+        : imageRatio > viewRatio ? view.height / image.height : view.width / image.width;
+    width = image.width * scale;
+    height = image.height * scale;
+    x = (view.width - width) / 2 + (transform?.x ?? 0);
+    y = (view.height - height) / 2 + (transform?.y ?? 0);
+  } else if (fitMode === "manual") {
+    width = transform?.width ?? image.width;
+    height = transform?.height ?? image.height;
+  }
+
+  return {
+    fitMode,
+    x,
+    y,
+    width,
+    height,
+    scaleX: transform?.scaleX ?? 1,
+    scaleY: transform?.scaleY ?? 1,
+    rotation: transform?.rotation ?? 0,
+    opacity: transform?.opacity ?? opacity,
+  };
+}
+
+function drawReferenceImage(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  view: MockupViewCalibration,
+  opacity: number,
+) {
+  const transform = getReferenceTransform(image, view, opacity);
+  const width = transform.width * transform.scaleX;
+  const height = transform.height * transform.scaleY;
+  ctx.save();
+  ctx.globalAlpha = transform.opacity;
+  ctx.translate(transform.x + width / 2, transform.y + height / 2);
+  ctx.rotate((transform.rotation * Math.PI) / 180);
+  ctx.drawImage(image, -width / 2, -height / 2, width, height);
+  ctx.restore();
 }
 
 function drawGuide(ctx: CanvasRenderingContext2D, guide: MockupGuide, selected: boolean) {
@@ -88,6 +146,15 @@ function drawPanelBounds(ctx: CanvasRenderingContext2D, panel: MockupPanelPlacem
     ]) {
       ctx.fillRect(point.x - 5, point.y - 5, 10, 10);
     }
+    if (selected) {
+      ctx.beginPath();
+      ctx.moveTo(0, -height / 2);
+      ctx.lineTo(0, -height / 2 - 28);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(0, -height / 2 - 34, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   if (panel.seamAnchor) {
@@ -130,12 +197,13 @@ export async function renderMockupToCanvas(
   const artworkByName = new Map(options.artworkPanels.map((asset) => [asset.name, asset.url]));
   const sortedPanels = [...view.panels].sort((a, b) => a.zIndex - b.zIndex);
   for (const panel of sortedPanels) {
+    if (!panel.visible) continue;
     const artworkUrl = artworkByName.get(panel.artworkPanelName);
-    if (!artworkUrl || !panel.visible) continue;
     const [artworkImage, maskImage] = await Promise.all([
       getCachedImage(artworkUrl, imageCache),
       getCachedImage(panel.maskUrl, imageCache),
     ]);
+    if (panel.bgColor) applyPanelFill(ctx, panel, panel.bgColor, { maskImage });
     if (artworkImage) applyPanelTransform(ctx, artworkImage, panel, { maskImage });
   }
 
@@ -161,8 +229,7 @@ export async function renderMockupToCanvas(
     const referenceImage = await getCachedImage(view.referenceImageUrl, imageCache);
     if (referenceImage) {
       ctx.save();
-      ctx.globalAlpha = options.referenceOpacity ?? 0.5;
-      ctx.drawImage(referenceImage, 0, 0, canvas.width, canvas.height);
+      drawReferenceImage(ctx, referenceImage, view, options.referenceOpacity ?? 0.5);
       ctx.restore();
     }
   }

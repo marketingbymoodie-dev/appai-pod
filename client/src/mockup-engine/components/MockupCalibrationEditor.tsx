@@ -25,6 +25,8 @@ import { fileToDataUrl, filesToNamedDataUrls, loadImage } from "../utils/imageLo
 
 type DragState =
   | { type: "panel"; panelId: string; start: MockupPoint; original: MockupPanelPlacement }
+  | { type: "panel-resize"; panelId: string; start: MockupPoint; original: MockupPanelPlacement }
+  | { type: "panel-rotate"; panelId: string; start: MockupPoint; original: MockupPanelPlacement }
   | { type: "guide-point"; guideId: string; pointIndex: number; start: MockupPoint; original: MockupGuide };
 
 function cloneCalibration(calibration: MockupCalibration): MockupCalibration {
@@ -70,6 +72,15 @@ function panelBounds(panel: MockupPanelPlacement) {
 
 function distance(a: MockupPoint, b: MockupPoint) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function panelCenter(panel: MockupPanelPlacement): MockupPoint {
+  const bounds = panelBounds(panel);
+  return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+}
+
+function angleBetween(center: MockupPoint, point: MockupPoint) {
+  return (Math.atan2(point.y - center.y, point.x - center.x) * 180) / Math.PI;
 }
 
 function movePanel(panel: MockupPanelPlacement, dx: number, dy: number): MockupPanelPlacement {
@@ -155,6 +166,26 @@ export function MockupCalibrationEditor() {
     [updateActiveView],
   );
 
+  const updateReferenceTransform = useCallback(
+    (patch: Partial<NonNullable<MockupViewCalibration["referenceTransform"]>>) => {
+      updateActiveView((view) => ({
+        ...view,
+        referenceTransform: {
+          fitMode: "contain",
+          x: 0,
+          y: 0,
+          scaleX: 1,
+          scaleY: 1,
+          rotation: 0,
+          opacity: referenceOpacity,
+          ...(view.referenceTransform ?? {}),
+          ...patch,
+        },
+      }));
+    },
+    [referenceOpacity, updateActiveView],
+  );
+
   const redraw = useCallback(async () => {
     if (!canvasRef.current || !activeView) return;
     await renderMockupToCanvas(
@@ -209,8 +240,28 @@ export function MockupCalibrationEditor() {
       });
   }
 
+  function hitSelectedPanelHandle(point: MockupPoint) {
+    if (!activeView || !selectedPanelId || !showPanelBounds) return null;
+    const panel = activeView.panels.find((item) => item.id === selectedPanelId);
+    if (!panel || panel.locked || !panel.visible) return null;
+    const bounds = panelBounds(panel);
+    const resizePoint = { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+    const rotatePoint = { x: bounds.x + bounds.width / 2, y: bounds.y - 28 };
+    if (distance(point, resizePoint) < 22) return { type: "panel-resize" as const, panel };
+    if (distance(point, rotatePoint) < 22) return { type: "panel-rotate" as const, panel };
+    return null;
+  }
+
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
     const point = canvasPoint(event);
+    const handleHit = hitSelectedPanelHandle(point);
+    if (handleHit) {
+      setSelectedPanelId(handleHit.panel.id);
+      setSelectedGuideId(null);
+      setDragState({ type: handleHit.type, panelId: handleHit.panel.id, start: point, original: { ...handleHit.panel } });
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     const guideHit = hitGuidePoint(point);
     if (guideHit) {
       setSelectedGuideId(guideHit.guide.id);
@@ -225,7 +276,10 @@ export function MockupCalibrationEditor() {
       setSelectedGuideId(null);
       setDragState({ type: "panel", panelId: panel.id, start: point, original: { ...panel } });
       event.currentTarget.setPointerCapture(event.pointerId);
+      return;
     }
+    setSelectedPanelId(null);
+    setSelectedGuideId(null);
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -236,6 +290,22 @@ export function MockupCalibrationEditor() {
     if (dragState.type === "panel") {
       const next = movePanel(dragState.original, dx, dy);
       updatePanel(dragState.panelId, next);
+      return;
+    }
+    if (dragState.type === "panel-resize") {
+      updatePanel(dragState.panelId, {
+        width: Math.max(20, dragState.original.width + dx / Math.max(0.1, dragState.original.scaleX)),
+        height: Math.max(20, dragState.original.height + dy / Math.max(0.1, dragState.original.scaleY)),
+      });
+      return;
+    }
+    if (dragState.type === "panel-rotate") {
+      const center = panelCenter(dragState.original);
+      const startAngle = angleBetween(center, dragState.start);
+      const currentAngle = angleBetween(center, point);
+      updatePanel(dragState.panelId, {
+        rotation: dragState.original.rotation + currentAngle - startAngle,
+      });
       return;
     }
     const nextPoints = dragState.original.points.map((guidePoint, index) =>
@@ -285,6 +355,17 @@ export function MockupCalibrationEditor() {
       return merged;
     });
     setStatus(`${nextAssets.length} artwork panel(s) loaded.`);
+    if (selectedPanelId && nextAssets[0]?.name) {
+      updatePanel(selectedPanelId, { artworkPanelName: nextAssets[0].name });
+      setStatus(`${nextAssets.length} artwork panel(s) loaded and assigned to selected panel.`);
+    }
+  }
+
+  async function uploadPanelMask(panelId: string, file?: File) {
+    if (!file) return;
+    const maskUrl = await fileToDataUrl(file);
+    updatePanel(panelId, { maskUrl });
+    setStatus("Panel mask loaded.");
   }
 
   function addPanel(preset: MockupPanelPreset, artworkPanelName: string) {
@@ -308,6 +389,21 @@ export function MockupCalibrationEditor() {
     };
     updateActiveView((view) => ({ ...view, panels: [...view.panels, panel] }));
     setSelectedPanelId(id);
+  }
+
+  function assignArtworkToSelected(artworkPanelName: string) {
+    if (!selectedPanelId || !artworkPanelName) return;
+    updatePanel(selectedPanelId, { artworkPanelName });
+    setStatus(`Assigned ${artworkPanelName} to selected panel.`);
+  }
+
+  function assignArtworkToVisible(artworkPanelName: string) {
+    if (!artworkPanelName) return;
+    updateActiveView((view) => ({
+      ...view,
+      panels: view.panels.map((panel) => panel.visible && !panel.locked ? { ...panel, artworkPanelName } : panel),
+    }));
+    setStatus(`Assigned ${artworkPanelName} to all visible unlocked panels.`);
   }
 
   function duplicatePanel(panelId: string) {
@@ -491,7 +587,74 @@ export function MockupCalibrationEditor() {
               </div>
               <div className="space-y-2">
                 <Label className="text-xs">Reference opacity: {Math.round(referenceOpacity * 100)}%</Label>
-                <Slider value={[referenceOpacity]} min={0} max={1} step={0.05} onValueChange={([value]) => setReferenceOpacity(value ?? 0.5)} />
+                <Slider
+                  value={[activeView.referenceTransform?.opacity ?? referenceOpacity]}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  onValueChange={([value]) => {
+                    const opacity = value ?? 0.5;
+                    setReferenceOpacity(opacity);
+                    updateReferenceTransform({ opacity });
+                  }}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Label className="space-y-1 text-xs">
+                  <span>Reference fit</span>
+                  <select
+                    className="h-9 w-full rounded-md border bg-background px-2"
+                    value={activeView.referenceTransform?.fitMode ?? "contain"}
+                    onChange={(event) => updateReferenceTransform({ fitMode: event.target.value as any })}
+                  >
+                    <option value="contain">Contain</option>
+                    <option value="cover">Cover</option>
+                    <option value="stretch">Stretch</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </Label>
+                <Label className="space-y-1 text-xs">
+                  <span>Ref rotation</span>
+                  <Input
+                    type="number"
+                    value={activeView.referenceTransform?.rotation ?? 0}
+                    onChange={(event) => updateReferenceTransform({ rotation: Number(event.target.value) || 0 })}
+                  />
+                </Label>
+                <Label className="space-y-1 text-xs">
+                  <span>Ref X offset</span>
+                  <Input
+                    type="number"
+                    value={activeView.referenceTransform?.x ?? 0}
+                    onChange={(event) => updateReferenceTransform({ x: Number(event.target.value) || 0 })}
+                  />
+                </Label>
+                <Label className="space-y-1 text-xs">
+                  <span>Ref Y offset</span>
+                  <Input
+                    type="number"
+                    value={activeView.referenceTransform?.y ?? 0}
+                    onChange={(event) => updateReferenceTransform({ y: Number(event.target.value) || 0 })}
+                  />
+                </Label>
+                <Label className="space-y-1 text-xs">
+                  <span>Ref scale X</span>
+                  <Input
+                    type="number"
+                    step="0.05"
+                    value={activeView.referenceTransform?.scaleX ?? 1}
+                    onChange={(event) => updateReferenceTransform({ scaleX: Number(event.target.value) || 1 })}
+                  />
+                </Label>
+                <Label className="space-y-1 text-xs">
+                  <span>Ref scale Y</span>
+                  <Input
+                    type="number"
+                    step="0.05"
+                    value={activeView.referenceTransform?.scaleY ?? 1}
+                    onChange={(event) => updateReferenceTransform({ scaleY: Number(event.target.value) || 1 })}
+                  />
+                </Label>
               </div>
             </div>
 
@@ -560,6 +723,9 @@ export function MockupCalibrationEditor() {
                 if (!panel) return;
                 updatePanel(panelId, { zIndex: panel.zIndex + (direction === "up" ? 1 : -1) });
               }}
+              onAssignArtworkToSelected={assignArtworkToSelected}
+              onAssignArtworkToVisible={assignArtworkToVisible}
+              onUploadMask={(panelId, file) => void uploadPanelMask(panelId, file)}
             />
             <GuideEditor
               guides={activeView.guides}
