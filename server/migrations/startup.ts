@@ -302,6 +302,41 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "aop_calibration_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "aop_calibration_runs" (
+        "id"                   VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "product_type_id"      INTEGER,
+        "blueprint_id"         INTEGER NOT NULL,
+        "provider_id"          INTEGER NOT NULL,
+        "variant_id"           INTEGER,
+        "size"                 TEXT,
+        "status"               TEXT NOT NULL DEFAULT 'pending',
+        "printify_product_id"  TEXT,
+        "printify_mockup_urls" JSONB,
+        "print_areas_payload"  JSONB,
+        "error"                TEXT,
+        "created_at"           TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"           TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "aop_calibration_panels",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "aop_calibration_panels" (
+        "id"                    VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "run_id"                VARCHAR NOT NULL REFERENCES "aop_calibration_runs"("id") ON DELETE CASCADE,
+        "panel_key"             TEXT NOT NULL,
+        "width"                 INTEGER NOT NULL,
+        "height"                INTEGER NOT NULL,
+        "calibration_image_url" TEXT NOT NULL,
+        "placement"             JSONB,
+        "created_at"            TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -324,6 +359,26 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "order_discount_claims_customer_idx",
     sql: `CREATE INDEX IF NOT EXISTS "order_discount_claims_customer_idx"
       ON "order_discount_claims" ("customer_id")`,
+  },
+  {
+    name: "aop_calibration_runs_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_calibration_runs_product_type_idx"
+      ON "aop_calibration_runs" ("product_type_id")`,
+  },
+  {
+    name: "aop_calibration_runs_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_calibration_runs_created_idx"
+      ON "aop_calibration_runs" ("created_at")`,
+  },
+  {
+    name: "aop_calibration_panels_run_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_calibration_panels_run_idx"
+      ON "aop_calibration_panels" ("run_id")`,
+  },
+  {
+    name: "aop_calibration_panels_panel_key_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_calibration_panels_panel_key_idx"
+      ON "aop_calibration_panels" ("panel_key")`,
   },
 ];
 

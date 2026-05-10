@@ -758,3 +758,53 @@ export const insertCachedPanelImageSchema = createInsertSchema(cachedPanelImages
 });
 export type CachedPanelImage = typeof cachedPanelImages.$inferSelect;
 export type InsertCachedPanelImage = z.infer<typeof insertCachedPanelImageSchema>;
+
+// Internal AOP calibration captures. These are debug/training artifacts only;
+// they are never published to Shopify and should not affect customer flows.
+export const aopCalibrationRuns = pgTable("aop_calibration_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productTypeId: integer("product_type_id"),
+  blueprintId: integer("blueprint_id").notNull(),
+  providerId: integer("provider_id").notNull(),
+  variantId: integer("variant_id"),
+  size: text("size"),
+  status: text("status").notNull().default("pending"),
+  printifyProductId: text("printify_product_id"),
+  printifyMockupUrls: jsonb("printify_mockup_urls"),
+  printAreasPayload: jsonb("print_areas_payload"),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("aop_calibration_runs_product_type_idx").on(table.productTypeId),
+  index("aop_calibration_runs_created_idx").on(table.createdAt),
+]);
+
+export const aopCalibrationPanels = pgTable("aop_calibration_panels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  runId: varchar("run_id").notNull().references(() => aopCalibrationRuns.id, { onDelete: "cascade" }),
+  panelKey: text("panel_key").notNull(),
+  width: integer("width").notNull(),
+  height: integer("height").notNull(),
+  calibrationImageUrl: text("calibration_image_url").notNull(),
+  placement: jsonb("placement"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("aop_calibration_panels_run_idx").on(table.runId),
+  index("aop_calibration_panels_panel_key_idx").on(table.panelKey),
+]);
+
+export const insertAopCalibrationRunSchema = createInsertSchema(aopCalibrationRuns).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type AopCalibrationRun = typeof aopCalibrationRuns.$inferSelect;
+export type InsertAopCalibrationRun = z.infer<typeof insertAopCalibrationRunSchema>;
+
+export const insertAopCalibrationPanelSchema = createInsertSchema(aopCalibrationPanels).omit({
+  id: true,
+  createdAt: true,
+});
+export type AopCalibrationPanel = typeof aopCalibrationPanels.$inferSelect;
+export type InsertAopCalibrationPanel = z.infer<typeof insertAopCalibrationPanelSchema>;

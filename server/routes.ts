@@ -46,6 +46,81 @@ function toCleanBuffer(buf: Buffer) {
 const objectStorage = new ObjectStorageService();
 const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" }) : null;
 
+async function captureAopCustomerFlowSnapshot(params: {
+  jobId: string;
+  designState: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    const { jobId, designState } = params;
+    const aopPrintPanelUrls = (designState as any).aopPrintPanelUrls;
+    const panelUrls = (designState as any).panelUrls;
+    const printAreas = (designState as any).print_areas || (designState as any).printAreas;
+    const hasAopCapture =
+      !!(aopPrintPanelUrls || panelUrls || printAreas || (designState as any).aopPlacementSettings);
+    if (!hasAopCapture) return;
+
+    const job = await storage.getGenerationJob(jobId);
+    const productTypeId = Number((job as any)?.productTypeId);
+    if (!job || !Number.isFinite(productTypeId)) return;
+
+    const productType = await storage.getProductType(productTypeId);
+    if (!productType?.isAllOverPrint || !productType.printifyBlueprintId || !productType.printifyProviderId) return;
+
+    const runResult = await pool.query(
+      `INSERT INTO aop_calibration_runs (
+          product_type_id, blueprint_id, provider_id, size, status,
+          printify_mockup_urls, print_areas_payload
+        )
+        VALUES ($1, $2, $3, $4, 'customer_flow_capture', $5, $6)
+        RETURNING id`,
+      [
+        productType.id,
+        productType.printifyBlueprintId,
+        productType.printifyProviderId,
+        (job as any).size || null,
+        JSON.stringify((job as any).mockupUrls || []),
+        JSON.stringify({
+          source: "customer_flow_save_state",
+          jobId,
+          capturedAt: new Date().toISOString(),
+          aopPlacementSettings: (designState as any).aopPlacementSettings || null,
+          aopPatternSettings: (designState as any).aopPatternSettings || null,
+          aopPrintPanelUrls: aopPrintPanelUrls || null,
+          panelUrls: panelUrls || null,
+          printAreas: printAreas || null,
+        }),
+      ],
+    );
+
+    const runId = String(runResult.rows[0]?.id || "");
+    const panelSource = Array.isArray(aopPrintPanelUrls)
+      ? aopPrintPanelUrls
+      : Array.isArray(panelUrls)
+        ? panelUrls
+        : [];
+
+    for (const panel of panelSource) {
+      const panelKey = String(panel?.position || panel?.panelKey || panel?.key || "unknown");
+      const calibrationImageUrl = String(panel?.url || panel?.dataUrl || panel?.imageUrl || "");
+      if (!panelKey || !calibrationImageUrl) continue;
+      await pool.query(
+        `INSERT INTO aop_calibration_panels (run_id, panel_key, width, height, calibration_image_url, placement)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          runId,
+          panelKey,
+          Number(panel?.width || 0),
+          Number(panel?.height || 0),
+          calibrationImageUrl,
+          JSON.stringify({ source: "customer_flow_save_state", panel }),
+        ],
+      );
+    }
+  } catch (error: any) {
+    console.warn("[AOP Customer Flow Capture] skipped:", error?.message || error);
+  }
+}
+
 /**
  * Build a storefront app-proxy designer URL for Stripe's success_url / cancel_url.
  *
@@ -5892,6 +5967,41 @@ ${textEdgeRestrictions}
     }
   });
 
+  // Internal debug: latest AOP calibration capture for a product type.
+  // Authenticated because rows can include Printify mockup URLs and customer-flow metadata.
+  app.get("/api/debug/aop-calibration-runs/latest", isAuthenticated, async (req: Request, res: Response) => {
+    try {
+      const productTypeId = req.query.productTypeId ? Number(req.query.productTypeId) : null;
+      const runResult = await pool.query(
+        productTypeId
+          ? `SELECT * FROM aop_calibration_runs WHERE product_type_id = $1 ORDER BY created_at DESC LIMIT 1`
+          : `SELECT * FROM aop_calibration_runs ORDER BY created_at DESC LIMIT 1`,
+        productTypeId ? [productTypeId] : [],
+      );
+      const run = runResult.rows[0];
+      if (!run) return res.status(404).json({ error: "No AOP calibration runs found" });
+
+      const [productTypeResult, panelsResult] = await Promise.all([
+        pool.query(`SELECT * FROM product_types WHERE id = $1 LIMIT 1`, [run.product_type_id]),
+        pool.query(
+          `SELECT * FROM aop_calibration_panels WHERE run_id = $1 ORDER BY panel_key ASC, created_at ASC`,
+          [run.id],
+        ),
+      ]);
+
+      return res.json({
+        run,
+        productType: productTypeResult.rows[0] || null,
+        panels: panelsResult.rows,
+        printAreasPayload: run.print_areas_payload,
+        printifyMockupUrls: run.printify_mockup_urls,
+      });
+    } catch (error) {
+      console.error("[AOP Calibration Debug] latest failed:", error);
+      return res.status(500).json({ error: "Failed to load latest AOP calibration run" });
+    }
+  });
+
   // Proxy Printify panel SVGs so the storefront iframe can fetch them without CORS/taint issues
   // (PatternCustomizer uses fetch + blob → Image for masking; cross-origin SVG often fails.)
   app.get("/api/storefront/panel-svg", asyncHandler(async (req: Request, res: Response) => {
@@ -7064,6 +7174,7 @@ ${textEdgeRestrictions}
           : {};
       const mergedDesignState = { ...prevState, ...designState };
       await storage.updateGenerationJob(jobId, { designState: mergedDesignState } as any);
+      void captureAopCustomerFlowSnapshot({ jobId, designState: mergedDesignState });
       console.log(`[SaveState] jobId=${jobId} merged designState keys=${Object.keys(mergedDesignState).join(",")}`);
       return res.json({ saved: true });
     } catch (err: any) {
