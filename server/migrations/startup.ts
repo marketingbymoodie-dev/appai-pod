@@ -339,6 +339,21 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "aop_projection_maps",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "aop_projection_maps" (
+        "id"              VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+        "product_type_id" INTEGER,
+        "blueprint_id"    INTEGER NOT NULL,
+        "provider_id"     INTEGER NOT NULL,
+        "size"            TEXT,
+        "map_json"        JSONB NOT NULL,
+        "created_at"      TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"      TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -381,6 +396,21 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "aop_calibration_panels_panel_key_idx",
     sql: `CREATE INDEX IF NOT EXISTS "aop_calibration_panels_panel_key_idx"
       ON "aop_calibration_panels" ("panel_key")`,
+  },
+  {
+    name: "aop_projection_maps_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_projection_maps_product_type_idx"
+      ON "aop_projection_maps" ("product_type_id")`,
+  },
+  {
+    name: "aop_projection_maps_blueprint_provider_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_projection_maps_blueprint_provider_idx"
+      ON "aop_projection_maps" ("blueprint_id", "provider_id")`,
+  },
+  {
+    name: "aop_projection_maps_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "aop_projection_maps_created_idx"
+      ON "aop_projection_maps" ("created_at")`,
   },
 ];
 

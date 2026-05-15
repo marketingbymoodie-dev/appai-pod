@@ -1,0 +1,105 @@
+/**
+ * Shared types for the AOP Calibration Mapper.
+ *
+ * Convention:
+ *   (u, v) = normalized [0..1] coordinates in the source panel image.
+ *   (x, y) = pixel coordinates in the mockup image space (NOT screen space).
+ */
+
+export type ViewId = "front" | "back";
+
+export type UV = { u: number; v: number };
+export type Pt = { x: number; y: number };
+
+export type MeshPoint = {
+  u: number;
+  v: number;
+  x: number;
+  y: number;
+};
+
+export type MeshGrid = {
+  cols: number;
+  rows: number;
+  points: MeshPoint[];
+};
+
+export type MaskState = {
+  polygon: UV[];
+  feather: number;
+} | null;
+
+export type PanelState = {
+  panelKey: string;
+  visible: boolean;
+  locked: boolean;
+  opacity: number;
+  zIndex: number;
+  artworkSrc: string | null;
+  sourceSize: { width: number; height: number } | null;
+  mesh: MeshGrid;
+  mask: MaskState;
+};
+
+export type ViewState = {
+  mockupSrc: string | null;
+  mockupSize: { width: number; height: number } | null;
+  panels: Record<string, PanelState>;
+  panelOrder: string[];
+};
+
+export type CalibrationState = {
+  version: "aop-mapper/v1";
+  productTypeId: number | null;
+  blueprintId: number | null;
+  providerId: number | null;
+  size: string | null;
+  productType: string;
+  views: Record<ViewId, ViewState>;
+  meta: {
+    createdAt: string;
+    updatedAt: string;
+    label: string;
+  };
+};
+
+export type DebugFlags = {
+  showMesh: boolean;
+  showMask: boolean;
+  showHandles: boolean;
+  showPanelBounds: boolean;
+  showOnionSkin: boolean;
+  onionSkinOpacity: number;
+  showOverlapHeatmap: boolean;
+  highContrast: boolean;
+};
+
+export const DEFAULT_PANEL_KEYS: string[] = [
+  "front_right",
+  "front_left",
+  "back",
+  "right_sleeve",
+  "left_sleeve",
+  "right_hood",
+  "left_hood",
+  "pocket_right",
+  "pocket_left",
+  "right_cuff_panel",
+  "left_cuff_panel",
+  "waistband",
+];
+
+export const PANEL_DEFAULT_VIEW: Record<string, ViewId> = {
+  front_right: "front",
+  front_left: "front",
+  back: "back",
+  right_sleeve: "front",
+  left_sleeve: "front",
+  right_hood: "front",
+  left_hood: "front",
+  pocket_right: "front",
+  pocket_left: "front",
+  right_cuff_panel: "front",
+  left_cuff_panel: "front",
+  waistband: "front",
+};

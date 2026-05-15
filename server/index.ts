@@ -7,6 +7,7 @@ import fs from "fs";
 import crypto from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { setupVite } from "./vite";
 import { registerStripeWebhook } from "./stripe-webhook";
 import { createServer } from "http";
 
@@ -368,8 +369,22 @@ app.use((req, res, next) => {
     });
   }
 
-  // ✅ 3) Serve static files LAST
-  serveStatic(app);
+  // ✅ 3) SPA / static fallback LAST.
+  //
+  // In development we mount the Vite middleware so the SPA + HMR work without
+  // a build step. In production we fall back to serving the prebuilt files
+  // from dist/public via serveStatic.
+  if (process.env.NODE_ENV === "development") {
+    try {
+      await setupVite(httpServer, app);
+      console.log("[startup] Vite dev middleware mounted");
+    } catch (viteErr) {
+      console.error("[startup] setupVite failed, falling back to serveStatic:", viteErr);
+      serveStatic(app);
+    }
+  } else {
+    serveStatic(app);
+  }
 
   const PORT = process.env.PORT || 5000;
   httpServer.listen(PORT, () => {

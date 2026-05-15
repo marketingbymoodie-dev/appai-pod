@@ -40,6 +40,13 @@ async function main() {
       `SELECT * FROM aop_calibration_panels WHERE run_id = $1 ORDER BY panel_key ASC, created_at ASC`,
       [runId],
     );
+    const projectionMapsResult = await pool.query(
+      `SELECT * FROM aop_projection_maps
+       WHERE product_type_id = $1 OR (blueprint_id = $2 AND provider_id = $3)
+       ORDER BY updated_at DESC
+       LIMIT 10`,
+      [run.product_type_id, run.blueprint_id, run.provider_id],
+    );
 
     const output = {
       run,
@@ -48,6 +55,7 @@ async function main() {
       printAreasPayload: run.print_areas_payload,
       printifyMockupUrls: run.printify_mockup_urls,
       exportUrl: run.export_url || null,
+      projectionMaps: projectionMapsResult.rows,
     };
 
     const json = JSON.stringify(output, null, hasFlag("pretty") ? 2 : 0);

@@ -9,7 +9,10 @@ import { enqueueMockupJob, getMockupJob } from "../server/mockup-jobs";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const LOCAL_OUTPUT_DIR = path.join(process.cwd(), "tmp", "aop-calibration");
-const CALIBRATION_BUCKET = "aop-calibration";
+const CALIBRATION_BUCKET = process.env.SUPABASE_AOP_CALIBRATION_BUCKET || "aop-calibration";
+const ZIP_HOODIE_BLUEPRINT_ID = 451;
+const ZIP_HOODIE_PROVIDER_ID = 10;
+const ZIP_HOODIE_SIZE_L_VARIANT_ID = 63249;
 
 type ProductTypeRow = {
   id: number;
@@ -33,6 +36,31 @@ type Placeholder = {
   raw?: unknown;
 };
 
+type PanelRecord = Placeholder & {
+  calibrationImageUrl: string;
+  placement: {
+    placeholderRaw: unknown;
+    storageBucket: string;
+    storagePath: string;
+    pipeline: string;
+  };
+};
+
+type RunResult = {
+  runId: string;
+  productTypeId: number;
+  blueprintId: number;
+  providerId: number;
+  variantId: number;
+  size: string | null;
+  printifyProductId: string | null;
+  mockupJobId: string;
+  mockupUrlCount: number;
+  mockupUrls: string[];
+  panelCount: number;
+  status: string;
+};
+
 function argValue(name: string): string | undefined {
   const flag = `--${name}`;
   const idx = process.argv.indexOf(flag);
@@ -43,6 +71,55 @@ function argValue(name: string): string | undefined {
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+function printHelp() {
+  console.log(`
+Run an internal AOP calibration capture.
+
+Usage:
+  npx tsx scripts/run-aop-calibration.ts --productTypeId 20 --variantSize L --pretty
+  npx tsx scripts/run-aop-calibration.ts --blueprintId 451 --variantSize L --pretty
+  npx tsx scripts/run-aop-calibration.ts --blueprintId 451 --variantId 63249 --pretty
+
+Options:
+  --productTypeId <id>   Product type row to calibrate.
+  --blueprintId <id>     Product type lookup fallback by Printify blueprint id.
+  --variantId <id>       Exact Printify variant id to calibrate.
+  --variantSize <size>   Size label to resolve from stored variant_map or variants.json.
+  --topLatency <n>       Run against the top N slow AOP product types.
+  --out <path>           Local JSON summary output path.
+  --pretty               Pretty-print JSON output.
+  --help                 Show this help.
+
+Required environment variables:
+  DATABASE_URL
+  PRINTIFY_API_TOKEN
+  SUPABASE_URL
+  SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_AOP_CALIBRATION_BUCKET (optional, defaults to aop-calibration)
+
+Supabase setup:
+  Create a public Storage bucket named "aop-calibration" or the value of
+  SUPABASE_AOP_CALIBRATION_BUCKET before running this script.
+`);
+}
+
+function validateRequiredEnv() {
+  const required = [
+    "DATABASE_URL",
+    "PRINTIFY_API_TOKEN",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+  ];
+  const missing = required.filter((key) => !process.env[key]);
+  if (missing.length === 0) return;
+
+  console.error("[run-aop-calibration] Missing required environment variable(s):");
+  for (const key of missing) console.error(`  - ${key}`);
+  console.error(`  - SUPABASE_AOP_CALIBRATION_BUCKET is optional and currently "${CALIBRATION_BUCKET}"`);
+  console.error("\nRun with --help to see usage and setup notes.");
+  throw new Error(`Missing required env vars: ${missing.join(", ")}`);
 }
 
 function parseJson<T>(value: unknown, fallback: T): T {
@@ -161,18 +238,43 @@ function normalizePlaceholders(rawList: any[], stored: Placeholder[]): Placehold
   return stored;
 }
 
-function pickVariant(variantsData: any, variantSize?: string): { id: number; title?: string; raw?: any } {
+function variantsList(variantsData: any): any[] {
   const variants = Array.isArray(variantsData?.variants)
     ? variantsData.variants
     : Array.isArray(variantsData)
       ? variantsData
       : [];
+  return Array.isArray(variants) ? variants : [];
+}
+
+function variantIdOf(variant: any): number {
+  return Number(variant?.id ?? variant?.variant_id);
+}
+
+function pickVariant(
+  variantsData: any,
+  options: { variantSize?: string; variantId?: number; blueprintId: number; providerId: number },
+): { id: number; title?: string; raw?: any } {
+  const variants = variantsList(variantsData);
   if (!Array.isArray(variants) || variants.length === 0) {
     throw new Error("Printify variants response did not include any variants.");
   }
 
-  const sizeNeedle = variantSize?.trim().toLowerCase();
-  const match = sizeNeedle
+  if (options.variantId) {
+    const exact = variants.find((variant: any) => variantIdOf(variant) === options.variantId);
+    if (!exact) throw new Error(`Variant id ${options.variantId} was not found in variants.json.`);
+    return { id: options.variantId, title: exact.title, raw: exact };
+  }
+
+  const sizeNeedle = options.variantSize?.trim().toLowerCase();
+  const defaultZipHoodieL =
+    !sizeNeedle &&
+    options.blueprintId === ZIP_HOODIE_BLUEPRINT_ID &&
+    options.providerId === ZIP_HOODIE_PROVIDER_ID
+      ? variants.find((variant: any) => variantIdOf(variant) === ZIP_HOODIE_SIZE_L_VARIANT_ID)
+      : null;
+
+  const match = defaultZipHoodieL || (sizeNeedle
     ? variants.find((variant: any) => {
         const haystack = [
           variant.title,
@@ -184,20 +286,37 @@ function pickVariant(variantsData: any, variantSize?: string): { id: number; tit
           haystack.includes(`/${sizeNeedle}`) ||
           haystack.includes(`${sizeNeedle}/`);
       })
-    : null;
+    : null);
 
   const selected = match || variants[0];
-  const id = Number(selected.id ?? selected.variant_id);
+  const id = variantIdOf(selected);
   if (!id) throw new Error("Could not determine Printify variant id.");
   return { id, title: selected.title, raw: selected };
 }
 
-function pickVariantFromProductType(product: ProductTypeRow, variantSize?: string): { id: number; providerId: number; key: string; raw: any } | null {
+function pickVariantFromProductType(
+  product: ProductTypeRow,
+  options: { variantSize?: string; variantId?: number },
+): { id: number; providerId: number; key: string; raw: any } | null {
   const variantMap = parseJson<Record<string, any>>(product.variant_map, {});
   const entries = Object.entries(variantMap);
   if (entries.length === 0) return null;
 
-  const sizeId = variantSize || "default";
+  if (options.variantId) {
+    const exact = entries.find(([, value]) => Number(value?.printifyVariantId) === options.variantId);
+    if (exact) {
+      const [key, value] = exact;
+      return {
+        id: Number(value.printifyVariantId),
+        providerId: Number(value.providerId || product.printify_provider_id),
+        key,
+        raw: value,
+      };
+    }
+    return null;
+  }
+
+  const sizeId = options.variantSize || "default";
   const preferredKeys = [
     `${sizeId}:default`,
     `${sizeId}:`,
@@ -219,6 +338,31 @@ function pickVariantFromProductType(product: ProductTypeRow, variantSize?: strin
   };
 }
 
+function placeholderListFromVariantData(variant: any): Placeholder[] {
+  const rawPlaceholders = Array.isArray(variant?.placeholders)
+    ? variant.placeholders
+    : Array.isArray(variant?.print_areas)
+      ? variant.print_areas.flatMap((area: any) => area?.placeholders || [])
+      : [];
+  return normalizePlaceholders(rawPlaceholders, []);
+}
+
+function resolvePlaceholdersForVariant(params: {
+  storedPlaceholders: Placeholder[];
+  mappedVariant?: { raw?: any } | null;
+  catalogVariant?: any;
+}): Placeholder[] {
+  if (params.storedPlaceholders.length > 0) return params.storedPlaceholders;
+
+  const mapped = placeholderListFromVariantData(params.mappedVariant?.raw);
+  if (mapped.length > 0) return mapped;
+
+  const catalog = placeholderListFromVariantData(params.catalogVariant);
+  if (catalog.length > 0) return catalog;
+
+  return [];
+}
+
 function escapeSvg(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -232,6 +376,14 @@ async function generateCalibrationPanelPng(placeholder: Placeholder, sizeLabel: 
   const minor = Math.max(25, Math.round(Math.min(width, height) / 20));
   const major = minor * 4;
   const fontSize = Math.max(18, Math.round(Math.min(width, height) / 28));
+  const anchorSize = Math.max(18, Math.round(minor * 0.7));
+  const panelHash = crypto.createHash("sha1").update(position).digest();
+  const anchorColors = [
+    `rgb(${80 + (panelHash[0] % 120)},${30 + (panelHash[1] % 90)},${170 + (panelHash[2] % 70)})`,
+    `rgb(${170 + (panelHash[3] % 70)},${80 + (panelHash[4] % 120)},${30 + (panelHash[5] % 90)})`,
+    `rgb(${30 + (panelHash[6] % 90)},${170 + (panelHash[7] % 70)},${80 + (panelHash[8] % 120)})`,
+    `rgb(${120 + (panelHash[9] % 90)},${40 + (panelHash[10] % 80)},${120 + (panelHash[11] % 90)})`,
+  ];
   const lines: string[] = [];
 
   for (let x = 0; x <= width; x += minor) {
@@ -261,6 +413,10 @@ async function generateCalibrationPanelPng(placeholder: Placeholder, sizeLabel: 
       ${lines.join("\n")}
       <line x1="${width / 2}" y1="0" x2="${width / 2}" y2="${height}" stroke="#2563eb" stroke-width="${Math.max(3, Math.round(minor / 8))}" />
       <line x1="0" y1="${height / 2}" x2="${width}" y2="${height / 2}" stroke="#2563eb" stroke-width="${Math.max(3, Math.round(minor / 8))}" />
+      <rect x="${anchorSize}" y="${anchorSize}" width="${anchorSize}" height="${anchorSize}" fill="${anchorColors[0]}" stroke="#000000" stroke-width="3" />
+      <rect x="${width - anchorSize * 2}" y="${anchorSize}" width="${anchorSize}" height="${anchorSize}" fill="${anchorColors[1]}" stroke="#000000" stroke-width="3" />
+      <rect x="${width - anchorSize * 2}" y="${height - anchorSize * 2}" width="${anchorSize}" height="${anchorSize}" fill="${anchorColors[2]}" stroke="#000000" stroke-width="3" />
+      <rect x="${anchorSize}" y="${height - anchorSize * 2}" width="${anchorSize}" height="${anchorSize}" fill="${anchorColors[3]}" stroke="#000000" stroke-width="3" />
       <rect x="10" y="${Math.max(10, fontSize * 0.6)}" width="${Math.min(width - 20, label.length * fontSize * 0.58)}" height="${fontSize * 2.2}" rx="8" fill="#ffffff" opacity="0.9" stroke="#111827" />
       <text x="22" y="${Math.max(32, fontSize * 2)}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" font-weight="700" fill="#111827">${escapeSvg(label)}</text>
       <rect x="0" y="0" width="${width}" height="${height}" fill="none" stroke="#000000" stroke-width="${Math.max(4, Math.round(minor / 5))}" />
@@ -407,13 +563,16 @@ async function loadProducts(pool: pg.Pool): Promise<ProductTypeRow[]> {
   return result.rows;
 }
 
-async function runOne(pool: pg.Pool, product: ProductTypeRow) {
+async function runOne(pool: pg.Pool, product: ProductTypeRow): Promise<RunResult> {
   const blueprintId = Number(product.printify_blueprint_id);
   const providerId = Number(product.printify_provider_id);
   const token = product.printify_api_token || process.env.PRINTIFY_API_TOKEN;
   const shopId = product.printify_shop_id || process.env.PRINTIFY_SHOP_ID;
   const variantSize = argValue("variantSize");
+  const variantIdArg = argValue("variantId");
+  const requestedVariantId = variantIdArg ? Number(variantIdArg) : undefined;
   const sizeLabel = variantSize || "default";
+  if (variantIdArg && !requestedVariantId) throw new Error(`Invalid --variantId value: ${variantIdArg}`);
 
   if (!blueprintId || !providerId) throw new Error(`Product type ${product.id} is missing Printify blueprint/provider ids.`);
   if (!token || !shopId) throw new Error("Printify token/shop id are required from merchant record or PRINTIFY_API_TOKEN/PRINTIFY_SHOP_ID.");
@@ -438,27 +597,32 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
       `/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
       token,
     );
-    const mappedVariant = pickVariantFromProductType(product, variantSize);
-    const variant = mappedVariant || pickVariant(variantsData, variantSize);
+    const mappedVariant = pickVariantFromProductType(product, { variantSize, variantId: requestedVariantId });
+    const variant = mappedVariant || pickVariant(variantsData, {
+      variantSize,
+      variantId: requestedVariantId,
+      blueprintId,
+      providerId,
+    });
     const effectiveProviderId = mappedVariant?.providerId || providerId;
+    const catalogVariant = variantsList(variantsData).find((candidate) => variantIdOf(candidate) === variant.id) || variant.raw;
     await pool.query(
       `UPDATE aop_calibration_runs SET variant_id = $2, provider_id = $3, updated_at = NOW() WHERE id = $1`,
       [runId, variant.id, effectiveProviderId],
     );
 
-    const placeholdersResponse = await printifyRequest<any>(
-      `/catalog/blueprints/${blueprintId}/print_providers/${effectiveProviderId}/variants/${variant.id}/placeholders.json`,
-      token,
-    );
-    const rawPlaceholders = Array.isArray(placeholdersResponse?.placeholders)
-      ? placeholdersResponse.placeholders
-      : Array.isArray(placeholdersResponse)
-        ? placeholdersResponse
-        : [];
-    const placeholders = normalizePlaceholders(rawPlaceholders, storedPlaceholders);
-    if (placeholders.length === 0) throw new Error("No placeholder dimensions found from Printify or product_types.placeholder_positions.");
+    const placeholders = resolvePlaceholdersForVariant({
+      storedPlaceholders,
+      mappedVariant,
+      catalogVariant,
+    });
+    if (placeholders.length === 0) {
+      throw new Error(
+        "No placeholder dimensions found from product_types.placeholder_positions, product_types.variant_map, or variants.json.",
+      );
+    }
 
-    const panelRecords = [];
+    const panelRecords: PanelRecord[] = [];
     const panelUrls: { position: string; dataUrl: string }[] = [];
 
     for (const placeholder of placeholders) {
@@ -570,13 +734,19 @@ async function runOne(pool: pg.Pool, product: ProductTypeRow) {
 }
 
 async function main() {
+  if (hasFlag("help")) {
+    printHelp();
+    return;
+  }
+  validateRequiredEnv();
+
   const pool = makePool();
   try {
     await ensureTables(pool);
     const products = await loadProducts(pool);
     if (products.length === 0) throw new Error("No matching AOP product type found.");
 
-    const results = [];
+    const results: RunResult[] = [];
     for (const product of products) {
       results.push(await runOne(pool, product));
     }

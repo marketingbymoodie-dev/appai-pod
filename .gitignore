@@ -7,3 +7,8 @@ vite.config.ts.*
 .env
 .env.*
 
+# Local dev artifacts (calibration runs, render tests, generated panel sources, etc.)
+tmp/
+tmp_dev_log*.txt
+.commit-msg.tmp
+

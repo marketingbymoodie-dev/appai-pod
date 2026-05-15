@@ -34,6 +34,7 @@ import {
   LayoutTemplate,
   TrendingUp,
   Globe,
+  Crosshair,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 
@@ -51,6 +52,12 @@ const menuItems = [
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
   { title: "Settings", url: "/admin/settings", icon: Settings },
+];
+
+// Dev-only tools: only shown when running `npm run dev`. The pages are also
+// reachable via direct URL regardless of this flag.
+const devMenuItems = [
+  { title: "AOP Calibration Mapper", url: "/admin/aop-calibration-mapper", icon: Crosshair },
 ];
 
 const customerLinks = [
@@ -136,6 +143,28 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
+            {import.meta.env.DEV && (
+              <SidebarGroup>
+                <SidebarGroupLabel>Dev tools</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {devMenuItems.map((item) => {
+                      const isActive = location === item.url || location.startsWith(item.url);
+                      return (
+                        <SidebarMenuItem key={item.title}>
+                          <SidebarMenuButton asChild data-active={isActive}>
+                            <Link href={item.url} onClick={() => handleNavClick(item.url)}>
+                              <item.icon className="h-4 w-4" />
+                              <span>{item.title}</span>
+                            </Link>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      );
+                    })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
             {customizerPagesData?.pages && customizerPagesData.pages.length > 0 && (
               <SidebarGroup>
                 <SidebarGroupLabel>Customizer Pages</SidebarGroupLabel>

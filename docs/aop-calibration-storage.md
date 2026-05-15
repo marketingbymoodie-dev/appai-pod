@@ -1,7 +1,8 @@
 # AOP Calibration Storage
 
 The automated AOP calibration runner stores artifacts in a dedicated Supabase
-Storage bucket named `aop-calibration`.
+Storage bucket named by `SUPABASE_AOP_CALIBRATION_BUCKET`, defaulting to
+`aop-calibration`.
 
 Create this bucket manually in Supabase Storage before running calibration in
 production. The bucket must be public if the saved URLs need to be viewed

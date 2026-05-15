@@ -809,3 +809,26 @@ export const insertAopCalibrationPanelSchema = createInsertSchema(aopCalibration
 });
 export type AopCalibrationPanel = typeof aopCalibrationPanels.$inferSelect;
 export type InsertAopCalibrationPanel = z.infer<typeof insertAopCalibrationPanelSchema>;
+
+export const aopProjectionMaps = pgTable("aop_projection_maps", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productTypeId: integer("product_type_id"),
+  blueprintId: integer("blueprint_id").notNull(),
+  providerId: integer("provider_id").notNull(),
+  size: text("size"),
+  mapJson: jsonb("map_json").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("aop_projection_maps_product_type_idx").on(table.productTypeId),
+  index("aop_projection_maps_blueprint_provider_idx").on(table.blueprintId, table.providerId),
+  index("aop_projection_maps_created_idx").on(table.createdAt),
+]);
+
+export const insertAopProjectionMapSchema = createInsertSchema(aopProjectionMaps).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type AopProjectionMap = typeof aopProjectionMaps.$inferSelect;
+export type InsertAopProjectionMap = z.infer<typeof insertAopProjectionMapSchema>;
