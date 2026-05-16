@@ -1,9 +1,10 @@
+import { useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import type { CalibrationState, DebugFlags, RenderPreviewMode, ViewId } from "./types";
+import type { CalibrationState, DebugFlags, DetectionImport, RenderPreviewMode, ViewId } from "./types";
 import type { CalibrationActions } from "./useCalibration";
 
 type Props = {
@@ -22,11 +23,35 @@ type Props = {
   savedCalibrations: Array<{ name: string; updatedAt: string }>;
   saveTarget: string;
   setSaveTarget: (label: string) => void;
+  panelDetections: Record<string, DetectionImport>;
+  onImportDetection: (file: File) => void;
+  onClearDetection: () => void;
 };
 
 export default function PropertiesPanel(props: Props) {
-  const { state, actions, view, selectedPanel, debug, setDebug, mode, setMode, onSave, onLoad, onExportJson, onTestRender, savedCalibrations, saveTarget, setSaveTarget } = props;
+  const {
+    state,
+    actions,
+    view,
+    selectedPanel,
+    debug,
+    setDebug,
+    mode,
+    setMode,
+    onSave,
+    onLoad,
+    onExportJson,
+    onTestRender,
+    savedCalibrations,
+    saveTarget,
+    setSaveTarget,
+    panelDetections,
+    onImportDetection,
+    onClearDetection,
+  } = props;
   const panel = selectedPanel ? state.views[view].panels[selectedPanel] : null;
+  const detection = selectedPanel ? panelDetections[selectedPanel] : null;
+  const detectionInputRef = useRef<HTMLInputElement | null>(null);
 
   return (
     <div className="flex h-full w-80 flex-col border-l border-slate-800 bg-slate-900 text-slate-200" data-testid="aop-mapper-properties">
@@ -154,6 +179,68 @@ export default function PropertiesPanel(props: Props) {
                 <Button size="sm" variant="outline" onClick={() => actions.resetPanelMask(view, panel.panelKey)}>reset mask</Button>
                 <Button size="sm" variant="outline" onClick={() => actions.resetPanelTransform(view, panel.panelKey)}>reset transform</Button>
               </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="AI-assist (triangle CV)">
+          {!panel && <div className="text-xs text-slate-400">Select a panel to import a detection.</div>}
+          {panel && (
+            <div className="space-y-2">
+              <div className="text-[11px] text-slate-400">
+                Import the JSON emitted by <code className="rounded bg-slate-800 px-1 py-0.5">npm run aop:triangle:detect -- --panel {panel.panelKey} --mockup &lt;path&gt;</code>.
+                The mesh + mask suggestion is applied to <span className="font-semibold text-slate-200">{panel.panelKey}</span>.
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="flex-1"
+                  onClick={() => detectionInputRef.current?.click()}
+                  data-testid="aop-mapper-import-detection"
+                >
+                  Auto-suggest mesh
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!detection}
+                  onClick={() => onClearDetection()}
+                  data-testid="aop-mapper-clear-detection"
+                >
+                  Clear overlay
+                </Button>
+              </div>
+              <input
+                ref={detectionInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  onImportDetection(file);
+                  event.target.value = "";
+                }}
+              />
+              {detection && (
+                <div className="rounded border border-slate-800 bg-slate-950 p-2 text-[11px] text-slate-300" data-testid="aop-mapper-detection-summary">
+                  <div className="font-semibold text-slate-200">{detection.panelName}</div>
+                  <div>
+                    {detection.stats?.accepted ?? 0} / {detection.stats?.totalTriangles ?? detection.detectedTriangles.length} triangles · avg conf {(((detection.stats?.averageConfidence ?? 0) * 100) | 0)}%
+                  </div>
+                  <div className="text-slate-400">
+                    grid {detection.panelGrid.cols}×{detection.panelGrid.rows} · mockup {detection.mockupSize.width}×{detection.mockupSize.height}
+                  </div>
+                  {detection.detectedAt && <div className="text-slate-500">detected {detection.detectedAt.replace("T", " ").slice(0, 16)}</div>}
+                  <div className="mt-1 grid grid-cols-2 gap-1">
+                    <DebugToggle label="Triangles" checked={debug.showDetectionTriangles} onChange={(c) => setDebug({ showDetectionTriangles: c })} />
+                    <DebugToggle label="Lines" checked={debug.showDetectionCorrespondences} onChange={(c) => setDebug({ showDetectionCorrespondences: c })} />
+                    <DebugToggle label="Heatmap" checked={debug.showDetectionConfidenceHeatmap} onChange={(c) => setDebug({ showDetectionConfidenceHeatmap: c })} />
+                    <DebugToggle label="Rejects" checked={debug.showDetectionRejected} onChange={(c) => setDebug({ showDetectionRejected: c })} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </Section>

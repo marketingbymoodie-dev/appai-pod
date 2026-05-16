@@ -19,6 +19,7 @@ import {
 import type {
   CalibrationState,
   DebugFlags,
+  DetectionImport,
   PanelState,
   ViewId,
 } from "@/components/aop-calibration-mapper/types";
@@ -53,6 +54,10 @@ const DEFAULT_DEBUG: DebugFlags = {
   showFinalPreview: true,
   showOverlapHeatmap: false,
   highContrast: false,
+  showDetectionTriangles: true,
+  showDetectionCorrespondences: true,
+  showDetectionConfidenceHeatmap: false,
+  showDetectionRejected: true,
 };
 
 export default function AopCalibrationMapperPage() {
@@ -73,6 +78,7 @@ export default function AopCalibrationMapperPage() {
   }>({ runId: null, front: null, back: null });
   const [savedCalibrations, setSavedCalibrations] = useState<CalibrationListItem[]>([]);
   const [calibrationsDir, setCalibrationsDir] = useState<string>("tmp/aop-calibrations");
+  const [panelDetections, setPanelDetections] = useState<Record<string, DetectionImport>>({});
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
@@ -199,6 +205,68 @@ export default function AopCalibrationMapperPage() {
     const json = (await r.json()) as CalibrationState;
     actions.load(json);
     toast({ title: "Calibration loaded", description: label });
+  }
+
+  async function importDetectionFile(panelKey: string | null, file: File) {
+    if (!panelKey) {
+      toast({
+        title: "Select a panel first",
+        description: "Pick a target panel before importing a detection JSON.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const text = await file.text();
+    let detection: DetectionImport;
+    try {
+      detection = JSON.parse(text) as DetectionImport;
+    } catch (err) {
+      toast({ title: "Invalid detection JSON", description: (err as Error).message, variant: "destructive" });
+      return;
+    }
+    if (!detection?.suggestedMesh?.points?.length) {
+      toast({ title: "Detection missing mesh", description: "JSON has no suggestedMesh.points", variant: "destructive" });
+      return;
+    }
+    const targetView: ViewId = state.views.front.panels[panelKey] ? "front" : state.views.back.panels[panelKey] ? "back" : view;
+    const panel = state.views[targetView].panels[panelKey];
+    if (!panel) {
+      toast({ title: "Panel not found", description: `${panelKey} on ${targetView}`, variant: "destructive" });
+      return;
+    }
+
+    const cols = detection.suggestedMesh.cols;
+    const rows = detection.suggestedMesh.rows;
+    if (detection.suggestedMesh.points.length !== (cols + 1) * (rows + 1)) {
+      toast({
+        title: "Mesh size mismatch",
+        description: `Expected ${(cols + 1) * (rows + 1)} points, got ${detection.suggestedMesh.points.length}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    actions.replaceMesh(targetView, panelKey, {
+      cols,
+      rows,
+      points: detection.suggestedMesh.points.map((p) => ({ u: p.u, v: p.v, x: p.x, y: p.y })),
+    }, true);
+    if (detection.suggestedMask && detection.suggestedMask.length >= 3) {
+      actions.setMaskPolygon(targetView, panelKey, detection.suggestedMask);
+    }
+    setPanelDetections((prev) => ({ ...prev, [panelKey]: detection }));
+    toast({
+      title: "Auto-suggest applied",
+      description: `${panelKey}: ${detection.stats?.accepted ?? "?"} / ${detection.stats?.totalTriangles ?? "?"} triangles, mesh ${cols}x${rows}.`,
+    });
+  }
+
+  function clearDetectionFor(panelKey: string) {
+    setPanelDetections((prev) => {
+      const next = { ...prev };
+      delete next[panelKey];
+      return next;
+    });
   }
 
   function onExportJson() {
@@ -346,6 +414,7 @@ export default function AopCalibrationMapperPage() {
             debug={debug}
             width={canvasSize.width}
             height={canvasSize.height}
+            detections={panelDetections}
           />
         </div>
 
@@ -365,6 +434,9 @@ export default function AopCalibrationMapperPage() {
           savedCalibrations={savedCalibrations}
           saveTarget={saveTarget}
           setSaveTarget={setSaveTarget}
+          panelDetections={panelDetections}
+          onImportDetection={(file) => importDetectionFile(selectedPanel, file)}
+          onClearDetection={() => selectedPanel && clearDetectionFor(selectedPanel)}
         />
       </div>
     </div>

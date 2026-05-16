@@ -11,7 +11,9 @@
     "db:push": "drizzle-kit push",
     "ext:install": "npm install --prefix extensions/checkout-ui",
     "shopify:dev": "npm run ext:install && npx shopify app dev",
-    "shopify:deploy": "npm run ext:install && npx shopify app deploy"
+    "shopify:deploy": "npm run ext:install && npx shopify app deploy",
+    "aop:triangle:generate": "tsx scripts/generate-aop-triangle-calibration.ts",
+    "aop:triangle:detect": "tsx scripts/detect-aop-triangle-calibration.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",
