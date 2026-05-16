@@ -7,6 +7,7 @@
  */
 
 export type ViewId = "front" | "back";
+export type RenderPreviewMode = "source" | "warped" | "clipped" | "difference";
 
 export type UV = { u: number; v: number };
 export type Pt = { x: number; y: number };
@@ -73,12 +74,21 @@ export type CalibrationState = {
 };
 
 export type DebugFlags = {
+  renderPreviewMode: RenderPreviewMode;
   showMesh: boolean;
   showMask: boolean;
   showHandles: boolean;
   showPanelBounds: boolean;
   showOnionSkin: boolean;
   onionSkinOpacity: number;
+  mockupOpacity: number;
+  warpedPanelOpacity: number;
+  blinkCompare: boolean;
+  showDistortionHeatmap: boolean;
+  showGarmentSeamGuides: boolean;
+  showMockupEdges: boolean;
+  showGridIntersections: boolean;
+  showFinalPreview: boolean;
   showOverlapHeatmap: boolean;
   highContrast: boolean;
 };

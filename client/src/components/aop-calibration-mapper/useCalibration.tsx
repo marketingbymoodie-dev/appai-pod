@@ -87,6 +87,9 @@ type Action =
   | { type: "remove-panel"; view: ViewId; panelKey: string }
   | { type: "patch-panel"; view: ViewId; panelKey: string; patch: Partial<PanelState> }
   | { type: "set-panel-transform"; view: ViewId; panelKey: string; transform: Partial<PanelTransform> }
+  | { type: "reset-panel-transform"; view: ViewId; panelKey: string }
+  | { type: "reset-panel-mask"; view: ViewId; panelKey: string }
+  | { type: "reset-panel-mesh"; view: ViewId; panelKey: string }
   | { type: "move-mesh-point"; view: ViewId; panelKey: string; index: number; x: number; y: number }
   | { type: "set-mesh-density"; view: ViewId; panelKey: string; cols: number; rows: number }
   | { type: "transform-mesh"; view: ViewId; panelKey: string; opts: { dx?: number; dy?: number; scale?: number; rotation?: number; pivot?: { x: number; y: number } } }
@@ -147,6 +150,31 @@ function reducer(state: CalibrationState, action: Action): CalibrationState {
         ...panel,
         transform: { ...DEFAULT_PANEL_TRANSFORM, ...panel.transform, ...action.transform },
       };
+      return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
+    }
+    case "reset-panel-transform": {
+      const view = state.views[action.view];
+      const panel = view.panels[action.panelKey];
+      if (!panel || panel.locked) return state;
+      const nextPanel: PanelState = { ...panel, transform: { ...DEFAULT_PANEL_TRANSFORM } };
+      return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
+    }
+    case "reset-panel-mask": {
+      const view = state.views[action.view];
+      const panel = view.panels[action.panelKey];
+      if (!panel || panel.locked) return state;
+      const nextPanel: PanelState = { ...panel, mask: { polygon: defaultMaskPolygon(), feather: panel.mask?.feather ?? 0 } };
+      return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
+    }
+    case "reset-panel-mesh": {
+      const view = state.views[action.view];
+      const panel = view.panels[action.panelKey];
+      if (!panel || panel.locked || !panel.sourceSize) return state;
+      const w = view.mockupSize?.width ?? 2000;
+      const h = view.mockupSize?.height ?? 2000;
+      const bounds = defaultBoundsForPanel(w, h, panel.sourceSize.width, panel.sourceSize.height);
+      const mesh = buildMeshFromBounds(panel.mesh.cols, panel.mesh.rows, bounds);
+      const nextPanel: PanelState = { ...panel, mesh };
       return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
     }
     case "move-mesh-point": {
@@ -219,6 +247,9 @@ export function useCalibration() {
       patchPanel: (view: ViewId, panelKey: string, patch: Partial<PanelState>) => dispatch({ type: "patch-panel", view, panelKey, patch }),
       setPanelTransform: (view: ViewId, panelKey: string, transform: Partial<PanelTransform>) =>
         dispatch({ type: "set-panel-transform", view, panelKey, transform }),
+      resetPanelTransform: (view: ViewId, panelKey: string) => dispatch({ type: "reset-panel-transform", view, panelKey }),
+      resetPanelMask: (view: ViewId, panelKey: string) => dispatch({ type: "reset-panel-mask", view, panelKey }),
+      resetPanelMesh: (view: ViewId, panelKey: string) => dispatch({ type: "reset-panel-mesh", view, panelKey }),
       moveMeshPoint: (view: ViewId, panelKey: string, index: number, x: number, y: number) =>
         dispatch({ type: "move-mesh-point", view, panelKey, index, x, y }),
       setMeshDensity: (view: ViewId, panelKey: string, cols: number, rows: number) =>

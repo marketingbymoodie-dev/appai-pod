@@ -11,7 +11,7 @@ import {
   Text,
 } from "react-konva";
 import Konva from "konva";
-import { drawMeshWarp, meshIndex, meshOutline, warpUVThroughMesh } from "./meshUtils";
+import { applyPanelTransformToMesh, drawMeshWarp, meshIndex, meshOutline, warpUVThroughMesh } from "./meshUtils";
 import type {
   CalibrationState,
   DebugFlags,
@@ -65,10 +65,14 @@ function PanelMesh({
   panel,
   image,
   highlighted,
+  previewMode,
+  opacity,
 }: {
   panel: PanelState;
   image: HTMLImageElement | null;
   highlighted: boolean;
+  previewMode: DebugFlags["renderPreviewMode"];
+  opacity: number;
 }) {
   const sceneFunc = useCallback(
     (ctx: Konva.Context, _shape: Konva.Shape) => {
@@ -85,15 +89,44 @@ function PanelMesh({
         ctx.stroke();
         return;
       }
-      drawMeshWarp(ctx as unknown as CanvasRenderingContext2D, image, sourceSize, panel.mesh, {
-        opacity: panel.opacity,
-        mask: panel.mask?.polygon ?? null,
+      const canvasCtx = ctx as unknown as CanvasRenderingContext2D;
+      if (previewMode === "source") {
+        const bounds = meshBounds(panel);
+        canvasCtx.save();
+        canvasCtx.globalAlpha = opacity;
+        canvasCtx.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height);
+        canvasCtx.restore();
+        return;
+      }
+      if (previewMode === "difference") {
+        canvasCtx.save();
+        canvasCtx.globalCompositeOperation = "difference";
+        drawMeshWarp(canvasCtx, image, sourceSize, panel.mesh, {
+          opacity,
+          mask: null,
+        });
+        canvasCtx.restore();
+        return;
+      }
+      drawMeshWarp(canvasCtx, image, sourceSize, panel.mesh, {
+        opacity,
+        mask: previewMode === "clipped" ? panel.mask?.polygon ?? null : null,
       });
     },
-    [panel.mesh, panel.opacity, panel.mask, panel.sourceSize, image, highlighted],
+    [panel, image, highlighted, previewMode, opacity],
   );
 
   return <Shape listening={false} sceneFunc={sceneFunc} />;
+}
+
+function meshBounds(panel: PanelState) {
+  const xs = panel.mesh.points.map((p) => p.x);
+  const ys = panel.mesh.points.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return { x: minX, y: minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
 }
 
 function PanelBoundsOverlay({ panel, color }: { panel: PanelState; color: string }) {
@@ -138,6 +171,7 @@ function MeshHandles({
   actions,
   zoom,
   editable,
+  showIntersections,
 }: {
   panel: PanelState;
   view: ViewId;
@@ -146,6 +180,7 @@ function MeshHandles({
   actions: CalibrationActions;
   zoom: number;
   editable: boolean;
+  showIntersections: boolean;
 }) {
   const cols = panel.mesh.cols;
   const rows = panel.mesh.rows;
@@ -173,6 +208,18 @@ function MeshHandles({
       {meshLines.map((pts, i) => (
         <Line key={i} listening={false} points={pts} stroke={selected ? "#0ea5e9" : "#64748b"} strokeWidth={1 / zoom} opacity={0.7} />
       ))}
+      {selected && showIntersections &&
+        panel.mesh.points.map((p, i) => (
+          <Circle
+            key={`grid-${i}`}
+            x={p.x}
+            y={p.y}
+            radius={Math.max(2, 3.5 / zoom)}
+            fill="#bae6fd"
+            opacity={0.65}
+            listening={false}
+          />
+        ))}
       {selected && editable && !panel.locked &&
         panel.mesh.points.map((p, i) => {
           const r = Math.max(0, Math.floor(i / (cols + 1)));
@@ -190,6 +237,18 @@ function MeshHandles({
               stroke="#0f172a"
               strokeWidth={1 / zoom}
               draggable
+              onMouseEnter={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = "grab";
+              }}
+              onMouseLeave={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = "default";
+              }}
+              onDragStart={(e) => {
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = "grabbing";
+              }}
               onDragMove={(e) => {
                 const node = e.target;
                 actions.moveMeshPoint(view, panelKey, i, node.x(), node.y());
@@ -197,12 +256,138 @@ function MeshHandles({
               onDragEnd={(e) => {
                 const node = e.target;
                 actions.moveMeshPoint(view, panelKey, i, node.x(), node.y());
+                const stage = e.target.getStage();
+                if (stage) stage.container().style.cursor = "grab";
               }}
             />
           );
         })}
     </Group>
   );
+}
+
+function MeshDistortionHeatmap({ panel, zoom }: { panel: PanelState; zoom: number }) {
+  const cells: Array<{ points: number[]; fill: string; ratio: number }> = [];
+  for (let r = 0; r < panel.mesh.rows; r++) {
+    for (let c = 0; c < panel.mesh.cols; c++) {
+      const tl = panel.mesh.points[meshIndex(panel.mesh, c, r)];
+      const tr = panel.mesh.points[meshIndex(panel.mesh, c + 1, r)];
+      const br = panel.mesh.points[meshIndex(panel.mesh, c + 1, r + 1)];
+      const bl = panel.mesh.points[meshIndex(panel.mesh, c, r + 1)];
+      const top = dist(tl, tr);
+      const bottom = dist(bl, br);
+      const left = dist(tl, bl);
+      const right = dist(tr, br);
+      const horizontalRatio = Math.max(top, bottom) / Math.max(1, Math.min(top, bottom));
+      const verticalRatio = Math.max(left, right) / Math.max(1, Math.min(left, right));
+      const ratio = Math.max(horizontalRatio, verticalRatio);
+      const fill = ratio > 1.8 ? "rgba(239,68,68,0.28)" : ratio > 1.25 ? "rgba(234,179,8,0.24)" : "rgba(34,197,94,0.18)";
+      cells.push({ points: [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y], fill, ratio });
+    }
+  }
+  return (
+    <Group listening={false}>
+      {cells.map((cell, idx) => (
+        <Line
+          key={idx}
+          points={cell.points}
+          closed
+          fill={cell.fill}
+          stroke={cell.ratio > 1.8 ? "#ef4444" : cell.ratio > 1.25 ? "#eab308" : "#22c55e"}
+          strokeWidth={0.75 / zoom}
+          opacity={0.95}
+        />
+      ))}
+    </Group>
+  );
+}
+
+function MeshCellHoverOverlay({
+  panel,
+  zoom,
+}: {
+  panel: PanelState;
+  zoom: number;
+}) {
+  const [hoveredCell, setHoveredCell] = useState<number | null>(null);
+  const cells: number[][] = [];
+  for (let r = 0; r < panel.mesh.rows; r++) {
+    for (let c = 0; c < panel.mesh.cols; c++) {
+      const tl = panel.mesh.points[meshIndex(panel.mesh, c, r)];
+      const tr = panel.mesh.points[meshIndex(panel.mesh, c + 1, r)];
+      const br = panel.mesh.points[meshIndex(panel.mesh, c + 1, r + 1)];
+      const bl = panel.mesh.points[meshIndex(panel.mesh, c, r + 1)];
+      cells.push([tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
+    }
+  }
+  return (
+    <Group>
+      {cells.map((points, idx) => (
+        <Line
+          key={idx}
+          points={points}
+          closed
+          fill={hoveredCell === idx ? "rgba(14,165,233,0.18)" : "rgba(255,255,255,0.001)"}
+          stroke={hoveredCell === idx ? "#38bdf8" : "transparent"}
+          strokeWidth={hoveredCell === idx ? 2 / zoom : 0}
+          onMouseEnter={(e) => {
+            setHoveredCell(idx);
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "crosshair";
+          }}
+          onMouseLeave={(e) => {
+            setHoveredCell(null);
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "default";
+          }}
+        />
+      ))}
+    </Group>
+  );
+}
+
+function MaskEdgeHoverOverlay({
+  panel,
+  warped,
+  zoom,
+}: {
+  panel: PanelState;
+  warped: Array<{ x: number; y: number }>;
+  zoom: number;
+}) {
+  const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
+  if (warped.length < 2 || panel.locked) return null;
+  return (
+    <Group>
+      {warped.map((p, i) => {
+        const next = warped[(i + 1) % warped.length];
+        if (!next || (i === warped.length - 1 && warped.length < 3)) return null;
+        return (
+          <Line
+            key={i}
+            points={[p.x, p.y, next.x, next.y]}
+            stroke={hoveredEdge === i ? "#f0abfc" : "rgba(255,255,255,0.001)"}
+            strokeWidth={hoveredEdge === i ? 4 / zoom : 10 / zoom}
+            lineCap="round"
+            onMouseEnter={(e) => {
+              setHoveredEdge(i);
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "crosshair";
+            }}
+            onMouseLeave={(e) => {
+              setHoveredEdge(null);
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "default";
+            }}
+          />
+        );
+      })}
+    </Group>
+  );
+}
+
+function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function MaskEditor({
@@ -221,19 +406,64 @@ function MaskEditor({
   const polygon = panel.mask?.polygon ?? [];
   const warped = polygon.map((p) => warpUVThroughMesh(panel.mesh, p.u, p.v));
   const handleSize = Math.max(4, 8 / zoom);
+  const winding = signedArea(warped) >= 0 ? "CW" : "CCW";
   return (
     <Group>
+      {warped.length >= 3 && (
+        <Shape
+          listening={false}
+          sceneFunc={(ctx) => {
+            const canvasCtx = ctx as unknown as CanvasRenderingContext2D;
+            const bounds = meshBounds(panel);
+            canvasCtx.save();
+            canvasCtx.beginPath();
+            canvasCtx.rect(bounds.x - 80 / zoom, bounds.y - 80 / zoom, bounds.width + 160 / zoom, bounds.height + 160 / zoom);
+            canvasCtx.moveTo(warped[0].x, warped[0].y);
+            for (let i = 1; i < warped.length; i++) canvasCtx.lineTo(warped[i].x, warped[i].y);
+            canvasCtx.closePath();
+            canvasCtx.fillStyle = "rgba(2,6,23,0.45)";
+            canvasCtx.fill("evenodd");
+            canvasCtx.restore();
+          }}
+        />
+      )}
       {warped.length >= 2 && (
         <Line
           listening={false}
           points={warped.flatMap((p) => [p.x, p.y])}
-          stroke="#a855f7"
-          strokeWidth={1.5 / zoom}
+          stroke="#d946ef"
+          strokeWidth={2.5 / zoom}
           closed={warped.length >= 3}
-          dash={[8 / zoom, 4 / zoom]}
-          fill="rgba(168,85,247,0.08)"
+          fill="rgba(168,85,247,0.18)"
         />
       )}
+      {warped.map((p, i) => {
+        const next = warped[(i + 1) % warped.length];
+        if (!next || warped.length < 2) return null;
+        const mid = { x: (p.x + next.x) / 2, y: (p.y + next.y) / 2 };
+        return (
+          <Text
+            key={`edge-${i}`}
+            x={mid.x + 4 / zoom}
+            y={mid.y + 4 / zoom}
+            text={`${i + 1}`}
+            fontSize={10 / zoom}
+            fill="#f0abfc"
+            listening={false}
+          />
+        );
+      })}
+      {warped.length >= 3 && (
+        <Text
+          x={warped[0].x}
+          y={warped[0].y - 20 / zoom}
+          text={`mask ${winding}`}
+          fontSize={12 / zoom}
+          fill="#f0abfc"
+          listening={false}
+        />
+      )}
+      <MaskEdgeHoverOverlay panel={panel} warped={warped} zoom={zoom} />
       {warped.map((p, i) => (
         <Circle
           key={`mask-${i}`}
@@ -244,6 +474,18 @@ function MaskEditor({
           stroke="#0f172a"
           strokeWidth={1 / zoom}
           draggable={!panel.locked}
+          onMouseEnter={(e) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "grab";
+          }}
+          onMouseLeave={(e) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "default";
+          }}
+          onDragStart={(e) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "grabbing";
+          }}
           onDragMove={(e) => {
             const node = e.target;
             // Convert dragged mockup-space point back to UV by inverting via nearest mesh cell.
@@ -251,6 +493,10 @@ function MaskEditor({
             const next = polygon.slice();
             next[i] = newUv;
             actions.setMaskPolygon(view, panelKey, next);
+          }}
+          onDragEnd={(e) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = "grab";
           }}
           onDblClick={() => {
             // remove vertex on double-click
@@ -262,6 +508,16 @@ function MaskEditor({
       ))}
     </Group>
   );
+}
+
+function signedArea(points: Array<{ x: number; y: number }>) {
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    sum += (b.x - a.x) * (b.y + a.y);
+  }
+  return sum;
 }
 
 function mockupToUV(panel: PanelState, x: number, y: number): UV {
@@ -326,11 +582,21 @@ export default function MockupCanvas(props: MockupCanvasProps) {
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [draggingPanelKey, setDraggingPanelKey] = useState<string | null>(null);
+  const [blinkOn, setBlinkOn] = useState(false);
 
   const viewState = state.views[view];
   const mockupImage = useLoadedImage(viewState.mockupSrc);
 
   const panelImageMap = usePanelImages(viewState);
+
+  useEffect(() => {
+    if (!debug.blinkCompare) {
+      setBlinkOn(false);
+      return;
+    }
+    const id = window.setInterval(() => setBlinkOn((value) => !value), 450);
+    return () => window.clearInterval(id);
+  }, [debug.blinkCompare]);
 
   // Fit-to-screen on mount or when the mockup changes.
   useEffect(() => {
@@ -400,6 +666,10 @@ export default function MockupCanvas(props: MockupCanvasProps) {
     if (container) container.style.cursor = cursor;
   }, []);
 
+  const effectiveMockupOpacity = debug.blinkCompare && blinkOn ? 0 : debug.mockupOpacity;
+  const effectivePanelOpacity = debug.blinkCompare && !blinkOn ? 0 : debug.warpedPanelOpacity;
+  const showMockup = debug.renderPreviewMode !== "source";
+
   return (
     <div className="relative h-full w-full bg-slate-950 overflow-hidden" data-testid="aop-mapper-canvas">
       <Stage
@@ -430,13 +700,14 @@ export default function MockupCanvas(props: MockupCanvasProps) {
               fill="#0f172a"
             />
           )}
-          {mockupImage && viewState.mockupSize && (
+          {mockupImage && viewState.mockupSize && showMockup && (
             <KonvaImage
               image={mockupImage}
               x={0}
               y={0}
               width={viewState.mockupSize.width}
               height={viewState.mockupSize.height}
+              opacity={effectiveMockupOpacity}
               filters={debug.highContrast ? [Konva.Filters.Contrast] : []}
               contrast={debug.highContrast ? 80 : 0}
               listening={false}
@@ -446,6 +717,38 @@ export default function MockupCanvas(props: MockupCanvasProps) {
                 }
               }}
             />
+          )}
+          {debug.showGarmentSeamGuides && viewState.mockupSize && (
+            <Group listening={false}>
+              <Line
+                points={[viewState.mockupSize.width / 2, 0, viewState.mockupSize.width / 2, viewState.mockupSize.height]}
+                stroke="#38bdf8"
+                strokeWidth={1 / scale}
+                dash={[10 / scale, 8 / scale]}
+                opacity={0.45}
+              />
+              <Line
+                points={[0, viewState.mockupSize.height / 2, viewState.mockupSize.width, viewState.mockupSize.height / 2]}
+                stroke="#38bdf8"
+                strokeWidth={1 / scale}
+                dash={[10 / scale, 8 / scale]}
+                opacity={0.35}
+              />
+            </Group>
+          )}
+          {debug.showMockupEdges && viewState.mockupSize && (
+            <Group listening={false}>
+              <Rect
+                x={0}
+                y={0}
+                width={viewState.mockupSize.width}
+                height={viewState.mockupSize.height}
+                stroke="#f8fafc"
+                strokeWidth={2 / scale}
+                dash={[8 / scale, 6 / scale]}
+                opacity={0.35}
+              />
+            </Group>
           )}
         </Layer>
 
@@ -499,7 +802,13 @@ export default function MockupCanvas(props: MockupCanvasProps) {
                 }}
               >
                 {mode === "select" && <PanelHitArea panel={panel} />}
-                <PanelMesh panel={panel} image={img} highlighted={isSelected} />
+                <PanelMesh
+                  panel={panel}
+                  image={img}
+                  highlighted={isSelected}
+                  previewMode={mode === "mask" && isSelected ? "clipped" : debug.renderPreviewMode}
+                  opacity={panel.opacity * effectivePanelOpacity}
+                />
                 {debug.showPanelBounds && (
                   <PanelBoundsOverlay panel={panel} color={isSelected ? "#f97316" : "#94a3b8"} />
                 )}
@@ -538,7 +847,22 @@ export default function MockupCanvas(props: MockupCanvasProps) {
                 scaleY={transform.scaleY}
               >
                 {(debug.showMesh || (mode === "mesh" && isSelected)) && (
-                  <MeshHandles panel={panel} view={view} panelKey={panel.panelKey} selected={isSelected} actions={actions} zoom={scale} editable={mode === "mesh" && isSelected} />
+                  <>
+                    {debug.showDistortionHeatmap && (mode === "mesh" || isSelected) && (
+                      <MeshDistortionHeatmap panel={panel} zoom={scale} />
+                    )}
+                    {mode === "mesh" && isSelected && <MeshCellHoverOverlay panel={panel} zoom={scale} />}
+                    <MeshHandles
+                      panel={panel}
+                      view={view}
+                      panelKey={panel.panelKey}
+                      selected={isSelected}
+                      actions={actions}
+                      zoom={scale}
+                      editable={mode === "mesh" && isSelected}
+                      showIntersections={debug.showGridIntersections}
+                    />
+                  </>
                 )}
                 {(debug.showMask || (mode === "mask" && isSelected)) && panel.mask && (
                   <MaskEditor panel={panel} view={view} panelKey={panel.panelKey} actions={actions} zoom={scale} />
@@ -562,6 +886,65 @@ export default function MockupCanvas(props: MockupCanvasProps) {
       <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-2 py-1 text-xs text-slate-200" data-testid="aop-mapper-canvas-zoom">
         zoom {(scale * 100).toFixed(0)}%
       </div>
+      {debug.showFinalPreview && (
+        <FinalPreview
+          viewState={viewState}
+          mockupImage={mockupImage}
+          panelImageMap={panelImageMap}
+          sortedPanels={sortedPanels}
+        />
+      )}
+    </div>
+  );
+}
+
+function FinalPreview({
+  viewState,
+  mockupImage,
+  panelImageMap,
+  sortedPanels,
+}: {
+  viewState: CalibrationState["views"][ViewId];
+  mockupImage: HTMLImageElement | null;
+  panelImageMap: Record<string, HTMLImageElement | null>;
+  sortedPanels: PanelState[];
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      const canvas = canvasRef.current;
+      const size = viewState.mockupSize;
+      if (!canvas || !size) return;
+      const previewW = 220;
+      const previewH = Math.max(1, Math.round((size.height / Math.max(1, size.width)) * previewW));
+      canvas.width = previewW;
+      canvas.height = previewH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, previewW, previewH);
+      ctx.save();
+      ctx.scale(previewW / size.width, previewH / size.height);
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(0, 0, size.width, size.height);
+      if (mockupImage) ctx.drawImage(mockupImage, 0, 0, size.width, size.height);
+      for (const panel of sortedPanels) {
+        const img = panelImageMap[panel.panelKey];
+        const sourceSize = panel.sourceSize ?? (img ? { width: img.width, height: img.height } : null);
+        if (!panel.visible || !img || !sourceSize) continue;
+        drawMeshWarp(ctx, img, sourceSize, applyPanelTransformToMesh(panel.mesh, panel.transform), {
+          opacity: panel.opacity,
+          mask: panel.mask?.polygon ?? null,
+        });
+      }
+      ctx.restore();
+    }, 40);
+    return () => window.clearTimeout(timeout);
+  }, [viewState.mockupSize, mockupImage, panelImageMap, sortedPanels]);
+
+  return (
+    <div className="pointer-events-none absolute bottom-3 right-3 rounded-lg border border-slate-700 bg-slate-950/90 p-2 shadow-2xl">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-300">Final output only</div>
+      <canvas ref={canvasRef} className="block rounded border border-slate-800 bg-slate-900" />
     </div>
   );
 }
