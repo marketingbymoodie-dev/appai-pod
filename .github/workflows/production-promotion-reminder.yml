@@ -1,0 +1,74 @@
+name: Production Promotion Reminder
+
+on:
+  push:
+    branches:
+      - main
+      - production
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-production-promotion:
+    name: Check production promotion
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare main and production
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/production:refs/remotes/origin/production \
+            --prune
+
+          MAIN_SHA="$(git rev-parse origin/main)"
+          PRODUCTION_SHA="$(git rev-parse origin/production)"
+          BEHIND_MAIN_COUNT="$(git rev-list --count origin/production..origin/main)"
+          AHEAD_OF_MAIN_COUNT="$(git rev-list --count origin/main..origin/production)"
+
+          {
+            echo "## Production Promotion Status"
+            echo ""
+            echo "| Branch | Commit |"
+            echo "| --- | --- |"
+            echo "| main | \`${MAIN_SHA}\` |"
+            echo "| production | \`${PRODUCTION_SHA}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$BEHIND_MAIN_COUNT" -gt 0 ]; then
+            MESSAGE="origin/production is ${BEHIND_MAIN_COUNT} commit(s) behind origin/main. Run the \"Manual Promote to Production\" workflow when you are ready to deploy."
+            echo "::warning title=Production promotion pending::$MESSAGE"
+            {
+              echo "### Promotion pending"
+              echo ""
+              echo "$MESSAGE"
+              echo ""
+              echo "This workflow is reminder-only: it does not merge, push, or deploy."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$AHEAD_OF_MAIN_COUNT" -gt 0 ]; then
+            MESSAGE="origin/production is ${AHEAD_OF_MAIN_COUNT} commit(s) ahead of origin/main. Check branch history before promoting again."
+            echo "::warning title=Production ahead of main::$MESSAGE"
+            {
+              echo "### Production ahead of main"
+              echo ""
+              echo "$MESSAGE"
+              echo ""
+              echo "This workflow is reminder-only: it does not merge, push, or deploy."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Production is up to date"
+              echo ""
+              echo "origin/production contains the current origin/main commit."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
