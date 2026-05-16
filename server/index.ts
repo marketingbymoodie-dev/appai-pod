@@ -9,7 +9,6 @@ import fs from "fs";
 import crypto from "crypto";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
-import { setupVite } from "./vite";
 import { registerStripeWebhook } from "./stripe-webhook";
 import { createServer } from "http";
 
@@ -19,7 +18,7 @@ import { createServer } from "http";
 // we fall back to process.cwd() which is the project root — dist/ doesn't exist
 // in dev anyway so the static asset middleware just logs a warning and skips.
 declare const __dirname: string | undefined;
-const _dirname: string = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+const _dirname: string = typeof __dirname === "string" && __dirname.length > 0 ? __dirname : process.cwd();
 
 // ============================================================
 // STARTUP BANNER - Identify deployed version
@@ -378,6 +377,7 @@ app.use((req, res, next) => {
   // from dist/public via serveStatic.
   if (process.env.NODE_ENV === "development") {
     try {
+      const { setupVite } = await import("./vite");
       await setupVite(httpServer, app);
       console.log("[startup] Vite dev middleware mounted");
     } catch (viteErr) {

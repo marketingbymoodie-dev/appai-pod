@@ -10,7 +10,7 @@ let staticInitialized = false;
 // In development (tsx ESM, package.json type:module): __dirname is undefined;
 // we fall back to process.cwd() which is the project root.
 declare const __dirname: string | undefined;
-const _dirname: string = typeof __dirname !== "undefined" ? __dirname : process.cwd();
+const _dirname: string = typeof __dirname === "string" && __dirname.length > 0 ? __dirname : process.cwd();
 
 export function serveStatic(app: Express) {
   // Resolve dist/public relative to the built server file location using _dirname

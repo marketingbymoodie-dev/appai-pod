@@ -20,7 +20,6 @@ import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, ty
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
-import { registerAopCalibrationMapperRoutes } from "./routes/aop-calibration-mapper";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
@@ -16113,7 +16112,10 @@ ${textEdgeRestrictions}
 
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
-  registerAopCalibrationMapperRoutes(app);
+  if (process.env.NODE_ENV !== "production") {
+    const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
+    registerAopCalibrationMapperRoutes(app);
+  }
 
   return httpServer;
 }

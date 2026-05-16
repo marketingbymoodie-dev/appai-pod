@@ -19,11 +19,15 @@
  *     value set manually via `$env:DATABASE_URL=...` always wins.
  */
 
-import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 
 declare const __dirname: string | undefined;
+
+function safeResolve(...parts: Array<string | undefined>): string | undefined {
+  if (parts.some((part) => typeof part !== "string" || part.length === 0)) return undefined;
+  return path.resolve(...(parts as string[]));
+}
 
 function resolveEnvPath(): string | undefined {
   const candidates: string[] = [];
@@ -40,7 +44,8 @@ function resolveEnvPath(): string | undefined {
       // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
       const { fileURLToPath } = require("url") as typeof import("url");
       const here = path.dirname(fileURLToPath(metaUrl));
-      candidates.push(path.resolve(here, "..", ".env"));
+      const envPath = safeResolve(here, "..", ".env");
+      if (envPath) candidates.push(envPath);
     }
   } catch {
     /* fall through */
@@ -48,15 +53,18 @@ function resolveEnvPath(): string | undefined {
 
   // 2) CJS (esbuild bundle): __dirname is defined.
   try {
-    if (typeof __dirname !== "undefined") {
-      candidates.push(path.resolve(__dirname, "..", ".env"));
+    if (typeof __dirname === "string" && __dirname.length > 0) {
+      const envPath = safeResolve(__dirname, "..", ".env");
+      if (envPath) candidates.push(envPath);
     }
   } catch {
     /* fall through */
   }
 
   // 3) Last resort: cwd/.env (default dotenv behaviour).
-  candidates.push(path.resolve(process.cwd(), ".env"));
+  const cwd = typeof process.cwd === "function" ? process.cwd() : undefined;
+  const cwdEnvPath = safeResolve(cwd, ".env");
+  if (cwdEnvPath) candidates.push(cwdEnvPath);
 
   for (const candidate of candidates) {
     try {
@@ -71,6 +79,8 @@ function resolveEnvPath(): string | undefined {
 if (process.env.NODE_ENV !== "production") {
   const envPath = resolveEnvPath();
   if (envPath) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    const dotenv = require("dotenv") as typeof import("dotenv");
     // `quiet: true` suppresses dotenv@17's marketing tip log.
     // `override: false` (the default) preserves vars already set in the shell.
     dotenv.config({ path: envPath, quiet: true });
