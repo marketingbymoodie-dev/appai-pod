@@ -3,7 +3,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import type { CalibrationState, DebugFlags, ViewId } from "./types";
+import type { CalibrationState, DebugFlags, RenderPreviewMode, ViewId } from "./types";
 import type { CalibrationActions } from "./useCalibration";
 
 type Props = {
@@ -49,6 +49,33 @@ export default function PropertiesPanel(props: Props) {
           </div>
           <div className="mt-2 text-[11px] text-slate-400">
             Select: drag panels, zoom/pan canvas. Mesh: drag mesh handles. Mask: click canvas to add polygon vertex; drag to move; double-click to delete.
+          </div>
+        </Section>
+
+        <Section title="Render preview">
+          <div className="grid grid-cols-4 gap-1">
+            {(["source", "warped", "clipped", "difference"] as RenderPreviewMode[]).map((previewMode) => (
+              <Button
+                key={previewMode}
+                size="sm"
+                variant={debug.renderPreviewMode === previewMode ? "default" : "outline"}
+                onClick={() => setDebug({ renderPreviewMode: previewMode })}
+                className="px-1 text-[11px]"
+                data-testid={`aop-mapper-preview-${previewMode}`}
+              >
+                {previewMode}
+              </Button>
+            ))}
+          </div>
+          <div className="mt-2 space-y-2">
+            <LabelRow label={`Mockup opacity ${Math.round(debug.mockupOpacity * 100)}%`}>
+              <Slider value={[debug.mockupOpacity * 100]} min={0} max={100} step={1} onValueChange={([v]) => setDebug({ mockupOpacity: v / 100 })} />
+            </LabelRow>
+            <LabelRow label={`Warped panel opacity ${Math.round(debug.warpedPanelOpacity * 100)}%`}>
+              <Slider value={[debug.warpedPanelOpacity * 100]} min={0} max={100} step={1} onValueChange={([v]) => setDebug({ warpedPanelOpacity: v / 100 })} />
+            </LabelRow>
+            <DebugToggle label="Blink compare" checked={debug.blinkCompare} onChange={(c) => setDebug({ blinkCompare: c })} />
+            <DebugToggle label="Final output preview" checked={debug.showFinalPreview} onChange={(c) => setDebug({ showFinalPreview: c })} />
           </div>
         </Section>
 
@@ -122,6 +149,11 @@ export default function PropertiesPanel(props: Props) {
                   reset
                 </Button>
               </div>
+              <div className="grid grid-cols-3 gap-1 text-xs">
+                <Button size="sm" variant="outline" onClick={() => actions.resetPanelMesh(view, panel.panelKey)}>reset mesh</Button>
+                <Button size="sm" variant="outline" onClick={() => actions.resetPanelMask(view, panel.panelKey)}>reset mask</Button>
+                <Button size="sm" variant="outline" onClick={() => actions.resetPanelTransform(view, panel.panelKey)}>reset transform</Button>
+              </div>
             </div>
           )}
         </Section>
@@ -130,12 +162,10 @@ export default function PropertiesPanel(props: Props) {
           <DebugToggle label="Mesh handles" checked={debug.showMesh} onChange={(c) => setDebug({ showMesh: c })} />
           <DebugToggle label="Mask polygon" checked={debug.showMask} onChange={(c) => setDebug({ showMask: c })} />
           <DebugToggle label="Panel bounds" checked={debug.showPanelBounds} onChange={(c) => setDebug({ showPanelBounds: c })} />
-          <DebugToggle label="Onion skin" checked={debug.showOnionSkin} onChange={(c) => setDebug({ showOnionSkin: c })} />
-          {debug.showOnionSkin && (
-            <LabelRow label={`Onion skin alpha ${Math.round(debug.onionSkinOpacity * 100)}%`}>
-              <Slider value={[debug.onionSkinOpacity * 100]} min={0} max={100} step={1} onValueChange={([v]) => setDebug({ onionSkinOpacity: v / 100 })} />
-            </LabelRow>
-          )}
+          <DebugToggle label="Distortion heatmap" checked={debug.showDistortionHeatmap} onChange={(c) => setDebug({ showDistortionHeatmap: c })} />
+          <DebugToggle label="Garment seam guides" checked={debug.showGarmentSeamGuides} onChange={(c) => setDebug({ showGarmentSeamGuides: c })} />
+          <DebugToggle label="Mockup contour edges" checked={debug.showMockupEdges} onChange={(c) => setDebug({ showMockupEdges: c })} />
+          <DebugToggle label="Grid intersections" checked={debug.showGridIntersections} onChange={(c) => setDebug({ showGridIntersections: c })} />
           <DebugToggle label="High-contrast mockup" checked={debug.highContrast} onChange={(c) => setDebug({ highContrast: c })} />
         </Section>
 

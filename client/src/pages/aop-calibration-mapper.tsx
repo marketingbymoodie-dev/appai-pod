@@ -36,12 +36,21 @@ type SourcePanelMeta = {
 type CalibrationListItem = { name: string; updatedAt: string; sizeBytes: number };
 
 const DEFAULT_DEBUG: DebugFlags = {
+  renderPreviewMode: "clipped",
   showMesh: true,
   showMask: false,
   showHandles: true,
   showPanelBounds: true,
   showOnionSkin: false,
   onionSkinOpacity: 0.3,
+  mockupOpacity: 1,
+  warpedPanelOpacity: 0.75,
+  blinkCompare: false,
+  showDistortionHeatmap: true,
+  showGarmentSeamGuides: false,
+  showMockupEdges: false,
+  showGridIntersections: true,
+  showFinalPreview: true,
   showOverlapHeatmap: false,
   highContrast: false,
 };
