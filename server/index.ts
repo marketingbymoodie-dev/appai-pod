@@ -1,4 +1,6 @@
-import "dotenv/config";
+// Side-effect import: load .env in dev BEFORE any module reads process.env.
+// No-op in production (Railway injects env vars directly).
+import "./load-env";
 
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";

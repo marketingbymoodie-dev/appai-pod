@@ -1,3 +1,7 @@
+// Side-effect import: must come FIRST so .env is loaded into process.env
+// before we read DATABASE_URL below. No-op in production (Railway).
+import "./load-env";
+
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "@shared/schema";
