@@ -15,6 +15,7 @@ import { applyPanelTransformToMesh, drawMeshWarp, meshIndex, meshOutline, warpUV
 import type {
   CalibrationState,
   DebugFlags,
+  DetectionImport,
   PanelState,
   PanelTransform,
   UV,
@@ -34,6 +35,7 @@ type MockupCanvasProps = {
   debug: DebugFlags;
   width: number;
   height: number;
+  detections?: Record<string, DetectionImport>;
 };
 
 function loadImage(src: string | null | undefined): Promise<HTMLImageElement | null> {
@@ -390,6 +392,120 @@ function dist(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function DetectionOverlay({
+  panel,
+  detection,
+  debug,
+  zoom,
+}: {
+  panel: PanelState;
+  detection: DetectionImport;
+  debug: DebugFlags;
+  zoom: number;
+}) {
+  const heatCells = useMemo(() => {
+    if (!debug.showDetectionConfidenceHeatmap) return [] as Array<{ points: number[]; fill: string }>;
+    const cols = detection.suggestedMesh.cols;
+    const rows = detection.suggestedMesh.rows;
+    const idxFor = (c: number, r: number) => r * (cols + 1) + c;
+    const pts = detection.suggestedMesh.points;
+    if (pts.length !== (cols + 1) * (rows + 1)) return [];
+    const result: Array<{ points: number[]; fill: string }> = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const tl = pts[idxFor(c, r)];
+        const tr = pts[idxFor(c + 1, r)];
+        const br = pts[idxFor(c + 1, r + 1)];
+        const bl = pts[idxFor(c, r + 1)];
+        const conf = ((tl.confidence ?? 0) + (tr.confidence ?? 0) + (br.confidence ?? 0) + (bl.confidence ?? 0)) / 4;
+        const fill =
+          conf > 0.75
+            ? "rgba(34,197,94,0.32)"
+            : conf > 0.45
+              ? "rgba(234,179,8,0.32)"
+              : conf > 0.2
+                ? "rgba(249,115,22,0.32)"
+                : "rgba(220,38,38,0.32)";
+        result.push({ points: [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y], fill });
+      }
+    }
+    return result;
+  }, [debug.showDetectionConfidenceHeatmap, detection.suggestedMesh]);
+
+  return (
+    <Group listening={false}>
+      {heatCells.map((cell, idx) => (
+        <Line key={`heat-${idx}`} points={cell.points} closed fill={cell.fill} stroke="rgba(15,23,42,0.4)" strokeWidth={0.5 / zoom} />
+      ))}
+      {debug.showDetectionCorrespondences && detection.correspondences.map((corr, idx) => {
+        const current = warpUVThroughMesh(panel.mesh, corr.source.u, corr.source.v);
+        const stroke = corr.confidence > 0.7 ? "rgba(34,197,94,0.85)" : corr.confidence > 0.4 ? "rgba(234,179,8,0.85)" : "rgba(249,115,22,0.85)";
+        return (
+          <Line
+            key={`corr-${idx}`}
+            points={[current.x, current.y, corr.target.x, corr.target.y]}
+            stroke={stroke}
+            strokeWidth={1.4 / zoom}
+            dash={[6 / zoom, 4 / zoom]}
+          />
+        );
+      })}
+      {debug.showDetectionTriangles && detection.detectedTriangles
+        .filter((t) => !t.rejected && t.centroidXY)
+        .map((tri) => {
+          const fill = tri.confidence > 0.7 ? "#22c55e" : tri.confidence > 0.4 ? "#eab308" : "#f97316";
+          return (
+            <Group key={`tri-${tri.id}`}>
+              <Circle
+                x={tri.centroidXY!.x}
+                y={tri.centroidXY!.y}
+                radius={Math.max(2, 5 / zoom)}
+                fill={fill}
+                stroke="#0f172a"
+                strokeWidth={1 / zoom}
+              />
+              <Text
+                x={tri.centroidXY!.x + 6 / zoom}
+                y={tri.centroidXY!.y - 6 / zoom}
+                text={`${tri.id}`}
+                fontSize={10 / zoom}
+                fill="#f8fafc"
+                stroke="#0f172a"
+                strokeWidth={2 / zoom}
+                fillAfterStrokeEnabled
+              />
+            </Group>
+          );
+        })}
+      {debug.showDetectionRejected && detection.detectedTriangles
+        .filter((t) => t.rejected)
+        .map((tri) => {
+          const placeholder = warpUVThroughMesh(panel.mesh, tri.centroidUV.u, tri.centroidUV.v);
+          return (
+            <Group key={`rej-${tri.id}`}>
+              <Circle
+                x={placeholder.x}
+                y={placeholder.y}
+                radius={Math.max(2, 4 / zoom)}
+                fill="rgba(220,38,38,0.6)"
+                stroke="#0f172a"
+                strokeWidth={1 / zoom}
+                dash={[3 / zoom, 2 / zoom]}
+              />
+              <Text
+                x={placeholder.x + 6 / zoom}
+                y={placeholder.y - 6 / zoom}
+                text={`${tri.id}*`}
+                fontSize={9 / zoom}
+                fill="#fecaca"
+              />
+            </Group>
+          );
+        })}
+    </Group>
+  );
+}
+
 function MaskEditor({
   panel,
   view,
@@ -577,7 +693,7 @@ function inversePanelPoint(panel: PanelState, x: number, y: number): { x: number
 }
 
 export default function MockupCanvas(props: MockupCanvasProps) {
-  const { state, actions, view, selectedPanel, setSelectedPanel, mode, debug, width, height } = props;
+  const { state, actions, view, selectedPanel, setSelectedPanel, mode, debug, width, height, detections } = props;
   const stageRef = useRef<Konva.Stage | null>(null);
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -828,6 +944,17 @@ export default function MockupCanvas(props: MockupCanvasProps) {
               height={viewState.mockupSize.height}
               opacity={debug.onionSkinOpacity}
             />
+          </Layer>
+        )}
+
+        {/* Detection overlay (AI-assist) */}
+        {detections && Object.keys(detections).length > 0 && (
+          <Layer listening={false}>
+            {sortedPanels.map((panel) => {
+              const det = detections[panel.panelKey];
+              if (!det) return null;
+              return <DetectionOverlay key={`det-${panel.panelKey}`} panel={panel} detection={det} debug={debug} zoom={scale} />;
+            })}
           </Layer>
         )}
 

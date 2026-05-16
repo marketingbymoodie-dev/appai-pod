@@ -94,6 +94,7 @@ type Action =
   | { type: "set-mesh-density"; view: ViewId; panelKey: string; cols: number; rows: number }
   | { type: "transform-mesh"; view: ViewId; panelKey: string; opts: { dx?: number; dy?: number; scale?: number; rotation?: number; pivot?: { x: number; y: number } } }
   | { type: "set-mask-polygon"; view: ViewId; panelKey: string; polygon: UV[] }
+  | { type: "replace-mesh"; view: ViewId; panelKey: string; mesh: MeshGrid; resetTransform?: boolean }
   | { type: "reorder-panel"; view: ViewId; panelKey: string; newZIndex: number }
   | { type: "set-meta"; meta: Partial<CalibrationState["meta"]> }
   | { type: "set-product-info"; productTypeId?: number | null; blueprintId?: number | null; providerId?: number | null; size?: string | null };
@@ -210,6 +211,17 @@ function reducer(state: CalibrationState, action: Action): CalibrationState {
       const nextPanel: PanelState = { ...panel, mask: { polygon: action.polygon, feather: panel.mask?.feather ?? 0 } };
       return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
     }
+    case "replace-mesh": {
+      const view = state.views[action.view];
+      const panel = view.panels[action.panelKey];
+      if (!panel || panel.locked) return state;
+      const nextPanel: PanelState = {
+        ...panel,
+        mesh: action.mesh,
+        transform: action.resetTransform ? { ...DEFAULT_PANEL_TRANSFORM } : panel.transform,
+      };
+      return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
+    }
     case "reorder-panel": {
       const view = state.views[action.view];
       const panel = view.panels[action.panelKey];
@@ -257,6 +269,8 @@ export function useCalibration() {
       transformMesh: (view: ViewId, panelKey: string, opts: { dx?: number; dy?: number; scale?: number; rotation?: number; pivot?: { x: number; y: number } }) =>
         dispatch({ type: "transform-mesh", view, panelKey, opts }),
       setMaskPolygon: (view: ViewId, panelKey: string, polygon: UV[]) => dispatch({ type: "set-mask-polygon", view, panelKey, polygon }),
+      replaceMesh: (view: ViewId, panelKey: string, mesh: MeshGrid, resetTransform = true) =>
+        dispatch({ type: "replace-mesh", view, panelKey, mesh, resetTransform }),
       reorderPanel: (view: ViewId, panelKey: string, newZIndex: number) => dispatch({ type: "reorder-panel", view, panelKey, newZIndex }),
       setMeta: (meta: Partial<CalibrationState["meta"]>) => dispatch({ type: "set-meta", meta }),
       setProductInfo: (info: { productTypeId?: number | null; blueprintId?: number | null; providerId?: number | null; size?: string | null }) =>

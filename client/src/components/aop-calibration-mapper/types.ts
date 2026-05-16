@@ -91,6 +91,65 @@ export type DebugFlags = {
   showFinalPreview: boolean;
   showOverlapHeatmap: boolean;
   highContrast: boolean;
+  showDetectionTriangles: boolean;
+  showDetectionCorrespondences: boolean;
+  showDetectionConfidenceHeatmap: boolean;
+  showDetectionRejected: boolean;
+};
+
+/**
+ * AI-assisted calibration detection import (matches the JSON emitted by
+ * scripts/detect-aop-triangle-calibration.ts).
+ */
+export type DetectedTriangle = {
+  id: number;
+  type?: "upper" | "lower";
+  cell?: { row: number; col: number };
+  centroidUV: UV;
+  expectedColor: string;
+  observedColor?: string;
+  centroidXY: { x: number; y: number } | null;
+  pixelCount: number;
+  bboxXY?: { x: number; y: number; width: number; height: number } | null;
+  meanLabDistance?: number;
+  spread?: number;
+  confidence: number;
+  rejected: boolean;
+  reason?: string;
+};
+
+export type DetectionCorrespondence = {
+  triangleId: number;
+  source: { u: number; v: number; x: number; y: number };
+  target: { x: number; y: number };
+  confidence: number;
+};
+
+export type SuggestedMeshPoint = {
+  u: number;
+  v: number;
+  x: number;
+  y: number;
+  confidence?: number;
+};
+
+export type DetectionImport = {
+  panelName: string;
+  manifestVersion?: string;
+  detectedAt?: string;
+  mockupSize: { width: number; height: number };
+  analysisSize?: { width: number; height: number };
+  panelGrid: { cols: number; rows: number };
+  detectedTriangles: DetectedTriangle[];
+  correspondences: DetectionCorrespondence[];
+  suggestedMesh: { rows: number; cols: number; points: SuggestedMeshPoint[] };
+  suggestedMask?: UV[];
+  stats?: {
+    totalTriangles: number;
+    accepted: number;
+    rejected: number;
+    averageConfidence: number;
+  };
 };
 
 export const DEFAULT_PANEL_KEYS: string[] = [
