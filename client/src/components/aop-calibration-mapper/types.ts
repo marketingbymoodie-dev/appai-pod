@@ -29,12 +29,21 @@ export type MaskState = {
   feather: number;
 } | null;
 
+export type PanelTransform = {
+  x: number;
+  y: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+};
+
 export type PanelState = {
   panelKey: string;
   visible: boolean;
   locked: boolean;
   opacity: number;
   zIndex: number;
+  transform: PanelTransform;
   artworkSrc: string | null;
   sourceSize: { width: number; height: number } | null;
   mesh: MeshGrid;

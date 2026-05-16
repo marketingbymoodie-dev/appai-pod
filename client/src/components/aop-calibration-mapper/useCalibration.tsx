@@ -10,6 +10,7 @@ import {
   type CalibrationState,
   type MeshGrid,
   type PanelState,
+  type PanelTransform,
   type UV,
   type ViewId,
   type ViewState,
@@ -19,6 +20,14 @@ import {
 function emptyView(): ViewState {
   return { mockupSrc: null, mockupSize: null, panels: {}, panelOrder: [] };
 }
+
+const DEFAULT_PANEL_TRANSFORM: PanelTransform = {
+  x: 0,
+  y: 0,
+  rotation: 0,
+  scaleX: 1,
+  scaleY: 1,
+};
 
 export function emptyCalibration(): CalibrationState {
   return {
@@ -44,11 +53,31 @@ function defaultPanelState(panelKey: string, mesh: MeshGrid, sourceSize: { width
     locked: false,
     opacity: 0.65,
     zIndex,
+    transform: { ...DEFAULT_PANEL_TRANSFORM },
     artworkSrc,
     sourceSize,
     mesh,
     mask: { polygon: defaultMaskPolygon(), feather: 0 },
   };
+}
+
+function normalizePanel(panel: PanelState): PanelState {
+  return {
+    ...panel,
+    transform: { ...DEFAULT_PANEL_TRANSFORM, ...(panel.transform ?? {}) },
+  };
+}
+
+function normalizeCalibration(calibration: CalibrationState): CalibrationState {
+  const views = { ...calibration.views };
+  for (const viewId of Object.keys(views) as ViewId[]) {
+    const view = views[viewId];
+    const panels = Object.fromEntries(
+      Object.entries(view.panels).map(([key, panel]) => [key, normalizePanel(panel)]),
+    );
+    views[viewId] = { ...view, panels };
+  }
+  return { ...calibration, views };
 }
 
 type Action =
@@ -57,6 +86,7 @@ type Action =
   | { type: "add-panel"; view: ViewId; panelKey: string; sourceSize: { width: number; height: number }; artworkSrc: string }
   | { type: "remove-panel"; view: ViewId; panelKey: string }
   | { type: "patch-panel"; view: ViewId; panelKey: string; patch: Partial<PanelState> }
+  | { type: "set-panel-transform"; view: ViewId; panelKey: string; transform: Partial<PanelTransform> }
   | { type: "move-mesh-point"; view: ViewId; panelKey: string; index: number; x: number; y: number }
   | { type: "set-mesh-density"; view: ViewId; panelKey: string; cols: number; rows: number }
   | { type: "transform-mesh"; view: ViewId; panelKey: string; opts: { dx?: number; dy?: number; scale?: number; rotation?: number; pivot?: { x: number; y: number } } }
@@ -72,7 +102,7 @@ function bump(state: CalibrationState): CalibrationState {
 function reducer(state: CalibrationState, action: Action): CalibrationState {
   switch (action.type) {
     case "load":
-      return action.calibration;
+      return normalizeCalibration(action.calibration);
     case "set-mockup": {
       const view = state.views[action.view];
       const next: ViewState = { ...view, mockupSrc: action.src, mockupSize: action.size };
@@ -107,6 +137,16 @@ function reducer(state: CalibrationState, action: Action): CalibrationState {
       if (!panel) return state;
       if (panel.locked && !("locked" in action.patch) && !("visible" in action.patch) && !("opacity" in action.patch)) return state;
       const nextPanel: PanelState = { ...panel, ...action.patch };
+      return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
+    }
+    case "set-panel-transform": {
+      const view = state.views[action.view];
+      const panel = view.panels[action.panelKey];
+      if (!panel || panel.locked) return state;
+      const nextPanel: PanelState = {
+        ...panel,
+        transform: { ...DEFAULT_PANEL_TRANSFORM, ...panel.transform, ...action.transform },
+      };
       return bump({ ...state, views: { ...state.views, [action.view]: { ...view, panels: { ...view.panels, [action.panelKey]: nextPanel } } } });
     }
     case "move-mesh-point": {
@@ -177,6 +217,8 @@ export function useCalibration() {
         dispatch({ type: "add-panel", view, panelKey, sourceSize, artworkSrc }),
       removePanel: (view: ViewId, panelKey: string) => dispatch({ type: "remove-panel", view, panelKey }),
       patchPanel: (view: ViewId, panelKey: string, patch: Partial<PanelState>) => dispatch({ type: "patch-panel", view, panelKey, patch }),
+      setPanelTransform: (view: ViewId, panelKey: string, transform: Partial<PanelTransform>) =>
+        dispatch({ type: "set-panel-transform", view, panelKey, transform }),
       moveMeshPoint: (view: ViewId, panelKey: string, index: number, x: number, y: number) =>
         dispatch({ type: "move-mesh-point", view, panelKey, index, x, y }),
       setMeshDensity: (view: ViewId, panelKey: string, cols: number, rows: number) =>
