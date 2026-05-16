@@ -1,4 +1,4 @@
-import type { MeshGrid, MeshPoint, UV } from "./types";
+import type { MeshGrid, MeshPoint, PanelTransform, UV } from "./types";
 
 /**
  * Build a default mesh covering a rectangle on the mockup.
@@ -124,6 +124,27 @@ export function transformMesh(
       const rx = lx * cos - ly * sin;
       const ry = lx * sin + ly * cos;
       return { u: p.u, v: p.v, x: cx + rx + dx, y: cy + ry + dy };
+    }),
+  };
+}
+
+export function applyPanelTransformToMesh(mesh: MeshGrid, transform: PanelTransform | null | undefined): MeshGrid {
+  if (!transform) return mesh;
+  const { x = 0, y = 0, rotation = 0, scaleX = 1, scaleY = 1 } = transform;
+  if (x === 0 && y === 0 && rotation === 0 && scaleX === 1 && scaleY === 1) return mesh;
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  return {
+    cols: mesh.cols,
+    rows: mesh.rows,
+    points: mesh.points.map((p) => {
+      const sx = p.x * scaleX;
+      const sy = p.y * scaleY;
+      return {
+        ...p,
+        x: sx * cos - sy * sin + x,
+        y: sx * sin + sy * cos + y,
+      };
     }),
   };
 }

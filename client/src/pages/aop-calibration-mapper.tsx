@@ -7,7 +7,7 @@ import { Upload } from "lucide-react";
 import MockupCanvas from "@/components/aop-calibration-mapper/MockupCanvas";
 import PanelSidebar from "@/components/aop-calibration-mapper/PanelSidebar";
 import PropertiesPanel from "@/components/aop-calibration-mapper/PropertiesPanel";
-import { drawMeshWarp } from "@/components/aop-calibration-mapper/meshUtils";
+import { applyPanelTransformToMesh, drawMeshWarp } from "@/components/aop-calibration-mapper/meshUtils";
 import {
   fileToImage,
   loadImageFromUrl,
@@ -229,7 +229,7 @@ export default function AopCalibrationMapperPage() {
       if (!panel.visible || !panel.artworkSrc) continue;
       const meta = await loadImageFromUrl(panel.artworkSrc);
       if (!meta) continue;
-      drawMeshWarp(ctx, meta.image, panel.sourceSize ?? { width: meta.width, height: meta.height }, panel.mesh, {
+      drawMeshWarp(ctx, meta.image, panel.sourceSize ?? { width: meta.width, height: meta.height }, applyPanelTransformToMesh(panel.mesh, panel.transform), {
         opacity: panel.opacity,
         mask: panel.mask?.polygon ?? null,
       });

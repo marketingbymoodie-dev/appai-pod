@@ -11,11 +11,12 @@ import {
   Text,
 } from "react-konva";
 import Konva from "konva";
-import { drawMeshWarp, meshIndex, warpUVThroughMesh } from "./meshUtils";
+import { drawMeshWarp, meshIndex, meshOutline, warpUVThroughMesh } from "./meshUtils";
 import type {
   CalibrationState,
   DebugFlags,
   PanelState,
+  PanelTransform,
   UV,
   ViewId,
 } from "./types";
@@ -117,6 +118,18 @@ function PanelBoundsOverlay({ panel, color }: { panel: PanelState; color: string
   );
 }
 
+function PanelHitArea({ panel }: { panel: PanelState }) {
+  return (
+    <Line
+      points={meshOutline(panel.mesh).flatMap((p) => [p.x, p.y])}
+      closed
+      fill="rgba(255,255,255,0.01)"
+      strokeEnabled={false}
+      listening
+    />
+  );
+}
+
 function MeshHandles({
   panel,
   view,
@@ -124,6 +137,7 @@ function MeshHandles({
   selected,
   actions,
   zoom,
+  editable,
 }: {
   panel: PanelState;
   view: ViewId;
@@ -131,6 +145,7 @@ function MeshHandles({
   selected: boolean;
   actions: CalibrationActions;
   zoom: number;
+  editable: boolean;
 }) {
   const cols = panel.mesh.cols;
   const rows = panel.mesh.rows;
@@ -158,7 +173,7 @@ function MeshHandles({
       {meshLines.map((pts, i) => (
         <Line key={i} listening={false} points={pts} stroke={selected ? "#0ea5e9" : "#64748b"} strokeWidth={1 / zoom} opacity={0.7} />
       ))}
-      {selected && !panel.locked &&
+      {selected && editable && !panel.locked &&
         panel.mesh.points.map((p, i) => {
           const r = Math.max(0, Math.floor(i / (cols + 1)));
           const c = i - r * (cols + 1);
@@ -285,11 +300,32 @@ function mockupToUV(panel: PanelState, x: number, y: number): UV {
   return { u: Math.min(1, Math.max(0, best.u)), v: Math.min(1, Math.max(0, best.v)) };
 }
 
+const IDENTITY_TRANSFORM: PanelTransform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 };
+
+function panelTransform(panel: PanelState): PanelTransform {
+  return { ...IDENTITY_TRANSFORM, ...(panel.transform ?? {}) };
+}
+
+function inversePanelPoint(panel: PanelState, x: number, y: number): { x: number; y: number } {
+  const t = panelTransform(panel);
+  const dx = x - t.x;
+  const dy = y - t.y;
+  const cos = Math.cos(-t.rotation);
+  const sin = Math.sin(-t.rotation);
+  const rx = dx * cos - dy * sin;
+  const ry = dx * sin + dy * cos;
+  return {
+    x: rx / (t.scaleX || 1),
+    y: ry / (t.scaleY || 1),
+  };
+}
+
 export default function MockupCanvas(props: MockupCanvasProps) {
   const { state, actions, view, selectedPanel, setSelectedPanel, mode, debug, width, height } = props;
   const stageRef = useRef<Konva.Stage | null>(null);
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [draggingPanelKey, setDraggingPanelKey] = useState<string | null>(null);
 
   const viewState = state.views[view];
   const mockupImage = useLoadedImage(viewState.mockupSrc);
@@ -342,7 +378,8 @@ export default function MockupCanvas(props: MockupCanvasProps) {
         const py = (pointer.y - position.y) / scale;
         const panel = viewState.panels[selectedPanel];
         if (!panel) return;
-        const uv = mockupToUV(panel, px, py);
+        const local = inversePanelPoint(panel, px, py);
+        const uv = mockupToUV(panel, local.x, local.y);
         const polygon = panel.mask?.polygon ?? [];
         actions.setMaskPolygon(view, selectedPanel, [...polygon, uv]);
         return;
@@ -358,6 +395,11 @@ export default function MockupCanvas(props: MockupCanvasProps) {
       .sort((a, b) => a.zIndex - b.zIndex);
   }, [viewState.panels, viewState.panelOrder]);
 
+  const setCursor = useCallback((cursor: string) => {
+    const container = stageRef.current?.container();
+    if (container) container.style.cursor = cursor;
+  }, []);
+
   return (
     <div className="relative h-full w-full bg-slate-950 overflow-hidden" data-testid="aop-mapper-canvas">
       <Stage
@@ -370,7 +412,7 @@ export default function MockupCanvas(props: MockupCanvasProps) {
         scaleY={scale}
         x={position.x}
         y={position.y}
-        draggable={mode === "select"}
+        draggable={mode === "select" && draggingPanelKey === null}
         onDragEnd={(e) => {
           if (e.target === e.target.getStage()) setPosition({ x: e.target.x(), y: e.target.y() });
         }}
@@ -416,14 +458,47 @@ export default function MockupCanvas(props: MockupCanvasProps) {
             if (!panel.visible) return null;
             const img = panelImageMap[panel.panelKey] ?? null;
             const isSelected = panel.panelKey === selectedPanel;
+            const transform = panelTransform(panel);
+            const canDragPanel = mode === "select" && isSelected && !panel.locked;
             return (
               <Group
                 key={panel.panelKey}
+                x={transform.x}
+                y={transform.y}
+                rotation={transform.rotation * (180 / Math.PI)}
+                scaleX={transform.scaleX}
+                scaleY={transform.scaleY}
+                draggable={canDragPanel}
                 onMouseDown={(e) => {
                   e.cancelBubble = true;
                   setSelectedPanel(panel.panelKey);
                 }}
+                onMouseEnter={() => {
+                  if (canDragPanel) setCursor("grab");
+                }}
+                onMouseLeave={() => {
+                  if (draggingPanelKey !== panel.panelKey) setCursor("default");
+                }}
+                onDragStart={(e) => {
+                  e.cancelBubble = true;
+                  setSelectedPanel(panel.panelKey);
+                  setDraggingPanelKey(panel.panelKey);
+                  setCursor("grabbing");
+                }}
+                onDragMove={(e) => {
+                  e.cancelBubble = true;
+                  const node = e.currentTarget;
+                  actions.setPanelTransform(view, panel.panelKey, { x: node.x(), y: node.y() });
+                }}
+                onDragEnd={(e) => {
+                  e.cancelBubble = true;
+                  const node = e.currentTarget;
+                  actions.setPanelTransform(view, panel.panelKey, { x: node.x(), y: node.y() });
+                  setDraggingPanelKey(null);
+                  setCursor(canDragPanel ? "grab" : "default");
+                }}
               >
+                {mode === "select" && <PanelHitArea panel={panel} />}
                 <PanelMesh panel={panel} image={img} highlighted={isSelected} />
                 {debug.showPanelBounds && (
                   <PanelBoundsOverlay panel={panel} color={isSelected ? "#f97316" : "#94a3b8"} />
@@ -452,10 +527,18 @@ export default function MockupCanvas(props: MockupCanvasProps) {
           {sortedPanels.map((panel) => {
             if (!panel.visible) return null;
             const isSelected = panel.panelKey === selectedPanel;
+            const transform = panelTransform(panel);
             return (
-              <Group key={`handles-${panel.panelKey}`}>
+              <Group
+                key={`handles-${panel.panelKey}`}
+                x={transform.x}
+                y={transform.y}
+                rotation={transform.rotation * (180 / Math.PI)}
+                scaleX={transform.scaleX}
+                scaleY={transform.scaleY}
+              >
                 {(debug.showMesh || (mode === "mesh" && isSelected)) && (
-                  <MeshHandles panel={panel} view={view} panelKey={panel.panelKey} selected={isSelected} actions={actions} zoom={scale} />
+                  <MeshHandles panel={panel} view={view} panelKey={panel.panelKey} selected={isSelected} actions={actions} zoom={scale} editable={mode === "mesh" && isSelected} />
                 )}
                 {(debug.showMask || (mode === "mask" && isSelected)) && panel.mask && (
                   <MaskEditor panel={panel} view={view} panelKey={panel.panelKey} actions={actions} zoom={scale} />
@@ -485,6 +568,10 @@ export default function MockupCanvas(props: MockupCanvasProps) {
 
 function usePanelImages(viewState: { panels: Record<string, PanelState> }): Record<string, HTMLImageElement | null> {
   const [map, setMap] = useState<Record<string, HTMLImageElement | null>>({});
+  const artworkKey = useMemo(
+    () => Object.values(viewState.panels).map((panel) => `${panel.panelKey}:${panel.artworkSrc ?? ""}`).sort().join("|"),
+    [viewState.panels],
+  );
   useEffect(() => {
     let cancelled = false;
     const tasks = Object.values(viewState.panels).map(async (panel) => {
@@ -501,6 +588,6 @@ function usePanelImages(viewState: { panels: Record<string, PanelState> }): Reco
     return () => {
       cancelled = true;
     };
-  }, [viewState.panels]);
+  }, [artworkKey]);
   return map;
 }
