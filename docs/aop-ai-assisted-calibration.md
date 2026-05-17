@@ -5,7 +5,7 @@ suggestion for the AOP Calibration Mapper without using GPT/SAM/RAFT or
 any heavy ML model. It is intentionally simple and deterministic so we
 can iterate on the harder pipeline later from a known baseline.
 
-The pipeline uses three pieces:
+The pipeline uses four pieces:
 
 1. A **calibration texture generator** that paints a per-panel triangulated
    target with unique high-saturation colors and printed triangle IDs:
@@ -20,10 +20,20 @@ The pipeline uses three pieces:
    - script: `scripts/detect-aop-triangle-calibration.ts`
    - npm: `npm run aop:triangle:detect`
 
-3. The **AOP Calibration Mapper UI** (`/aop-calibration-mapper`) which
-   accepts a detection JSON and applies the suggested mesh and mask to the
-   currently-selected panel. The same overlays are still available for
-   manual mesh/mask editing on top of the suggestion.
+3. A **panel calibration ingestion CLI** that consumes the detection JSON
+   plus the original flat panel PNG and produces reusable per-panel
+   calibration data: piecewise-affine triangle mappings, a solved mesh,
+   the outer-boundary mask polygon, quality diagnostics, and a
+   reconstruction PNG that warps the source panel through the saved
+   mappings:
+
+   - script: `scripts/build-aop-panel-calibration.ts`
+   - npm: `npm run aop:panel:calibrate`
+
+4. The **AOP Calibration Mapper UI** (`/aop-calibration-mapper`) which
+   accepts both detection JSON (initial guess) and calibration JSON
+   (final piecewise-affine mapping). The same overlays are still
+   available for manual mesh/mask editing on top of the suggestion.
 
 > **Important:** This is *assisted* calibration, not fully automatic
 > calibration. Always treat the output of step 2/3 as a starting point;
@@ -126,12 +136,75 @@ The pipeline uses three pieces:
      triangle the detector dropped. Use them to spot occluded or warped
      regions where you might want to add manual correction.
 
-7. **Save calibration.**
+7. **(Optional) Build per-panel calibration JSON.**
+
+   Once the detection looks reasonable you can build a reusable
+   piecewise-affine calibration with one CLI invocation:
+
+   ```bash
+   npm run aop:panel:calibrate -- \
+     --panel back \
+     --mockup tmp/aop-triangle-calibration/mockups/back.png
+   # optional flags:
+   #   --source <path>      # default tmp/.../panels/<panel>.png
+   #   --detection <path>   # reuse a pre-existing detection JSON
+   #   --skipReconstruction
+   #   --skipDebug
+   ```
+
+   The CLI runs (or imports) detection, solves a confidence-weighted
+   Gauss-Seidel mesh that pins each detected triangle's centroid to its
+   measured XY in the mockup, traces the outer boundary of detected cells
+   for the mask polygon, and emits:
+
+   - `tmp/aop-triangle-calibration/calibrations/<panel>.json` — the full
+     calibration record (per-triangle src/dst vertices, solved mesh,
+     mask polygon, quality diagnostics).
+   - `tmp/aop-triangle-calibration/reconstructions/<panel>.png` — the
+     source panel warped through the saved mappings onto a transparent
+     canvas at mockup size.
+   - `tmp/aop-triangle-calibration/debug/<panel>-calibration-debug.png`
+     — the Printify mockup composited with the reconstruction overlay
+     plus mask boundary, triangle confidence markers, and dashed outlines
+     around low-confidence triangles.
+
+   The same calibration math is exposed inside the mapper: select a
+   panel, import a detection, then click **Build from detection** in the
+   *Panel calibration (piecewise affine)* section to apply the same
+   mesh + mask without leaving the page.
+
+8. **Manually correct.**
+
+   Use the existing mesh / mask edit modes to refine. Detection overlays
+   help you do this:
+
+   - **Triangles** — colored dots at each detected centroid (green > 70%
+     confidence, yellow > 40%, orange below).
+   - **Lines** — dashed segments from the *current* warped UV centroid
+     to the *detected* mockup XY. Short = mesh agrees with detection;
+     long = mesh needs a nudge.
+   - **Heatmap** — fill each suggested mesh cell with a confidence
+     gradient (green → red).
+   - **Rejects** — red dashed markers at the warped UV position of every
+     triangle the detector dropped. Use them to spot occluded or warped
+     regions where you might want to add manual correction.
+   - **Mask boundary** — the calibration's traced outer boundary in
+     dashed cyan.
+   - **Show reconstruction only** — hides the Printify mockup and shows
+     just the warped panel so you can confirm shape coverage in
+     isolation.
+   - **Diff vs mockup** — flips the panel preview into a `difference`
+     blend so misalignments stand out as bright pixels.
+
+9. **Save calibration.**
 
    When you're satisfied, save with **Save** in the Properties panel.
    Saved calibrations live in `tmp/aop-calibrations/<label>.json`. The
    detection itself is *not* saved into the calibration JSON — it is a
-   per-session hint only, so calibrations stay portable.
+   per-session hint only, so calibrations stay portable. The
+   piecewise-affine calibration JSON (step 7) is a separate, portable
+   artifact that lives next to the run artifacts and can be replayed
+   against any artwork panel for the same garment view.
 
 ---
 
@@ -223,6 +296,69 @@ The pipeline uses three pieces:
 ```
 
 ---
+
+## Calibration schema (v1)
+
+```jsonc
+{
+  "version": "aop-panel-calibration/v1",
+  "panelName": "<panelKey>",
+  "manifestVersion": "aop-triangle-calibration/v1",
+  "detectedAt": "<ISO-8601>",
+  "builtAt": "<ISO-8601>",
+  "sourceSize": { "width": <int>, "height": <int> },
+  "mockupSize": { "width": <int>, "height": <int> },
+  "panelGrid": { "cols": <int>, "rows": <int> },
+  "triangles": [
+    {
+      "triangleId": <int>,
+      "type": "upper" | "lower",
+      "cell": { "row": <int>, "col": <int> },
+      "vertexIndices": [<int>, <int>, <int>],
+      "srcVertices": [[<px>,<px>], [<px>,<px>], [<px>,<px>]],
+      "dstVertices": [[<px>,<px>], [<px>,<px>], [<px>,<px>]],
+      "confidence": <0..1>
+    }
+  ],
+  "mesh": {
+    "rows": <int>,
+    "cols": <int>,
+    "points": [
+      { "u": <0..1>, "v": <0..1>, "x": <px>, "y": <px>,
+        "confidence": <0..1>, "constraintCount": <int> }
+    ]
+  },
+  "mask": {
+    "polygon":   [[<px>,<px>], ...],
+    "polygonUV": [[<0..1>,<0..1>], ...],
+    "source": "outer-boundary-of-detected-triangles" | "no-detection"
+  },
+  "quality": {
+    "detectedTriangleCount": <int>,
+    "totalTriangleCount": <int>,
+    "coveragePercent": <0..100>,
+    "avgConfidence": <0..1>,
+    "meshUnconstrainedVertexCount": <int>,
+    "meanCentroidErrorPx": <px>,
+    "maxCentroidErrorPx": <px>,
+    "missingTriangleIds": [<int>, ...],
+    "lowConfidenceTriangleIds": [<int>, ...]
+  }
+}
+```
+
+`srcVertices` are pixel coordinates inside the source panel image
+(`sourceSize`); `dstVertices` are pixel coordinates inside the mockup
+image (`mockupSize`). The triangle list is the **reusable** mapping —
+warping `srcVertices → dstVertices` for every triangle and compositing
+them produces the reconstruction PNG, and the same math will warp any
+customer artwork panel into the same garment shape.
+
+`mesh.points` is the solved per-vertex mesh in the same mockup pixel
+space — use it for the `MeshGrid` of a mapper panel. `mask.polygon` is
+the outer boundary of detected cells in mockup pixels;
+`mask.polygonUV` is the same polygon expressed in source UV space and
+is what the mapper applies as a clipping mask after import.
 
 ## Tuning notes
 
