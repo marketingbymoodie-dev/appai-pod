@@ -13,6 +13,7 @@ import {
 import Konva from "konva";
 import { applyPanelTransformToMesh, drawMeshWarp, meshIndex, meshOutline, warpUVThroughMesh } from "./meshUtils";
 import type {
+  CalibrationImport,
   CalibrationState,
   DebugFlags,
   DetectionImport,
@@ -36,6 +37,7 @@ type MockupCanvasProps = {
   width: number;
   height: number;
   detections?: Record<string, DetectionImport>;
+  calibrations?: Record<string, CalibrationImport>;
 };
 
 function loadImage(src: string | null | undefined): Promise<HTMLImageElement | null> {
@@ -506,6 +508,37 @@ function DetectionOverlay({
   );
 }
 
+function CalibrationMaskOverlay({
+  calibration,
+  zoom,
+}: {
+  calibration: CalibrationImport;
+  zoom: number;
+}) {
+  if (!calibration.mask?.polygon?.length || calibration.mask.polygon.length < 3) return null;
+  const points = calibration.mask.polygon.flatMap(([x, y]) => [x, y]);
+  return (
+    <Group listening={false}>
+      <Line
+        points={points}
+        closed
+        fill="rgba(56,189,248,0.10)"
+        stroke="#38bdf8"
+        strokeWidth={2 / zoom}
+        dash={[8 / zoom, 5 / zoom]}
+      />
+      <Text
+        x={calibration.mask.polygon[0][0]}
+        y={calibration.mask.polygon[0][1] - 22 / zoom}
+        text={`calibration mask · ${calibration.mask.polygon.length} pts (${calibration.mask.source})`}
+        fontSize={11 / zoom}
+        fill="#7dd3fc"
+        listening={false}
+      />
+    </Group>
+  );
+}
+
 function MaskEditor({
   panel,
   view,
@@ -693,7 +726,19 @@ function inversePanelPoint(panel: PanelState, x: number, y: number): { x: number
 }
 
 export default function MockupCanvas(props: MockupCanvasProps) {
-  const { state, actions, view, selectedPanel, setSelectedPanel, mode, debug, width, height, detections } = props;
+  const {
+    state,
+    actions,
+    view,
+    selectedPanel,
+    setSelectedPanel,
+    mode,
+    debug,
+    width,
+    height,
+    detections,
+    calibrations,
+  } = props;
   const stageRef = useRef<Konva.Stage | null>(null);
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -954,6 +999,17 @@ export default function MockupCanvas(props: MockupCanvasProps) {
               const det = detections[panel.panelKey];
               if (!det) return null;
               return <DetectionOverlay key={`det-${panel.panelKey}`} panel={panel} detection={det} debug={debug} zoom={scale} />;
+            })}
+          </Layer>
+        )}
+
+        {/* Calibration mask boundary overlay */}
+        {debug.showCalibrationMaskBoundary && calibrations && Object.keys(calibrations).length > 0 && (
+          <Layer listening={false}>
+            {sortedPanels.map((panel) => {
+              const cal = calibrations[panel.panelKey];
+              if (!cal?.mask?.polygon?.length) return null;
+              return <CalibrationMaskOverlay key={`cal-${panel.panelKey}`} calibration={cal} zoom={scale} />;
             })}
           </Layer>
         )}

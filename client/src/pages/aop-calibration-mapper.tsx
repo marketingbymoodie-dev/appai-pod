@@ -17,12 +17,17 @@ import {
   useCalibration,
 } from "@/components/aop-calibration-mapper/useCalibration";
 import type {
+  CalibrationImport,
   CalibrationState,
   DebugFlags,
   DetectionImport,
   PanelState,
   ViewId,
 } from "@/components/aop-calibration-mapper/types";
+import {
+  buildCalibrationFromDetection,
+  validateCalibrationImport,
+} from "@/components/aop-calibration-mapper/calibrationMath";
 import { buildAppUrl } from "@/lib/urlBase";
 
 type SourcePanelMeta = {
@@ -58,6 +63,9 @@ const DEFAULT_DEBUG: DebugFlags = {
   showDetectionCorrespondences: true,
   showDetectionConfidenceHeatmap: false,
   showDetectionRejected: true,
+  showCalibrationMaskBoundary: true,
+  showCalibrationDifference: false,
+  reconstructionOnlyPreview: false,
 };
 
 export default function AopCalibrationMapperPage() {
@@ -79,6 +87,7 @@ export default function AopCalibrationMapperPage() {
   const [savedCalibrations, setSavedCalibrations] = useState<CalibrationListItem[]>([]);
   const [calibrationsDir, setCalibrationsDir] = useState<string>("tmp/aop-calibrations");
   const [panelDetections, setPanelDetections] = useState<Record<string, DetectionImport>>({});
+  const [panelCalibrations, setPanelCalibrations] = useState<Record<string, CalibrationImport>>({});
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
@@ -269,6 +278,104 @@ export default function AopCalibrationMapperPage() {
     });
   }
 
+  function applyCalibrationToPanel(targetView: ViewId, panelKey: string, calibration: CalibrationImport) {
+    const panel = state.views[targetView].panels[panelKey];
+    if (!panel) {
+      toast({ title: "Panel not found", description: `${panelKey} on ${targetView}`, variant: "destructive" });
+      return;
+    }
+    const cols = calibration.mesh.cols;
+    const rows = calibration.mesh.rows;
+    if (calibration.mesh.points.length !== (cols + 1) * (rows + 1)) {
+      toast({
+        title: "Mesh size mismatch",
+        description: `Expected ${(cols + 1) * (rows + 1)} mesh points, got ${calibration.mesh.points.length}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    actions.replaceMesh(
+      targetView,
+      panelKey,
+      {
+        cols,
+        rows,
+        points: calibration.mesh.points.map((p) => ({ u: p.u, v: p.v, x: p.x, y: p.y })),
+      },
+      true,
+    );
+
+    let maskUV: Array<{ u: number; v: number }> | null = null;
+    if (calibration.mask.polygonUV && calibration.mask.polygonUV.length >= 3) {
+      maskUV = calibration.mask.polygonUV.map(([u, v]) => ({ u, v }));
+    } else if (calibration.mask.polygon && calibration.mask.polygon.length >= 3) {
+      // Fallback: derive UV from mockup-XY polygon by walking the mesh perimeter
+      // (for backwards compatibility with hand-edited calibration files).
+      maskUV = calibration.mask.polygon.map(([x, y]) => {
+        const W = calibration.mockupSize.width || 1;
+        const H = calibration.mockupSize.height || 1;
+        return { u: x / W, v: y / H };
+      });
+    }
+    if (maskUV) actions.setMaskPolygon(targetView, panelKey, maskUV);
+
+    setPanelCalibrations((prev) => ({ ...prev, [panelKey]: calibration }));
+    toast({
+      title: "Calibration applied",
+      description: `${panelKey}: ${calibration.quality.detectedTriangleCount}/${calibration.quality.totalTriangleCount ?? "?"} triangles · ${calibration.quality.coveragePercent}% coverage`,
+    });
+  }
+
+  function buildCalibrationFromDetectionAction(panelKey: string | null) {
+    if (!panelKey) {
+      toast({ title: "Select a panel first", variant: "destructive" });
+      return;
+    }
+    const detection = panelDetections[panelKey];
+    if (!detection) {
+      toast({
+        title: "No detection imported",
+        description: "Run 'Auto-suggest mesh' to import a detection JSON for this panel first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const targetView: ViewId = state.views.front.panels[panelKey] ? "front" : state.views.back.panels[panelKey] ? "back" : view;
+    const panel = state.views[targetView].panels[panelKey];
+    if (!panel) {
+      toast({ title: "Panel not found", description: panelKey, variant: "destructive" });
+      return;
+    }
+    const sourceSize = panel.sourceSize ?? { width: detection.mockupSize.width, height: detection.mockupSize.height };
+    const calibration = buildCalibrationFromDetection(detection, sourceSize);
+    applyCalibrationToPanel(targetView, panelKey, calibration);
+  }
+
+  async function importCalibrationFile(panelKey: string | null, file: File) {
+    if (!panelKey) {
+      toast({ title: "Select a panel first", variant: "destructive" });
+      return;
+    }
+    let calibration: CalibrationImport;
+    try {
+      const raw = JSON.parse(await file.text());
+      calibration = validateCalibrationImport(raw);
+    } catch (err) {
+      toast({ title: "Invalid calibration JSON", description: (err as Error).message, variant: "destructive" });
+      return;
+    }
+    const targetView: ViewId = state.views.front.panels[panelKey] ? "front" : state.views.back.panels[panelKey] ? "back" : view;
+    applyCalibrationToPanel(targetView, panelKey, calibration);
+  }
+
+  function clearCalibrationFor(panelKey: string) {
+    setPanelCalibrations((prev) => {
+      const next = { ...prev };
+      delete next[panelKey];
+      return next;
+    });
+  }
+
   function onExportJson() {
     const payload = buildSerializableState();
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -415,6 +522,7 @@ export default function AopCalibrationMapperPage() {
             width={canvasSize.width}
             height={canvasSize.height}
             detections={panelDetections}
+            calibrations={panelCalibrations}
           />
         </div>
 
@@ -437,6 +545,10 @@ export default function AopCalibrationMapperPage() {
           panelDetections={panelDetections}
           onImportDetection={(file) => importDetectionFile(selectedPanel, file)}
           onClearDetection={() => selectedPanel && clearDetectionFor(selectedPanel)}
+          panelCalibrations={panelCalibrations}
+          onBuildCalibration={() => buildCalibrationFromDetectionAction(selectedPanel)}
+          onImportCalibration={(file) => importCalibrationFile(selectedPanel, file)}
+          onClearCalibration={() => selectedPanel && clearCalibrationFor(selectedPanel)}
         />
       </div>
     </div>
