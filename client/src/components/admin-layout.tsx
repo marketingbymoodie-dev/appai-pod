@@ -35,6 +35,7 @@ import {
   TrendingUp,
   Globe,
   Crosshair,
+  Shirt,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 
@@ -58,6 +59,7 @@ const menuItems = [
 // reachable via direct URL regardless of this flag.
 const devMenuItems = [
   { title: "AOP Calibration Mapper", url: "/admin/aop-calibration-mapper", icon: Crosshair },
+  { title: "Hoodie Template Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];
 
 const customerLinks = [
