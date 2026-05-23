@@ -16115,6 +16115,8 @@ ${textEdgeRestrictions}
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);
+    const { registerHoodieTemplateMapperRoutes } = await import("./routes/hoodie-template-mapper");
+    registerHoodieTemplateMapperRoutes(app);
   }
 
   return httpServer;
