@@ -76,7 +76,10 @@ export default function HoodieTemplateMapperPage() {
 
   return (
     <AdminLayout>
-      <div className="flex h-[calc(100vh-3.5rem)] flex-col bg-slate-950 text-slate-100">
+      {/* AdminLayout wraps children in a padded <main> with overflow-auto. We
+          need full-bleed for the canvas, so cancel the p-6 with negative
+          margins and stretch to the full main content box. */}
+      <div className="-m-6 flex h-[calc(100%+3rem)] flex-col bg-slate-950 text-slate-100">
         <header className="border-b border-slate-800 bg-slate-900 px-4 py-2">
           <div className="flex items-center justify-between">
             <div>
