@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -22,15 +22,24 @@ type Props = {
   onOpenLoadDialog: () => void;
 };
 
-const TOOL_BUTTONS: Array<{ id: HoodieToolId; icon: React.ComponentType<{ className?: string }>; label: string; phase: number }> = [
-  { id: "move", icon: MousePointer2, label: "Move", phase: 1 },
-  { id: "polygon-pen", icon: PenLine, label: "Polygon Pen", phase: 2 },
-  { id: "magnetic-pen", icon: Magnet, label: "Magnetic Pen", phase: 3 },
+const TOOL_BUTTONS: Array<{
+  id: HoodieToolId;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  /** Earliest phase that ships this tool. Tools from earlier phases are enabled. */
+  phase: number;
+  shortcut?: string;
+}> = [
+  { id: "move", icon: MousePointer2, label: "Move (V)", phase: 1, shortcut: "v" },
+  { id: "polygon-pen", icon: PenLine, label: "Polygon Pen (P)", phase: 2, shortcut: "p" },
+  { id: "magnetic-pen", icon: Magnet, label: "Magnetic Pen (M)", phase: 2, shortcut: "m" },
   { id: "mesh-warp", icon: Grid3X3, label: "Mesh Warp", phase: 4 },
   { id: "corner-pin", icon: Frame, label: "Corner Pin", phase: 4 },
   { id: "rotate", icon: RotateCw, label: "Rotate", phase: 4 },
   { id: "scale", icon: Maximize2, label: "Scale", phase: 4 },
 ];
+
+const HIGHEST_ENABLED_PHASE = 2;
 
 export default function Toolbar({ onOpenLoadDialog }: Props) {
   const { toast } = useToast();
@@ -43,6 +52,24 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
 
   const frontInputRef = useRef<HTMLInputElement | null>(null);
   const backInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen).
+  // Skipped while typing in form fields so we don't hijack input.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && /input|textarea|select/i.test(target.tagName)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const match = TOOL_BUTTONS.find((t) => t.shortcut === key);
+      if (!match) return;
+      if (match.phase > HIGHEST_ENABLED_PHASE) return;
+      e.preventDefault();
+      actions.setTool(match.id);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [actions]);
 
   async function handleMockupUpload(targetView: HoodieView, file: File) {
     actions.setBusy(true);
@@ -76,7 +103,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       {/* Tool buttons */}
       <div className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-950 p-1">
         {TOOL_BUTTONS.map(({ id, icon: Icon, label, phase }) => {
-          const enabled = phase === 1; // phase 1 only enables Move
+          const enabled = phase <= HIGHEST_ENABLED_PHASE;
           return (
             <Button
               key={id}

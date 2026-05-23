@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Eye, EyeOff, Lock, Unlock, Trash2, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -21,7 +21,13 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
 
   const [templates, setTemplates] = useState<TemplateListEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
+
+  useEffect(() => {
+    if (renamingId) renameInputRef.current?.select();
+  }, [renamingId]);
 
   async function refreshTemplates() {
     setLoading(true);
@@ -52,7 +58,7 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {layers.length === 0 ? (
           <div className="rounded border border-dashed border-slate-700 px-3 py-4 text-[11px] text-slate-500">
-            No mask layers yet. Use the Polygon Pen (phase 2) to trace each panel directly on the mockup.
+            No mask layers yet. Pick the Polygon (P) or Magnetic (M) pen and click on the mockup to start tracing each panel.
           </div>
         ) : (
           <ul className="space-y-1">
@@ -61,12 +67,14 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
               .map((l) => {
                 const isSelected = selectedLayerId === l.id;
                 const isHover = hoverLayerId === l.id;
+                const isExclusion = l.isExclusion || l.kind === "exclusion";
                 return (
                   <li
                     key={l.id}
                     onMouseEnter={() => actions.setHoverLayer(l.id)}
                     onMouseLeave={() => actions.setHoverLayer(null)}
                     onClick={() => actions.setSelectedLayer(l.id)}
+                    onDoubleClick={() => setRenamingId(l.id)}
                     className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition ${
                       isSelected
                         ? "bg-slate-700"
@@ -97,10 +105,33 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                     >
                       {l.locked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5 opacity-50" />}
                     </button>
-                    <span className="flex-1 truncate">
-                      {l.name}
-                      {l.kind === "exclusion" && <span className="ml-1 rounded bg-red-900/40 px-1 text-[10px] text-red-200">EXCL</span>}
-                    </span>
+                    {renamingId === l.id ? (
+                      <input
+                        ref={renameInputRef}
+                        defaultValue={l.name}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v && v !== l.name) actions.patchLayer(l.id, { name: v });
+                          setRenamingId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        className="flex-1 rounded bg-slate-950 px-1 py-0.5 text-xs text-slate-100 outline-none ring-1 ring-slate-600"
+                      />
+                    ) : (
+                      <span className="flex-1 truncate" title={l.panelKey ? PANEL_DISPLAY_LABEL[l.panelKey] : "unassigned"}>
+                        {l.name}
+                        {isExclusion && <span className="ml-1 rounded bg-red-900/40 px-1 text-[10px] text-red-200">EXCL</span>}
+                        {l.panelKey && (
+                          <span className="ml-1 text-[10px] text-slate-500">
+                            · {PANEL_DISPLAY_LABEL[l.panelKey]}
+                          </span>
+                        )}
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={(e) => {
