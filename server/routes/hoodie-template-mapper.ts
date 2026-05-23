@@ -206,7 +206,19 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
     const file = safeJoin(MOCKUPS_DIR, filename);
     if (!file) return res.status(400).json({ error: "Invalid path" });
     try {
-      const buf = await readRawBody(req, MAX_MOCKUP_BYTES);
+      // Prefer the buffer captured by express.json's verify hook (req.rawBody)
+      // when present — Express's middleware drains the stream for any matching
+      // type and the rawBody hook captures it. For unmatched content-types the
+      // stream is still readable and we fall back to reading it directly.
+      const rawBody = (req as any).rawBody as Buffer | undefined;
+      const buf =
+        rawBody && rawBody.length > 0 ? rawBody : await readRawBody(req, MAX_MOCKUP_BYTES);
+      if (buf.length === 0) {
+        return res.status(400).json({ error: "Empty body. Did Express middleware consume it?" });
+      }
+      if (buf.length > MAX_MOCKUP_BYTES) {
+        return res.status(413).json({ error: `Body too large (${buf.length} > ${MAX_MOCKUP_BYTES})` });
+      }
       ensureDirSync(MOCKUPS_DIR);
       await fs.promises.writeFile(file, buf);
       const stat = await fs.promises.stat(file);

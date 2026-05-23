@@ -29,13 +29,31 @@ const ZOOM_STEP = 1.12;
 const WORKSPACE_BG = "#0b1220";
 const WORKSPACE_PAGE_BG = "#1e293b";
 
+function isCrossOrigin(src: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const url = new URL(src, window.location.href);
+    return url.origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 function loadHtmlImage(src: string | null | undefined): Promise<HTMLImageElement | null> {
   if (!src) return Promise.resolve(null);
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // Only request CORS for actually cross-origin sources. Setting crossOrigin
+    // on same-origin requests can fail when the server doesn't echo CORS headers.
+    if (isCrossOrigin(src)) {
+      img.crossOrigin = "anonymous";
+    }
     img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
+    img.onerror = (e) => {
+      // eslint-disable-next-line no-console
+      console.warn("[hoodie-mapper] image load failed", src, e);
+      resolve(null);
+    };
     img.src = src;
   });
 }
