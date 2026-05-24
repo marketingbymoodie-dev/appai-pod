@@ -36,6 +36,8 @@ export type HoodieMapperDebugFlags = {
   showHoverHighlight: boolean;
   /** Reference overlay opacity slider mirror (0..1). */
   referenceOverlayOpacity: number;
+  /** Diagnostic strip at the bottom of the canvas (stage size, mockup, img state, scale, pos). */
+  showCanvasDebug: boolean;
 };
 
 const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
@@ -43,6 +45,7 @@ const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
   showPanelLabels: true,
   showHoverHighlight: true,
   referenceOverlayOpacity: 0.5,
+  showCanvasDebug: false,
 };
 
 /**

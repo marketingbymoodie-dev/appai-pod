@@ -209,6 +209,11 @@ export default function RightSidebar() {
             checked={debug.showHoverHighlight}
             onChange={(c) => actions.setDebug({ showHoverHighlight: c })}
           />
+          <ToggleRow
+            label="Canvas debug strip"
+            checked={debug.showCanvasDebug}
+            onChange={(c) => actions.setDebug({ showCanvasDebug: c })}
+          />
         </Section>
 
         <Section title="Coming next">

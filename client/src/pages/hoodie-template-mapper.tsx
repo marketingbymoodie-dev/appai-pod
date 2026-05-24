@@ -267,7 +267,16 @@ export default function HoodieTemplateMapperPage() {
         <div className="flex flex-1 overflow-hidden">
           <LeftSidebar onLoadTemplate={(name) => handleLoad(name)} />
           <div ref={containerRef} className="relative flex-1 overflow-hidden">
-            {width > 0 && height > 0 && <HoodieCanvas width={width} height={height} />}
+            {width > 0 && height > 0 ? (
+              <HoodieCanvas width={width} height={height} />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-xs text-amber-300">
+                <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                  Canvas container has no size yet ({width}×{height}). If this stays put, the
+                  flex layout failed to give the middle column any space.
+                </div>
+              </div>
+            )}
           </div>
           <RightSidebar />
         </div>
