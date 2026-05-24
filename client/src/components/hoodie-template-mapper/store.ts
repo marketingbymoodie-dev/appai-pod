@@ -3,15 +3,25 @@ import {
   EMPTY_HOODIE_VIEW,
   emptyHoodieTemplate,
   HOODIE_TEMPLATE_VERSION,
+  createDefaultMesh,
+  resizeMesh,
   type HoodieTemplate,
   type HoodieToolId,
   type HoodieView,
   type MaskLayer,
+  type MeshGrid,
   type MockupAsset,
   type Pt,
   type ReferenceOverlayAsset,
+  type SourceRect,
 } from "@shared/hoodieTemplate";
-import { anchorsToSvgPath, simplifyPath, smoothPath, svgPathToAnchors } from "./lib/svgPath";
+import {
+  anchorsToSvgPath,
+  boundingBox,
+  simplifyPath,
+  smoothPath,
+  svgPathToAnchors,
+} from "./lib/svgPath";
 
 /**
  * Zustand store for the hoodie template mapper. Centralizes the in-memory
@@ -105,6 +115,27 @@ export type HoodieMapperState = {
    * receive an event from the save call site directly.
    */
   saveSeq: number;
+  /**
+   * Mesh-warp editor UI state. Lives outside the persisted template so
+   * the toggle doesn't bake into saved JSON.
+   */
+  meshEdit: MeshEditState;
+};
+
+/**
+ * Mesh-warp editor view state. `showFullArtwork` lets the user briefly
+ * see the entire source artwork rectangle outside the panel polygon so
+ * they can tell which slice of e.g. a sleeve sheet they're looking at.
+ */
+export type MeshEditState = {
+  showFullArtwork: boolean;
+  /** When true, the editor exposes draggable handles for the source rect. */
+  cropEditing: boolean;
+};
+
+export const DEFAULT_MESH_EDIT_STATE: MeshEditState = {
+  showFullArtwork: false,
+  cropEditing: false,
 };
 
 export type HoodieMapperActions = {
@@ -147,6 +178,14 @@ export type HoodieMapperActions = {
    * Returns the created layer id, or null if there were too few anchors.
    */
   closePenDraft: () => string | null;
+  /** Mesh-warp actions. */
+  setLayerSourcePanel: (id: string, src: string | null) => void;
+  initLayerMesh: (id: string, cols?: number, rows?: number) => void;
+  resetLayerMesh: (id: string, cols?: number, rows?: number) => void;
+  resizeLayerMesh: (id: string, cols: number, rows: number) => void;
+  setLayerMeshTargetPoint: (id: string, index: number, point: Pt) => void;
+  setLayerMeshSourceRect: (id: string, rect: SourceRect | null) => void;
+  setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
 
 type Store = HoodieMapperState & { actions: HoodieMapperActions };
@@ -258,6 +297,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   penDraft: null,
   magneticRadius: DEFAULT_MAGNETIC_RADIUS,
   magneticTolerance: DEFAULT_MAGNETIC_TOLERANCE,
+  meshEdit: { ...DEFAULT_MESH_EDIT_STATE },
   selectedAnchorIndex: null,
   dirty: false,
   busy: false,
@@ -438,6 +478,118 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       }));
       return layer.id;
     },
+    setLayerSourcePanel: (id, src) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        const layers = s.template.views[found.view].layers.map((l) =>
+          l.id === id ? { ...l, productionPanelSrc: src } : l,
+        );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    initLayerMesh: (id, cols = 4, rows = 4) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        const anchors = svgPathToAnchors(found.layer.maskPath);
+        const bb = boundingBox(anchors);
+        if (!bb) return {} as Partial<Store>;
+        const mesh: MeshGrid = createDefaultMesh(
+          { x: bb.minX, y: bb.minY, width: bb.maxX - bb.minX, height: bb.maxY - bb.minY },
+          cols,
+          rows,
+          found.layer.mesh?.sourceRect ?? null,
+        );
+        const layers = s.template.views[found.view].layers.map((l) =>
+          l.id === id ? { ...l, mesh } : l,
+        );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    resetLayerMesh: (id, cols, rows) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        const anchors = svgPathToAnchors(found.layer.maskPath);
+        const bb = boundingBox(anchors);
+        if (!bb) return {} as Partial<Store>;
+        const c = cols ?? found.layer.mesh?.cols ?? 4;
+        const r = rows ?? found.layer.mesh?.rows ?? 4;
+        const mesh: MeshGrid = createDefaultMesh(
+          { x: bb.minX, y: bb.minY, width: bb.maxX - bb.minX, height: bb.maxY - bb.minY },
+          c,
+          r,
+          found.layer.mesh?.sourceRect ?? null,
+        );
+        const layers = s.template.views[found.view].layers.map((l) =>
+          l.id === id ? { ...l, mesh } : l,
+        );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    resizeLayerMesh: (id, cols, rows) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        const layer = found.layer;
+        const anchors = svgPathToAnchors(layer.maskPath);
+        const bb = boundingBox(anchors);
+        if (!bb) return {} as Partial<Store>;
+        const fallback = {
+          x: bb.minX,
+          y: bb.minY,
+          width: bb.maxX - bb.minX,
+          height: bb.maxY - bb.minY,
+        };
+        const next = layer.mesh
+          ? resizeMesh(layer.mesh, cols, rows, fallback)
+          : createDefaultMesh(fallback, cols, rows, null);
+        const layers = s.template.views[found.view].layers.map((l) =>
+          l.id === id ? { ...l, mesh: next } : l,
+        );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    setLayerMeshTargetPoint: (id, index, point) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        const mesh = found.layer.mesh;
+        if (index < 0 || index >= mesh.targetPoints.length) return {} as Partial<Store>;
+        const targetPoints = mesh.targetPoints.map((p, i) =>
+          i === index ? { x: point.x, y: point.y } : p,
+        );
+        const layers = s.template.views[found.view].layers.map((l) =>
+          l.id === id ? { ...l, mesh: { ...mesh, targetPoints } } : l,
+        );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    setLayerMeshSourceRect: (id, rect) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        const layers = s.template.views[found.view].layers.map((l) =>
+          l.id === id && l.mesh ? { ...l, mesh: { ...l.mesh, sourceRect: rect } } : l,
+        );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    setMeshEdit: (patch) =>
+      set((s) => ({ meshEdit: { ...s.meshEdit, ...patch } })),
   },
 }));
 

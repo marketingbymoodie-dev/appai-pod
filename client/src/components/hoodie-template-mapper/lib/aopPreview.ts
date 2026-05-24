@@ -38,6 +38,7 @@
 import type { HoodiePanelKey, HoodieTemplate, HoodieView, MaskLayer, Pt } from "@shared/hoodieTemplate";
 import { layerRenderPriority } from "@shared/hoodieTemplate";
 import { svgPathToAnchors } from "./svgPath";
+import { drawMeshWarp } from "./meshWarp";
 
 export type AopPreviewMode = "single-sheet" | "per-panel-stretch" | "solid-colors";
 
@@ -65,6 +66,21 @@ export type AopPreviewParams = {
    */
   width?: number;
   height?: number;
+  /**
+   * Pre-loaded per-layer source artwork keyed by URL. When a layer's
+   * `productionPanelSrc` resolves in this map, that image is warped
+   * through the layer's mesh instead of using the global `artwork`.
+   * Callers (e.g. AopPreviewModal) preload these before invoking
+   * `renderAopPreview` so the renderer stays synchronous.
+   */
+  layerSources?: Map<string, HTMLImageElement>;
+  /**
+   * When true, multiply the original mockup pixels over each warped
+   * panel. Bakes the fabric shadows / highlights of the photo into the
+   * artwork so the AOP looks like real cloth rather than a flat decal.
+   * Has no effect on `solid-colors` mode.
+   */
+  applyShading?: boolean;
 };
 
 /**
@@ -172,6 +188,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     showExclusions = true,
     showOutlines = false,
     showLabels = false,
+    layerSources,
+    applyShading = false,
   } = params;
 
   const W = params.width ?? mockup.naturalWidth ?? mockup.width;
@@ -223,9 +241,27 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pctx.clip();
     pctx.globalAlpha = layer.opacity;
 
+    // Per-layer mesh-warped source artwork takes priority over the
+    // mode-driven global artwork, regardless of mode (mesh + source ==
+    // explicit production-panel intent). Layers without a mesh fall back
+    // to the existing single-sheet / per-panel-stretch behaviour.
+    const layerSrc =
+      layer.productionPanelSrc && layerSources
+        ? layerSources.get(layer.productionPanelSrc) ?? null
+        : null;
+    const usingLayerMesh = !useColors && layerSrc && layer.mesh;
+
     if (useColors) {
       pctx.fillStyle = colorForLayer(layer, PANEL_COLORS.unassigned);
       pctx.fillRect(0, 0, W, H);
+    } else if (usingLayerMesh && layer.mesh && layerSrc) {
+      drawMeshWarp(
+        pctx,
+        layerSrc,
+        layerSrc.naturalWidth || layerSrc.width,
+        layerSrc.naturalHeight || layerSrc.height,
+        layer.mesh,
+      );
     } else if (artwork) {
       if (mode === "single-sheet" && totalBbox) {
         // Whole artwork stretched once across the entire union of print
@@ -236,6 +272,17 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         const bb = aabbOf(anchors);
         if (bb) pctx.drawImage(artwork, bb.x, bb.y, bb.width, bb.height);
       }
+    }
+
+    // Shading multiply: bake the original mockup's fabric shadows over
+    // the warped artwork so the AOP looks like real cloth, not a flat
+    // decal. Skipped in solid-colors mode (debug). Still inside the
+    // polygon clip so other panels are untouched.
+    if (applyShading && !useColors) {
+      pctx.save();
+      pctx.globalCompositeOperation = "multiply";
+      pctx.drawImage(mockup, 0, 0, W, H);
+      pctx.restore();
     }
 
     pctx.restore();

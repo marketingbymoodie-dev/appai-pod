@@ -18,6 +18,7 @@ import {
   anchorsToSvgPath,
 } from "../lib/svgPath";
 import MaskLayersOverlay from "./MaskLayersOverlay";
+import MeshWarpOverlay from "./MeshWarpOverlay";
 import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
 import type { Pt } from "@shared/hoodieTemplate";
@@ -173,6 +174,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const selectedAnchorIndex = useHoodieMapperStore((s) => s.selectedAnchorIndex);
   const mockup = useHoodieMapperStore((s) => s.template.views[s.view].mockup);
   const referenceOverlay = useHoodieMapperStore((s) => s.template.views[s.view].referenceOverlay);
+  const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const mockupImageState = useLoadedImage(mockup?.src);
@@ -513,9 +515,11 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
       : "grab"
     : isPenActive
       ? "crosshair"
-      : tool === "move"
+      : tool === "mesh-warp"
         ? "default"
-        : "default";
+        : tool === "move"
+          ? "default"
+          : "default";
 
   return (
     <div ref={wrapperRef} className="relative h-full w-full" data-testid="hoodie-canvas-root">
@@ -610,6 +614,21 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             the click instead initiates the Stage's drag-pan, even when the
             cursor is on top of a mask region. */}
         <Layer listening={!isPanning}>
+          {/* Mesh-warp preview + handles. Drawn before MaskLayersOverlay
+              so the saved-layer outlines stay visible on top. */}
+          {selectedLayer && selectedLayer.mesh && (
+            <MeshWarpOverlay
+              layer={selectedLayer}
+              zoom={scale}
+              active={tool === "mesh-warp"}
+              panLocked={isPanning}
+              showFullArtwork={meshEdit.showFullArtwork}
+              onDragControlPoint={(idx, p) =>
+                actions.setLayerMeshTargetPoint(selectedLayer.id, idx, p)
+              }
+            />
+          )}
+
           <MaskLayersOverlay
             layers={layers}
             selectedId={selectedLayerId}

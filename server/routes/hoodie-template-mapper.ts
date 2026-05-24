@@ -33,11 +33,18 @@ const PROJECT_ROOT = process.cwd();
 const ROOT_DIR = path.resolve(PROJECT_ROOT, "tmp", "hoodie-templates");
 const TEMPLATES_DIR = path.resolve(ROOT_DIR, "templates");
 const MOCKUPS_DIR = path.resolve(ROOT_DIR, "mockups");
+/**
+ * Per-panel artwork sheets (Printify production panels). Filename
+ * convention: `<template>-<panelKey>.png` so the front-view and
+ * back-view sleeve masks can share the same source artwork file.
+ */
+const SOURCE_PANELS_DIR = path.resolve(ROOT_DIR, "source-panels");
 
 const SAFE_NAME_RE = /^[a-zA-Z0-9_\-]+$/;
 const SAFE_FILENAME_RE = /^[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|webp)$/i;
 const MAX_TEMPLATE_BYTES = 8 * 1024 * 1024; // 8 MB JSON
 const MAX_MOCKUP_BYTES = 30 * 1024 * 1024; // 30 MB PNG/JPG
+const MAX_SOURCE_PANEL_BYTES = 60 * 1024 * 1024; // 60 MB — Printify panel sheets get big
 
 function isSafeName(name: string): boolean {
   return SAFE_NAME_RE.test(name) && name.length > 0 && name.length <= 64;
@@ -88,6 +95,7 @@ function readRawBody(req: Request, max: number): Promise<Buffer> {
 export function registerHoodieTemplateMapperRoutes(app: Express) {
   ensureDirSync(TEMPLATES_DIR);
   ensureDirSync(MOCKUPS_DIR);
+  ensureDirSync(SOURCE_PANELS_DIR);
 
   // eslint-disable-next-line no-console
   console.log(
@@ -322,6 +330,83 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
         ok: true,
         filename,
         url: `/api/dev/hoodie-mapper/mockups/${encodeURIComponent(filename)}`,
+        sizeBytes: stat.size,
+        updatedAt: stat.mtime.toISOString(),
+      });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || "upload failed" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Source panel artwork — per-panel Printify-style artwork sheets that the
+  // mesh-warp tool projects onto each mask polygon. Filename convention:
+  //   `<template>-<panelKey>.png`
+  // (so front-view and back-view sleeve masks share the same artwork).
+  // -------------------------------------------------------------------------
+
+  app.get("/api/dev/hoodie-mapper/source-panels", async (_req: Request, res: Response) => {
+    try {
+      const entries = await fs.promises.readdir(SOURCE_PANELS_DIR);
+      const panels = await Promise.all(
+        entries
+          .filter((f) => SAFE_FILENAME_RE.test(f))
+          .map(async (f) => {
+            const full = path.join(SOURCE_PANELS_DIR, f);
+            const stat = await fs.promises.stat(full);
+            return {
+              filename: f,
+              url: `/api/dev/hoodie-mapper/source-panels/${encodeURIComponent(f)}`,
+              sizeBytes: stat.size,
+              updatedAt: stat.mtime.toISOString(),
+            };
+          }),
+      );
+      panels.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+      res.json({ directory: path.relative(PROJECT_ROOT, SOURCE_PANELS_DIR), panels });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "list failed" });
+    }
+  });
+
+  app.get("/api/dev/hoodie-mapper/source-panels/:filename", async (req: Request, res: Response) => {
+    const filename = req.params.filename;
+    if (!isSafeFilename(filename)) return res.status(400).send("Invalid filename");
+    const file = safeJoin(SOURCE_PANELS_DIR, filename);
+    if (!file) return res.status(400).send("Invalid path");
+    if (!fs.existsSync(file)) return res.status(404).send("Not found");
+    const ext = path.extname(filename).toLowerCase();
+    const contentType =
+      ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "no-cache");
+    fs.createReadStream(file).pipe(res);
+  });
+
+  app.post("/api/dev/hoodie-mapper/source-panels/:filename", async (req: Request, res: Response) => {
+    const filename = req.params.filename;
+    if (!isSafeFilename(filename)) return res.status(400).json({ error: "Invalid filename" });
+    const file = safeJoin(SOURCE_PANELS_DIR, filename);
+    if (!file) return res.status(400).json({ error: "Invalid path" });
+    try {
+      const rawBody = (req as any).rawBody as Buffer | undefined;
+      const buf =
+        rawBody && rawBody.length > 0 ? rawBody : await readRawBody(req, MAX_SOURCE_PANEL_BYTES);
+      if (buf.length === 0) {
+        return res.status(400).json({ error: "Empty body" });
+      }
+      if (buf.length > MAX_SOURCE_PANEL_BYTES) {
+        return res
+          .status(413)
+          .json({ error: `Body too large (${buf.length} > ${MAX_SOURCE_PANEL_BYTES})` });
+      }
+      ensureDirSync(SOURCE_PANELS_DIR);
+      await fs.promises.writeFile(file, buf);
+      const stat = await fs.promises.stat(file);
+      res.json({
+        ok: true,
+        filename,
+        url: `/api/dev/hoodie-mapper/source-panels/${encodeURIComponent(filename)}`,
         sizeBytes: stat.size,
         updatedAt: stat.mtime.toISOString(),
       });

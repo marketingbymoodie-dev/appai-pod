@@ -123,6 +123,55 @@ export async function uploadMockup(
   return data;
 }
 
+// ---------------------------------------------------------------------------
+// Source panel artwork — per-panel Printify production sheets used by the
+// mesh-warp tool. The same file can be referenced by both the front-view
+// and the back-view masks for a panel; the mesh's sourceRect picks the
+// right slice for each view.
+// ---------------------------------------------------------------------------
+
+export type SourcePanelEntry = {
+  filename: string;
+  url: string;
+  sizeBytes: number;
+  updatedAt: string;
+};
+
+export async function listSourcePanels(): Promise<SourcePanelEntry[]> {
+  const r = await fetch(`${BASE}/source-panels`);
+  if (!r.ok) throw new Error(`Failed to list source panels (${r.status})`);
+  const data = (await r.json()) as { panels: SourcePanelEntry[] };
+  return data.panels ?? [];
+}
+
+/**
+ * Upload a source panel artwork for a given (template, panelKey). Filename
+ * derived as `<template>-<panelKey>.<ext>` so front-view and back-view
+ * masks for the same panel share the file.
+ *
+ * Returns the public URL the canvas should reference in `productionPanelSrc`.
+ */
+export async function uploadSourcePanel(
+  templateName: string,
+  panelKey: string,
+  file: File,
+): Promise<{ filename: string; url: string }> {
+  const ext = (file.name.match(/\.([a-z0-9]+)$/i)?.[1] || "png").toLowerCase();
+  const safePanelKey = panelKey.replace(/[^a-zA-Z0-9_\-]/g, "_");
+  const filename = `${templateName}-${safePanelKey}.${ext}`;
+  const body = await file.arrayBuffer();
+  const r = await fetch(`${BASE}/source-panels/${encodeURIComponent(filename)}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "image/png" },
+    body,
+  });
+  if (!r.ok) {
+    const err = await r.text().catch(() => "");
+    throw new Error(`Failed to upload source panel: ${err.slice(0, 200) || r.status}`);
+  }
+  return (await r.json()) as { filename: string; url: string };
+}
+
 export function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);

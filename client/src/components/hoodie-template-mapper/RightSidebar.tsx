@@ -1,10 +1,22 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import { ChevronUp, ChevronDown, Trash2, Sparkles, Wand2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import {
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Sparkles,
+  Wand2,
+  Image as ImageIcon,
+  Grid3X3,
+  RotateCcw,
+  Upload,
+  Loader2,
+} from "lucide-react";
 import {
   PANELS_PER_VIEW,
   PANEL_DISPLAY_LABEL,
@@ -13,6 +25,7 @@ import {
 } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
+import { uploadSourcePanel } from "./api";
 
 /**
  * Right sidebar: template metadata + tool-aware controls + per-layer
@@ -393,7 +406,211 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
           Drag anchor dots on the canvas to reshape · Alt-click an anchor to delete · Alt-click on the layer fill to insert.
         </div>
       </div>
+
+      <SourceArtworkSection layer={layer} />
+      <MeshWarpSection layer={layer} />
     </Section>
+  );
+}
+
+/**
+ * Source-panel artwork uploader for a single layer. Filename derives from
+ * the active template + this layer's panelKey so front and back masks for
+ * the same panel share a single upload (Printify ships one artwork sheet
+ * per panel and the mesh source-rect picks the right slice for each view).
+ */
+function SourceArtworkSection({ layer }: { layer: MaskLayer }) {
+  const templateName = useHoodieMapperStore((s) => s.template.name);
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+
+  async function handleUpload(file: File) {
+    setBusy(true);
+    try {
+      const panelKey = layer.panelKey ?? `mask-${layer.id}`;
+      const { url } = await uploadSourcePanel(templateName, panelKey, file);
+      actions.setLayerSourcePanel(layer.id, url);
+      toast({ title: "Source artwork uploaded", description: url });
+    } catch (err: any) {
+      toast({
+        title: "Upload failed",
+        description: err?.message || String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded border border-fuchsia-900/40 bg-fuchsia-950/20 p-2">
+      <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-fuchsia-300">
+        <ImageIcon className="h-3.5 w-3.5" /> Source artwork
+      </div>
+      <div className="text-[11px] text-slate-400">
+        The Printify panel sheet that this mask samples. Front/back masks of the same panel can
+        share one upload — pick the visible slice with the mesh.
+      </div>
+      {layer.productionPanelSrc ? (
+        <div className="mt-2 space-y-2">
+          <div className="overflow-hidden rounded border border-slate-800 bg-slate-950">
+            <img
+              src={layer.productionPanelSrc}
+              alt={`Source for ${layer.name}`}
+              className="block max-h-32 w-full object-contain bg-slate-900"
+            />
+          </div>
+          <div className="break-all text-[10px] text-slate-500">{layer.productionPanelSrc}</div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 flex-1 text-[11px]"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy}
+            >
+              {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
+              Replace
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-[11px] text-red-300 hover:text-red-200"
+              onClick={() => actions.setLayerSourcePanel(layer.id, null)}
+              disabled={busy}
+            >
+              Clear
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-2 h-8 w-full text-[11px]"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+        >
+          {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
+          Upload artwork
+        </Button>
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleUpload(f);
+          e.target.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Mesh density / reset / show-full-artwork toggle. Only useful once the
+ * layer has a closed polygon — otherwise creating a mesh has no shape to
+ * snap to.
+ */
+function MeshWarpSection({ layer }: { layer: MaskLayer }) {
+  const tool = useHoodieMapperStore((s) => s.tool);
+  const meshEdit = useHoodieMapperStore((s) => s.meshEdit);
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const anchors = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
+  const canInit = anchors.length >= 3;
+  const mesh = layer.mesh;
+
+  return (
+    <div className="mt-3 rounded border border-purple-900/40 bg-purple-950/20 p-2">
+      <div className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-purple-300">
+        <Grid3X3 className="h-3.5 w-3.5" /> Mesh warp
+      </div>
+      {!mesh ? (
+        <div className="space-y-2 text-[11px] text-slate-400">
+          <div>
+            Initialise a control grid covering this panel. Drag the dots to follow fabric
+            curvature — switch to the <span className="text-purple-200">Mesh Warp (W)</span> tool
+            to grab the handles.
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 w-full text-[11px]"
+            disabled={!canInit}
+            onClick={() => actions.initLayerMesh(layer.id, 4, 4)}
+          >
+            <Grid3X3 className="mr-1 h-3.5 w-3.5" />
+            Initialise 4×4 mesh
+          </Button>
+          {!canInit && (
+            <div className="text-[10px] text-amber-300">
+              Trace a closed polygon first (≥3 anchors).
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2 text-[11px] text-slate-400">
+          <div className="grid grid-cols-2 gap-2">
+            <Field label={`Cols ${mesh.cols}`}>
+              <Slider
+                value={[mesh.cols]}
+                min={2}
+                max={12}
+                step={1}
+                onValueChange={([v]) => actions.resizeLayerMesh(layer.id, v, mesh.rows)}
+              />
+            </Field>
+            <Field label={`Rows ${mesh.rows}`}>
+              <Slider
+                value={[mesh.rows]}
+                min={2}
+                max={12}
+                step={1}
+                onValueChange={([v]) => actions.resizeLayerMesh(layer.id, mesh.cols, v)}
+              />
+            </Field>
+          </div>
+          <ToggleRow
+            label="Show full artwork (ignore mask)"
+            checked={meshEdit.showFullArtwork}
+            onChange={(c) => actions.setMeshEdit({ showFullArtwork: c })}
+          />
+          <div className="text-[10px] text-slate-500">
+            Toggle on to see the artwork beyond the polygon — useful for picking which slice of a
+            sleeve sheet matches the front vs back view. Toggle off and the mask hides everything
+            outside the panel.
+          </div>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 flex-1 text-[11px]"
+              onClick={() => actions.resetLayerMesh(layer.id, mesh.cols, mesh.rows)}
+            >
+              <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset to bbox
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 text-[11px] text-red-300 hover:text-red-200"
+              onClick={() => actions.patchLayer(layer.id, { mesh: null })}
+            >
+              Remove
+            </Button>
+          </div>
+          <div className="text-[10px] text-slate-500">
+            {tool === "mesh-warp"
+              ? "Drag any purple dot to deform the grid. Saved with the template."
+              : "Switch to the Mesh Warp (W) tool to drag control points."}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
