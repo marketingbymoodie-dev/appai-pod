@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -15,10 +15,12 @@ import {
   Plus,
   Loader2,
   Check,
+  Sparkles,
 } from "lucide-react";
 import type { HoodieToolId, HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import { readImageDimensions, saveTemplate, uploadMockup } from "./api";
+import AopPreviewModal from "./AopPreviewModal";
 
 type Props = {
   onOpenLoadDialog: () => void;
@@ -54,6 +56,18 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
 
   const frontInputRef = useRef<HTMLInputElement | null>(null);
   const backInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  // Per-view layer counts for the Preview button's enabled state. We don't
+  // want users opening the modal on a totally empty template — that's just
+  // a confusing "blank canvas" experience.
+  const totalLayers =
+    template.views.front.layers.length + template.views.back.layers.length;
+  const hasMockup = Boolean(
+    template.views.front.mockup?.src || template.views.back.mockup?.src,
+  );
+  const previewReady = totalLayers > 0 && hasMockup;
 
   // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen).
   // Skipped while typing in form fields so we don't hijack input.
@@ -200,6 +214,24 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       />
 
       <div className="ml-auto flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1 border-fuchsia-700/60 bg-fuchsia-500/10 text-xs text-fuchsia-200 hover:bg-fuchsia-500/20"
+          onClick={() => setPreviewOpen(true)}
+          disabled={busy || !previewReady}
+          title={
+            !hasMockup
+              ? "Attach a mockup first"
+              : totalLayers === 0
+                ? "Trace at least one panel mask first"
+                : "Preview the AOP composited onto your masks"
+          }
+          data-testid="hoodie-preview-aop"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Preview AOP
+        </Button>
         {dirty ? (
           <span
             className="rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-300"
@@ -267,6 +299,8 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
           {busy ? "Saving…" : "Save"}
         </Button>
       </div>
+
+      <AopPreviewModal open={previewOpen} onOpenChange={setPreviewOpen} />
     </div>
   );
 }
