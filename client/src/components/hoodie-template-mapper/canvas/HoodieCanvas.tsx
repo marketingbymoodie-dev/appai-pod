@@ -61,35 +61,49 @@ function isCrossOrigin(src: string): boolean {
   }
 }
 
-function loadHtmlImage(src: string | null | undefined): Promise<HTMLImageElement | null> {
-  if (!src) return Promise.resolve(null);
+type ImageLoadResult = { img: HTMLImageElement | null; error: string | null };
+
+function loadHtmlImage(src: string | null | undefined): Promise<ImageLoadResult> {
+  if (!src) return Promise.resolve({ img: null, error: null });
   return new Promise((resolve) => {
     const img = new Image();
     if (isCrossOrigin(src)) {
       img.crossOrigin = "anonymous";
     }
-    img.onload = () => resolve(img);
+    img.onload = () => resolve({ img, error: null });
     img.onerror = (e) => {
       // eslint-disable-next-line no-console
       console.warn("[hoodie-mapper] image load failed", src, e);
-      resolve(null);
+      resolve({ img: null, error: `Failed to load mockup at ${src}` });
     };
     img.src = src;
   });
 }
 
-function useLoadedImage(src: string | null | undefined): HTMLImageElement | null {
-  const [img, setImg] = useState<HTMLImageElement | null>(null);
+type LoadedImageState = {
+  img: HTMLImageElement | null;
+  loading: boolean;
+  error: string | null;
+};
+
+function useLoadedImage(src: string | null | undefined): LoadedImageState {
+  const [state, setState] = useState<LoadedImageState>({ img: null, loading: false, error: null });
   useEffect(() => {
+    if (!src) {
+      setState({ img: null, loading: false, error: null });
+      return;
+    }
     let cancelled = false;
-    loadHtmlImage(src ?? null).then((loaded) => {
-      if (!cancelled) setImg(loaded);
+    setState({ img: null, loading: true, error: null });
+    loadHtmlImage(src).then((res) => {
+      if (cancelled) return;
+      setState({ img: res.img, loading: false, error: res.error });
     });
     return () => {
       cancelled = true;
     };
   }, [src]);
-  return img;
+  return state;
 }
 
 export default function HoodieCanvas({ width, height }: Props) {
@@ -112,8 +126,10 @@ export default function HoodieCanvas({ width, height }: Props) {
   const referenceOverlay = useHoodieMapperStore((s) => s.template.views[s.view].referenceOverlay);
   const actions = useHoodieMapperStore((s) => s.actions);
 
-  const mockupImage = useLoadedImage(mockup?.src);
-  const overlayImage = useLoadedImage(referenceOverlay?.src);
+  const mockupImageState = useLoadedImage(mockup?.src);
+  const overlayImageState = useLoadedImage(referenceOverlay?.src);
+  const mockupImage = mockupImageState.img;
+  const overlayImage = overlayImageState.img;
 
   const mockupWidth = mockup?.width ?? 0;
   const mockupHeight = mockup?.height ?? 0;
@@ -611,6 +627,27 @@ export default function HoodieCanvas({ width, height }: Props) {
             <div className="font-semibold text-slate-200">No {view} mockup loaded yet.</div>
             <div className="mt-1 text-xs">Use the toolbar above to upload a {view} hoodie mockup.</div>
             <div className="mt-1 text-[11px] text-slate-500">Hold space to pan · scroll to zoom.</div>
+          </div>
+        </div>
+      )}
+
+      {mockup && mockupImageState.loading && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-400">
+          <div className="rounded border border-dashed border-slate-700 bg-slate-900/70 px-4 py-2 backdrop-blur">
+            Loading {view} mockup…
+          </div>
+        </div>
+      )}
+
+      {mockup && !mockupImageState.loading && mockupImageState.error && (
+        <div className="absolute inset-0 flex items-center justify-center text-center text-xs">
+          <div className="max-w-md rounded border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-200">
+            <div className="font-semibold text-red-100">Failed to load {view} mockup</div>
+            <div className="mt-1 break-all text-[11px] text-red-200/80">{mockup.src}</div>
+            <div className="mt-1 text-[11px] text-red-200/60">
+              Open DevTools → Network to see the failing request. Common causes: 404 (file
+              missing), CORS, or the dev server is restarting.
+            </div>
           </div>
         </div>
       )}
