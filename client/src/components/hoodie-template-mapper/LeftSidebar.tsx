@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Eye, EyeOff, Lock, Unlock, Trash2, RefreshCw } from "lucide-react";
+import { Eye, EyeOff, Lock, Unlock, Trash2, RefreshCw, Image as ImageIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { PANELS_PER_VIEW, PANEL_DISPLAY_LABEL } from "@shared/hoodieTemplate";
+import { PANELS_PER_VIEW, PANEL_DISPLAY_LABEL, type HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
-import { listTemplates, type TemplateListEntry } from "./api";
+import {
+  listMockups,
+  listTemplates,
+  type MockupListEntry,
+  type TemplateListEntry,
+} from "./api";
 
 /**
  * Left sidebar: layer list + eligible panel reference + saved templates.
@@ -12,15 +17,34 @@ import { listTemplates, type TemplateListEntry } from "./api";
  * admin will be mapping for the active view, plus a list of recently saved
  * templates for quick context. Phase 2 adds real layer rows.
  */
+function inferViewFromFilename(filename: string): HoodieView | null {
+  if (/-front\.[a-z0-9]+$/i.test(filename)) return "front";
+  if (/-back\.[a-z0-9]+$/i.test(filename)) return "back";
+  return null;
+}
+
+function readImageDimsFromUrl(url: string): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
 export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name: string) => void }) {
   const view = useHoodieMapperStore((s) => s.view);
   const layers = useHoodieMapperStore((s) => s.template.views[s.view].layers);
+  const frontMockupSrc = useHoodieMapperStore((s) => s.template.views.front?.mockup?.src ?? null);
+  const backMockupSrc = useHoodieMapperStore((s) => s.template.views.back?.mockup?.src ?? null);
   const selectedLayerId = useHoodieMapperStore((s) => s.selectedLayerId);
   const hoverLayerId = useHoodieMapperStore((s) => s.hoverLayerId);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const [templates, setTemplates] = useState<TemplateListEntry[]>([]);
+  const [mockups, setMockups] = useState<MockupListEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [mockupLoading, setMockupLoading] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
@@ -40,8 +64,39 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
     }
   }
 
+  async function refreshMockups() {
+    setMockupLoading(true);
+    try {
+      setMockups(await listMockups());
+    } catch (err: any) {
+      toast({ title: "Could not list mockups", description: err?.message || String(err), variant: "destructive" });
+    } finally {
+      setMockupLoading(false);
+    }
+  }
+
+  async function attachMockupToView(entry: MockupListEntry, target?: HoodieView) {
+    const inferredView = target ?? inferViewFromFilename(entry.filename) ?? view;
+    const dims = await readImageDimsFromUrl(entry.url);
+    if (!dims) {
+      toast({
+        title: "Could not load mockup",
+        description: `Failed to read dimensions for ${entry.filename}`,
+        variant: "destructive",
+      });
+      return;
+    }
+    actions.setMockup(inferredView, { src: entry.url, width: dims.width, height: dims.height });
+    actions.markSaved();
+    toast({
+      title: `Attached ${inferredView} mockup`,
+      description: `${entry.filename} (${dims.width}\u00d7${dims.height}px)`,
+    });
+  }
+
   useEffect(() => {
     refreshTemplates();
+    refreshMockups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -160,6 +215,54 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
           </li>
         ))}
       </ul>
+
+      <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
+        <span>Mockup files</span>
+        <button
+          type="button"
+          onClick={refreshMockups}
+          className="text-slate-300 hover:text-white"
+          title="Refresh"
+        >
+          <RefreshCw className={`h-3 w-3 ${mockupLoading ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+      <div className="max-h-40 overflow-y-auto px-2 pb-2" data-testid="hoodie-mockup-list">
+        {mockups.length === 0 ? (
+          <div className="px-1 py-1 text-[11px] text-slate-500">
+            No uploaded mockups yet. Use Upload front / Upload back in the toolbar.
+          </div>
+        ) : (
+          mockups.map((m) => {
+            const inferred = inferViewFromFilename(m.filename);
+            const isAttachedFront = frontMockupSrc === m.url;
+            const isAttachedBack = backMockupSrc === m.url;
+            const isAttached = isAttachedFront || isAttachedBack;
+            return (
+              <div
+                key={m.filename}
+                className="flex items-center gap-1 rounded px-1 py-1 text-[11px] hover:bg-slate-800"
+              >
+                <ImageIcon className="h-3 w-3 shrink-0 text-slate-500" />
+                <button
+                  type="button"
+                  onClick={() => attachMockupToView(m)}
+                  className="flex-1 truncate text-left text-slate-300 hover:text-white"
+                  title={`Attach to ${inferred ?? view} view`}
+                  data-testid={`hoodie-mockup-${m.filename}`}
+                >
+                  {m.filename}
+                </button>
+                {isAttached && (
+                  <span className="rounded bg-emerald-500/20 px-1 text-[10px] font-medium uppercase text-emerald-300">
+                    {isAttachedFront ? "F" : "B"}
+                  </span>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
 
       <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
         <span>Saved templates</span>
