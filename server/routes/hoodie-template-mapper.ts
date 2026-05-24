@@ -39,12 +39,20 @@ const MOCKUPS_DIR = path.resolve(ROOT_DIR, "mockups");
  * back-view sleeve masks can share the same source artwork file.
  */
 const SOURCE_PANELS_DIR = path.resolve(ROOT_DIR, "source-panels");
+/**
+ * Per-view reference renders — typically Printify-rendered mockups
+ * with the user's calibration artwork applied. Used as a side-by-side
+ * crossfade reference for the mesh-warp editor. Filename convention:
+ * `<template>-<view>-ref.png`.
+ */
+const REFERENCE_OVERLAYS_DIR = path.resolve(ROOT_DIR, "reference-overlays");
 
 const SAFE_NAME_RE = /^[a-zA-Z0-9_\-]+$/;
 const SAFE_FILENAME_RE = /^[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|webp)$/i;
 const MAX_TEMPLATE_BYTES = 8 * 1024 * 1024; // 8 MB JSON
 const MAX_MOCKUP_BYTES = 30 * 1024 * 1024; // 30 MB PNG/JPG
 const MAX_SOURCE_PANEL_BYTES = 60 * 1024 * 1024; // 60 MB — Printify panel sheets get big
+const MAX_REFERENCE_OVERLAY_BYTES = 30 * 1024 * 1024; // 30 MB — typical product photo
 
 function isSafeName(name: string): boolean {
   return SAFE_NAME_RE.test(name) && name.length > 0 && name.length <= 64;
@@ -96,6 +104,7 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
   ensureDirSync(TEMPLATES_DIR);
   ensureDirSync(MOCKUPS_DIR);
   ensureDirSync(SOURCE_PANELS_DIR);
+  ensureDirSync(REFERENCE_OVERLAYS_DIR);
 
   // eslint-disable-next-line no-console
   console.log(
@@ -414,6 +423,92 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
       res.status(400).json({ error: err?.message || "upload failed" });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Reference overlays — per-view Printify-rendered mockups uploaded as a
+  // visual comparison reference for the mesh-warp editor. Filename
+  // convention: `<template>-<view>-ref.<ext>`.
+  // -------------------------------------------------------------------------
+
+  app.get("/api/dev/hoodie-mapper/reference-overlays", async (_req: Request, res: Response) => {
+    try {
+      const entries = await fs.promises.readdir(REFERENCE_OVERLAYS_DIR);
+      const overlays = await Promise.all(
+        entries
+          .filter((f) => SAFE_FILENAME_RE.test(f))
+          .map(async (f) => {
+            const full = path.join(REFERENCE_OVERLAYS_DIR, f);
+            const stat = await fs.promises.stat(full);
+            return {
+              filename: f,
+              url: `/api/dev/hoodie-mapper/reference-overlays/${encodeURIComponent(f)}`,
+              sizeBytes: stat.size,
+              updatedAt: stat.mtime.toISOString(),
+            };
+          }),
+      );
+      overlays.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+      res.json({ directory: path.relative(PROJECT_ROOT, REFERENCE_OVERLAYS_DIR), overlays });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "list failed" });
+    }
+  });
+
+  app.get(
+    "/api/dev/hoodie-mapper/reference-overlays/:filename",
+    async (req: Request, res: Response) => {
+      const filename = req.params.filename;
+      if (!isSafeFilename(filename)) return res.status(400).send("Invalid filename");
+      const file = safeJoin(REFERENCE_OVERLAYS_DIR, filename);
+      if (!file) return res.status(400).send("Invalid path");
+      if (!fs.existsSync(file)) return res.status(404).send("Not found");
+      const ext = path.extname(filename).toLowerCase();
+      const contentType =
+        ext === ".jpg" || ext === ".jpeg"
+          ? "image/jpeg"
+          : ext === ".webp"
+            ? "image/webp"
+            : "image/png";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "no-cache");
+      fs.createReadStream(file).pipe(res);
+    },
+  );
+
+  app.post(
+    "/api/dev/hoodie-mapper/reference-overlays/:filename",
+    async (req: Request, res: Response) => {
+      const filename = req.params.filename;
+      if (!isSafeFilename(filename)) return res.status(400).json({ error: "Invalid filename" });
+      const file = safeJoin(REFERENCE_OVERLAYS_DIR, filename);
+      if (!file) return res.status(400).json({ error: "Invalid path" });
+      try {
+        const rawBody = (req as any).rawBody as Buffer | undefined;
+        const buf =
+          rawBody && rawBody.length > 0
+            ? rawBody
+            : await readRawBody(req, MAX_REFERENCE_OVERLAY_BYTES);
+        if (buf.length === 0) return res.status(400).json({ error: "Empty body" });
+        if (buf.length > MAX_REFERENCE_OVERLAY_BYTES) {
+          return res
+            .status(413)
+            .json({ error: `Body too large (${buf.length} > ${MAX_REFERENCE_OVERLAY_BYTES})` });
+        }
+        ensureDirSync(REFERENCE_OVERLAYS_DIR);
+        await fs.promises.writeFile(file, buf);
+        const stat = await fs.promises.stat(file);
+        res.json({
+          ok: true,
+          filename,
+          url: `/api/dev/hoodie-mapper/reference-overlays/${encodeURIComponent(filename)}`,
+          sizeBytes: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+        });
+      } catch (err: any) {
+        res.status(400).json({ error: err?.message || "upload failed" });
+      }
+    },
+  );
 
   // eslint-disable-next-line no-console
   console.log("[hoodie-mapper] dev routes registered at /api/dev/hoodie-mapper/*");

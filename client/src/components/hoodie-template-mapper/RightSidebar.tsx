@@ -23,9 +23,10 @@ import {
   type HoodiePanelKey,
   type MaskLayer,
 } from "@shared/hoodieTemplate";
+import type { HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import { svgPathToAnchors } from "./lib/svgPath";
-import { uploadSourcePanel } from "./api";
+import { readImageDimensions, uploadReferenceOverlay, uploadSourcePanel } from "./api";
 
 /**
  * Right sidebar: template metadata + tool-aware controls + per-layer
@@ -234,11 +235,10 @@ export default function RightSidebar() {
                   Clear
                 </Button>
               </div>
+              <ReferenceOverlayUpload templateName={template.name} view={view} replace />
             </div>
           ) : (
-            <div className="rounded border border-dashed border-slate-700 px-3 py-3 text-[11px] text-slate-500">
-              Reference overlay upload arrives in phase 3 alongside the magnetic pen.
-            </div>
+            <ReferenceOverlayUpload templateName={template.name} view={view} />
           )}
         </Section>
 
@@ -257,6 +257,11 @@ export default function RightSidebar() {
             label="Hover highlight"
             checked={debug.showHoverHighlight}
             onChange={(c) => actions.setDebug({ showHoverHighlight: c })}
+          />
+          <ToggleRow
+            label="Show polygon anchors"
+            checked={debug.showAnchors}
+            onChange={(c) => actions.setDebug({ showAnchors: c })}
           />
           <ToggleRow
             label="Canvas debug strip"
@@ -410,6 +415,84 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
       <SourceArtworkSection layer={layer} />
       <MeshWarpSection layer={layer} />
     </Section>
+  );
+}
+
+/**
+ * Per-view reference overlay uploader. Pick a Printify-rendered mockup for
+ * this view and it'll show as a crossfadeable overlay on the canvas — handy
+ * for comparing your mesh-warp output against the actual Printify render.
+ */
+function ReferenceOverlayUpload({
+  templateName,
+  view,
+  replace = false,
+}: {
+  templateName: string;
+  view: HoodieView;
+  replace?: boolean;
+}) {
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const { toast } = useToast();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleUpload(file: File) {
+    setBusy(true);
+    try {
+      const { width, height } = await readImageDimensions(file);
+      const { url } = await uploadReferenceOverlay(templateName, view, file);
+      actions.setReferenceOverlay(view, {
+        src: url,
+        width,
+        height,
+        opacity: 0.6,
+        visible: true,
+        locked: false,
+        placement: "above",
+      });
+      toast({ title: `Loaded ${view} reference overlay`, description: `${width}×${height}px` });
+    } catch (err: any) {
+      toast({
+        title: "Upload failed",
+        description: err?.message || String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        className={`${replace ? "mt-2 h-7 w-full" : "h-8 w-full"} text-[11px]`}
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+      >
+        {busy ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-1 h-3.5 w-3.5" />}
+        {replace ? "Replace reference image" : `Upload ${view} reference image`}
+      </Button>
+      {!replace && (
+        <p className="mt-1 text-[10px] text-slate-500">
+          Drop a Printify-rendered mockup of this view here. Use the opacity slider to crossfade
+          against your mesh-warp output.
+        </p>
+      )}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleUpload(f);
+          e.target.value = "";
+        }}
+      />
+    </>
   );
 }
 
