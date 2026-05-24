@@ -272,6 +272,18 @@ export default function HoodieCanvas({ width, height }: Props) {
   const [dragAnchors, setDragAnchors] = useState<Pt[] | null>(null);
   const liveAnchors = dragAnchors ?? selectedAnchors;
 
+  // Tracks the last anchor we dropped while in magnetic-pen click-and-drag
+  // mode, plus whether the LMB is currently held. Lets mousemove drop new
+  // anchors at distance intervals so the user can sweep along an edge
+  // freehand instead of clicking every point.
+  const dragDropRef = useRef<{ active: boolean; lastDrop: Pt | null }>({
+    active: false,
+    lastDrop: null,
+  });
+  // Distance threshold (mockup px) between drag-drops. Scales with the
+  // magnetic snap radius so users with a wider snap don't get noisy drops.
+  const dragDropThreshold = Math.max(6, Math.round(magneticRadius * 0.7));
+
   // Stage handlers — pen click + canvas-clear-selection + edge insert.
   const handleStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
@@ -293,7 +305,11 @@ export default function HoodieCanvas({ width, height }: Props) {
         const draft = penDraft;
         if (!draft || draft.anchors.length === 0) {
           actions.startPenDraft();
-          actions.appendPenAnchor(snapPoint(mockupPt));
+          const first = snapPoint(mockupPt);
+          actions.appendPenAnchor(first);
+          if (tool === "magnetic-pen") {
+            dragDropRef.current = { active: true, lastDrop: first };
+          }
           return;
         }
         // Close on click near anchor[0] when ≥ MIN_MASK_ANCHORS.
@@ -302,9 +318,14 @@ export default function HoodieCanvas({ width, height }: Props) {
           distSq(mockupPt, draft.anchors[0]) <= PEN_CLOSE_RADIUS * PEN_CLOSE_RADIUS
         ) {
           actions.closePenDraft();
+          dragDropRef.current = { active: false, lastDrop: null };
           return;
         }
-        actions.appendPenAnchor(snapPoint(mockupPt));
+        const dropped = snapPoint(mockupPt);
+        actions.appendPenAnchor(dropped);
+        if (tool === "magnetic-pen") {
+          dragDropRef.current = { active: true, lastDrop: dropped };
+        }
         return;
       }
 
@@ -343,26 +364,58 @@ export default function HoodieCanvas({ width, height }: Props) {
 
   // Live cursor tracking for pen-tool overlay (closing-hint + snap target).
   const [snapTarget, setSnapTarget] = useState<Pt | null>(null);
-  const handleStageMouseMove = useCallback(() => {
-    if (!isPenActive) {
-      setSnapTarget(null);
-      return;
-    }
-    const raw = pointerToMockup();
-    if (!raw) return;
-    const snapped = effectiveSnapRadius > 0 ? findEdgeSnap(edgeMap, raw, effectiveSnapRadius) : null;
-    const cursor = snapped ?? raw;
-    setSnapTarget(snapped);
-    if (penDraft) {
-      const canClose =
-        penDraft.anchors.length >= MIN_MASK_ANCHORS &&
-        distSq(cursor, penDraft.anchors[0]) <= PEN_CLOSE_RADIUS * PEN_CLOSE_RADIUS;
-      actions.setPenCursor(cursor, canClose);
-    }
-  }, [actions, edgeMap, effectiveSnapRadius, isPenActive, penDraft, pointerToMockup]);
+  const handleStageMouseMove = useCallback(
+    (e: Konva.KonvaEventObject<MouseEvent>) => {
+      if (!isPenActive) {
+        setSnapTarget(null);
+        return;
+      }
+      const raw = pointerToMockup();
+      if (!raw) return;
+      const snapped = effectiveSnapRadius > 0 ? findEdgeSnap(edgeMap, raw, effectiveSnapRadius) : null;
+      const cursor = snapped ?? raw;
+      setSnapTarget(snapped);
+
+      // Magnetic pen click-and-drag: while LMB is held, drop additional
+      // anchors at fixed mockup-pixel intervals so the user can sweep along
+      // an edge freehand. If the LMB has been released by the time we get
+      // here (no `1` bit in `evt.buttons`), exit drag mode so the *next*
+      // mousedown starts a fresh drop sequence.
+      const lmbHeld = (e.evt.buttons & 1) === 1;
+      if (!lmbHeld) {
+        dragDropRef.current.active = false;
+      }
+      if (
+        tool === "magnetic-pen" &&
+        lmbHeld &&
+        dragDropRef.current.active &&
+        penDraft &&
+        penDraft.anchors.length > 0
+      ) {
+        const last = dragDropRef.current.lastDrop ?? penDraft.anchors[penDraft.anchors.length - 1];
+        if (distSq(cursor, last) >= dragDropThreshold * dragDropThreshold) {
+          actions.appendPenAnchor(cursor);
+          dragDropRef.current.lastDrop = cursor;
+        }
+      }
+
+      if (penDraft) {
+        const canClose =
+          penDraft.anchors.length >= MIN_MASK_ANCHORS &&
+          distSq(cursor, penDraft.anchors[0]) <= PEN_CLOSE_RADIUS * PEN_CLOSE_RADIUS;
+        actions.setPenCursor(cursor, canClose);
+      }
+    },
+    [actions, dragDropThreshold, edgeMap, effectiveSnapRadius, isPenActive, penDraft, pointerToMockup, tool],
+  );
+
+  const handleStageMouseUp = useCallback(() => {
+    dragDropRef.current.active = false;
+  }, []);
 
   const handleStageMouseLeave = useCallback(() => {
     setSnapTarget(null);
+    dragDropRef.current.active = false;
     if (isPenActive && penDraft) actions.setPenCursor(null, false);
   }, [actions, isPenActive, penDraft]);
 
@@ -397,6 +450,7 @@ export default function HoodieCanvas({ width, height }: Props) {
         }}
         onMouseDown={handleStageMouseDown}
         onMouseMove={handleStageMouseMove}
+        onMouseUp={handleStageMouseUp}
         onMouseLeave={handleStageMouseLeave}
         style={{ cursor: stageCursor, background: WORKSPACE_BG }}
       >
@@ -564,7 +618,9 @@ export default function HoodieCanvas({ width, height }: Props) {
       {isPenActive && (
         <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center text-[11px] text-slate-300">
           <div className="rounded bg-slate-900/70 px-3 py-1 backdrop-blur">
-            Click to add points · click first point or press Enter to close · Esc to cancel · Backspace to undo
+            {tool === "magnetic-pen"
+              ? "Click to add points · hold LMB and drag along an edge to auto-drop · click first point or Enter to close · Esc cancels · Backspace undoes"
+              : "Click to add points · click first point or press Enter to close · Esc to cancel · Backspace to undo"}
           </div>
         </div>
       )}
