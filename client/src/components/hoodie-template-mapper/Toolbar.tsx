@@ -13,6 +13,8 @@ import {
   Save,
   FolderOpen,
   Plus,
+  Loader2,
+  Check,
 } from "lucide-react";
 import type { HoodieToolId, HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
@@ -188,7 +190,22 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       />
 
       <div className="ml-auto flex items-center gap-2">
-        {dirty && <span className="text-[11px] text-amber-300">unsaved</span>}
+        {dirty ? (
+          <span
+            className="rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-300"
+            title="You have unsaved changes"
+          >
+            unsaved
+          </span>
+        ) : (
+          <span
+            className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-slate-500"
+            title="All changes saved"
+          >
+            <Check className="h-3 w-3" />
+            saved
+          </span>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -215,13 +232,29 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
         <Button
           size="sm"
           variant="default"
-          className="h-8 gap-1 text-xs"
+          className={
+            "h-8 gap-1 text-xs " +
+            (dirty && !busy
+              ? "border-emerald-400 bg-emerald-500 text-white hover:bg-emerald-400"
+              : "border-slate-700 bg-slate-800 text-slate-400")
+          }
           onClick={handleSave}
-          disabled={busy}
+          disabled={busy || !dirty}
+          title={
+            busy
+              ? "Saving…"
+              : dirty
+                ? "Save template (unsaved changes)"
+                : "Nothing to save"
+          }
           data-testid="hoodie-save"
         >
-          <Save className="h-3.5 w-3.5" />
-          Save
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          {busy ? "Saving…" : "Save"}
         </Button>
       </div>
     </div>

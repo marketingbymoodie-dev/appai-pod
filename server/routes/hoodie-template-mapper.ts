@@ -123,14 +123,28 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
     const file = safeJoin(TEMPLATES_DIR, `${name}.json`);
     if (!file) return res.status(400).json({ error: "Invalid path" });
     try {
-      const raw = await readRawBody(req, MAX_TEMPLATE_BYTES);
-      const text = raw.toString("utf-8");
-      // Validate JSON shape minimally — make sure it parses.
+      // The global express.json() middleware parses application/json bodies
+      // before this handler runs, draining the request stream. Prefer the
+      // raw buffer captured by its `verify` hook (req.rawBody); if that is
+      // missing, fall back to the parsed body; only as a last resort drain
+      // the stream ourselves (which would hang if it was already consumed).
+      const rawBody = (req as any).rawBody as Buffer | undefined;
+      let text: string;
+      if (rawBody && rawBody.length > 0) {
+        text = rawBody.toString("utf-8");
+      } else if (req.body && typeof req.body === "object" && Object.keys(req.body).length > 0) {
+        text = JSON.stringify(req.body);
+      } else {
+        const raw = await readRawBody(req, MAX_TEMPLATE_BYTES);
+        text = raw.toString("utf-8");
+      }
+      if (text.length > MAX_TEMPLATE_BYTES) {
+        return res.status(413).json({ error: `Body too large (${text.length} > ${MAX_TEMPLATE_BYTES})` });
+      }
       const parsed = JSON.parse(text) as { name?: string; version?: string };
       if (!parsed?.version || !String(parsed.version).startsWith("hoodie-template/")) {
         return res.status(400).json({ error: "Body missing 'version' = 'hoodie-template/v*'" });
       }
-      // Make sure the JSON's `name` matches the route param if present.
       if (parsed.name && parsed.name !== name) {
         return res.status(400).json({ error: `Body 'name' (${parsed.name}) does not match route ${name}` });
       }

@@ -1,6 +1,6 @@
-import { Group, Line, Text, Circle } from "react-konva";
+import { Group, Line, Text } from "react-konva";
 import { type CSSProperties, useMemo } from "react";
-import type { MaskLayer } from "@shared/hoodieTemplate";
+import type { MaskLayer, Pt } from "@shared/hoodieTemplate";
 import { PANEL_DISPLAY_LABEL } from "@shared/hoodieTemplate";
 import { centroid, svgPathToAnchors } from "../lib/svgPath";
 
@@ -19,6 +19,12 @@ type Props = {
   showPanelLabels: boolean;
   showHoverHighlight: boolean;
   interactive: boolean;
+  /**
+   * While an anchor of `dragOverride.id` is being dragged, render the
+   * polygon using `dragOverride.anchors` instead of the saved maskPath so
+   * the outline follows the dragged dot in real time.
+   */
+  dragOverride?: { id: string; anchors: Pt[] } | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
   /** Alt-click on the layer body — used by HoodieCanvas to insert an anchor at the click. */
@@ -51,6 +57,7 @@ export default function MaskLayersOverlay(props: Props) {
     showPanelLabels,
     showHoverHighlight,
     interactive,
+    dragOverride,
     onHover,
     onSelect,
     onAltClick,
@@ -62,7 +69,10 @@ export default function MaskLayersOverlay(props: Props) {
     <Group>
       {sorted.map((layer) => {
         if (!layer.visible) return null;
-        const anchors = svgPathToAnchors(layer.maskPath);
+        const anchors =
+          dragOverride && dragOverride.id === layer.id
+            ? dragOverride.anchors
+            : svgPathToAnchors(layer.maskPath);
         if (anchors.length < 3) return null;
         const isSelected = layer.id === selectedId;
         const isHover = layer.id === hoverId;

@@ -280,6 +280,11 @@ export default function HoodieCanvas({ width, height }: Props) {
       if (e.target !== e.target.getStage()) return;
       const evt = e.evt;
       if (evt.button !== 0) return;
+      // Spacebar pan owns the click — Konva still fires mousedown on the
+      // Stage even when draggable=true, so without this gate the click that
+      // initiates a pan also drops an anchor. Spacebar drags should be
+      // pan-only.
+      if (isPanning || evt.shiftKey) return;
       const mockupPt = pointerToMockup();
       if (!mockupPt) return;
 
@@ -322,7 +327,7 @@ export default function HoodieCanvas({ width, height }: Props) {
         actions.setSelectedLayer(null);
       }
     },
-    [actions, isPenActive, penDraft, pointerToMockup, scale, selectedLayer, tool],
+    [actions, isPenActive, isPanning, penDraft, pointerToMockup, scale, selectedLayer, tool],
   );
 
   // Snap a raw mockup point to the nearest strong edge when the magnetic pen
@@ -382,7 +387,14 @@ export default function HoodieCanvas({ width, height }: Props) {
         y={position.y}
         draggable={isPanning}
         onWheel={onWheel}
-        onDragEnd={(e) => setPosition({ x: e.target.x(), y: e.target.y() })}
+        onDragEnd={(e) => {
+          // Konva drag events bubble — only treat the stage's own drag end as
+          // a pan commit. Anchor-handle drags would otherwise yank the
+          // viewport to the anchor's mockup-pixel coords.
+          if (e.target === e.target.getStage()) {
+            setPosition({ x: e.target.x(), y: e.target.y() });
+          }
+        }}
         onMouseDown={handleStageMouseDown}
         onMouseMove={handleStageMouseMove}
         onMouseLeave={handleStageMouseLeave}
@@ -455,6 +467,15 @@ export default function HoodieCanvas({ width, height }: Props) {
             showPanelLabels={debug.showPanelLabels}
             showHoverHighlight={debug.showHoverHighlight}
             interactive={tool === "move"}
+            // While the user is dragging an anchor we keep the live geometry
+            // in `dragAnchors` (avoids per-frame store writes); pass it
+            // through here so the polygon outline tracks the dot in real
+            // time rather than snapping at drop.
+            dragOverride={
+              dragAnchors && selectedLayer
+                ? { id: selectedLayer.id, anchors: dragAnchors }
+                : null
+            }
             onHover={(id) => actions.setHoverLayer(id)}
             onSelect={(id) => actions.setSelectedLayer(id)}
             onAltClick={(id, mx, my) => {

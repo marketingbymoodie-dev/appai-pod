@@ -35,16 +35,29 @@ export async function loadTemplate(name: string): Promise<HoodieTemplate> {
 }
 
 export async function saveTemplate(name: string, template: HoodieTemplate): Promise<{ ok: true; file: string }> {
-  const r = await fetch(`${BASE}/templates/${encodeURIComponent(name)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(template),
-  });
-  if (!r.ok) {
-    const err = await r.text().catch(() => "");
-    throw new Error(`Failed to save template "${name}": ${err.slice(0, 200) || r.status}`);
+  // 20s safety timeout so a hung server can't pin the UI in the busy state.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const r = await fetch(`${BASE}/templates/${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(template),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) {
+      const err = await r.text().catch(() => "");
+      throw new Error(`Failed to save template "${name}": ${err.slice(0, 200) || r.status}`);
+    }
+    return (await r.json()) as { ok: true; file: string };
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Save timed out after 20s — server may be hung. (${name})`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return (await r.json()) as { ok: true; file: string };
 }
 
 export async function deleteTemplate(name: string): Promise<void> {
