@@ -172,6 +172,31 @@ export async function uploadSourcePanel(
   return (await r.json()) as { filename: string; url: string };
 }
 
+// ---------------------------------------------------------------------------
+// Reference overlays — Printify-rendered mockups uploaded as visual
+// comparison references for the mesh-warp editor. Per-view (front/back).
+// ---------------------------------------------------------------------------
+
+export async function uploadReferenceOverlay(
+  templateName: string,
+  view: HoodieView,
+  file: File,
+): Promise<{ filename: string; url: string }> {
+  const ext = (file.name.match(/\.([a-z0-9]+)$/i)?.[1] || "png").toLowerCase();
+  const filename = `${templateName}-${view}-ref.${ext}`;
+  const body = await file.arrayBuffer();
+  const r = await fetch(`${BASE}/reference-overlays/${encodeURIComponent(filename)}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "image/png" },
+    body,
+  });
+  if (!r.ok) {
+    const err = await r.text().catch(() => "");
+    throw new Error(`Failed to upload reference overlay: ${err.slice(0, 200) || r.status}`);
+  }
+  return (await r.json()) as { filename: string; url: string };
+}
+
 export function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);

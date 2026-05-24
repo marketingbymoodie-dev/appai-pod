@@ -48,6 +48,13 @@ export type HoodieMapperDebugFlags = {
   referenceOverlayOpacity: number;
   /** Diagnostic strip at the bottom of the canvas (stage size, mockup, img state, scale, pos). */
   showCanvasDebug: boolean;
+  /**
+   * When true (default), draggable polygon anchors render in the move
+   * tool. Setting false hides them so the user can focus on artwork
+   * placement / mesh warps without the perimeter dots competing for
+   * attention. Anchors are always hidden in the mesh-warp tool.
+   */
+  showAnchors: boolean;
 };
 
 const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
@@ -56,6 +63,7 @@ const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
   showHoverHighlight: true,
   referenceOverlayOpacity: 0.5,
   showCanvasDebug: false,
+  showAnchors: true,
 };
 
 /**

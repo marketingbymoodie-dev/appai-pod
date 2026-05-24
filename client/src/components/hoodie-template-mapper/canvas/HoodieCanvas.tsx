@@ -595,19 +595,6 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
           </Layer>
         )}
 
-        {referenceOverlay && referenceOverlay.placement === "above" && overlayImage && (
-          <Layer listening={false}>
-            <KonvaImage
-              image={overlayImage}
-              x={0}
-              y={0}
-              width={referenceOverlay.width}
-              height={referenceOverlay.height}
-              opacity={referenceOverlay.visible ? referenceOverlay.opacity : 0}
-            />
-          </Layer>
-        )}
-
         {/* Saved mask layers + anchor handles + pen draft.
             While the user holds Space (pan mode) we disable listening on
             this entire layer so masks/anchors don't intercept the click —
@@ -664,8 +651,10 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             }}
           />
 
-          {/* Draggable anchor handles for the selected layer (move tool only). */}
-          {tool === "move" && selectedLayer && liveAnchors.length >= MIN_MASK_ANCHORS && (
+          {/* Draggable anchor handles for the selected layer (move tool only).
+              Suppressed when the user has toggled off polygon-anchor display
+              (e.g. while focusing on mesh-warp artwork placement). */}
+          {tool === "move" && debug.showAnchors && selectedLayer && liveAnchors.length >= MIN_MASK_ANCHORS && (
             <AnchorHandlesOverlay
               anchors={liveAnchors}
               zoom={scale}
@@ -700,6 +689,23 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             />
           )}
         </Layer>
+
+        {/* Topmost reference overlay — sits ABOVE mesh-warp + masks so the
+            user can crossfade their mesh output against a Printify-rendered
+            comparison image via the opacity slider. Below-placement is
+            handled earlier in the stack (under the mockup). */}
+        {referenceOverlay && referenceOverlay.placement === "above" && overlayImage && (
+          <Layer listening={false}>
+            <KonvaImage
+              image={overlayImage}
+              x={0}
+              y={0}
+              width={referenceOverlay.width}
+              height={referenceOverlay.height}
+              opacity={referenceOverlay.visible ? referenceOverlay.opacity : 0}
+            />
+          </Layer>
+        )}
       </Stage>
 
       {/* HUD: zoom + tool hint + fit button. */}
