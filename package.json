@@ -11,7 +11,10 @@
     "db:push": "drizzle-kit push",
     "ext:install": "npm install --prefix extensions/checkout-ui",
     "shopify:dev": "npm run ext:install && npx shopify app dev",
-    "shopify:deploy": "npm run ext:install && npx shopify app deploy"
+    "shopify:deploy": "npm run ext:install && npx shopify app deploy",
+    "aop:triangle:generate": "tsx scripts/generate-aop-triangle-calibration.ts",
+    "aop:triangle:detect": "tsx scripts/detect-aop-triangle-calibration.ts",
+    "aop:panel:calibrate": "tsx scripts/build-aop-panel-calibration.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.18.0",
@@ -101,7 +104,8 @@
     "wouter": "^3.3.5",
     "ws": "^8.18.0",
     "zod": "^3.25.76",
-    "zod-validation-error": "^3.5.4"
+    "zod-validation-error": "^3.5.4",
+    "zustand": "^5.0.13"
   },
   "devDependencies": {
     "@replit/vite-plugin-cartographer": "^0.4.4",
@@ -125,7 +129,7 @@
     "autoprefixer": "^10.4.20",
     "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.8",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.25.12",
     "jsdom": "^28.1.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",

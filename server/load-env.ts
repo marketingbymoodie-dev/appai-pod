@@ -29,7 +29,7 @@ function safeResolve(...parts: Array<string | undefined>): string | undefined {
   return path.resolve(...(parts as string[]));
 }
 
-function resolveEnvPath(): string | undefined {
+async function resolveEnvPath(): Promise<string | undefined> {
   const candidates: string[] = [];
 
   // 1) ESM (dev via tsx): resolve relative to this module's URL.
@@ -37,12 +37,8 @@ function resolveEnvPath(): string | undefined {
     // Lazily access import.meta to avoid esbuild touching it in CJS prod builds.
     const metaUrl = (import.meta as { url?: string } | undefined)?.url;
     if (metaUrl) {
-      // Avoid a static import of "url" so esbuild doesn't keep it bundled in
-      // dead-code-eliminated branches; require() works in both ESM (tsx
-      // shims it) and CJS (production bundle, but we never reach this branch
-      // in production).
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      const { fileURLToPath } = require("url") as typeof import("url");
+      // Dynamic import keeps this ESM-safe under tsx and only runs in dev.
+      const { fileURLToPath } = await import("url");
       const here = path.dirname(fileURLToPath(metaUrl));
       const envPath = safeResolve(here, "..", ".env");
       if (envPath) candidates.push(envPath);
@@ -77,10 +73,9 @@ function resolveEnvPath(): string | undefined {
 }
 
 if (process.env.NODE_ENV !== "production") {
-  const envPath = resolveEnvPath();
+  const envPath = await resolveEnvPath();
   if (envPath) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-    const dotenv = require("dotenv") as typeof import("dotenv");
+    const dotenv = await import("dotenv");
     // `quiet: true` suppresses dotenv@17's marketing tip log.
     // `override: false` (the default) preserves vars already set in the shell.
     dotenv.config({ path: envPath, quiet: true });

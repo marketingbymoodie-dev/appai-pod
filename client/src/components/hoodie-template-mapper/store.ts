@@ -1,0 +1,413 @@
+import { create } from "zustand";
+import {
+  EMPTY_HOODIE_VIEW,
+  emptyHoodieTemplate,
+  HOODIE_TEMPLATE_VERSION,
+  type HoodieTemplate,
+  type HoodieToolId,
+  type HoodieView,
+  type MaskLayer,
+  type MockupAsset,
+  type Pt,
+  type ReferenceOverlayAsset,
+} from "@shared/hoodieTemplate";
+import { anchorsToSvgPath, simplifyPath, smoothPath, svgPathToAnchors } from "./lib/svgPath";
+
+/**
+ * Zustand store for the hoodie template mapper. Centralizes the in-memory
+ * template, the active view, the active tool, the selected/hover layer,
+ * and view-only debug flags. Persisting templates is delegated to the
+ * dev API in server/routes/hoodie-template-mapper.ts.
+ *
+ * Conventions:
+ *  - All mutations go through actions on this store; components never
+ *    rewrite the template directly.
+ *  - When the schema grows (mesh, transforms, exclusions in later phases)
+ *    new actions are added here; the JSON schema bumps versions in
+ *    `shared/hoodieTemplate.ts`.
+ */
+
+export type HoodieMapperDebugFlags = {
+  /** Show subtle dotted grid for visual scale reference. */
+  showGrid: boolean;
+  /** Show panel name labels on top of layers. */
+  showPanelLabels: boolean;
+  /** Translucent grey fill on hovered/selected mask layers. */
+  showHoverHighlight: boolean;
+  /** Reference overlay opacity slider mirror (0..1). */
+  referenceOverlayOpacity: number;
+};
+
+const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
+  showGrid: false,
+  showPanelLabels: true,
+  showHoverHighlight: true,
+  referenceOverlayOpacity: 0.5,
+};
+
+/**
+ * Pen-tool draft state. Anchors are accumulated in mockup pixel coords as the
+ * user clicks. The draft is committed to a real MaskLayer when closed and
+ * cleared otherwise. `view` lets us pin the in-progress draft to whichever
+ * view was active when drawing started.
+ */
+export type PenDraft = {
+  view: HoodieView;
+  anchors: Pt[];
+  /** Cursor position in mockup coords; used for the live "next segment" preview line. */
+  cursor: Pt | null;
+  /** True when the cursor is close enough to anchor[0] to close on click. */
+  canClose: boolean;
+};
+
+/** Snap radius in mockup pixels. 0 disables snapping (acts as polygon pen). */
+export const DEFAULT_MAGNETIC_RADIUS = 24;
+export const MIN_MASK_ANCHORS = 3;
+
+export type HoodieMapperState = {
+  template: HoodieTemplate;
+  view: HoodieView;
+  tool: HoodieToolId;
+  selectedLayerId: string | null;
+  hoverLayerId: string | null;
+  debug: HoodieMapperDebugFlags;
+  /** In-progress polygon being drawn; null when not actively drawing. */
+  penDraft: PenDraft | null;
+  /** Magnetic-pen snap radius in mockup pixels. */
+  magneticRadius: number;
+  /** Selected anchor index within the selected layer (for keyboard nudges). */
+  selectedAnchorIndex: number | null;
+  /** Tracks unsaved changes since the last successful save. */
+  dirty: boolean;
+  /** True while a save/load request is in flight. */
+  busy: boolean;
+};
+
+export type HoodieMapperActions = {
+  loadTemplate: (template: HoodieTemplate) => void;
+  resetTemplate: (name?: string) => void;
+  setView: (view: HoodieView) => void;
+  setTool: (tool: HoodieToolId) => void;
+  setSelectedLayer: (id: string | null) => void;
+  setHoverLayer: (id: string | null) => void;
+  setDebug: (patch: Partial<HoodieMapperDebugFlags>) => void;
+  setBusy: (busy: boolean) => void;
+  markSaved: () => void;
+  setMockup: (view: HoodieView, mockup: MockupAsset | null) => void;
+  setReferenceOverlay: (view: HoodieView, overlay: ReferenceOverlayAsset | null) => void;
+  setTemplateMeta: (patch: Partial<Pick<HoodieTemplate, "name" | "label" | "hoodieType" | "productTypeId" | "blueprintId" | "size">>) => void;
+  /** Mask layer mutations. */
+  upsertLayer: (layer: MaskLayer) => void;
+  removeLayer: (id: string) => void;
+  patchLayer: (id: string, patch: Partial<MaskLayer>) => void;
+  reorderLayer: (id: string, newZIndex: number) => void;
+  /**
+   * Replace the geometry of an existing layer. Re-serializes maskPath from
+   * the supplied anchors. Used by anchor edits (drag/insert/delete) and the
+   * Simplify/Smooth path-utility buttons.
+   */
+  setLayerAnchors: (id: string, anchors: Pt[]) => void;
+  simplifyLayerPath: (id: string, epsilon: number) => void;
+  smoothLayerPath: (id: string, iterations?: number) => void;
+  setSelectedAnchorIndex: (index: number | null) => void;
+  /** Pen-tool actions. */
+  setMagneticRadius: (radius: number) => void;
+  startPenDraft: (anchors?: Pt[]) => void;
+  appendPenAnchor: (point: Pt) => void;
+  setPenCursor: (cursor: Pt | null, canClose: boolean) => void;
+  popPenAnchor: () => void;
+  cancelPenDraft: () => void;
+  /**
+   * Close the current pen draft into a new MaskLayer on the active view.
+   * Returns the created layer id, or null if there were too few anchors.
+   */
+  closePenDraft: () => string | null;
+};
+
+type Store = HoodieMapperState & { actions: HoodieMapperActions };
+
+const STARTER_TEMPLATE_NAME = "zip-hoodie-aop-L";
+
+function bumpUpdatedAt(template: HoodieTemplate): HoodieTemplate {
+  return {
+    ...template,
+    meta: { ...template.meta, updatedAt: new Date().toISOString() },
+  };
+}
+
+function patchView(
+  template: HoodieTemplate,
+  view: HoodieView,
+  patch: Partial<HoodieTemplate["views"][HoodieView]>,
+): HoodieTemplate {
+  const current = template.views[view] ?? EMPTY_HOODIE_VIEW;
+  return bumpUpdatedAt({
+    ...template,
+    views: {
+      ...template.views,
+      [view]: { ...current, ...patch },
+    },
+  });
+}
+
+function newLayerId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `lyr_${crypto.randomUUID().slice(0, 8)}`;
+  }
+  return `lyr_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function findLayerById(template: HoodieTemplate, id: string): { view: HoodieView; layer: MaskLayer } | null {
+  for (const v of ["front", "back"] as HoodieView[]) {
+    const layer = template.views[v]?.layers.find((l) => l.id === id);
+    if (layer) return { view: v, layer };
+  }
+  return null;
+}
+
+function highestZIndexFor(template: HoodieTemplate, view: HoodieView): number {
+  const layers = template.views[view]?.layers ?? [];
+  if (layers.length === 0) return 0;
+  return layers.reduce((max, l) => (l.zIndex > max ? l.zIndex : max), 0);
+}
+
+function defaultMaskLayer(view: HoodieView, anchors: Pt[], template: HoodieTemplate): MaskLayer {
+  const id = newLayerId();
+  const z = highestZIndexFor(template, view) + 1;
+  return {
+    id,
+    view,
+    panelKey: null,
+    kind: "panel",
+    name: `Mask ${z}`,
+    visible: true,
+    locked: false,
+    zIndex: z,
+    opacity: 1,
+    blendMode: "normal",
+    maskPath: anchorsToSvgPath(anchors),
+    cornerPins: null,
+    mesh: null,
+    transform: {
+      x: 0,
+      y: 0,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      skewX: 0,
+      skewY: 0,
+    },
+    productionPanelAssignment: null,
+    productionPanelSrc: null,
+    isExclusion: false,
+  };
+}
+
+/**
+ * Helper used by anchor-editing actions: rebuild the SVG path for `id` from
+ * a fresh anchor list. The enclosing helper signature mirrors patchLayer so
+ * callers don't need to think about which view the layer lives on.
+ */
+function applyAnchorsTo(
+  template: HoodieTemplate,
+  id: string,
+  anchors: Pt[],
+): HoodieTemplate {
+  if (anchors.length < MIN_MASK_ANCHORS) return template;
+  const found = findLayerById(template, id);
+  if (!found) return template;
+  const view = template.views[found.view];
+  const layers = view.layers.map((l) =>
+    l.id === id ? { ...l, maskPath: anchorsToSvgPath(anchors) } : l,
+  );
+  return patchView(template, found.view, { layers });
+}
+
+export const useHoodieMapperStore = create<Store>((set, get) => ({
+  template: emptyHoodieTemplate(STARTER_TEMPLATE_NAME, "Zip Hoodie AOP — Size L"),
+  view: "front",
+  tool: "move",
+  selectedLayerId: null,
+  hoverLayerId: null,
+  debug: { ...DEFAULT_DEBUG_FLAGS },
+  penDraft: null,
+  magneticRadius: DEFAULT_MAGNETIC_RADIUS,
+  selectedAnchorIndex: null,
+  dirty: false,
+  busy: false,
+  actions: {
+    loadTemplate: (template) =>
+      set(() => ({
+        template,
+        selectedLayerId: null,
+        hoverLayerId: null,
+        penDraft: null,
+        selectedAnchorIndex: null,
+        dirty: false,
+      })),
+    resetTemplate: (name) =>
+      set(() => ({
+        template: emptyHoodieTemplate(name ?? STARTER_TEMPLATE_NAME),
+        selectedLayerId: null,
+        hoverLayerId: null,
+        penDraft: null,
+        selectedAnchorIndex: null,
+        dirty: false,
+      })),
+    setView: (view) =>
+      set(() => ({
+        view,
+        selectedLayerId: null,
+        hoverLayerId: null,
+        penDraft: null,
+        selectedAnchorIndex: null,
+      })),
+    setTool: (tool) =>
+      set((s) => ({
+        tool,
+        // Cancel any in-progress pen draft when switching to a non-pen tool.
+        penDraft: tool === "polygon-pen" || tool === "magnetic-pen" ? s.penDraft : null,
+      })),
+    setSelectedLayer: (id) => set(() => ({ selectedLayerId: id, selectedAnchorIndex: null })),
+    setHoverLayer: (id) => set(() => ({ hoverLayerId: id })),
+    setDebug: (patch) => set((s) => ({ debug: { ...s.debug, ...patch } })),
+    setBusy: (busy) => set(() => ({ busy })),
+    markSaved: () => set(() => ({ dirty: false })),
+    setMockup: (view, mockup) =>
+      set((s) => ({
+        template: patchView(s.template, view, { mockup }),
+        dirty: true,
+      })),
+    setReferenceOverlay: (view, overlay) =>
+      set((s) => ({
+        template: patchView(s.template, view, { referenceOverlay: overlay }),
+        dirty: true,
+      })),
+    setTemplateMeta: (patch) =>
+      set((s) => ({
+        template: bumpUpdatedAt({ ...s.template, ...patch }),
+        dirty: true,
+      })),
+    upsertLayer: (layer) =>
+      set((s) => {
+        const view = s.template.views[layer.view] ?? EMPTY_HOODIE_VIEW;
+        const existsIdx = view.layers.findIndex((l) => l.id === layer.id);
+        const layers = existsIdx >= 0
+          ? view.layers.map((l, i) => (i === existsIdx ? { ...l, ...layer } : l))
+          : [...view.layers, layer];
+        return {
+          template: patchView(s.template, layer.view, { layers }),
+          selectedLayerId: layer.id,
+          dirty: true,
+        };
+      }),
+    removeLayer: (id) =>
+      set((s) => {
+        let updated = s.template;
+        for (const v of ["front", "back"] as HoodieView[]) {
+          const view = updated.views[v];
+          if (!view) continue;
+          if (view.layers.some((l) => l.id === id)) {
+            updated = patchView(updated, v, { layers: view.layers.filter((l) => l.id !== id) });
+          }
+        }
+        const nextSelected = s.selectedLayerId === id ? null : s.selectedLayerId;
+        return { template: updated, selectedLayerId: nextSelected, dirty: true };
+      }),
+    patchLayer: (id, patch) =>
+      set((s) => {
+        let updated = s.template;
+        for (const v of ["front", "back"] as HoodieView[]) {
+          const view = updated.views[v];
+          if (!view) continue;
+          const idx = view.layers.findIndex((l) => l.id === id);
+          if (idx < 0) continue;
+          const layers = view.layers.map((l, i) => (i === idx ? { ...l, ...patch } : l));
+          updated = patchView(updated, v, { layers });
+        }
+        return { template: updated, dirty: true };
+      }),
+    reorderLayer: (id, newZIndex) =>
+      set((s) => {
+        let updated = s.template;
+        for (const v of ["front", "back"] as HoodieView[]) {
+          const view = updated.views[v];
+          if (!view) continue;
+          if (!view.layers.some((l) => l.id === id)) continue;
+          const layers = view.layers.map((l) => (l.id === id ? { ...l, zIndex: newZIndex } : l));
+          updated = patchView(updated, v, { layers });
+        }
+        return { template: updated, dirty: true };
+      }),
+    setLayerAnchors: (id, anchors) =>
+      set((s) => ({
+        template: applyAnchorsTo(s.template, id, anchors),
+        dirty: true,
+      })),
+    simplifyLayerPath: (id, epsilon) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        const anchors = svgPathToAnchors(found.layer.maskPath);
+        const next = simplifyPath(anchors, epsilon);
+        if (next.length < MIN_MASK_ANCHORS) return {} as Partial<Store>;
+        return { template: applyAnchorsTo(s.template, id, next), dirty: true };
+      }),
+    smoothLayerPath: (id, iterations = 1) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        const anchors = svgPathToAnchors(found.layer.maskPath);
+        const next = smoothPath(anchors, iterations);
+        if (next.length < MIN_MASK_ANCHORS) return {} as Partial<Store>;
+        return { template: applyAnchorsTo(s.template, id, next), dirty: true };
+      }),
+    setSelectedAnchorIndex: (index) => set(() => ({ selectedAnchorIndex: index })),
+    setMagneticRadius: (radius) =>
+      set(() => ({ magneticRadius: Math.max(0, Math.min(200, Math.round(radius))) })),
+    startPenDraft: (anchors) =>
+      set((s) => ({
+        penDraft: { view: s.view, anchors: anchors ? [...anchors] : [], cursor: null, canClose: false },
+        selectedLayerId: null,
+        selectedAnchorIndex: null,
+      })),
+    appendPenAnchor: (point) =>
+      set((s) => {
+        const draft = s.penDraft ?? { view: s.view, anchors: [], cursor: null, canClose: false };
+        return {
+          penDraft: { ...draft, view: draft.view ?? s.view, anchors: [...draft.anchors, point] },
+        };
+      }),
+    setPenCursor: (cursor, canClose) =>
+      set((s) => {
+        if (!s.penDraft) return {} as Partial<Store>;
+        return { penDraft: { ...s.penDraft, cursor, canClose } };
+      }),
+    popPenAnchor: () =>
+      set((s) => {
+        if (!s.penDraft || s.penDraft.anchors.length === 0) return {} as Partial<Store>;
+        return {
+          penDraft: { ...s.penDraft, anchors: s.penDraft.anchors.slice(0, -1) },
+        };
+      }),
+    cancelPenDraft: () => set(() => ({ penDraft: null })),
+    closePenDraft: () => {
+      const s = get();
+      const draft = s.penDraft;
+      if (!draft || draft.anchors.length < MIN_MASK_ANCHORS) return null;
+      const layer = defaultMaskLayer(draft.view, draft.anchors, s.template);
+      const view = s.template.views[draft.view];
+      const layers = [...view.layers, layer];
+      set(() => ({
+        template: patchView(s.template, draft.view, { layers }),
+        penDraft: null,
+        selectedLayerId: layer.id,
+        selectedAnchorIndex: null,
+        dirty: true,
+      }));
+      return layer.id;
+    },
+  },
+}));
+
+export const HOODIE_MAPPER_VERSION = HOODIE_TEMPLATE_VERSION;

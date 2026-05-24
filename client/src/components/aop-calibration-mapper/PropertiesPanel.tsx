@@ -1,9 +1,17 @@
+import { useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import type { CalibrationState, DebugFlags, ViewId } from "./types";
+import type {
+  CalibrationImport,
+  CalibrationState,
+  DebugFlags,
+  DetectionImport,
+  RenderPreviewMode,
+  ViewId,
+} from "./types";
 import type { CalibrationActions } from "./useCalibration";
 
 type Props = {
@@ -22,11 +30,67 @@ type Props = {
   savedCalibrations: Array<{ name: string; updatedAt: string }>;
   saveTarget: string;
   setSaveTarget: (label: string) => void;
+  panelDetections: Record<string, DetectionImport>;
+  onImportDetection: (file: File) => void;
+  onClearDetection: () => void;
+  panelCalibrations: Record<string, CalibrationImport>;
+  onBuildCalibration: () => void;
+  onImportCalibration: (file: File) => void;
+  onClearCalibration: () => void;
 };
 
 export default function PropertiesPanel(props: Props) {
-  const { state, actions, view, selectedPanel, debug, setDebug, mode, setMode, onSave, onLoad, onExportJson, onTestRender, savedCalibrations, saveTarget, setSaveTarget } = props;
+  const {
+    state,
+    actions,
+    view,
+    selectedPanel,
+    debug,
+    setDebug,
+    mode,
+    setMode,
+    onSave,
+    onLoad,
+    onExportJson,
+    onTestRender,
+    savedCalibrations,
+    saveTarget,
+    setSaveTarget,
+    panelDetections,
+    onImportDetection,
+    onClearDetection,
+    panelCalibrations,
+    onBuildCalibration,
+    onImportCalibration,
+    onClearCalibration,
+  } = props;
   const panel = selectedPanel ? state.views[view].panels[selectedPanel] : null;
+  const detection = selectedPanel ? panelDetections[selectedPanel] : null;
+  const calibration = selectedPanel ? panelCalibrations[selectedPanel] : null;
+  const detectionInputRef = useRef<HTMLInputElement | null>(null);
+  const calibrationInputRef = useRef<HTMLInputElement | null>(null);
+
+  function applyReconstructionOnlyPreset() {
+    setDebug({
+      reconstructionOnlyPreview: true,
+      renderPreviewMode: "warped",
+      mockupOpacity: 0,
+      warpedPanelOpacity: 1,
+      showMockupEdges: false,
+      showMesh: false,
+      showOnionSkin: false,
+      blinkCompare: false,
+    });
+  }
+  function exitReconstructionOnly() {
+    setDebug({
+      reconstructionOnlyPreview: false,
+      renderPreviewMode: "clipped",
+      mockupOpacity: 1,
+      warpedPanelOpacity: 0.75,
+      showMesh: true,
+    });
+  }
 
   return (
     <div className="flex h-full w-80 flex-col border-l border-slate-800 bg-slate-900 text-slate-200" data-testid="aop-mapper-properties">
@@ -49,6 +113,33 @@ export default function PropertiesPanel(props: Props) {
           </div>
           <div className="mt-2 text-[11px] text-slate-400">
             Select: drag panels, zoom/pan canvas. Mesh: drag mesh handles. Mask: click canvas to add polygon vertex; drag to move; double-click to delete.
+          </div>
+        </Section>
+
+        <Section title="Render preview">
+          <div className="grid grid-cols-4 gap-1">
+            {(["source", "warped", "clipped", "difference"] as RenderPreviewMode[]).map((previewMode) => (
+              <Button
+                key={previewMode}
+                size="sm"
+                variant={debug.renderPreviewMode === previewMode ? "default" : "outline"}
+                onClick={() => setDebug({ renderPreviewMode: previewMode })}
+                className="px-1 text-[11px]"
+                data-testid={`aop-mapper-preview-${previewMode}`}
+              >
+                {previewMode}
+              </Button>
+            ))}
+          </div>
+          <div className="mt-2 space-y-2">
+            <LabelRow label={`Mockup opacity ${Math.round(debug.mockupOpacity * 100)}%`}>
+              <Slider value={[debug.mockupOpacity * 100]} min={0} max={100} step={1} onValueChange={([v]) => setDebug({ mockupOpacity: v / 100 })} />
+            </LabelRow>
+            <LabelRow label={`Warped panel opacity ${Math.round(debug.warpedPanelOpacity * 100)}%`}>
+              <Slider value={[debug.warpedPanelOpacity * 100]} min={0} max={100} step={1} onValueChange={([v]) => setDebug({ warpedPanelOpacity: v / 100 })} />
+            </LabelRow>
+            <DebugToggle label="Blink compare" checked={debug.blinkCompare} onChange={(c) => setDebug({ blinkCompare: c })} />
+            <DebugToggle label="Final output preview" checked={debug.showFinalPreview} onChange={(c) => setDebug({ showFinalPreview: c })} />
           </div>
         </Section>
 
@@ -122,6 +213,188 @@ export default function PropertiesPanel(props: Props) {
                   reset
                 </Button>
               </div>
+              <div className="grid grid-cols-3 gap-1 text-xs">
+                <Button size="sm" variant="outline" onClick={() => actions.resetPanelMesh(view, panel.panelKey)}>reset mesh</Button>
+                <Button size="sm" variant="outline" onClick={() => actions.resetPanelMask(view, panel.panelKey)}>reset mask</Button>
+                <Button size="sm" variant="outline" onClick={() => actions.resetPanelTransform(view, panel.panelKey)}>reset transform</Button>
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="AI-assist (triangle CV)">
+          {!panel && <div className="text-xs text-slate-400">Select a panel to import a detection.</div>}
+          {panel && (
+            <div className="space-y-2">
+              <div className="text-[11px] text-slate-400">
+                Import the JSON emitted by <code className="rounded bg-slate-800 px-1 py-0.5">npm run aop:triangle:detect -- --panel {panel.panelKey} --mockup &lt;path&gt;</code>.
+                The mesh + mask suggestion is applied to <span className="font-semibold text-slate-200">{panel.panelKey}</span>.
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="default"
+                  className="flex-1"
+                  onClick={() => detectionInputRef.current?.click()}
+                  data-testid="aop-mapper-import-detection"
+                >
+                  Auto-suggest mesh
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!detection}
+                  onClick={() => onClearDetection()}
+                  data-testid="aop-mapper-clear-detection"
+                >
+                  Clear overlay
+                </Button>
+              </div>
+              <input
+                ref={detectionInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  onImportDetection(file);
+                  event.target.value = "";
+                }}
+              />
+              {detection && (
+                <div className="rounded border border-slate-800 bg-slate-950 p-2 text-[11px] text-slate-300" data-testid="aop-mapper-detection-summary">
+                  <div className="font-semibold text-slate-200">{detection.panelName}</div>
+                  <div>
+                    {detection.stats?.accepted ?? 0} / {detection.stats?.totalTriangles ?? detection.detectedTriangles.length} triangles · avg conf {(((detection.stats?.averageConfidence ?? 0) * 100) | 0)}%
+                  </div>
+                  <div className="text-slate-400">
+                    grid {detection.panelGrid.cols}×{detection.panelGrid.rows} · mockup {detection.mockupSize.width}×{detection.mockupSize.height}
+                  </div>
+                  {detection.detectedAt && <div className="text-slate-500">detected {detection.detectedAt.replace("T", " ").slice(0, 16)}</div>}
+                  <div className="mt-1 grid grid-cols-2 gap-1">
+                    <DebugToggle label="Triangles" checked={debug.showDetectionTriangles} onChange={(c) => setDebug({ showDetectionTriangles: c })} />
+                    <DebugToggle label="Lines" checked={debug.showDetectionCorrespondences} onChange={(c) => setDebug({ showDetectionCorrespondences: c })} />
+                    <DebugToggle label="Heatmap" checked={debug.showDetectionConfidenceHeatmap} onChange={(c) => setDebug({ showDetectionConfidenceHeatmap: c })} />
+                    <DebugToggle label="Rejects" checked={debug.showDetectionRejected} onChange={(c) => setDebug({ showDetectionRejected: c })} />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </Section>
+
+        <Section title="Panel calibration (piecewise affine)">
+          {!panel && <div className="text-xs text-slate-400">Select a panel to build or import calibration data.</div>}
+          {panel && (
+            <div className="space-y-2">
+              <div className="text-[11px] text-slate-400">
+                Build calibration from the imported detection (Gauss-Seidel solve), or import a JSON
+                produced by <code className="rounded bg-slate-800 px-1 py-0.5">npm run aop:panel:calibrate -- --panel {panel.panelKey} --mockup &lt;path&gt;</code>.
+                Either action replaces the mesh + mask for <span className="font-semibold text-slate-200">{panel.panelKey}</span>.
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  variant="default"
+                  disabled={!detection}
+                  onClick={() => onBuildCalibration()}
+                  data-testid="aop-mapper-build-calibration"
+                >
+                  Build from detection
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => calibrationInputRef.current?.click()}
+                  data-testid="aop-mapper-import-calibration"
+                >
+                  Import calibration JSON
+                </Button>
+              </div>
+              <input
+                ref={calibrationInputRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (!file) return;
+                  onImportCalibration(file);
+                  event.target.value = "";
+                }}
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  variant={debug.reconstructionOnlyPreview ? "default" : "outline"}
+                  onClick={() => (debug.reconstructionOnlyPreview ? exitReconstructionOnly() : applyReconstructionOnlyPreset())}
+                  data-testid="aop-mapper-reconstruction-only"
+                >
+                  {debug.reconstructionOnlyPreview ? "Exit reconstruction view" : "Show reconstruction only"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant={debug.renderPreviewMode === "difference" ? "default" : "outline"}
+                  onClick={() =>
+                    setDebug({
+                      renderPreviewMode: debug.renderPreviewMode === "difference" ? "clipped" : "difference",
+                      mockupOpacity: 1,
+                      warpedPanelOpacity: 0.85,
+                      reconstructionOnlyPreview: false,
+                    })
+                  }
+                  data-testid="aop-mapper-difference-overlay"
+                >
+                  {debug.renderPreviewMode === "difference" ? "Exit diff overlay" : "Diff vs mockup"}
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <DebugToggle
+                  label="Mask boundary"
+                  checked={debug.showCalibrationMaskBoundary}
+                  onChange={(c) => setDebug({ showCalibrationMaskBoundary: c })}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!calibration}
+                  onClick={() => onClearCalibration()}
+                  data-testid="aop-mapper-clear-calibration"
+                >
+                  Clear calibration
+                </Button>
+              </div>
+              {calibration && (
+                <div className="rounded border border-slate-800 bg-slate-950 p-2 text-[11px] text-slate-300" data-testid="aop-mapper-calibration-summary">
+                  <div className="font-semibold text-slate-200">{calibration.panelName}</div>
+                  <div>
+                    {calibration.quality.detectedTriangleCount}/{calibration.quality.totalTriangleCount ?? "?"} triangles · {calibration.quality.coveragePercent}% coverage · avg conf {(((calibration.quality.avgConfidence ?? 0) * 100) | 0)}%
+                  </div>
+                  <div className="text-slate-400">
+                    mean centroid err {calibration.quality.meanCentroidErrorPx?.toFixed(2) ?? "?"}px · max {calibration.quality.maxCentroidErrorPx?.toFixed(2) ?? "?"}px
+                  </div>
+                  <div className="text-slate-400">
+                    grid {calibration.panelGrid.cols}×{calibration.panelGrid.rows} · mockup {calibration.mockupSize.width}×{calibration.mockupSize.height}
+                  </div>
+                  <div className="text-slate-400">
+                    mask: {calibration.mask.polygon.length} vertices ({calibration.mask.source})
+                  </div>
+                  {(calibration.quality.missingTriangleIds?.length || 0) > 0 && (
+                    <div className="mt-1 truncate text-amber-300" title={(calibration.quality.missingTriangleIds || []).join(", ")}>
+                      missing: {calibration.quality.missingTriangleIds?.length}
+                    </div>
+                  )}
+                  {(calibration.quality.lowConfidenceTriangleIds?.length || 0) > 0 && (
+                    <div className="truncate text-orange-300" title={(calibration.quality.lowConfidenceTriangleIds || []).join(", ")}>
+                      low-confidence: {calibration.quality.lowConfidenceTriangleIds?.length}
+                    </div>
+                  )}
+                  {calibration.builtAt && (
+                    <div className="text-slate-500">built {calibration.builtAt.replace("T", " ").slice(0, 16)}</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </Section>
@@ -130,12 +403,10 @@ export default function PropertiesPanel(props: Props) {
           <DebugToggle label="Mesh handles" checked={debug.showMesh} onChange={(c) => setDebug({ showMesh: c })} />
           <DebugToggle label="Mask polygon" checked={debug.showMask} onChange={(c) => setDebug({ showMask: c })} />
           <DebugToggle label="Panel bounds" checked={debug.showPanelBounds} onChange={(c) => setDebug({ showPanelBounds: c })} />
-          <DebugToggle label="Onion skin" checked={debug.showOnionSkin} onChange={(c) => setDebug({ showOnionSkin: c })} />
-          {debug.showOnionSkin && (
-            <LabelRow label={`Onion skin alpha ${Math.round(debug.onionSkinOpacity * 100)}%`}>
-              <Slider value={[debug.onionSkinOpacity * 100]} min={0} max={100} step={1} onValueChange={([v]) => setDebug({ onionSkinOpacity: v / 100 })} />
-            </LabelRow>
-          )}
+          <DebugToggle label="Distortion heatmap" checked={debug.showDistortionHeatmap} onChange={(c) => setDebug({ showDistortionHeatmap: c })} />
+          <DebugToggle label="Garment seam guides" checked={debug.showGarmentSeamGuides} onChange={(c) => setDebug({ showGarmentSeamGuides: c })} />
+          <DebugToggle label="Mockup contour edges" checked={debug.showMockupEdges} onChange={(c) => setDebug({ showMockupEdges: c })} />
+          <DebugToggle label="Grid intersections" checked={debug.showGridIntersections} onChange={(c) => setDebug({ showGridIntersections: c })} />
           <DebugToggle label="High-contrast mockup" checked={debug.highContrast} onChange={(c) => setDebug({ highContrast: c })} />
         </Section>
 

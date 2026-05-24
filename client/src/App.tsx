@@ -14,6 +14,7 @@ import EmbedDesign from "@/pages/embed-design";
 import TestSizeChart from "@/pages/test-size-chart";
 import ZipHoodieAopCalibrationPage from "@/pages/mockup-calibration/zip-hoodie-aop";
 import AopCalibrationMapperPage from "@/pages/aop-calibration-mapper";
+import HoodieTemplateMapperPage from "@/pages/hoodie-template-mapper";
 import NotFound from "@/pages/not-found";
 
 import AdminDashboard from "@/pages/admin/dashboard";
@@ -44,6 +45,7 @@ function AppRouter() {
       <Route path="/test-size-chart" component={TestSizeChart} />
       <Route path="/mockup-calibration/zip-hoodie-aop" component={ZipHoodieAopCalibrationPage} />
       <Route path="/admin/aop-calibration-mapper" component={AopCalibrationMapperPage} />
+      <Route path="/admin/hoodie-template-mapper" component={HoodieTemplateMapperPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />
