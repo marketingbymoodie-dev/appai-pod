@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Image as KonvaImage, Layer, Line, Rect, Stage } from "react-konva";
 import Konva from "konva";
 import {
@@ -37,8 +37,15 @@ import type { Pt } from "@shared/hoodieTemplate";
  */
 
 type Props = {
-  width: number;
-  height: number;
+  /**
+   * Optional explicit canvas size in pixels. If omitted, HoodieCanvas
+   * self-measures via its own wrapper ref. Self-measurement is the
+   * recommended path because it survives StrictMode / ResizeObserver
+   * timing races that have intermittently zeroed-out parent-supplied
+   * sizes in dev.
+   */
+  width?: number;
+  height?: number;
 };
 
 const ZOOM_MIN = 0.05;
@@ -106,11 +113,52 @@ function useLoadedImage(src: string | null | undefined): LoadedImageState {
   return state;
 }
 
-export default function HoodieCanvas({ width, height }: Props) {
+export default function HoodieCanvas({ width: widthProp, height: heightProp }: Props) {
   const stageRef = useRef<Konva.Stage | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+
+  // Self-measured wrapper size. Used when the caller doesn't pass an
+  // explicit width/height (the recommended path). We measure with
+  // useLayoutEffect + ResizeObserver + window resize + a short rAF chain
+  // to handle StrictMode mount/cleanup/mount races and post-paint layout
+  // shifts.
+  const [measuredSize, setMeasuredSize] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    if (widthProp !== undefined && heightProp !== undefined) return;
+    function measure() {
+      const node = wrapperRef.current;
+      if (!node) return;
+      const r = node.getBoundingClientRect();
+      const w = Math.floor(r.width);
+      const h = Math.floor(r.height);
+      setMeasuredSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+    }
+    measure();
+    const el = wrapperRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    const rafIds: number[] = [];
+    let remaining = 8;
+    const tick = () => {
+      remaining -= 1;
+      measure();
+      if (remaining > 0) rafIds.push(window.requestAnimationFrame(tick));
+    };
+    rafIds.push(window.requestAnimationFrame(tick));
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+      for (const id of rafIds) window.cancelAnimationFrame(id);
+    };
+  }, [widthProp, heightProp]);
+
+  const width = widthProp ?? measuredSize.width;
+  const height = heightProp ?? measuredSize.height;
 
   // Store wiring.
   const view = useHoodieMapperStore((s) => s.view);
@@ -445,7 +493,7 @@ export default function HoodieCanvas({ width, height }: Props) {
         : "default";
 
   return (
-    <div className="relative h-full w-full" data-testid="hoodie-canvas-root">
+    <div ref={wrapperRef} className="relative h-full w-full" data-testid="hoodie-canvas-root">
       <Stage
         ref={stageRef}
         width={Math.max(1, width)}

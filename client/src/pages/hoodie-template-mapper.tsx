@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AdminLayout from "@/components/admin-layout";
 import HoodieCanvas from "@/components/hoodie-template-mapper/canvas/HoodieCanvas";
 import LeftSidebar from "@/components/hoodie-template-mapper/LeftSidebar";
@@ -49,8 +49,6 @@ function readImageDimsFromUrl(url: string): Promise<{ width: number; height: num
 }
 
 export default function HoodieTemplateMapperPage() {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [{ width, height }, setSize] = useState({ width: 0, height: 0 });
   const [openLoad, setOpenLoad] = useState(false);
   const [loadName, setLoadName] = useState("");
   const [autosavePrompt, setAutosavePrompt] = useState<AutosaveSnapshot | null>(null);
@@ -60,47 +58,6 @@ export default function HoodieTemplateMapperPage() {
   const frontMockup = useHoodieMapperStore((s) => s.template.views.front?.mockup ?? null);
   const backMockup = useHoodieMapperStore((s) => s.template.views.back?.mockup ?? null);
   const { toast } = useToast();
-
-  // Defensive size measurement for the canvas container. We've seen the
-  // ResizeObserver-only path land at 0x0 in dev (likely StrictMode running
-  // the effect, then cleanup, then re-running before the initial RO
-  // callback could fire — leaving us subscribed but never delivered a
-  // size). Use useLayoutEffect (synchronous post-DOM measure), plus a
-  // ResizeObserver, plus a window resize listener, plus a few rAF
-  // re-measures so a missed initial measurement self-heals on the next
-  // frames.
-  useLayoutEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    function measure() {
-      const node = containerRef.current;
-      if (!node) return;
-      const r = node.getBoundingClientRect();
-      const w = Math.floor(r.width);
-      const h = Math.floor(r.height);
-      setSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
-    }
-    measure();
-    const ro = new ResizeObserver(() => measure());
-    ro.observe(el);
-    window.addEventListener("resize", measure);
-    // Re-measure on the next several animation frames in case the layout
-    // wasn't settled yet at this point in the commit (font load,
-    // sidebar/dialog mount, etc.).
-    const rafIds: number[] = [];
-    let remaining = 6;
-    const tick = () => {
-      remaining -= 1;
-      measure();
-      if (remaining > 0) rafIds.push(window.requestAnimationFrame(tick));
-    };
-    rafIds.push(window.requestAnimationFrame(tick));
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-      for (const id of rafIds) window.cancelAnimationFrame(id);
-    };
-  }, []);
 
   // Warn before navigating away with unsaved changes.
   useEffect(() => {
@@ -293,17 +250,13 @@ export default function HoodieTemplateMapperPage() {
 
         <div className="flex flex-1 overflow-hidden">
           <LeftSidebar onLoadTemplate={(name) => handleLoad(name)} />
-          <div ref={containerRef} className="relative flex-1 overflow-hidden">
-            {width > 0 && height > 0 ? (
-              <HoodieCanvas width={width} height={height} />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-xs text-amber-300">
-                <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                  Canvas container has no size yet ({width}×{height}). If this stays put, the
-                  flex layout failed to give the middle column any space.
-                </div>
-              </div>
-            )}
+          <div className="relative flex-1 overflow-hidden">
+            {/* HoodieCanvas self-measures via its own wrapper ref —
+                we don't pass width/height props, since the previous
+                page-level useLayoutEffect+ResizeObserver path was
+                landing at 0x0 in StrictMode and gating the canvas
+                from mounting at all. */}
+            <HoodieCanvas />
           </div>
           <RightSidebar />
         </div>
