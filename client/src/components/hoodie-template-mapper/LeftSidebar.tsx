@@ -39,6 +39,8 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const backMockupSrc = useHoodieMapperStore((s) => s.template.views.back?.mockup?.src ?? null);
   const selectedLayerId = useHoodieMapperStore((s) => s.selectedLayerId);
   const hoverLayerId = useHoodieMapperStore((s) => s.hoverLayerId);
+  const saveSeq = useHoodieMapperStore((s) => s.saveSeq);
+  const activeTemplateName = useHoodieMapperStore((s) => s.template.name);
   const actions = useHoodieMapperStore((s) => s.actions);
 
   const [templates, setTemplates] = useState<TemplateListEntry[]>([]);
@@ -99,6 +101,15 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
     refreshMockups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fetch the saved-templates list every time markSaved() bumps saveSeq,
+  // so a template the user just saved appears in this sidebar without them
+  // having to click the refresh icon.
+  useEffect(() => {
+    if (saveSeq === 0) return;
+    refreshTemplates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveSeq]);
 
   const eligiblePanels = PANELS_PER_VIEW[view];
 
@@ -279,21 +290,30 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
         {templates.length === 0 ? (
           <div className="px-1 py-1 text-[11px] text-slate-500">No saved templates yet.</div>
         ) : (
-          templates.map((t) => (
-            <Button
-              key={t.name}
-              size="sm"
-              variant="ghost"
-              className="w-full justify-start text-[11px]"
-              onClick={() => onLoadTemplate(t.name)}
-              data-testid={`hoodie-load-template-${t.name}`}
-            >
-              <span className="truncate">{t.name}</span>
-              <span className="ml-auto text-[10px] text-slate-500">
-                {t.updatedAt.replace("T", " ").slice(0, 16)}
-              </span>
-            </Button>
-          ))
+          templates.map((t) => {
+            const isActive = t.name === activeTemplateName;
+            return (
+              <Button
+                key={t.name}
+                size="sm"
+                variant="ghost"
+                className={`w-full justify-start text-[11px] ${
+                  isActive ? "bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15" : ""
+                }`}
+                onClick={() => onLoadTemplate(t.name)}
+                data-testid={`hoodie-load-template-${t.name}`}
+                title={isActive ? "Currently open — click to reload from disk" : `Load ${t.name}`}
+              >
+                <span className="truncate">
+                  {isActive && <span className="mr-1 text-emerald-300">●</span>}
+                  {t.name}
+                </span>
+                <span className="ml-auto text-[10px] text-slate-500">
+                  {t.updatedAt.replace("T", " ").slice(0, 16)}
+                </span>
+              </Button>
+            );
+          })
         )}
       </div>
     </aside>

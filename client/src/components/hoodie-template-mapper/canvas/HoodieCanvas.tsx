@@ -169,6 +169,7 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const hoverLayerId = useHoodieMapperStore((s) => s.hoverLayerId);
   const penDraft = useHoodieMapperStore((s) => s.penDraft);
   const magneticRadius = useHoodieMapperStore((s) => s.magneticRadius);
+  const magneticTolerance = useHoodieMapperStore((s) => s.magneticTolerance);
   const selectedAnchorIndex = useHoodieMapperStore((s) => s.selectedAnchorIndex);
   const mockup = useHoodieMapperStore((s) => s.template.views[s.view].mockup);
   const referenceOverlay = useHoodieMapperStore((s) => s.template.views[s.view].referenceOverlay);
@@ -420,10 +421,10 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const snapPoint = useCallback(
     (raw: Pt): Pt => {
       if (effectiveSnapRadius <= 0) return raw;
-      const snapped = findEdgeSnap(edgeMap, raw, effectiveSnapRadius);
+      const snapped = findEdgeSnap(edgeMap, raw, effectiveSnapRadius, magneticTolerance);
       return snapped ?? raw;
     },
-    [edgeMap, effectiveSnapRadius],
+    [edgeMap, effectiveSnapRadius, magneticTolerance],
   );
 
   // Live cursor tracking for pen-tool overlay (closing-hint + snap target).
@@ -436,7 +437,10 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
       }
       const raw = pointerToMockup();
       if (!raw) return;
-      const snapped = effectiveSnapRadius > 0 ? findEdgeSnap(edgeMap, raw, effectiveSnapRadius) : null;
+      const snapped =
+        effectiveSnapRadius > 0
+          ? findEdgeSnap(edgeMap, raw, effectiveSnapRadius, magneticTolerance)
+          : null;
       const cursor = snapped ?? raw;
       setSnapTarget(snapped);
 
@@ -470,7 +474,17 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
         actions.setPenCursor(cursor, canClose);
       }
     },
-    [actions, dragDropThreshold, edgeMap, effectiveSnapRadius, isPenActive, penDraft, pointerToMockup, tool],
+    [
+      actions,
+      dragDropThreshold,
+      edgeMap,
+      effectiveSnapRadius,
+      isPenActive,
+      magneticTolerance,
+      penDraft,
+      pointerToMockup,
+      tool,
+    ],
   );
 
   const handleStageMouseUp = useCallback(() => {
@@ -656,7 +670,10 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
           {view.toUpperCase()} · {tool} · zoom {Math.round(scale * 100)}%
           {mockup && <span className="ml-2 text-slate-400">{mockup.width}×{mockup.height}</span>}
           {tool === "magnetic-pen" && (
-            <span className="ml-2 text-purple-300">snap r={magneticRadius}px {edgeMap ? "" : "(idle)"}</span>
+            <span className="ml-2 text-purple-300">
+              snap r={magneticRadius}px · tol={magneticTolerance.toFixed(2)}{" "}
+              {edgeMap ? "" : "(idle)"}
+            </span>
           )}
         </div>
         <button
