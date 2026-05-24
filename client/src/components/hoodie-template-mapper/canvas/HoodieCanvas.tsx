@@ -497,9 +497,20 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
     if (isPenActive && penDraft) actions.setPenCursor(null, false);
   }, [actions, isPenActive, penDraft]);
 
-  // Cursor styling per active tool.
+  // Track whether the stage is currently mid-drag (left mouse held while
+  // spacebar pan is active). Lets us flip the cursor between an open hand
+  // ("grab", spacebar held but nothing dragged yet) and a closed hand
+  // ("grabbing", actively panning).
+  const [isPanDragging, setIsPanDragging] = useState(false);
+
+  // Cursor styling per active tool. While spacebar is held we want the hand
+  // cursor regardless of whether the pointer is over a mask, an anchor, or
+  // empty mockup — the layer below has listening disabled in that mode so
+  // none of the child elements can override us.
   const stageCursor = isPanning
-    ? "grabbing"
+    ? isPanDragging
+      ? "grabbing"
+      : "grab"
     : isPenActive
       ? "crosshair"
       : tool === "move"
@@ -518,12 +529,16 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
         y={position.y}
         draggable={isPanning}
         onWheel={onWheel}
+        onDragStart={(e) => {
+          if (e.target === e.target.getStage()) setIsPanDragging(true);
+        }}
         onDragEnd={(e) => {
           // Konva drag events bubble — only treat the stage's own drag end as
           // a pan commit. Anchor-handle drags would otherwise yank the
           // viewport to the anchor's mockup-pixel coords.
           if (e.target === e.target.getStage()) {
             setPosition({ x: e.target.x(), y: e.target.y() });
+            setIsPanDragging(false);
           }
         }}
         onMouseDown={handleStageMouseDown}
@@ -589,8 +604,12 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
           </Layer>
         )}
 
-        {/* Saved mask layers + anchor handles + pen draft. */}
-        <Layer>
+        {/* Saved mask layers + anchor handles + pen draft.
+            While the user holds Space (pan mode) we disable listening on
+            this entire layer so masks/anchors don't intercept the click —
+            the click instead initiates the Stage's drag-pan, even when the
+            cursor is on top of a mask region. */}
+        <Layer listening={!isPanning}>
           <MaskLayersOverlay
             layers={layers}
             selectedId={selectedLayerId}
