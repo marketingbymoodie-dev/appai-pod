@@ -1,7 +1,7 @@
 import { Group, Line, Text } from "react-konva";
 import { type CSSProperties, useMemo } from "react";
 import type { MaskLayer, Pt } from "@shared/hoodieTemplate";
-import { PANEL_DISPLAY_LABEL } from "@shared/hoodieTemplate";
+import { PANEL_DISPLAY_LABEL, layerRenderPriority } from "@shared/hoodieTemplate";
 import { centroid, svgPathToAnchors } from "../lib/svgPath";
 
 /**
@@ -63,7 +63,10 @@ export default function MaskLayersOverlay(props: Props) {
     onAltClick,
   } = props;
 
-  const sorted = useMemo(() => [...layers].sort((a, b) => a.zIndex - b.zIndex), [layers]);
+  const sorted = useMemo(
+    () => [...layers].sort((a, b) => layerRenderPriority(a) - layerRenderPriority(b)),
+    [layers],
+  );
 
   return (
     <Group>

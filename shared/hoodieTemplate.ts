@@ -240,3 +240,52 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   waistband: "Waistband",
   back: "Back",
 };
+
+/**
+ * Anatomical render order for hoodie panels. Pieces that physically sit
+ * on top of others on the garment must draw on top in the renderer too —
+ * otherwise a kangaroo pocket gets covered by the front-left body panel,
+ * cuffs disappear under sleeves, etc.
+ *
+ * Higher number = drawn later (on top). The mapper canvas, the AOP
+ * preview, and any future production renderer all share this ordering.
+ *
+ * The user's per-layer `zIndex` is still respected as a tiebreaker WITHIN
+ * the same anatomical tier — the Forward/Back buttons in the Properties
+ * panel let you rearrange e.g. two overlapping shadow passes on the same
+ * Front Left panel — but they will not push a body panel above the
+ * pocket. That ordering is structurally correct so it shouldn't be a
+ * per-layer chore.
+ */
+export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
+  back: 10,
+  front_left: 20,
+  front_right: 20,
+  left_sleeve: 30,
+  right_sleeve: 30,
+  left_hood: 40,
+  right_hood: 40,
+  left_cuff: 50,
+  right_cuff: 50,
+  waistband: 60,
+  front_pocket: 70,
+};
+
+/** Tier used when a layer has no panelKey assigned yet. Sits in the middle so unassigned scratch layers don't all collapse to the bottom of the stack. */
+const UNASSIGNED_RENDER_TIER = 35;
+
+/**
+ * Combined render priority for a mask layer. Sorts ascending: lower
+ * priority draws first (background), higher priority draws on top.
+ *
+ * Combines an anatomical tier (per panelKey) with the user's per-layer
+ * zIndex so the Forward/Back buttons still have a useful within-tier
+ * effect. Multiplying tier by 1000 means user zIndex (small integers)
+ * never crosses tier boundaries.
+ */
+export function layerRenderPriority(layer: MaskLayer): number {
+  const tier = layer.panelKey
+    ? (PANEL_RENDER_ORDER[layer.panelKey] ?? UNASSIGNED_RENDER_TIER)
+    : UNASSIGNED_RENDER_TIER;
+  return tier * 1000 + layer.zIndex;
+}

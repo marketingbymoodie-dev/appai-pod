@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Eye, EyeOff, Lock, Unlock, Trash2, RefreshCw, Image as ImageIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { PANELS_PER_VIEW, PANEL_DISPLAY_LABEL, type HoodieView } from "@shared/hoodieTemplate";
+import {
+  PANELS_PER_VIEW,
+  PANEL_DISPLAY_LABEL,
+  layerRenderPriority,
+  type HoodieView,
+} from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
   listMockups,
@@ -129,7 +134,10 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
         ) : (
           <ul className="space-y-1">
             {[...layers]
-              .sort((a, b) => b.zIndex - a.zIndex)
+              // Topmost-rendered at the top of the list (Photoshop convention).
+              // Uses anatomical render priority so e.g. Front Pocket sits at
+              // the top of the list, matching what shows on the canvas.
+              .sort((a, b) => layerRenderPriority(b) - layerRenderPriority(a))
               .map((l) => {
                 const isSelected = selectedLayerId === l.id;
                 const isHover = hoverLayerId === l.id;

@@ -36,6 +36,7 @@
  */
 
 import type { HoodiePanelKey, HoodieTemplate, HoodieView, MaskLayer, Pt } from "@shared/hoodieTemplate";
+import { layerRenderPriority } from "@shared/hoodieTemplate";
 import { svgPathToAnchors } from "./svgPath";
 
 export type AopPreviewMode = "single-sheet" | "per-panel-stretch" | "solid-colors";
@@ -189,10 +190,12 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   const printLayers = visible.filter((l) => !l.isExclusion);
   const exclusionLayers = visible.filter((l) => l.isExclusion);
 
-  // Sort by zIndex so higher-z draws on top — matches the canvas tool's
-  // rendering order in MaskLayersOverlay.
-  printLayers.sort((a, b) => a.zIndex - b.zIndex);
-  exclusionLayers.sort((a, b) => a.zIndex - b.zIndex);
+  // Sort by anatomical render priority so e.g. the front pocket sits on
+  // top of the front-left/right body panels regardless of the order the
+  // user traced them in. Within a tier, the user's zIndex still controls
+  // ordering (Forward/Back buttons in the Properties panel).
+  printLayers.sort((a, b) => layerRenderPriority(a) - layerRenderPriority(b));
+  exclusionLayers.sort((a, b) => layerRenderPriority(a) - layerRenderPriority(b));
 
   // Quick exit: nothing to render.
   if (printLayers.length === 0) {
