@@ -25,6 +25,7 @@ export default function RightSidebar() {
   const template = useHoodieMapperStore((s) => s.template);
   const debug = useHoodieMapperStore((s) => s.debug);
   const magneticRadius = useHoodieMapperStore((s) => s.magneticRadius);
+  const magneticTolerance = useHoodieMapperStore((s) => s.magneticTolerance);
   const selectedLayerId = useHoodieMapperStore((s) => s.selectedLayerId);
   const actions = useHoodieMapperStore((s) => s.actions);
 
@@ -68,9 +69,44 @@ export default function RightSidebar() {
                 onValueChange={([v]) => actions.setMagneticRadius(v)}
               />
             </Field>
-            <div className="text-[11px] text-slate-500">
+            <div className="mt-3 text-[11px] text-slate-400">
+              Edge tolerance — how strong an edge has to be (relative to the
+              strongest edge in the image) before the magnet locks onto it.
+              <span className="text-slate-500"> Lower = greedier (snaps to faint internal seams);
+              higher = pickier (silhouette only).</span>
+            </div>
+            <Field label={`Tolerance ${magneticTolerance.toFixed(2)} (${tolerancePresetLabel(magneticTolerance)})`}>
+              <Slider
+                value={[Math.round(magneticTolerance * 100)]}
+                min={0}
+                max={60}
+                step={1}
+                onValueChange={([v]) => actions.setMagneticTolerance(v / 100)}
+              />
+            </Field>
+            <div className="flex flex-wrap gap-1 pt-1">
+              {[
+                { label: "Greedy", value: 0.05 },
+                { label: "Default", value: 0.18 },
+                { label: "Strict", value: 0.32 },
+                { label: "Silhouette only", value: 0.45 },
+              ].map((p) => (
+                <Button
+                  key={p.label}
+                  size="sm"
+                  variant={Math.abs(magneticTolerance - p.value) < 0.01 ? "default" : "outline"}
+                  className="h-6 px-2 text-[10px]"
+                  onClick={() => actions.setMagneticTolerance(p.value)}
+                  data-testid={`hoodie-tolerance-${p.label.replace(/\s+/g, "-").toLowerCase()}`}
+                >
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+            <div className="mt-2 text-[11px] text-slate-500">
               Tip: magnetic snap reads pixel data from the mockup once it loads. Cross-origin mockups without CORS
-              fall back to plain polygon behavior.
+              fall back to plain polygon behavior. On transparent-background mockups, raise tolerance until anchors
+              stop drifting onto internal seams.
             </div>
           </Section>
         )}
@@ -394,4 +430,15 @@ function ToggleRow({
       <Switch checked={checked} onCheckedChange={onChange} />
     </div>
   );
+}
+
+/**
+ * Friendly label for the magnetic-pen tolerance value, mirroring the preset
+ * names users see in the quick-pick row underneath the slider.
+ */
+function tolerancePresetLabel(t: number): string {
+  if (t < 0.1) return "greedy";
+  if (t < 0.25) return "default";
+  if (t < 0.4) return "strict";
+  return "silhouette only";
 }

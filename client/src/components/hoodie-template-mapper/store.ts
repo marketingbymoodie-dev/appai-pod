@@ -65,6 +65,15 @@ export type PenDraft = {
 
 /** Snap radius in mockup pixels. 0 disables snapping (acts as polygon pen). */
 export const DEFAULT_MAGNETIC_RADIUS = 24;
+/**
+ * Magnetic-pen edge tolerance — minimum gradient strength (relative to the
+ * frame's strongest edge, 0..1) that counts as "snappable". Lower values
+ * snap to weaker edges (more permissive, like Photoshop's high tolerance);
+ * higher values demand a stronger edge before snapping (stricter, locks to
+ * the silhouette and rejects internal seams). 0.18 is a good default for
+ * transparent-background mockups with the alpha-boosted gradient map.
+ */
+export const DEFAULT_MAGNETIC_TOLERANCE = 0.18;
 export const MIN_MASK_ANCHORS = 3;
 
 export type HoodieMapperState = {
@@ -78,12 +87,24 @@ export type HoodieMapperState = {
   penDraft: PenDraft | null;
   /** Magnetic-pen snap radius in mockup pixels. */
   magneticRadius: number;
+  /**
+   * Magnetic-pen edge-strength tolerance (0..1). See
+   * `DEFAULT_MAGNETIC_TOLERANCE`. Higher = pickier (silhouette only),
+   * lower = greedier (will snap to faint internal edges too).
+   */
+  magneticTolerance: number;
   /** Selected anchor index within the selected layer (for keyboard nudges). */
   selectedAnchorIndex: number | null;
   /** Tracks unsaved changes since the last successful save. */
   dirty: boolean;
   /** True while a save/load request is in flight. */
   busy: boolean;
+  /**
+   * Monotonic counter bumped by `markSaved()`. Components can subscribe to
+   * trigger refreshes (e.g. the saved-templates list) without having to
+   * receive an event from the save call site directly.
+   */
+  saveSeq: number;
 };
 
 export type HoodieMapperActions = {
@@ -115,6 +136,7 @@ export type HoodieMapperActions = {
   setSelectedAnchorIndex: (index: number | null) => void;
   /** Pen-tool actions. */
   setMagneticRadius: (radius: number) => void;
+  setMagneticTolerance: (tolerance: number) => void;
   startPenDraft: (anchors?: Pt[]) => void;
   appendPenAnchor: (point: Pt) => void;
   setPenCursor: (cursor: Pt | null, canClose: boolean) => void;
@@ -235,9 +257,11 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   debug: { ...DEFAULT_DEBUG_FLAGS },
   penDraft: null,
   magneticRadius: DEFAULT_MAGNETIC_RADIUS,
+  magneticTolerance: DEFAULT_MAGNETIC_TOLERANCE,
   selectedAnchorIndex: null,
   dirty: false,
   busy: false,
+  saveSeq: 0,
   actions: {
     loadTemplate: (template) =>
       set(() => ({
@@ -275,7 +299,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     setHoverLayer: (id) => set(() => ({ hoverLayerId: id })),
     setDebug: (patch) => set((s) => ({ debug: { ...s.debug, ...patch } })),
     setBusy: (busy) => set(() => ({ busy })),
-    markSaved: () => set(() => ({ dirty: false })),
+    markSaved: () => set((s) => ({ dirty: false, saveSeq: s.saveSeq + 1 })),
     setMockup: (view, mockup) =>
       set((s) => ({
         template: patchView(s.template, view, { mockup }),
@@ -368,6 +392,10 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     setSelectedAnchorIndex: (index) => set(() => ({ selectedAnchorIndex: index })),
     setMagneticRadius: (radius) =>
       set(() => ({ magneticRadius: Math.max(0, Math.min(200, Math.round(radius))) })),
+    setMagneticTolerance: (tolerance) =>
+      set(() => ({
+        magneticTolerance: Math.max(0, Math.min(1, Number.isFinite(tolerance) ? tolerance : 0)),
+      })),
     startPenDraft: (anchors) =>
       set((s) => ({
         penDraft: { view: s.view, anchors: anchors ? [...anchors] : [], cursor: null, canClose: false },
