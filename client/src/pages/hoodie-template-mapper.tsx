@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import AdminLayout from "@/components/admin-layout";
 import HoodieCanvas from "@/components/hoodie-template-mapper/canvas/HoodieCanvas";
 import LeftSidebar from "@/components/hoodie-template-mapper/LeftSidebar";
@@ -61,18 +61,45 @@ export default function HoodieTemplateMapperPage() {
   const backMockup = useHoodieMapperStore((s) => s.template.views.back?.mockup ?? null);
   const { toast } = useToast();
 
-  useEffect(() => {
+  // Defensive size measurement for the canvas container. We've seen the
+  // ResizeObserver-only path land at 0x0 in dev (likely StrictMode running
+  // the effect, then cleanup, then re-running before the initial RO
+  // callback could fire — leaving us subscribed but never delivered a
+  // size). Use useLayoutEffect (synchronous post-DOM measure), plus a
+  // ResizeObserver, plus a window resize listener, plus a few rAF
+  // re-measures so a missed initial measurement self-heals on the next
+  // frames.
+  useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const r = entry.contentRect;
-        setSize({ width: Math.floor(r.width), height: Math.floor(r.height) });
-      }
-    });
+    function measure() {
+      const node = containerRef.current;
+      if (!node) return;
+      const r = node.getBoundingClientRect();
+      const w = Math.floor(r.width);
+      const h = Math.floor(r.height);
+      setSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+    }
+    measure();
+    const ro = new ResizeObserver(() => measure());
     ro.observe(el);
-    setSize({ width: el.clientWidth, height: el.clientHeight });
-    return () => ro.disconnect();
+    window.addEventListener("resize", measure);
+    // Re-measure on the next several animation frames in case the layout
+    // wasn't settled yet at this point in the commit (font load,
+    // sidebar/dialog mount, etc.).
+    const rafIds: number[] = [];
+    let remaining = 6;
+    const tick = () => {
+      remaining -= 1;
+      measure();
+      if (remaining > 0) rafIds.push(window.requestAnimationFrame(tick));
+    };
+    rafIds.push(window.requestAnimationFrame(tick));
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+      for (const id of rafIds) window.cancelAnimationFrame(id);
+    };
   }, []);
 
   // Warn before navigating away with unsaved changes.
