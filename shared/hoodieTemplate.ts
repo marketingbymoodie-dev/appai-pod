@@ -171,13 +171,27 @@ export type MockupAsset = {
 
 export type ReferenceOverlayAsset = {
   src: string;
+  /** Natural image dimensions (in image pixels). Stays constant. */
   width: number;
   height: number;
   opacity: number;
   visible: boolean;
+  /** When false, the canvas exposes drag + corner-resize handles. */
   locked: boolean;
   /** "below" places overlay under masks; "above" places it on top for ghosting. */
   placement: "below" | "above";
+  /**
+   * Top-left position of the rendered overlay in mockup pixels. Defaults
+   * to (0, 0) so legacy uploads stay where they were.
+   */
+  x?: number;
+  y?: number;
+  /**
+   * Uniform scale applied to (width, height). Defaults to 1. Aspect
+   * ratio is locked — the editor only exposes proportional resize
+   * handles so the reference image can never be squished.
+   */
+  scale?: number;
 };
 
 export type HoodieViewState = {

@@ -191,6 +191,13 @@ export default function RightSidebar() {
                 {referenceOverlay.width}×{referenceOverlay.height}px ·{" "}
                 <span className="text-slate-500">{referenceOverlay.placement}</span>
               </div>
+              <div className="text-[10px] text-slate-500">
+                pos ({Math.round(referenceOverlay.x ?? 0)},{Math.round(referenceOverlay.y ?? 0)}) · scale{" "}
+                {((referenceOverlay.scale ?? 1) * 100).toFixed(0)}%
+                {!referenceOverlay.locked && (
+                  <span className="ml-1 text-amber-300">— drag &amp; resize on canvas</span>
+                )}
+              </div>
               <Field label={`Opacity ${(referenceOverlay.opacity * 100).toFixed(0)}%`}>
                 <Slider
                   value={[referenceOverlay.opacity * 100]}
@@ -225,6 +232,25 @@ export default function RightSidebar() {
                   }
                 >
                   Toggle above/below
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-[11px]"
+                  title="Recenter and refit the overlay to the mockup"
+                  onClick={() => {
+                    const mockupWidth =
+                      template.views[view].mockup?.width ?? referenceOverlay.width;
+                    const fit = referenceOverlay.width > 0 ? mockupWidth / referenceOverlay.width : 1;
+                    actions.setReferenceOverlay(view, {
+                      ...referenceOverlay,
+                      x: 0,
+                      y: 0,
+                      scale: fit,
+                    });
+                  }}
+                >
+                  Reset
                 </Button>
                 <Button
                   size="sm"
@@ -442,6 +468,12 @@ function ReferenceOverlayUpload({
     try {
       const { width, height } = await readImageDimensions(file);
       const { url } = await uploadReferenceOverlay(templateName, view, file);
+      // Fit-to-mockup-width by default so a 2048px Printify render doesn't
+      // explode beyond the 1024px workspace on first sight. The user can
+      // resize from there with the corner handles.
+      const mockupWidth =
+        useHoodieMapperStore.getState().template.views[view].mockup?.width ?? width;
+      const initialScale = width > 0 ? mockupWidth / width : 1;
       actions.setReferenceOverlay(view, {
         src: url,
         width,
@@ -450,8 +482,14 @@ function ReferenceOverlayUpload({
         visible: true,
         locked: false,
         placement: "above",
+        x: 0,
+        y: 0,
+        scale: initialScale,
       });
-      toast({ title: `Loaded ${view} reference overlay`, description: `${width}×${height}px` });
+      toast({
+        title: `Loaded ${view} reference overlay`,
+        description: `${width}×${height}px (scaled ${(initialScale * 100).toFixed(0)}%)`,
+      });
     } catch (err: any) {
       toast({
         title: "Upload failed",

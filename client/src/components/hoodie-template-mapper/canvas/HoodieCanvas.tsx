@@ -21,6 +21,7 @@ import MaskLayersOverlay from "./MaskLayersOverlay";
 import MeshWarpOverlay from "./MeshWarpOverlay";
 import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
+import ReferenceOverlayLayer from "./ReferenceOverlayLayer";
 import type { Pt } from "@shared/hoodieTemplate";
 
 /**
@@ -577,16 +578,14 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
         </Layer>
 
         {referenceOverlay && referenceOverlay.placement === "below" && overlayImage && (
-          <Layer listening={false}>
-            <KonvaImage
-              image={overlayImage}
-              x={0}
-              y={0}
-              width={referenceOverlay.width}
-              height={referenceOverlay.height}
-              opacity={referenceOverlay.visible ? referenceOverlay.opacity : 0}
-            />
-          </Layer>
+          <ReferenceOverlayLayer
+            overlay={referenceOverlay}
+            image={overlayImage}
+            panLocked={isPanning}
+            onChange={(patch) =>
+              actions.setReferenceOverlay(view, { ...referenceOverlay, ...patch })
+            }
+          />
         )}
 
         {mockupImage && mockupWidth > 0 && mockupHeight > 0 && (
@@ -693,18 +692,17 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
         {/* Topmost reference overlay — sits ABOVE mesh-warp + masks so the
             user can crossfade their mesh output against a Printify-rendered
             comparison image via the opacity slider. Below-placement is
-            handled earlier in the stack (under the mockup). */}
+            handled earlier in the stack (under the mockup). When unlocked,
+            the layer exposes drag + corner-resize handles. */}
         {referenceOverlay && referenceOverlay.placement === "above" && overlayImage && (
-          <Layer listening={false}>
-            <KonvaImage
-              image={overlayImage}
-              x={0}
-              y={0}
-              width={referenceOverlay.width}
-              height={referenceOverlay.height}
-              opacity={referenceOverlay.visible ? referenceOverlay.opacity : 0}
-            />
-          </Layer>
+          <ReferenceOverlayLayer
+            overlay={referenceOverlay}
+            image={overlayImage}
+            panLocked={isPanning}
+            onChange={(patch) =>
+              actions.setReferenceOverlay(view, { ...referenceOverlay, ...patch })
+            }
+          />
         )}
       </Stage>
 
