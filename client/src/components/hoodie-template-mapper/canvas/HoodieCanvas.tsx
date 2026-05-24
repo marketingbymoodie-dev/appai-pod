@@ -621,24 +621,26 @@ export default function HoodieCanvas({ width, height }: Props) {
         </button>
       </div>
 
-      {/* Debug strip — visible at the bottom of the canvas. Surfaces every
-          piece of state involved in image rendering so a silent-black
-          canvas is impossible. Remove once the rendering issue is
-          fully understood. */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-9 flex justify-center">
-        <div className="pointer-events-auto rounded bg-slate-900/80 px-2 py-1 text-[10px] text-slate-300 backdrop-blur">
-          stage {Math.round(width)}×{Math.round(height)} · mockup{" "}
-          {mockup ? `${mockup.width}×${mockup.height}` : "—"} · img{" "}
-          {mockupImageState.loading
-            ? "loading"
-            : mockupImageState.error
-              ? "ERROR"
-              : mockupImage
-                ? "loaded"
-                : "—"}{" "}
-          · scale {scale.toFixed(2)} · pos ({Math.round(position.x)},{Math.round(position.y)})
+      {/* Diagnostic strip — surfaces every piece of state involved in
+          image rendering so a silent-black canvas is debuggable. Gated
+          on debug.showCanvasDebug (toggle in the RightSidebar) since
+          most users don't need it. */}
+      {debug.showCanvasDebug && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-9 flex justify-center">
+          <div className="pointer-events-auto rounded bg-slate-900/80 px-2 py-1 text-[10px] text-slate-300 backdrop-blur">
+            stage {Math.round(width)}×{Math.round(height)} · mockup{" "}
+            {mockup ? `${mockup.width}×${mockup.height}` : "—"} · img{" "}
+            {mockupImageState.loading
+              ? "loading"
+              : mockupImageState.error
+                ? "ERROR"
+                : mockupImage
+                  ? "loaded"
+                  : "—"}{" "}
+            · scale {scale.toFixed(2)} · pos ({Math.round(position.x)},{Math.round(position.y)})
+          </div>
         </div>
-      </div>
+      )}
 
       {!mockup && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-sm text-slate-400">
