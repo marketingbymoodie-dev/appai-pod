@@ -92,7 +92,17 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
     try {
       const result = await saveTemplate(template.name, template);
       actions.markSaved();
-      toast({ title: "Template saved", description: result.file });
+      const meta = [
+        result.bodySource ? `body=${result.bodySource}` : null,
+        typeof result.elapsedMs === "number" ? `${result.elapsedMs}ms` : null,
+        result.handler ? `srv=${result.handler}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      toast({
+        title: "Template saved",
+        description: meta ? `${result.file}\n${meta}` : result.file,
+      });
     } catch (err: any) {
       toast({ title: "Save failed", description: err?.message || String(err), variant: "destructive" });
     } finally {

@@ -1,10 +1,18 @@
 /**
  * Edge gradient map for the magnetic pen tool.
  *
- * On mockup load we run Sobel on a downsampled luminance copy of the image
- * and store the gradient magnitude as a Float32Array. Magnetic-pen mouse
- * moves then look up the strongest gradient peak inside a configurable
- * radius and snap the cursor there.
+ * On mockup load we run Sobel on a downsampled copy of the image and store
+ * a combined gradient magnitude as a Float32Array. Magnetic-pen mouse moves
+ * then look up the strongest gradient peak inside a configurable radius
+ * and snap the cursor there.
+ *
+ * The combined magnitude blends:
+ *   - LUMINANCE gradient  (Rec. 709 luma) — picks up colour/contrast edges.
+ *   - ALPHA gradient      — picks up transparent-background silhouettes.
+ *
+ * Alpha is given a heavy weight (ALPHA_WEIGHT) so a transparent-background
+ * mockup's silhouette dominates internal seams, drawstrings, etc. — the
+ * silhouette is what users actually want to trace on a hoodie panel.
  *
  * The downsample step keeps the cost bounded on large mockups (Printify
  * panel renders are often 4-8MP). Lookup is O(radius^2) per move which is
@@ -26,6 +34,29 @@ export type EdgeGradientMap = {
 };
 
 const MAX_GRID_DIM = 768;
+
+/**
+ * Weight applied to the alpha gradient before combining with luminance.
+ * The silhouette of a transparent-background mockup is the cleanest edge
+ * we have, so we want it to win decisively against any internal contrast.
+ *
+ * With the combined formula `magL + ALPHA_WEIGHT * magA`, a silhouette
+ * pixel (which has BOTH a strong luminance step from foreground colour to
+ * transparent black AND a strong alpha step from 255 → 0) ends up roughly
+ * (1 + ALPHA_WEIGHT)x stronger than an internal seam (luminance only).
+ * That comfortably moves internal edges below the relative-strength
+ * threshold in `findEdgeSnap`, so they fall through to raw cursor instead
+ * of yanking points off-silhouette.
+ */
+const ALPHA_WEIGHT = 4;
+
+/**
+ * Minimum alpha range for the alpha channel to count as "informative".
+ * If every pixel in the downsampled image has the same alpha (e.g. a
+ * fully opaque JPEG or a flattened PNG), the alpha gradient is pure
+ * floating-point noise — disable it and fall back to luminance only.
+ */
+const ALPHA_RANGE_THRESHOLD = 16;
 
 /**
  * Build a Sobel gradient-magnitude map from an HTMLImageElement (or anything
@@ -58,10 +89,22 @@ export function buildEdgeGradientMap(image: HTMLImageElement | HTMLCanvasElement
 
   const data = imageData.data;
   const lum = new Float32Array(w * h);
+  const alpha = new Float32Array(w * h);
+  let alphaMin = 255;
+  let alphaMax = 0;
   for (let i = 0, j = 0; i < data.length; i += 4, j++) {
     // Rec. 709 luma.
     lum[j] = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    const a = data[i + 3];
+    alpha[j] = a;
+    if (a < alphaMin) alphaMin = a;
+    if (a > alphaMax) alphaMax = a;
   }
+
+  // Only mix in the alpha gradient if the alpha channel actually varies
+  // across the image. Flattened/opaque mockups don't get bogus snap targets
+  // from numerical noise.
+  const useAlpha = alphaMax - alphaMin >= ALPHA_RANGE_THRESHOLD;
 
   const magnitudes = new Float32Array(w * h);
   let maxMag = 0;
@@ -70,17 +113,36 @@ export function buildEdgeGradientMap(image: HTMLImageElement | HTMLCanvasElement
     const y0 = y * w;
     const yn = (y + 1) * w;
     for (let x = 1; x < w - 1; x++) {
-      const tl = lum[yp + x - 1];
-      const tc = lum[yp + x];
-      const tr = lum[yp + x + 1];
-      const ml = lum[y0 + x - 1];
-      const mr = lum[y0 + x + 1];
-      const bl = lum[yn + x - 1];
-      const bc = lum[yn + x];
-      const br = lum[yn + x + 1];
-      const gx = -tl - 2 * ml - bl + tr + 2 * mr + br;
-      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
-      const mag = Math.sqrt(gx * gx + gy * gy);
+      // Sobel on luminance.
+      const ltl = lum[yp + x - 1];
+      const ltc = lum[yp + x];
+      const ltr = lum[yp + x + 1];
+      const lml = lum[y0 + x - 1];
+      const lmr = lum[y0 + x + 1];
+      const lbl = lum[yn + x - 1];
+      const lbc = lum[yn + x];
+      const lbr = lum[yn + x + 1];
+      const lgx = -ltl - 2 * lml - lbl + ltr + 2 * lmr + lbr;
+      const lgy = -ltl - 2 * ltc - ltr + lbl + 2 * lbc + lbr;
+      const magL = Math.sqrt(lgx * lgx + lgy * lgy);
+
+      let mag = magL;
+      if (useAlpha) {
+        // Sobel on alpha — boundary between transparent and opaque pixels.
+        const atl = alpha[yp + x - 1];
+        const atc = alpha[yp + x];
+        const atr = alpha[yp + x + 1];
+        const aml = alpha[y0 + x - 1];
+        const amr = alpha[y0 + x + 1];
+        const abl = alpha[yn + x - 1];
+        const abc = alpha[yn + x];
+        const abr = alpha[yn + x + 1];
+        const agx = -atl - 2 * aml - abl + atr + 2 * amr + abr;
+        const agy = -atl - 2 * atc - atr + abl + 2 * abc + abr;
+        const magA = Math.sqrt(agx * agx + agy * agy);
+        mag = magL + ALPHA_WEIGHT * magA;
+      }
+
       magnitudes[y0 + x] = mag;
       if (mag > maxMag) maxMag = mag;
     }
