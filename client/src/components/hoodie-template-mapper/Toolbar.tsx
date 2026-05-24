@@ -37,13 +37,24 @@ const TOOL_BUTTONS: Array<{
   { id: "move", icon: MousePointer2, label: "Move (V)", phase: 1, shortcut: "v" },
   { id: "polygon-pen", icon: PenLine, label: "Polygon Pen (P)", phase: 2, shortcut: "p" },
   { id: "magnetic-pen", icon: Magnet, label: "Magnetic Pen (M)", phase: 2, shortcut: "m" },
-  { id: "mesh-warp", icon: Grid3X3, label: "Mesh Warp", phase: 4 },
+  { id: "mesh-warp", icon: Grid3X3, label: "Mesh Warp (W)", phase: 4, shortcut: "w" },
   { id: "corner-pin", icon: Frame, label: "Corner Pin", phase: 4 },
   { id: "rotate", icon: RotateCw, label: "Rotate", phase: 4 },
   { id: "scale", icon: Maximize2, label: "Scale", phase: 4 },
 ];
 
 const HIGHEST_ENABLED_PHASE = 2;
+/**
+ * Phase-4 tools that we've shipped early. Mesh warp is enabled even though
+ * it's nominally phase 4 — corner-pin / rotate / scale stay disabled.
+ */
+const ENABLED_PHASE_4_TOOLS: ReadonlySet<HoodieToolId> = new Set<HoodieToolId>([
+  "mesh-warp",
+]);
+
+function isToolEnabled(t: { id: HoodieToolId; phase: number }): boolean {
+  return t.phase <= HIGHEST_ENABLED_PHASE || ENABLED_PHASE_4_TOOLS.has(t.id);
+}
 
 export default function Toolbar({ onOpenLoadDialog }: Props) {
   const { toast } = useToast();
@@ -79,7 +90,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       const key = e.key.toLowerCase();
       const match = TOOL_BUTTONS.find((t) => t.shortcut === key);
       if (!match) return;
-      if (match.phase > HIGHEST_ENABLED_PHASE) return;
+      if (!isToolEnabled(match)) return;
       e.preventDefault();
       actions.setTool(match.id);
     }
@@ -129,7 +140,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       {/* Tool buttons */}
       <div className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-950 p-1">
         {TOOL_BUTTONS.map(({ id, icon: Icon, label, phase }) => {
-          const enabled = phase <= HIGHEST_ENABLED_PHASE;
+          const enabled = isToolEnabled({ id, phase });
           return (
             <Button
               key={id}

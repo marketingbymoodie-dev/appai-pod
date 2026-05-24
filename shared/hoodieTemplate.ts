@@ -11,7 +11,8 @@
  *   - Mockup pixel coordinates: origin top-left, +x right, +y down,
  *     measured against `MockupAsset.width` x `MockupAsset.height`.
  *   - `maskPath` uses SVG path "d" syntax in mockup pixel coordinates.
- *   - `mesh.points` are mockup pixel coordinates (NOT normalized).
+ *   - `mesh.targetPoints` are mockup pixel coordinates (NOT normalized);
+ *     source UVs are computed implicitly from the grid and `sourceRect`.
  *
  * Storage:
  *   - Templates live as JSON under tmp/hoodie-templates/templates/<name>.json
@@ -58,11 +59,47 @@ export type SvgPathD = string;
 /** Top-left, top-right, bottom-right, bottom-left in mockup pixel coords. */
 export type CornerPins = [Pt, Pt, Pt, Pt];
 
+/**
+ * Rectangular sub-region of a source artwork sheet that a mesh samples
+ * from. Lets the front-view sleeve mask reference the front-half of the
+ * full sleeve artwork, while the back-view sleeve mask references the
+ * back-half of the same artwork file.
+ *
+ * Coordinates are in source-image pixels.
+ */
+export type SourceRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * Mesh warp grid for projecting a rectangular slice of a panel artwork
+ * onto an irregular hoodie panel polygon. The mesh is regular in source
+ * space (`cols × rows` evenly spaced grid points spanning `sourceRect`)
+ * and irregular in target space (each grid point's position on the
+ * mockup is editable, allowing fabric curvature, sleeve foreshortening,
+ * and similar real-world distortions).
+ *
+ * Source UVs are computed implicitly: for grid point `(col, row)` they
+ * are `(col / (cols-1), row / (rows-1))` mapped through `sourceRect`.
+ * Stored explicitly only the `targetPoints` so the JSON stays compact.
+ *
+ * Length invariant: `targetPoints.length === cols * rows`.
+ */
 export type MeshGrid = {
+  /** 2..16 — number of columns in the control grid. */
   cols: number;
+  /** 2..16 — number of rows. */
   rows: number;
-  /** Length must equal (cols+1)*(rows+1). Mockup pixel coords. */
-  points: Pt[];
+  /**
+   * Sub-region of the source artwork the mesh samples. `null` means use
+   * the entire artwork as the source rectangle.
+   */
+  sourceRect: SourceRect | null;
+  /** Row-major: index = row * cols + col. Mockup pixel coords. */
+  targetPoints: Pt[];
 };
 
 export type Transform2D = {
@@ -273,6 +310,86 @@ export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
 
 /** Tier used when a layer has no panelKey assigned yet. Sits in the middle so unassigned scratch layers don't all collapse to the bottom of the stack. */
 const UNASSIGNED_RENDER_TIER = 35;
+
+/**
+ * Generate a default rectangular mesh that fills `bounds` (mockup pixels).
+ * Used to initialise a layer's mesh on the first switch to the mesh-warp
+ * tool — the user can then drag interior control points to deform the
+ * grid against fabric curvature.
+ */
+export function createDefaultMesh(
+  bounds: { x: number; y: number; width: number; height: number },
+  cols = 4,
+  rows = 4,
+  sourceRect: SourceRect | null = null,
+): MeshGrid {
+  const safeCols = Math.max(2, Math.min(16, Math.floor(cols)));
+  const safeRows = Math.max(2, Math.min(16, Math.floor(rows)));
+  const targetPoints: Pt[] = [];
+  for (let r = 0; r < safeRows; r += 1) {
+    const v = r / (safeRows - 1);
+    for (let c = 0; c < safeCols; c += 1) {
+      const u = c / (safeCols - 1);
+      targetPoints.push({
+        x: bounds.x + u * bounds.width,
+        y: bounds.y + v * bounds.height,
+      });
+    }
+  }
+  return { cols: safeCols, rows: safeRows, sourceRect, targetPoints };
+}
+
+/**
+ * Resize an existing mesh to a new (cols, rows) shape, preserving the
+ * deformation as much as possible by bilinearly resampling the target
+ * positions of the old grid into the new grid.
+ *
+ * Falls back to a default rectangular mesh if the old mesh is empty or
+ * malformed.
+ */
+export function resizeMesh(
+  mesh: MeshGrid,
+  newCols: number,
+  newRows: number,
+  fallbackBounds: { x: number; y: number; width: number; height: number },
+): MeshGrid {
+  const safeCols = Math.max(2, Math.min(16, Math.floor(newCols)));
+  const safeRows = Math.max(2, Math.min(16, Math.floor(newRows)));
+  const old = mesh.targetPoints;
+  if (
+    old.length !== mesh.cols * mesh.rows ||
+    mesh.cols < 2 ||
+    mesh.rows < 2
+  ) {
+    return createDefaultMesh(fallbackBounds, safeCols, safeRows, mesh.sourceRect);
+  }
+  const targetPoints: Pt[] = [];
+  for (let r = 0; r < safeRows; r += 1) {
+    const v = r / (safeRows - 1);
+    const yIdx = v * (mesh.rows - 1);
+    const y0 = Math.floor(yIdx);
+    const y1 = Math.min(mesh.rows - 1, y0 + 1);
+    const ty = yIdx - y0;
+    for (let c = 0; c < safeCols; c += 1) {
+      const u = c / (safeCols - 1);
+      const xIdx = u * (mesh.cols - 1);
+      const x0 = Math.floor(xIdx);
+      const x1 = Math.min(mesh.cols - 1, x0 + 1);
+      const tx = xIdx - x0;
+      const tl = old[y0 * mesh.cols + x0];
+      const tr = old[y0 * mesh.cols + x1];
+      const bl = old[y1 * mesh.cols + x0];
+      const br = old[y1 * mesh.cols + x1];
+      const top = { x: tl.x + (tr.x - tl.x) * tx, y: tl.y + (tr.y - tl.y) * tx };
+      const bot = { x: bl.x + (br.x - bl.x) * tx, y: bl.y + (br.y - bl.y) * tx };
+      targetPoints.push({
+        x: top.x + (bot.x - top.x) * ty,
+        y: top.y + (bot.y - top.y) * ty,
+      });
+    }
+  }
+  return { cols: safeCols, rows: safeRows, sourceRect: mesh.sourceRect, targetPoints };
+}
 
 /**
  * Combined render priority for a mask layer. Sorts ascending: lower

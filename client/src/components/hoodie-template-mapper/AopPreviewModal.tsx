@@ -61,6 +61,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const [showExclusions, setShowExclusions] = useState(true);
   const [showOutlines, setShowOutlines] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
+  const [applyShading, setApplyShading] = useState(true);
 
   // Artwork pipeline — file → blob URL → HTMLImageElement.
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
@@ -142,6 +143,48 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     };
   }, [artworkUrl, artworkName, toast]);
 
+  // Per-layer source artwork preloader. Builds a Map<URL, HTMLImageElement>
+  // so the renderer can stay synchronous while still consuming Printify-
+  // style production-panel sheets that the user uploads per layer.
+  const layerSrcUrls = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of ["front", "back"] as HoodieView[]) {
+      const layers = template.views[v]?.layers ?? [];
+      for (const l of layers) {
+        if (l.productionPanelSrc) set.add(l.productionPanelSrc);
+      }
+    }
+    return Array.from(set);
+  }, [template]);
+  const [layerSources, setLayerSources] = useState<Map<string, HTMLImageElement>>(new Map());
+  useEffect(() => {
+    if (!open) return;
+    if (layerSrcUrls.length === 0) {
+      setLayerSources(new Map());
+      return;
+    }
+    let cancelled = false;
+    const next = new Map<string, HTMLImageElement>();
+    let remaining = layerSrcUrls.length;
+    layerSrcUrls.forEach((url) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        next.set(url, img);
+        remaining -= 1;
+        if (remaining === 0 && !cancelled) setLayerSources(new Map(next));
+      };
+      img.onerror = () => {
+        remaining -= 1;
+        if (remaining === 0 && !cancelled) setLayerSources(new Map(next));
+      };
+      img.src = url;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, layerSrcUrls]);
+
   // Re-render the preview canvas whenever any input changes.
   useEffect(() => {
     if (!open) return;
@@ -158,8 +201,22 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       showExclusions,
       showOutlines,
       showLabels,
+      layerSources,
+      applyShading,
     });
-  }, [open, template, view, mockupImg, artworkImg, mode, showExclusions, showOutlines, showLabels]);
+  }, [
+    open,
+    template,
+    view,
+    mockupImg,
+    artworkImg,
+    mode,
+    showExclusions,
+    showOutlines,
+    showLabels,
+    layerSources,
+    applyShading,
+  ]);
 
   // Layer summary for the footer.
   const summary = useMemo(() => {
@@ -199,6 +256,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       showExclusions,
       showOutlines,
       showLabels,
+      layerSources,
+      applyShading,
     });
     canvas.toBlob((blob) => {
       if (!blob) {
@@ -237,8 +296,9 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
               AOP Preview · {template.name}
             </DialogTitle>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              Drops AOP artwork onto the hoodie using your traced panel masks. Per-panel mesh warps come in
-              Phase 4.
+              Drops AOP artwork onto the hoodie using your traced panel masks. Layers with a
+              mesh + uploaded source artwork render through the warp; the rest fall back to the
+              selected mode.
             </p>
           </div>
 
@@ -344,8 +404,19 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 checked={showExclusions}
                 onChange={setShowExclusions}
               />
+              <ToggleRow
+                label="Bake mockup shading"
+                checked={applyShading}
+                onChange={setApplyShading}
+              />
               <ToggleRow label="Mask outlines" checked={showOutlines} onChange={setShowOutlines} />
               <ToggleRow label="Panel labels" checked={showLabels} onChange={setShowLabels} />
+              {layerSources.size > 0 && (
+                <div className="mt-1 rounded border border-purple-900/40 bg-purple-950/20 px-2 py-1 text-[10px] text-purple-200">
+                  Mesh-warped sources active for {layerSources.size}{" "}
+                  panel{layerSources.size === 1 ? "" : "s"}.
+                </div>
+              )}
             </div>
 
             {/* Layer summary */}
