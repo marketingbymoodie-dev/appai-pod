@@ -18,6 +18,13 @@
  * All endpoints are gated by NODE_ENV !== 'production' in server/routes.ts.
  */
 
+// Bump this whenever the save handler logic changes so the banner clearly
+// shows in the dev server log when the new code is loaded. If the user
+// hits Save and does NOT see a `[hoodie-mapper] save start` line in the
+// server log, their dev server is still running the OLD module — restart
+// `npm run dev` to pick up the change.
+const HOODIE_MAPPER_HANDLER_VERSION = "2026-05-24-save-rawbody+timeout";
+
 import { type Express, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
@@ -82,6 +89,15 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
   ensureDirSync(TEMPLATES_DIR);
   ensureDirSync(MOCKUPS_DIR);
 
+  // eslint-disable-next-line no-console
+  console.log(
+    `[hoodie-mapper] routes registered (handler ${HOODIE_MAPPER_HANDLER_VERSION}) ` +
+      `templates=${path.relative(PROJECT_ROOT, TEMPLATES_DIR)} mockups=${path.relative(
+        PROJECT_ROOT,
+        MOCKUPS_DIR,
+      )}`,
+  );
+
   app.get("/api/dev/hoodie-mapper/templates", async (_req: Request, res: Response) => {
     try {
       const entries = await fs.promises.readdir(TEMPLATES_DIR);
@@ -119,9 +135,43 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
 
   app.post("/api/dev/hoodie-mapper/templates/:name", async (req: Request, res: Response) => {
     const name = req.params.name;
-    if (!isSafeName(name)) return res.status(400).json({ error: "Invalid template name" });
+    const t0 = Date.now();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[hoodie-mapper] save start name=${name} content-type=${req.headers["content-type"] ?? "?"} ` +
+        `content-length=${req.headers["content-length"] ?? "?"} ` +
+        `handler=${HOODIE_MAPPER_HANDLER_VERSION}`,
+    );
+
+    if (!isSafeName(name)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[hoodie-mapper] save reject name=${name} reason=invalid-name`);
+      return res.status(400).json({ error: "Invalid template name" });
+    }
     const file = safeJoin(TEMPLATES_DIR, `${name}.json`);
     if (!file) return res.status(400).json({ error: "Invalid path" });
+
+    // Hard server-side timeout — even with the rawBody fix in place, we
+    // never want this handler to hang the client. If anything below takes
+    // longer than this, give the client a clear 504 instead of letting
+    // the request sit open for minutes.
+    const HARD_TIMEOUT_MS = 10_000;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      // eslint-disable-next-line no-console
+      console.error(
+        `[hoodie-mapper] save TIMEOUT name=${name} after=${Date.now() - t0}ms ` +
+          `handler=${HOODIE_MAPPER_HANDLER_VERSION}`,
+      );
+      if (!res.headersSent) {
+        res.status(504).json({
+          error: `Server save handler timed out after ${HARD_TIMEOUT_MS}ms`,
+          handler: HOODIE_MAPPER_HANDLER_VERSION,
+        });
+      }
+    }, HARD_TIMEOUT_MS);
+
     try {
       // The global express.json() middleware parses application/json bodies
       // before this handler runs, draining the request stream. Prefer the
@@ -130,35 +180,67 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
       // the stream ourselves (which would hang if it was already consumed).
       const rawBody = (req as any).rawBody as Buffer | undefined;
       let text: string;
+      let bodySource: "rawBody" | "parsedBody" | "stream";
       if (rawBody && rawBody.length > 0) {
         text = rawBody.toString("utf-8");
+        bodySource = "rawBody";
       } else if (req.body && typeof req.body === "object" && Object.keys(req.body).length > 0) {
         text = JSON.stringify(req.body);
+        bodySource = "parsedBody";
       } else {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[hoodie-mapper] save fallback-stream name=${name} — neither req.rawBody ` +
+            `nor parsed req.body had content; this almost always means the dev ` +
+            `server is running OLD code (restart 'npm run dev') OR express.json ` +
+            `did not match the request content-type.`,
+        );
         const raw = await readRawBody(req, MAX_TEMPLATE_BYTES);
         text = raw.toString("utf-8");
+        bodySource = "stream";
       }
+      if (timedOut) return;
       if (text.length > MAX_TEMPLATE_BYTES) {
+        clearTimeout(timer);
         return res.status(413).json({ error: `Body too large (${text.length} > ${MAX_TEMPLATE_BYTES})` });
       }
       const parsed = JSON.parse(text) as { name?: string; version?: string };
       if (!parsed?.version || !String(parsed.version).startsWith("hoodie-template/")) {
+        clearTimeout(timer);
         return res.status(400).json({ error: "Body missing 'version' = 'hoodie-template/v*'" });
       }
       if (parsed.name && parsed.name !== name) {
+        clearTimeout(timer);
         return res.status(400).json({ error: `Body 'name' (${parsed.name}) does not match route ${name}` });
       }
       ensureDirSync(TEMPLATES_DIR);
       await fs.promises.writeFile(file, text, "utf-8");
       const stat = await fs.promises.stat(file);
+      if (timedOut) return;
+      clearTimeout(timer);
+      // eslint-disable-next-line no-console
+      console.log(
+        `[hoodie-mapper] save done name=${name} bytes=${stat.size} ` +
+          `body-source=${bodySource} elapsed=${Date.now() - t0}ms`,
+      );
       res.json({
         ok: true,
         file: path.relative(PROJECT_ROOT, file),
         sizeBytes: stat.size,
         updatedAt: stat.mtime.toISOString(),
+        handler: HOODIE_MAPPER_HANDLER_VERSION,
+        bodySource,
+        elapsedMs: Date.now() - t0,
       });
     } catch (err: any) {
-      res.status(400).json({ error: err?.message || "save failed" });
+      clearTimeout(timer);
+      // eslint-disable-next-line no-console
+      console.error(
+        `[hoodie-mapper] save error name=${name} elapsed=${Date.now() - t0}ms err=${err?.message ?? err}`,
+      );
+      if (!res.headersSent) {
+        res.status(400).json({ error: err?.message || "save failed" });
+      }
     }
   });
 

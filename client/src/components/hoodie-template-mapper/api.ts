@@ -34,8 +34,21 @@ export async function loadTemplate(name: string): Promise<HoodieTemplate> {
   return (await r.json()) as HoodieTemplate;
 }
 
-export async function saveTemplate(name: string, template: HoodieTemplate): Promise<{ ok: true; file: string }> {
+export type SaveTemplateResult = {
+  ok: true;
+  file: string;
+  sizeBytes?: number;
+  updatedAt?: string;
+  /** Server-side handler version marker — useful to confirm the dev server is running new code. */
+  handler?: string;
+  bodySource?: "rawBody" | "parsedBody" | "stream";
+  elapsedMs?: number;
+};
+
+export async function saveTemplate(name: string, template: HoodieTemplate): Promise<SaveTemplateResult> {
   // 20s safety timeout so a hung server can't pin the UI in the busy state.
+  // (The server now also enforces its own 10s hard timeout and replies 504,
+  // but we keep this as a belt-and-braces fallback for total network hangs.)
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 20_000);
   try {
@@ -47,12 +60,22 @@ export async function saveTemplate(name: string, template: HoodieTemplate): Prom
     });
     if (!r.ok) {
       const err = await r.text().catch(() => "");
-      throw new Error(`Failed to save template "${name}": ${err.slice(0, 200) || r.status}`);
+      if (r.status === 504) {
+        throw new Error(
+          `Server save handler timed out (504). Restart your dev server ` +
+            `('npm run dev') so the latest code loads. (${name})`,
+        );
+      }
+      throw new Error(`Failed to save template "${name}" (${r.status}): ${err.slice(0, 200) || r.status}`);
     }
-    return (await r.json()) as { ok: true; file: string };
+    return (await r.json()) as SaveTemplateResult;
   } catch (err: any) {
     if (err?.name === "AbortError") {
-      throw new Error(`Save timed out after 20s — server may be hung. (${name})`);
+      throw new Error(
+        `Save timed out after 20s — your dev server is almost certainly running ` +
+          `OLD code. Stop it (Ctrl+C in the terminal) and run 'npm run dev' again, ` +
+          `then retry. (${name})`,
+      );
     }
     throw err;
   } finally {
