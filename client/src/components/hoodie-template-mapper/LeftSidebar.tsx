@@ -199,6 +199,22 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
                       <span className="flex-1 truncate" title={l.panelKey ? PANEL_DISPLAY_LABEL[l.panelKey] : "unassigned"}>
                         {l.name}
                         {isExclusion && <span className="ml-1 rounded bg-red-900/40 px-1 text-[10px] text-red-200">EXCL</span>}
+                        {!isExclusion && l.mesh && l.productionPanelSrc && (
+                          <span
+                            className="ml-1 rounded bg-emerald-500/20 px-1 text-[10px] font-medium uppercase text-emerald-300"
+                            title="Mesh warp + source artwork ready"
+                          >
+                            M
+                          </span>
+                        )}
+                        {!isExclusion && l.mesh && !l.productionPanelSrc && (
+                          <span
+                            className="ml-1 rounded bg-amber-500/20 px-1 text-[10px] font-medium uppercase text-amber-300"
+                            title="Mesh exists — upload source artwork to complete"
+                          >
+                            M?
+                          </span>
+                        )}
                         {l.panelKey && (
                           <span className="ml-1 text-[10px] text-slate-500">
                             · {PANEL_DISPLAY_LABEL[l.panelKey]}
