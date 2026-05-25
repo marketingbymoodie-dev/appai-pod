@@ -75,11 +75,12 @@ export type SourceRect = {
 };
 
 /**
- * Quantised source-image rotation applied before warping. Lets a sleeve
- * artwork sheet that ships portrait-oriented be turned 90° to match a
- * landscape sleeve polygon without re-tracing or re-deforming the mesh.
+ * Source-image rotation in degrees (clockwise positive), applied before
+ * warping. Stored as an arbitrary number so the user can drag a rotate
+ * handle freely; the previous quantised 0/90/180/270 values remain valid
+ * data and stay backward-compatible.
  */
-export type MeshSourceRotation = 0 | 90 | 180 | 270;
+export type MeshSourceRotation = number;
 
 /**
  * Mesh warp grid for projecting a rectangular slice of a panel artwork
@@ -110,9 +111,10 @@ export type MeshGrid = {
   targetPoints: Pt[];
   /**
    * Rotation applied to the source UVs before sampling, in degrees CW.
+   * Free-form (any number); UI typically normalises to [-180, 180].
    * Defaults to 0 when omitted (legacy data).
    */
-  sourceRotation?: MeshSourceRotation;
+  sourceRotation?: number;
   /** Mirror the source horizontally (after rotation). Default false. */
   sourceFlipX?: boolean;
   /** Mirror the source vertically (after rotation). Default false. */

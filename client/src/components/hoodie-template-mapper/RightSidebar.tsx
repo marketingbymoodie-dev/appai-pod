@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -741,23 +741,45 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
 }
 
 /**
- * Quantised rotation + flip controls for the source artwork. Operates in
- * source-UV space, so the user's tuned `targetPoints` deformation stays
- * intact — handy for sleeve / cuff Printify panels that ship rotated 90°
- * relative to the mockup orientation.
+ * Free-form rotation + flip controls for the source artwork. Operates
+ * in source-UV space, so the user's tuned `targetPoints` deformation
+ * stays intact. The on-canvas rotate handle (rendered by
+ * `MeshWarpOverlay`) is the primary UX; this sidebar block adds:
+ *   - precise numeric entry,
+ *   - quick ±90° / 180° steppers,
+ *   - flip H / flip V toggles,
+ *   - a slider for sweeping through angles.
  */
 function SourceTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshGrid }) {
   const actions = useHoodieMapperStore((s) => s.actions);
-  const rotation = (mesh.sourceRotation ?? 0) as 0 | 90 | 180 | 270;
+  const rawRotation = mesh.sourceRotation ?? 0;
   const flipX = mesh.sourceFlipX ?? false;
   const flipY = mesh.sourceFlipY ?? false;
 
-  const rotate = (delta: 90 | -90) => {
-    const next = (((rotation + delta) % 360) + 360) % 360;
+  const normalise = (deg: number): number => {
+    let a = deg % 360;
+    if (a > 180) a -= 360;
+    if (a <= -180) a += 360;
+    return a;
+  };
+  const displayRotation = normalise(rawRotation);
+
+  // Local input state so the user can type a partial number (e.g. "-1")
+  // without each keystroke being clobbered by an outbound store update.
+  // We sync FROM the store whenever the canonical value changes from
+  // somewhere else (canvas drag, slider, ±90° steppers).
+  const [rotationInput, setRotationInput] = useState(displayRotation.toFixed(1));
+  useEffect(() => {
+    setRotationInput(displayRotation.toFixed(1));
+  }, [displayRotation]);
+
+  const setRotation = (deg: number) => {
     actions.setLayerMeshSourceTransform(layer.id, {
-      sourceRotation: next as 0 | 90 | 180 | 270,
+      sourceRotation: normalise(deg),
     });
   };
+
+  const stepRotation = (delta: number) => setRotation(rawRotation + delta);
 
   const reset = () =>
     actions.setLayerMeshSourceTransform(layer.id, {
@@ -766,36 +788,102 @@ function SourceTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: Mesh
       sourceFlipY: false,
     });
 
-  const isTransformed = rotation !== 0 || flipX || flipY;
+  const isTransformed = Math.abs(displayRotation) > 0.05 || flipX || flipY;
 
   return (
-    <div className="space-y-1 rounded border border-slate-700/40 bg-slate-900/40 p-2">
+    <div className="space-y-2 rounded border border-slate-700/40 bg-slate-900/40 p-2">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-400">
         <span>Source rotation / flip</span>
         <span className="text-purple-300">
-          {rotation}°{flipX ? " · ↔" : ""}
+          {displayRotation.toFixed(1)}°{flipX ? " · ↔" : ""}
           {flipY ? " · ↕" : ""}
         </span>
       </div>
+
+      {/* Slider + numeric input for free-form angle entry. */}
+      <div className="space-y-1">
+        <Slider
+          value={[displayRotation]}
+          min={-180}
+          max={180}
+          step={0.5}
+          onValueChange={([v]) => setRotation(v)}
+        />
+        <div className="flex items-center gap-1">
+          <Input
+            type="number"
+            value={rotationInput}
+            step={1}
+            onChange={(e) => setRotationInput(e.target.value)}
+            onBlur={() => {
+              const parsed = parseFloat(rotationInput);
+              if (Number.isFinite(parsed)) {
+                setRotation(parsed);
+              } else {
+                setRotationInput(displayRotation.toFixed(1));
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const parsed = parseFloat(rotationInput);
+                if (Number.isFinite(parsed)) setRotation(parsed);
+                (e.target as HTMLInputElement).blur();
+              } else if (e.key === "Escape") {
+                setRotationInput(displayRotation.toFixed(1));
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            className="h-7 text-[11px]"
+            aria-label="Rotation in degrees"
+          />
+          <span className="text-[10px] text-slate-500">deg</span>
+        </div>
+      </div>
+
+      {/* Quick steppers — shift everything in 90° / 15° / 1° increments. */}
+      <div className="grid grid-cols-4 gap-1">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-1 text-[11px]"
+          onClick={() => stepRotation(-90)}
+          title="Rotate -90°"
+        >
+          <RotateCcw className="h-3 w-3" />
+          90
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-1 text-[11px]"
+          onClick={() => stepRotation(-15)}
+          title="Rotate -15°"
+        >
+          -15
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-1 text-[11px]"
+          onClick={() => stepRotation(15)}
+          title="Rotate +15°"
+        >
+          +15
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-1 text-[11px]"
+          onClick={() => stepRotation(90)}
+          title="Rotate +90°"
+        >
+          <RotateCw className="h-3 w-3" />
+          90
+        </Button>
+      </div>
+
+      {/* Flip toggles. */}
       <div className="grid grid-cols-2 gap-1">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-[11px]"
-          onClick={() => rotate(-90)}
-          title="Rotate source artwork 90° counter-clockwise"
-        >
-          <RotateCcw className="mr-1 h-3 w-3" /> 90° CCW
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 text-[11px]"
-          onClick={() => rotate(90)}
-          title="Rotate source artwork 90° clockwise"
-        >
-          <RotateCw className="mr-1 h-3 w-3" /> 90° CW
-        </Button>
         <Button
           size="sm"
           variant={flipX ? "default" : "outline"}
@@ -819,6 +907,7 @@ function SourceTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: Mesh
           <FlipVertical className="mr-1 h-3 w-3" /> Flip V
         </Button>
       </div>
+
       {isTransformed && (
         <Button
           size="sm"
@@ -830,7 +919,10 @@ function SourceTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: Mesh
         </Button>
       )}
       <div className="text-[10px] text-slate-500">
-        Applied to the source UVs only — your mesh deformation is preserved.
+        Drag the purple puck above the artwork on canvas, or use this
+        slider. Hold <kbd className="rounded bg-slate-800 px-1">Shift</kbd>{" "}
+        while dragging on canvas to snap to 15°. Double-click the puck
+        to zero rotation.
       </div>
     </div>
   );
