@@ -196,11 +196,12 @@ export type HoodieMapperActions = {
   /**
    * Patch source-image rotation/flip on a layer's mesh. Lets the user
    * rotate sleeve/cuff Printify panel sheets to match the mockup
-   * orientation without re-tracing the mesh.
+   * orientation without re-tracing the mesh. `sourceRotation` is degrees
+   * CW (free-form, any number).
    */
   setLayerMeshSourceTransform: (
     id: string,
-    patch: { sourceRotation?: 0 | 90 | 180 | 270; sourceFlipX?: boolean; sourceFlipY?: boolean },
+    patch: { sourceRotation?: number; sourceFlipX?: boolean; sourceFlipY?: boolean },
   ) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };

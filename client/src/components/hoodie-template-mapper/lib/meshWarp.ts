@@ -17,39 +17,42 @@
  * 1-pixel cracks.
  */
 
-import type { MeshGrid, MeshSourceRotation, Pt, SourceRect } from "@shared/hoodieTemplate";
+import type { MeshGrid, Pt, SourceRect } from "@shared/hoodieTemplate";
 
 /**
- * Map a (u, v) pair in [0..1]² through a quantised rotation and optional
- * horizontal/vertical flip. Used to pre-rotate the source UVs before
- * sampling the artwork rectangle so we never touch the user's tuned
- * `targetPoints` — the rotation lives entirely in source space.
+ * Map a (u, v) pair in [0..1]² through a free-form rotation around the
+ * centre (0.5, 0.5) and optional horizontal/vertical flip. Used to
+ * pre-rotate the source UVs before sampling the artwork rectangle so
+ * we never touch the user's tuned `targetPoints` — the rotation lives
+ * entirely in source space.
+ *
+ * Convention: positive `rotationDeg` rotates the rendered artwork
+ * clockwise on screen (i.e. the source UV grid is rotated counter-
+ * clockwise in screen frame, which appears as CW rotation of the
+ * sampled image content).
+ *
+ * Note that arbitrary rotations push UVs outside [0, 1]² near the
+ * corners; that's expected — the sampled pixels there fall outside the
+ * source image and render transparent, exactly like rotating a square
+ * inside its own bounding box.
  */
 function applySourceUvTransform(
   u: number,
   v: number,
-  rotation: MeshSourceRotation,
+  rotationDeg: number,
   flipX: boolean,
   flipY: boolean,
 ): { u: number; v: number } {
   let nu = u;
   let nv = v;
-  switch (rotation) {
-    case 90:
-      nu = v;
-      nv = 1 - u;
-      break;
-    case 180:
-      nu = 1 - u;
-      nv = 1 - v;
-      break;
-    case 270:
-      nu = 1 - v;
-      nv = u;
-      break;
-    case 0:
-    default:
-      break;
+  if (rotationDeg !== 0) {
+    const rad = (rotationDeg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cu = u - 0.5;
+    const cv = v - 0.5;
+    nu = cu * cos + cv * sin + 0.5;
+    nv = -cu * sin + cv * cos + 0.5;
   }
   if (flipX) nu = 1 - nu;
   if (flipY) nv = 1 - nv;
@@ -115,7 +118,7 @@ export function drawMeshWarp(
   // `targetPoints` deformation is preserved.
   const cols = mesh.cols;
   const rows = mesh.rows;
-  const rotation = (mesh.sourceRotation ?? 0) as MeshSourceRotation;
+  const rotation = mesh.sourceRotation ?? 0;
   const flipX = mesh.sourceFlipX ?? false;
   const flipY = mesh.sourceFlipY ?? false;
 
@@ -235,33 +238,27 @@ function inflateTriangle(tri: Pt[], amount: number): Pt[] {
  * the natural grid UV space, so callers like `meshSampleTarget` can bilin
  * sample using the user's tuned `targetPoints` even when the artwork has
  * been rotated/flipped.
+ *
+ * Inverse order is: undo flips first (flips are involutions), then
+ * rotate by `-rotationDeg` around (0.5, 0.5).
  */
 function inverseSourceUvTransform(
   u: number,
   v: number,
-  rotation: MeshSourceRotation,
+  rotationDeg: number,
   flipX: boolean,
   flipY: boolean,
 ): { u: number; v: number } {
-  // Flips first (inverse of forward flip = same flip).
   let nu = flipX ? 1 - u : u;
   let nv = flipY ? 1 - v : v;
-  // Then inverse rotation.
-  switch (rotation) {
-    case 90:
-      // forward: (u,v) -> (v, 1-u); inverse: (u',v') -> (1-v', u')
-      [nu, nv] = [1 - nv, nu];
-      break;
-    case 180:
-      [nu, nv] = [1 - nu, 1 - nv];
-      break;
-    case 270:
-      // forward: (u,v) -> (1-v, u); inverse: (u',v') -> (v', 1-u')
-      [nu, nv] = [nv, 1 - nu];
-      break;
-    case 0:
-    default:
-      break;
+  if (rotationDeg !== 0) {
+    const rad = (rotationDeg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cu = nu - 0.5;
+    const cv = nv - 0.5;
+    nu = cu * cos - cv * sin + 0.5;
+    nv = cu * sin + cv * cos + 0.5;
   }
   return { u: nu, v: nv };
 }
@@ -280,7 +277,7 @@ export function meshSampleTarget(mesh: MeshGrid, u: number, v: number): Pt {
   const inverted = inverseSourceUvTransform(
     u,
     v,
-    (mesh.sourceRotation ?? 0) as MeshSourceRotation,
+    mesh.sourceRotation ?? 0,
     mesh.sourceFlipX ?? false,
     mesh.sourceFlipY ?? false,
   );
