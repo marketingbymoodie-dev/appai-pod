@@ -75,6 +75,13 @@ export type SourceRect = {
 };
 
 /**
+ * Quantised source-image rotation applied before warping. Lets a sleeve
+ * artwork sheet that ships portrait-oriented be turned 90° to match a
+ * landscape sleeve polygon without re-tracing or re-deforming the mesh.
+ */
+export type MeshSourceRotation = 0 | 90 | 180 | 270;
+
+/**
  * Mesh warp grid for projecting a rectangular slice of a panel artwork
  * onto an irregular hoodie panel polygon. The mesh is regular in source
  * space (`cols × rows` evenly spaced grid points spanning `sourceRect`)
@@ -83,7 +90,8 @@ export type SourceRect = {
  * and similar real-world distortions).
  *
  * Source UVs are computed implicitly: for grid point `(col, row)` they
- * are `(col / (cols-1), row / (rows-1))` mapped through `sourceRect`.
+ * are `(col / (cols-1), row / (rows-1))` mapped through `sourceRect`,
+ * then rotated/flipped per `sourceRotation`/`sourceFlipX`/`sourceFlipY`.
  * Stored explicitly only the `targetPoints` so the JSON stays compact.
  *
  * Length invariant: `targetPoints.length === cols * rows`.
@@ -100,6 +108,15 @@ export type MeshGrid = {
   sourceRect: SourceRect | null;
   /** Row-major: index = row * cols + col. Mockup pixel coords. */
   targetPoints: Pt[];
+  /**
+   * Rotation applied to the source UVs before sampling, in degrees CW.
+   * Defaults to 0 when omitted (legacy data).
+   */
+  sourceRotation?: MeshSourceRotation;
+  /** Mirror the source horizontally (after rotation). Default false. */
+  sourceFlipX?: boolean;
+  /** Mirror the source vertically (after rotation). Default false. */
+  sourceFlipY?: boolean;
 };
 
 export type Transform2D = {

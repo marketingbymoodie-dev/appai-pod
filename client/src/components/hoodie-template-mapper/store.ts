@@ -193,6 +193,15 @@ export type HoodieMapperActions = {
   resizeLayerMesh: (id: string, cols: number, rows: number) => void;
   setLayerMeshTargetPoint: (id: string, index: number, point: Pt) => void;
   setLayerMeshSourceRect: (id: string, rect: SourceRect | null) => void;
+  /**
+   * Patch source-image rotation/flip on a layer's mesh. Lets the user
+   * rotate sleeve/cuff Printify panel sheets to match the mockup
+   * orientation without re-tracing the mesh.
+   */
+  setLayerMeshSourceTransform: (
+    id: string,
+    patch: { sourceRotation?: 0 | 90 | 180 | 270; sourceFlipX?: boolean; sourceFlipY?: boolean },
+  ) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
 
@@ -591,6 +600,27 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const layers = s.template.views[found.view].layers.map((l) =>
           l.id === id && l.mesh ? { ...l, mesh: { ...l.mesh, sourceRect: rect } } : l,
         );
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    setLayerMeshSourceTransform: (id, patch) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        const layers = s.template.views[found.view].layers.map((l) => {
+          if (l.id !== id || !l.mesh) return l;
+          return {
+            ...l,
+            mesh: {
+              ...l.mesh,
+              ...(patch.sourceRotation !== undefined ? { sourceRotation: patch.sourceRotation } : {}),
+              ...(patch.sourceFlipX !== undefined ? { sourceFlipX: patch.sourceFlipX } : {}),
+              ...(patch.sourceFlipY !== undefined ? { sourceFlipY: patch.sourceFlipY } : {}),
+            },
+          };
+        });
         return {
           template: patchView(s.template, found.view, { layers }),
           dirty: true,

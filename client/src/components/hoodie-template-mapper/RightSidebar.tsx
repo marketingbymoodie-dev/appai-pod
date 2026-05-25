@@ -14,14 +14,18 @@ import {
   Image as ImageIcon,
   Grid3X3,
   RotateCcw,
+  RotateCw,
   Upload,
   Loader2,
+  FlipHorizontal,
+  FlipVertical,
 } from "lucide-react";
 import {
   PANELS_PER_VIEW,
   PANEL_DISPLAY_LABEL,
   type HoodiePanelKey,
   type MaskLayer,
+  type MeshGrid,
 } from "@shared/hoodieTemplate";
 import type { HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
@@ -706,6 +710,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             sleeve sheet matches the front vs back view. Toggle off and the mask hides everything
             outside the panel.
           </div>
+          <SourceTransformControls layer={layer} mesh={mesh} />
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -731,6 +736,102 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Quantised rotation + flip controls for the source artwork. Operates in
+ * source-UV space, so the user's tuned `targetPoints` deformation stays
+ * intact — handy for sleeve / cuff Printify panels that ship rotated 90°
+ * relative to the mockup orientation.
+ */
+function SourceTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshGrid }) {
+  const actions = useHoodieMapperStore((s) => s.actions);
+  const rotation = (mesh.sourceRotation ?? 0) as 0 | 90 | 180 | 270;
+  const flipX = mesh.sourceFlipX ?? false;
+  const flipY = mesh.sourceFlipY ?? false;
+
+  const rotate = (delta: 90 | -90) => {
+    const next = (((rotation + delta) % 360) + 360) % 360;
+    actions.setLayerMeshSourceTransform(layer.id, {
+      sourceRotation: next as 0 | 90 | 180 | 270,
+    });
+  };
+
+  const reset = () =>
+    actions.setLayerMeshSourceTransform(layer.id, {
+      sourceRotation: 0,
+      sourceFlipX: false,
+      sourceFlipY: false,
+    });
+
+  const isTransformed = rotation !== 0 || flipX || flipY;
+
+  return (
+    <div className="space-y-1 rounded border border-slate-700/40 bg-slate-900/40 p-2">
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-400">
+        <span>Source rotation / flip</span>
+        <span className="text-purple-300">
+          {rotation}°{flipX ? " · ↔" : ""}
+          {flipY ? " · ↕" : ""}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-1">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-[11px]"
+          onClick={() => rotate(-90)}
+          title="Rotate source artwork 90° counter-clockwise"
+        >
+          <RotateCcw className="mr-1 h-3 w-3" /> 90° CCW
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 text-[11px]"
+          onClick={() => rotate(90)}
+          title="Rotate source artwork 90° clockwise"
+        >
+          <RotateCw className="mr-1 h-3 w-3" /> 90° CW
+        </Button>
+        <Button
+          size="sm"
+          variant={flipX ? "default" : "outline"}
+          className="h-7 text-[11px]"
+          onClick={() =>
+            actions.setLayerMeshSourceTransform(layer.id, { sourceFlipX: !flipX })
+          }
+          title="Mirror artwork horizontally (e.g. left ↔ right sleeve)"
+        >
+          <FlipHorizontal className="mr-1 h-3 w-3" /> Flip H
+        </Button>
+        <Button
+          size="sm"
+          variant={flipY ? "default" : "outline"}
+          className="h-7 text-[11px]"
+          onClick={() =>
+            actions.setLayerMeshSourceTransform(layer.id, { sourceFlipY: !flipY })
+          }
+          title="Mirror artwork vertically"
+        >
+          <FlipVertical className="mr-1 h-3 w-3" /> Flip V
+        </Button>
+      </div>
+      {isTransformed && (
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 w-full text-[10px] text-slate-400 hover:text-slate-200"
+          onClick={reset}
+        >
+          Reset rotation & flip
+        </Button>
+      )}
+      <div className="text-[10px] text-slate-500">
+        Applied to the source UVs only — your mesh deformation is preserved.
+      </div>
     </div>
   );
 }

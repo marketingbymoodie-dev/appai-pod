@@ -17,7 +17,44 @@
  * 1-pixel cracks.
  */
 
-import type { MeshGrid, Pt, SourceRect } from "@shared/hoodieTemplate";
+import type { MeshGrid, MeshSourceRotation, Pt, SourceRect } from "@shared/hoodieTemplate";
+
+/**
+ * Map a (u, v) pair in [0..1]² through a quantised rotation and optional
+ * horizontal/vertical flip. Used to pre-rotate the source UVs before
+ * sampling the artwork rectangle so we never touch the user's tuned
+ * `targetPoints` — the rotation lives entirely in source space.
+ */
+function applySourceUvTransform(
+  u: number,
+  v: number,
+  rotation: MeshSourceRotation,
+  flipX: boolean,
+  flipY: boolean,
+): { u: number; v: number } {
+  let nu = u;
+  let nv = v;
+  switch (rotation) {
+    case 90:
+      nu = v;
+      nv = 1 - u;
+      break;
+    case 180:
+      nu = 1 - u;
+      nv = 1 - v;
+      break;
+    case 270:
+      nu = 1 - v;
+      nv = u;
+      break;
+    case 0:
+    default:
+      break;
+  }
+  if (flipX) nu = 1 - nu;
+  if (flipY) nv = 1 - nv;
+  return { u: nu, v: nv };
+}
 
 /**
  * Slight expansion (in pixels) of every triangle along its edge normals
@@ -72,18 +109,31 @@ export function drawMeshWarp(
     ctx.globalAlpha = ctx.globalAlpha * options.globalAlpha;
   }
 
-  // Pre-compute source UV grid in pixels, evenly spaced inside `src`.
+  // Source UV grid (normalised 0..1 inside `src`). Each grid corner runs
+  // through `applySourceUvTransform` so a 90°/180°/270° rotation or flip
+  // changes WHICH part of `src` each target cell pulls from — the user's
+  // `targetPoints` deformation is preserved.
   const cols = mesh.cols;
   const rows = mesh.rows;
-  const dx = src.width / (cols - 1);
-  const dy = src.height / (rows - 1);
+  const rotation = (mesh.sourceRotation ?? 0) as MeshSourceRotation;
+  const flipX = mesh.sourceFlipX ?? false;
+  const flipY = mesh.sourceFlipY ?? false;
+
+  const uvToPx = (u: number, v: number): Pt => {
+    const t = applySourceUvTransform(u, v, rotation, flipX, flipY);
+    return { x: src.x + t.u * src.width, y: src.y + t.v * src.height };
+  };
 
   for (let r = 0; r < rows - 1; r += 1) {
     for (let c = 0; c < cols - 1; c += 1) {
-      const sTL: Pt = { x: src.x + c * dx, y: src.y + r * dy };
-      const sTR: Pt = { x: src.x + (c + 1) * dx, y: src.y + r * dy };
-      const sBL: Pt = { x: src.x + c * dx, y: src.y + (r + 1) * dy };
-      const sBR: Pt = { x: src.x + (c + 1) * dx, y: src.y + (r + 1) * dy };
+      const u0 = c / (cols - 1);
+      const u1 = (c + 1) / (cols - 1);
+      const v0 = r / (rows - 1);
+      const v1 = (r + 1) / (rows - 1);
+      const sTL = uvToPx(u0, v0);
+      const sTR = uvToPx(u1, v0);
+      const sBL = uvToPx(u0, v1);
+      const sBR = uvToPx(u1, v1);
 
       const tTL = mesh.targetPoints[r * cols + c];
       const tTR = mesh.targetPoints[r * cols + (c + 1)];
@@ -181,17 +231,61 @@ function inflateTriangle(tri: Pt[], amount: number): Pt[] {
 }
 
 /**
+ * Inverse of `applySourceUvTransform` — maps a source-space UV back into
+ * the natural grid UV space, so callers like `meshSampleTarget` can bilin
+ * sample using the user's tuned `targetPoints` even when the artwork has
+ * been rotated/flipped.
+ */
+function inverseSourceUvTransform(
+  u: number,
+  v: number,
+  rotation: MeshSourceRotation,
+  flipX: boolean,
+  flipY: boolean,
+): { u: number; v: number } {
+  // Flips first (inverse of forward flip = same flip).
+  let nu = flipX ? 1 - u : u;
+  let nv = flipY ? 1 - v : v;
+  // Then inverse rotation.
+  switch (rotation) {
+    case 90:
+      // forward: (u,v) -> (v, 1-u); inverse: (u',v') -> (1-v', u')
+      [nu, nv] = [1 - nv, nu];
+      break;
+    case 180:
+      [nu, nv] = [1 - nu, 1 - nv];
+      break;
+    case 270:
+      // forward: (u,v) -> (1-v, u); inverse: (u',v') -> (v', 1-u')
+      [nu, nv] = [nv, 1 - nu];
+      break;
+    case 0:
+    default:
+      break;
+  }
+  return { u: nu, v: nv };
+}
+
+/**
  * Bilinearly interpolate a target point inside a (cols × rows) mesh given
  * source UV coordinates in [0..1]^2 spanning sourceRect. Used by the AOP
- * preview to map artwork pixels through the deformed grid.
+ * preview to map artwork pixels through the deformed grid. Respects any
+ * `sourceRotation`/`sourceFlipX`/`sourceFlipY` baked into the mesh.
  *
  * Returns { x, y } in mockup pixel coords.
  */
 export function meshSampleTarget(mesh: MeshGrid, u: number, v: number): Pt {
   const cols = mesh.cols;
   const rows = mesh.rows;
-  const cu = Math.max(0, Math.min(1, u));
-  const cv = Math.max(0, Math.min(1, v));
+  const inverted = inverseSourceUvTransform(
+    u,
+    v,
+    (mesh.sourceRotation ?? 0) as MeshSourceRotation,
+    mesh.sourceFlipX ?? false,
+    mesh.sourceFlipY ?? false,
+  );
+  const cu = Math.max(0, Math.min(1, inverted.u));
+  const cv = Math.max(0, Math.min(1, inverted.v));
   const fx = cu * (cols - 1);
   const fy = cv * (rows - 1);
   const x0 = Math.floor(fx);
