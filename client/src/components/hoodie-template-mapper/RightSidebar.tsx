@@ -710,6 +710,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
             sleeve sheet matches the front vs back view. Toggle off and the mask hides everything
             outside the panel.
           </div>
+          <PanelTransformControls layer={layer} mesh={mesh} />
           <SourceTransformControls layer={layer} mesh={mesh} />
           <div className="flex gap-2">
             <Button
@@ -736,6 +737,217 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Rigid-body transform controls for the entire mesh (rotation +
+ * translation). Bakes the transform into target points so the artwork
+ * + mesh rotate/move together as a unit — matches the user's mental
+ * model of "rotate the whole panel" / "move the whole panel". Per-
+ * vertex deformation work is preserved.
+ *
+ * Primary UX is the on-canvas yellow centroid puck (drag = move) and
+ * purple rotate puck (drag = rotate); this sidebar block adds quick
+ * steppers for precise arithmetic adjustments.
+ */
+function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshGrid }) {
+  const actions = useHoodieMapperStore((s) => s.actions);
+
+  // Centroid of the mesh's target points — used as the rotation anchor
+  // for the sidebar steppers, mirroring the on-canvas puck behaviour.
+  const anchor = useMemo(() => {
+    if (mesh.targetPoints.length === 0) return { x: 0, y: 0 };
+    let sx = 0;
+    let sy = 0;
+    for (const p of mesh.targetPoints) {
+      sx += p.x;
+      sy += p.y;
+    }
+    return { x: sx / mesh.targetPoints.length, y: sy / mesh.targetPoints.length };
+  }, [mesh.targetPoints]);
+
+  const rotate = (deg: number) => actions.rotateLayerMesh(layer.id, deg, anchor);
+  const translate = (dx: number, dy: number) => actions.translateLayerMesh(layer.id, dx, dy);
+
+  return (
+    <div className="space-y-2 rounded border border-yellow-700/30 bg-yellow-950/15 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-yellow-300">
+        Panel transform (whole mesh)
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-[10px] text-slate-400">Rotate</Label>
+        <div className="grid grid-cols-4 gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => rotate(-90)}
+            title="Rotate panel -90°"
+          >
+            <RotateCcw className="h-3 w-3" />
+            90
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => rotate(-15)}
+            title="Rotate panel -15°"
+          >
+            -15
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => rotate(15)}
+            title="Rotate panel +15°"
+          >
+            +15
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => rotate(90)}
+            title="Rotate panel +90°"
+          >
+            <RotateCw className="h-3 w-3" />
+            90
+          </Button>
+        </div>
+        <div className="grid grid-cols-3 gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => rotate(-1)}
+            title="Rotate panel -1°"
+          >
+            -1°
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => rotate(-5)}
+            title="Rotate panel -5°"
+          >
+            -5°
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => rotate(5)}
+            title="Rotate panel +5°"
+          >
+            +5°
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-[10px] text-slate-400">Nudge position (mockup px)</Label>
+        <div className="grid grid-cols-3 gap-1">
+          <span />
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => translate(0, -10)}
+            title="Move panel up 10px"
+          >
+            ↑10
+          </Button>
+          <span />
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => translate(-10, 0)}
+            title="Move panel left 10px"
+          >
+            ←10
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-1 text-[10px] text-slate-300"
+            disabled
+            title="Drag the yellow centroid puck on canvas to move freely"
+          >
+            ·
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => translate(10, 0)}
+            title="Move panel right 10px"
+          >
+            10→
+          </Button>
+          <span />
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => translate(0, 10)}
+            title="Move panel down 10px"
+          >
+            ↓10
+          </Button>
+          <span />
+        </div>
+        <div className="grid grid-cols-4 gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => translate(0, -1)}
+            title="Move panel up 1px"
+          >
+            ↑1
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => translate(0, 1)}
+            title="Move panel down 1px"
+          >
+            ↓1
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => translate(-1, 0)}
+            title="Move panel left 1px"
+          >
+            ←1
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1 text-[10px] text-slate-300"
+            onClick={() => translate(1, 0)}
+            title="Move panel right 1px"
+          >
+            1→
+          </Button>
+        </div>
+      </div>
+
+      <div className="text-[10px] text-slate-500">
+        Drag the yellow puck on canvas to move freely; drag the purple
+        puck to rotate. Holding <kbd className="rounded bg-slate-800 px-1">Shift</kbd>{" "}
+        while rotating snaps to 15°.
+      </div>
     </div>
   );
 }
@@ -793,11 +1005,16 @@ function SourceTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: Mesh
   return (
     <div className="space-y-2 rounded border border-slate-700/40 bg-slate-900/40 p-2">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-slate-400">
-        <span>Source rotation / flip</span>
+        <span>Artwork orientation (within mesh)</span>
         <span className="text-purple-300">
           {displayRotation.toFixed(1)}°{flipX ? " · ↔" : ""}
           {flipY ? " · ↕" : ""}
         </span>
+      </div>
+      <div className="text-[10px] text-slate-500">
+        Rotates only the artwork content inside each mesh cell — the mesh
+        shape stays put. Use the panel transform above (or the on-canvas
+        purple puck) to rotate the whole panel rigidly.
       </div>
 
       {/* Slider + numeric input for free-form angle entry. */}
