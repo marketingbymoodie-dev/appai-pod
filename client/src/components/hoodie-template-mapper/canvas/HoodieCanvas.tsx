@@ -612,10 +612,11 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
               onDragControlPoint={(idx, p) =>
                 actions.setLayerMeshTargetPoint(selectedLayer.id, idx, p)
               }
-              onRotate={(rotationDeg) =>
-                actions.setLayerMeshSourceTransform(selectedLayer.id, {
-                  sourceRotation: rotationDeg,
-                })
+              onRotateMesh={(deltaDeg, anchor) =>
+                actions.rotateLayerMesh(selectedLayer.id, deltaDeg, anchor)
+              }
+              onTranslateMesh={(dx, dy) =>
+                actions.translateLayerMesh(selectedLayer.id, dx, dy)
               }
             />
           )}

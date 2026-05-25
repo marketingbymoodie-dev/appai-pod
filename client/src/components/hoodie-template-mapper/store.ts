@@ -194,15 +194,30 @@ export type HoodieMapperActions = {
   setLayerMeshTargetPoint: (id: string, index: number, point: Pt) => void;
   setLayerMeshSourceRect: (id: string, rect: SourceRect | null) => void;
   /**
-   * Patch source-image rotation/flip on a layer's mesh. Lets the user
-   * rotate sleeve/cuff Printify panel sheets to match the mockup
-   * orientation without re-tracing the mesh. `sourceRotation` is degrees
-   * CW (free-form, any number).
+   * Patch source-image rotation/flip on a layer's mesh. Affects only the
+   * UV sampling of the artwork inside each mesh cell; the mesh shape is
+   * untouched. Use for fine-grained artwork orientation tweaks (e.g. a
+   * Printify sleeve sheet that ships portrait while the mesh is laid out
+   * landscape).
    */
   setLayerMeshSourceTransform: (
     id: string,
     patch: { sourceRotation?: number; sourceFlipX?: boolean; sourceFlipY?: boolean },
   ) => void;
+  /**
+   * Rigid-body rotate every mesh target point by `deltaDeg` (CW positive)
+   * around `anchor` (mockup pixel coords; typically the mesh centroid).
+   * The artwork rotates with the mesh because each cell still pulls from
+   * the same source UV — so this is the "rotate the whole panel" gesture
+   * the on-canvas rotate puck binds to.
+   */
+  rotateLayerMesh: (id: string, deltaDeg: number, anchor: Pt) => void;
+  /**
+   * Rigid-body translate every mesh target point by `(dx, dy)` mockup
+   * pixels. Powers the centroid drag-to-move handle on canvas; lets the
+   * user re-position a panel on a sleeve etc. without re-tracing.
+   */
+  translateLayerMesh: (id: string, dx: number, dy: number) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
 
@@ -621,6 +636,51 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
               ...(patch.sourceFlipY !== undefined ? { sourceFlipY: patch.sourceFlipY } : {}),
             },
           };
+        });
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    rotateLayerMesh: (id, deltaDeg, anchor) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        if (!Number.isFinite(deltaDeg) || deltaDeg === 0) return {} as Partial<Store>;
+        const rad = (deltaDeg * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const layers = s.template.views[found.view].layers.map((l) => {
+          if (l.id !== id || !l.mesh) return l;
+          const targetPoints = l.mesh.targetPoints.map((p) => {
+            const dx = p.x - anchor.x;
+            const dy = p.y - anchor.y;
+            return {
+              x: anchor.x + dx * cos - dy * sin,
+              y: anchor.y + dx * sin + dy * cos,
+            };
+          });
+          return { ...l, mesh: { ...l.mesh, targetPoints } };
+        });
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    translateLayerMesh: (id, dx, dy) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
+          return {} as Partial<Store>;
+        }
+        const layers = s.template.views[found.view].layers.map((l) => {
+          if (l.id !== id || !l.mesh) return l;
+          const targetPoints = l.mesh.targetPoints.map((p) => ({
+            x: p.x + dx,
+            y: p.y + dy,
+          }));
+          return { ...l, mesh: { ...l.mesh, targetPoints } };
         });
         return {
           template: patchView(s.template, found.view, { layers }),

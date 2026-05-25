@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Circle, Group, Line, Shape, Text } from "react-konva";
 import Konva from "konva";
 import type { MaskLayer, Pt } from "@shared/hoodieTemplate";
@@ -36,11 +36,16 @@ type Props = {
   showFullArtwork: boolean;
   onDragControlPoint: (index: number, point: Pt) => void;
   /**
-   * Update the mesh's source rotation (degrees CW). Called continuously
-   * during a drag of the on-canvas rotate handle so the warp updates
-   * live.
+   * Rigid-body rotate the mesh by `deltaDeg` (CW positive) around
+   * `anchor`. Called continuously during a rotate-puck drag so the
+   * mesh + warp update live.
    */
-  onRotate: (rotationDeg: number) => void;
+  onRotateMesh: (deltaDeg: number, anchor: Pt) => void;
+  /**
+   * Rigid-body translate every mesh target point by (dx, dy) mockup
+   * pixels. Bound to the centroid drag handle.
+   */
+  onTranslateMesh: (dx: number, dy: number) => void;
 };
 
 function isCrossOrigin(src: string): boolean {
@@ -102,18 +107,11 @@ const ROTATE_HANDLE_FILL = "#1e1b4b";
 const ROTATE_HANDLE_STROKE = "#c084fc";
 const ROTATE_HANDLE_HOVER_STROKE = "#f0abfc";
 const ROTATE_HANDLE_LINE_COLOR = "rgba(192, 132, 252, 0.7)";
-
-/**
- * Normalise an angle in degrees to the half-open range [-180, 180), so
- * the displayed value never jumps between e.g. 359 and 0 across the
- * dial origin.
- */
-function normaliseAngleDeg(deg: number): number {
-  let a = deg % 360;
-  if (a > 180) a -= 360;
-  if (a <= -180) a += 360;
-  return a;
-}
+/** Visual radius of the centroid "move" puck in screen px. */
+const MOVE_HANDLE_RADIUS_PX = 9;
+const MOVE_HANDLE_FILL = "#1e1b4b";
+const MOVE_HANDLE_STROKE = "#fde047";
+const MOVE_HANDLE_HOVER_STROKE = "#facc15";
 
 export default function MeshWarpOverlay({
   layer,
@@ -122,13 +120,21 @@ export default function MeshWarpOverlay({
   panLocked,
   showFullArtwork,
   onDragControlPoint,
-  onRotate,
+  onRotateMesh,
+  onTranslateMesh,
 }: Props) {
   const { img, loading, error } = useSourceImage(layer.productionPanelSrc);
   const mesh = layer.mesh;
   const polygon = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const [rotateHover, setRotateHover] = useState(false);
+  const [moveHover, setMoveHover] = useState(false);
+  /** Cumulative angle (deg) accumulated during a single rotate drag. */
   const [liveAngleDeg, setLiveAngleDeg] = useState<number | null>(null);
+  /** Last screen-space angle of the rotate puck during a drag — used to
+   * compute incremental rotation deltas. */
+  const lastRotateAngleRef = useRef<number | null>(null);
+  /** Last position of the centroid puck during a translate drag. */
+  const lastTranslatePosRef = useRef<Pt | null>(null);
 
   const polyPoints = useMemo(() => {
     const flat: number[] = [];
@@ -198,18 +204,22 @@ export default function MeshWarpOverlay({
   // directly above; positive angles swing it CW. The line length in
   // mockup space is computed so the puck stays a fixed screen distance
   // from the mesh's top regardless of zoom.
+  // Anchor for rigid mesh rotation = the mesh centroid. The rotate puck
+  // sits a constant screen distance directly above. Because rotation is
+  // baked into the target points (the artwork rotates *with* the mesh),
+  // the puck doesn't track an angle visually — it's just the grab point
+  // for the rotate gesture, and the centroid dot is the grab point for
+  // the translate gesture.
   const rotateAnchor: Pt = { x: meshAabb.cx, y: meshAabb.cy };
   const handleLengthMockup =
     (meshAabb.cy - meshAabb.minY) + ROTATE_HANDLE_SCREEN_OFFSET_PX / Math.max(0.0001, zoom);
-  const currentRotation = mesh.sourceRotation ?? 0;
-  const rotationDisplay =
-    liveAngleDeg !== null ? liveAngleDeg : normaliseAngleDeg(currentRotation);
-  const rotRad = (currentRotation * Math.PI) / 180;
   const rotateHandlePos: Pt = {
-    x: rotateAnchor.x + handleLengthMockup * Math.sin(rotRad),
-    y: rotateAnchor.y - handleLengthMockup * Math.cos(rotRad),
+    x: rotateAnchor.x,
+    y: rotateAnchor.y - handleLengthMockup,
   };
   const rotateRadiusMockup = ROTATE_HANDLE_RADIUS_PX / Math.max(0.0001, zoom);
+  const moveRadiusMockup = MOVE_HANDLE_RADIUS_PX / Math.max(0.0001, zoom);
+  const rotationDisplay = liveAngleDeg ?? 0;
 
   // sceneFunc closure must capture mesh + img by value (which it does
   // each render). React re-renders whenever any of these change.
@@ -319,13 +329,16 @@ export default function MeshWarpOverlay({
         </Group>
       )}
 
-      {/* Free-form rotation handle. Visible whenever the mesh-warp tool
-          is active. Drag the puck around the mesh centroid to rotate
-          the source artwork to any angle; hold Shift to snap to 15°.
+      {/* Rigid-body transform handles. Visible whenever the mesh-warp
+          tool is active.
 
-          The handle sits directly above the centroid at rotation = 0
-          and swings CW with the rotation, like a clock hand — so the
-          position itself communicates the current angle at a glance. */}
+          * Purple puck (above): drag to rotate the entire mesh + warped
+            artwork around the centroid. Shift = snap delta to 15°.
+          * Yellow puck (centroid): drag to translate the mesh on the
+            mockup so the panel lands exactly where Printify will print.
+
+          Per-vertex deformation work is preserved by both gestures —
+          they just rotate / translate every target point as a unit. */}
       {active && !panLocked && (
         <Group>
           <Line
@@ -335,13 +348,53 @@ export default function MeshWarpOverlay({
             dash={[6 / zoom, 4 / zoom]}
             listening={false}
           />
+
+          {/* Centroid → drag-to-translate the whole mesh. */}
           <Circle
             x={rotateAnchor.x}
             y={rotateAnchor.y}
-            radius={Math.max(2, 3 / zoom)}
-            fill={ROTATE_HANDLE_LINE_COLOR}
-            listening={false}
+            radius={moveRadiusMockup}
+            hitStrokeWidth={(MOVE_HANDLE_RADIUS_PX + 6) / zoom}
+            fill={MOVE_HANDLE_FILL}
+            stroke={moveHover ? MOVE_HANDLE_HOVER_STROKE : MOVE_HANDLE_STROKE}
+            strokeWidth={Math.max(1, 1.5 / zoom)}
+            draggable
+            onMouseEnter={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "move";
+              setMoveHover(true);
+            }}
+            onMouseLeave={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "default";
+              setMoveHover(false);
+            }}
+            onDragStart={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "grabbing";
+              const node = e.target;
+              lastTranslatePosRef.current = { x: node.x(), y: node.y() };
+            }}
+            onDragMove={(e) => {
+              const node = e.target;
+              const cur = { x: node.x(), y: node.y() };
+              const last = lastTranslatePosRef.current ?? cur;
+              const dx = cur.x - last.x;
+              const dy = cur.y - last.y;
+              if (dx !== 0 || dy !== 0) {
+                onTranslateMesh(dx, dy);
+                lastTranslatePosRef.current = cur;
+              }
+            }}
+            onDragEnd={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "default";
+              lastTranslatePosRef.current = null;
+              // Re-render snaps the puck back to the new centroid.
+            }}
           />
+
+          {/* Rotate puck → drag to rigidly rotate the mesh. */}
           <Circle
             x={rotateHandlePos.x}
             y={rotateHandlePos.y}
@@ -364,50 +417,56 @@ export default function MeshWarpOverlay({
             onDragStart={(e) => {
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "grabbing";
+              const node = e.target;
+              const dx = node.x() - rotateAnchor.x;
+              const dy = node.y() - rotateAnchor.y;
+              lastRotateAngleRef.current = Math.atan2(dx, -dy) * (180 / Math.PI);
+              setLiveAngleDeg(0);
             }}
             onDragMove={(e) => {
               const node = e.target;
-              // Compute angle from anchor → drag position. Screen y is
-              // down, so atan2(dx, -dy) gives a CW-from-up angle in
-              // radians — exactly what positive rotationDeg encodes.
               const dx = node.x() - rotateAnchor.x;
               const dy = node.y() - rotateAnchor.y;
               if (dx === 0 && dy === 0) return;
-              let angleDeg = Math.atan2(dx, -dy) * (180 / Math.PI);
+              let curAngle = Math.atan2(dx, -dy) * (180 / Math.PI);
               const evt = e.evt as MouseEvent | TouchEvent | undefined;
               const shift =
                 evt && "shiftKey" in evt
                   ? (evt as MouseEvent).shiftKey
                   : false;
               if (shift) {
-                angleDeg = Math.round(angleDeg / 15) * 15;
+                curAngle = Math.round(curAngle / 15) * 15;
               }
-              setLiveAngleDeg(normaliseAngleDeg(angleDeg));
-              onRotate(angleDeg);
+              const last = lastRotateAngleRef.current ?? curAngle;
+              // Wrap delta into [-180, 180] so a swing past the seam
+              // doesn't blow up into ±300°.
+              let delta = curAngle - last;
+              if (delta > 180) delta -= 360;
+              if (delta < -180) delta += 360;
+              if (delta !== 0) {
+                onRotateMesh(delta, rotateAnchor);
+                lastRotateAngleRef.current = curAngle;
+                setLiveAngleDeg((prev) => (prev ?? 0) + delta);
+              }
             }}
             onDragEnd={(e) => {
               const stage = e.target.getStage();
               if (stage) stage.container().style.cursor = "default";
               const node = e.target;
-              // Reset the node to the canonical handle position so the
-              // next drag starts from the geometrically correct spot.
+              // Snap puck back to the canonical "above centroid" spot
+              // so the next drag starts cleanly.
               node.position(rotateHandlePos);
-              setLiveAngleDeg(null);
-            }}
-            onDblClick={() => {
-              // Quick reset: double-clicking the rotate puck zeros the
-              // rotation. Handy when a sleeve drift gets out of hand.
-              onRotate(0);
+              lastRotateAngleRef.current = null;
               setLiveAngleDeg(null);
             }}
           />
-          {/* Angle readout — shown while hovering or dragging the
-              rotate puck so the user can dial in a precise value. */}
-          {(rotateHover || liveAngleDeg !== null) && (
+
+          {/* Live angle readout while rotating. */}
+          {liveAngleDeg !== null && (
             <Text
-              x={rotateHandlePos.x + (12 / zoom)}
-              y={rotateHandlePos.y - (8 / zoom)}
-              text={`${rotationDisplay.toFixed(rotateHover && liveAngleDeg === null ? 0 : 1)}°`}
+              x={rotateHandlePos.x + 12 / zoom}
+              y={rotateHandlePos.y - 8 / zoom}
+              text={`${rotationDisplay >= 0 ? "+" : ""}${rotationDisplay.toFixed(1)}°`}
               fontSize={12 / zoom}
               fill="#f0abfc"
               fontStyle="bold"
