@@ -770,6 +770,23 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
 
   const rotate = (deg: number) => actions.rotateLayerMesh(layer.id, deg, anchor);
   const translate = (dx: number, dy: number) => actions.translateLayerMesh(layer.id, dx, dy);
+  const scale = (factor: number) => actions.scaleLayerMesh(layer.id, factor, anchor);
+
+  // Slider tracks a session-relative scale: the value displayed = the
+  // cumulative scale applied since the slider was last reset (or the
+  // panel was loaded). Each slider tick applies the *delta* between the
+  // previous value and the new one as a `scaleLayerMesh` operation,
+  // which keeps the implementation drift-free regardless of how many
+  // times the user nudges back and forth.
+  const [sessionScale, setSessionScale] = useState(1);
+  const onScaleSliderChange = (next: number) => {
+    if (!Number.isFinite(next) || next <= 0) return;
+    if (Math.abs(next - sessionScale) < 0.0005) return;
+    const delta = next / sessionScale;
+    scale(delta);
+    setSessionScale(next);
+  };
+  const resetSessionScale = () => setSessionScale(1);
 
   return (
     <div className="space-y-2 rounded border border-yellow-700/30 bg-yellow-950/15 p-2">
@@ -848,6 +865,68 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
             +5°
           </Button>
         </div>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-[10px] text-slate-400">Size (uniform — preserves ratio)</Label>
+          <span className="text-[10px] text-yellow-300">×{sessionScale.toFixed(2)}</span>
+        </div>
+        <Slider
+          value={[sessionScale]}
+          min={0.25}
+          max={4}
+          step={0.01}
+          onValueChange={([v]) => onScaleSliderChange(v)}
+        />
+        <div className="grid grid-cols-4 gap-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => scale(0.9)}
+            title="Shrink panel by 10%"
+          >
+            −10%
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-1 text-[11px] text-slate-300"
+            onClick={() => scale(0.99)}
+            title="Shrink panel by 1%"
+          >
+            −1%
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-1 text-[11px] text-slate-300"
+            onClick={() => scale(1.01)}
+            title="Grow panel by 1%"
+          >
+            +1%
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-1 text-[11px]"
+            onClick={() => scale(1.1)}
+            title="Grow panel by 10%"
+          >
+            +10%
+          </Button>
+        </div>
+        {Math.abs(sessionScale - 1) > 0.001 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 w-full text-[10px] text-slate-400 hover:text-slate-200"
+            onClick={resetSessionScale}
+          >
+            Reset slider to ×1.00 (keeps current size)
+          </Button>
+        )}
       </div>
 
       <div className="space-y-1">
@@ -944,9 +1023,13 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
       </div>
 
       <div className="text-[10px] text-slate-500">
-        Drag the yellow puck on canvas to move freely; drag the purple
-        puck to rotate. Holding <kbd className="rounded bg-slate-800 px-1">Shift</kbd>{" "}
-        while rotating snaps to 15°.
+        On canvas: drag the <span className="text-yellow-300">yellow</span>{" "}
+        puck (centroid) to move,{" "}
+        <span className="text-purple-300">purple</span> puck (above) to
+        rotate, and <span className="text-emerald-300">green</span> puck
+        (bottom-right) to resize uniformly. Hold{" "}
+        <kbd className="rounded bg-slate-800 px-1">Shift</kbd> while
+        rotating to snap to 15°.
       </div>
     </div>
   );
