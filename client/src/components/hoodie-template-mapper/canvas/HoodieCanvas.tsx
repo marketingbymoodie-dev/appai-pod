@@ -618,6 +618,9 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
               onTranslateMesh={(dx, dy) =>
                 actions.translateLayerMesh(selectedLayer.id, dx, dy)
               }
+              onScaleMesh={(factor, anchor) =>
+                actions.scaleLayerMesh(selectedLayer.id, factor, anchor)
+              }
             />
           )}
 

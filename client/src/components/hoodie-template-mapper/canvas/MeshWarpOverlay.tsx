@@ -46,6 +46,12 @@ type Props = {
    * pixels. Bound to the centroid drag handle.
    */
   onTranslateMesh: (dx: number, dy: number) => void;
+  /**
+   * Uniformly scale every mesh target point by `factor` around `anchor`.
+   * Called incrementally during a corner-puck drag so the warp grows
+   * / shrinks live.
+   */
+  onScaleMesh: (factor: number, anchor: Pt) => void;
 };
 
 function isCrossOrigin(src: string): boolean {
@@ -112,6 +118,11 @@ const MOVE_HANDLE_RADIUS_PX = 9;
 const MOVE_HANDLE_FILL = "#1e1b4b";
 const MOVE_HANDLE_STROKE = "#fde047";
 const MOVE_HANDLE_HOVER_STROKE = "#facc15";
+/** Visual radius of the AABB corner "resize" puck in screen px. */
+const SCALE_HANDLE_RADIUS_PX = 9;
+const SCALE_HANDLE_FILL = "#1e1b4b";
+const SCALE_HANDLE_STROKE = "#34d399";
+const SCALE_HANDLE_HOVER_STROKE = "#6ee7b7";
 
 export default function MeshWarpOverlay({
   layer,
@@ -122,19 +133,26 @@ export default function MeshWarpOverlay({
   onDragControlPoint,
   onRotateMesh,
   onTranslateMesh,
+  onScaleMesh,
 }: Props) {
   const { img, loading, error } = useSourceImage(layer.productionPanelSrc);
   const mesh = layer.mesh;
   const polygon = useMemo(() => svgPathToAnchors(layer.maskPath), [layer.maskPath]);
   const [rotateHover, setRotateHover] = useState(false);
   const [moveHover, setMoveHover] = useState(false);
+  const [scaleHover, setScaleHover] = useState(false);
   /** Cumulative angle (deg) accumulated during a single rotate drag. */
   const [liveAngleDeg, setLiveAngleDeg] = useState<number | null>(null);
+  /** Cumulative scale factor accumulated during a single resize drag. */
+  const [liveScale, setLiveScale] = useState<number | null>(null);
   /** Last screen-space angle of the rotate puck during a drag — used to
    * compute incremental rotation deltas. */
   const lastRotateAngleRef = useRef<number | null>(null);
   /** Last position of the centroid puck during a translate drag. */
   const lastTranslatePosRef = useRef<Pt | null>(null);
+  /** Last distance (mockup px) from anchor → scale puck during a resize
+   * drag. Used to derive an incremental scale factor each frame. */
+  const lastScaleDistanceRef = useRef<number | null>(null);
 
   const polyPoints = useMemo(() => {
     const flat: number[] = [];
@@ -219,7 +237,19 @@ export default function MeshWarpOverlay({
   };
   const rotateRadiusMockup = ROTATE_HANDLE_RADIUS_PX / Math.max(0.0001, zoom);
   const moveRadiusMockup = MOVE_HANDLE_RADIUS_PX / Math.max(0.0001, zoom);
+  const scaleRadiusMockup = SCALE_HANDLE_RADIUS_PX / Math.max(0.0001, zoom);
   const rotationDisplay = liveAngleDeg ?? 0;
+  // Resize puck sits at the bottom-right of the mesh AABB, slightly
+  // offset outward so it doesn't overlap with the corner control point.
+  // The diagonal direction is intuitive (drag away = bigger).
+  const scaleHandlePos: Pt = {
+    x: meshAabb.maxX + 12 / Math.max(0.0001, zoom),
+    y: meshAabb.maxY + 12 / Math.max(0.0001, zoom),
+  };
+  const scaleHandleInitDistance = Math.hypot(
+    scaleHandlePos.x - rotateAnchor.x,
+    scaleHandlePos.y - rotateAnchor.y,
+  );
 
   // sceneFunc closure must capture mesh + img by value (which it does
   // each render). React re-renders whenever any of these change.
@@ -469,6 +499,78 @@ export default function MeshWarpOverlay({
               text={`${rotationDisplay >= 0 ? "+" : ""}${rotationDisplay.toFixed(1)}°`}
               fontSize={12 / zoom}
               fill="#f0abfc"
+              fontStyle="bold"
+              listening={false}
+            />
+          )}
+
+          {/* Resize puck → drag outward / inward to uniformly scale the
+              whole mesh around the centroid. Uniform scale only — both
+              X and Y multiply by the same factor so the panel ratio is
+              preserved (no stretching). */}
+          <Circle
+            x={scaleHandlePos.x}
+            y={scaleHandlePos.y}
+            radius={scaleRadiusMockup}
+            hitStrokeWidth={(SCALE_HANDLE_RADIUS_PX + 6) / zoom}
+            fill={SCALE_HANDLE_FILL}
+            stroke={scaleHover ? SCALE_HANDLE_HOVER_STROKE : SCALE_HANDLE_STROKE}
+            strokeWidth={Math.max(1, 1.5 / zoom)}
+            draggable
+            onMouseEnter={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "nwse-resize";
+              setScaleHover(true);
+            }}
+            onMouseLeave={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "default";
+              setScaleHover(false);
+            }}
+            onDragStart={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "nwse-resize";
+              const node = e.target;
+              const dx = node.x() - rotateAnchor.x;
+              const dy = node.y() - rotateAnchor.y;
+              const dist = Math.hypot(dx, dy);
+              lastScaleDistanceRef.current = dist > 0 ? dist : scaleHandleInitDistance;
+              setLiveScale(1);
+            }}
+            onDragMove={(e) => {
+              const node = e.target;
+              const dx = node.x() - rotateAnchor.x;
+              const dy = node.y() - rotateAnchor.y;
+              const dist = Math.hypot(dx, dy);
+              if (dist <= 0) return;
+              const last = lastScaleDistanceRef.current ?? dist;
+              if (last <= 0) return;
+              const delta = dist / last;
+              if (Number.isFinite(delta) && delta > 0 && Math.abs(delta - 1) > 0.001) {
+                onScaleMesh(delta, rotateAnchor);
+                lastScaleDistanceRef.current = dist;
+                setLiveScale((prev) => (prev ?? 1) * delta);
+              }
+            }}
+            onDragEnd={(e) => {
+              const stage = e.target.getStage();
+              if (stage) stage.container().style.cursor = "default";
+              const node = e.target;
+              // Snap puck back to the canonical AABB-corner spot so the
+              // next drag starts from a known reference point.
+              node.position(scaleHandlePos);
+              lastScaleDistanceRef.current = null;
+              setLiveScale(null);
+            }}
+          />
+          {/* Live scale readout while resizing. */}
+          {liveScale !== null && (
+            <Text
+              x={scaleHandlePos.x + 12 / zoom}
+              y={scaleHandlePos.y - 8 / zoom}
+              text={`×${liveScale.toFixed(2)}`}
+              fontSize={12 / zoom}
+              fill="#6ee7b7"
               fontStyle="bold"
               listening={false}
             />

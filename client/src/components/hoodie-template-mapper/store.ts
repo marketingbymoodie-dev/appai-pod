@@ -218,6 +218,14 @@ export type HoodieMapperActions = {
    * user re-position a panel on a sleeve etc. without re-tracing.
    */
   translateLayerMesh: (id: string, dx: number, dy: number) => void;
+  /**
+   * Uniformly scale every mesh target point by `scale` around `anchor`
+   * (mockup pixel coords; typically the mesh centroid). Single factor
+   * applied to both X and Y so the panel's aspect ratio is preserved.
+   * Rejects non-finite or non-positive values, and `scale === 1` is a
+   * no-op. Powers the size slider / corner puck.
+   */
+  scaleLayerMesh: (id: string, scale: number, anchor: Pt) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
 
@@ -679,6 +687,26 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           const targetPoints = l.mesh.targetPoints.map((p) => ({
             x: p.x + dx,
             y: p.y + dy,
+          }));
+          return { ...l, mesh: { ...l.mesh, targetPoints } };
+        });
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    scaleLayerMesh: (id, scale, anchor) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        if (!Number.isFinite(scale) || scale <= 0 || scale === 1) {
+          return {} as Partial<Store>;
+        }
+        const layers = s.template.views[found.view].layers.map((l) => {
+          if (l.id !== id || !l.mesh) return l;
+          const targetPoints = l.mesh.targetPoints.map((p) => ({
+            x: anchor.x + (p.x - anchor.x) * scale,
+            y: anchor.y + (p.y - anchor.y) * scale,
           }));
           return { ...l, mesh: { ...l.mesh, targetPoints } };
         });
