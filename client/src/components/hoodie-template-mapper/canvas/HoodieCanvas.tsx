@@ -19,6 +19,7 @@ import {
 } from "../lib/svgPath";
 import MaskLayersOverlay from "./MaskLayersOverlay";
 import MeshWarpOverlay from "./MeshWarpOverlay";
+import MeshWarpRender from "./MeshWarpRender";
 import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
 import ReferenceOverlayLayer from "./ReferenceOverlayLayer";
@@ -600,8 +601,26 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             the click instead initiates the Stage's drag-pan, even when the
             cursor is on top of a mask region. */}
         <Layer listening={!isPanning}>
-          {/* Mesh-warp preview + handles. Drawn before MaskLayersOverlay
-              so the saved-layer outlines stay visible on top. */}
+          {/* All-mesh composite — paints every other warped layer so the
+              user can review the panel set as one image. Render-only,
+              no event listeners; the selected layer's full editor is
+              drawn next on top so handles stay reachable. Off when the
+              workspace flag `showAllWarps` is unchecked. */}
+          {debug.showAllWarps &&
+            layers
+              .filter(
+                (l) =>
+                  l.id !== selectedLayerId &&
+                  l.visible !== false &&
+                  l.mesh &&
+                  l.productionPanelSrc,
+              )
+              .map((l) => <MeshWarpRender key={`warp-${l.id}`} layer={l} />)}
+
+          {/* Mesh-warp preview + handles for the selected layer. Drawn
+              after the other warps so its handles sit on top, but
+              before MaskLayersOverlay so the saved outlines remain
+              visible. */}
           {selectedLayer && selectedLayer.mesh && (
             <MeshWarpOverlay
               layer={selectedLayer}

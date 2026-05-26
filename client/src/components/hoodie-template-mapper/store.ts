@@ -55,6 +55,13 @@ export type HoodieMapperDebugFlags = {
    * attention. Anchors are always hidden in the mesh-warp tool.
    */
   showAnchors: boolean;
+  /**
+   * When true (default), every mesh-warped layer in the active view
+   * renders its artwork on the main canvas — not just the selected
+   * one. The selected layer still gets the editor handles on top.
+   * Toggle off to focus on a single layer at a time.
+   */
+  showAllWarps: boolean;
 };
 
 const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
@@ -64,6 +71,7 @@ const DEFAULT_DEBUG_FLAGS: HoodieMapperDebugFlags = {
   referenceOverlayOpacity: 0.5,
   showCanvasDebug: false,
   showAnchors: true,
+  showAllWarps: true,
 };
 
 /**

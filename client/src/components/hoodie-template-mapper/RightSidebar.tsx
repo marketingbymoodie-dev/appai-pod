@@ -294,6 +294,11 @@ export default function RightSidebar() {
             onChange={(c) => actions.setDebug({ showAnchors: c })}
           />
           <ToggleRow
+            label="Show all panel warps"
+            checked={debug.showAllWarps}
+            onChange={(c) => actions.setDebug({ showAllWarps: c })}
+          />
+          <ToggleRow
             label="Canvas debug strip"
             checked={debug.showCanvasDebug}
             onChange={(c) => actions.setDebug({ showCanvasDebug: c })}
