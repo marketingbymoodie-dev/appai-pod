@@ -730,22 +730,33 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     rotateLayerMesh: (id, deltaDeg, anchor) =>
       set((s) => {
         const found = findLayerById(s.template, id);
-        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        if (!found) return {} as Partial<Store>;
         if (!Number.isFinite(deltaDeg) || deltaDeg === 0) return {} as Partial<Store>;
         const rad = (deltaDeg * Math.PI) / 180;
         const cos = Math.cos(rad);
         const sin = Math.sin(rad);
+        const rot = (p: Pt): Pt => {
+          const dx = p.x - anchor.x;
+          const dy = p.y - anchor.y;
+          return {
+            x: anchor.x + dx * cos - dy * sin,
+            y: anchor.y + dx * sin + dy * cos,
+          };
+        };
         const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id || !l.mesh) return l;
-          const targetPoints = l.mesh.targetPoints.map((p) => {
-            const dx = p.x - anchor.x;
-            const dy = p.y - anchor.y;
-            return {
-              x: anchor.x + dx * cos - dy * sin,
-              y: anchor.y + dx * sin + dy * cos,
-            };
-          });
-          return { ...l, mesh: { ...l.mesh, targetPoints } };
+          if (l.id !== id) return l;
+          // Polygon and mesh rotate together as one rigid panel — that's
+          // the "rotate the whole panel" gesture from the on-canvas
+          // purple puck or the sidebar steppers.
+          const anchors = svgPathToAnchors(l.maskPath).map(rot);
+          const maskPath = anchors.length >= 2 ? anchorsToSvgPath(anchors) : l.maskPath;
+          const mesh = l.mesh
+            ? { ...l.mesh, targetPoints: l.mesh.targetPoints.map(rot) }
+            : l.mesh;
+          const cornerPins = l.cornerPins
+            ? (l.cornerPins.map(rot) as typeof l.cornerPins)
+            : l.cornerPins;
+          return { ...l, maskPath, mesh, cornerPins };
         });
         return {
           template: patchView(s.template, found.view, { layers }),
@@ -755,17 +766,22 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     translateLayerMesh: (id, dx, dy) =>
       set((s) => {
         const found = findLayerById(s.template, id);
-        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        if (!found) return {} as Partial<Store>;
         if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
           return {} as Partial<Store>;
         }
+        const trans = (p: Pt): Pt => ({ x: p.x + dx, y: p.y + dy });
         const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id || !l.mesh) return l;
-          const targetPoints = l.mesh.targetPoints.map((p) => ({
-            x: p.x + dx,
-            y: p.y + dy,
-          }));
-          return { ...l, mesh: { ...l.mesh, targetPoints } };
+          if (l.id !== id) return l;
+          const anchors = svgPathToAnchors(l.maskPath).map(trans);
+          const maskPath = anchors.length >= 2 ? anchorsToSvgPath(anchors) : l.maskPath;
+          const mesh = l.mesh
+            ? { ...l.mesh, targetPoints: l.mesh.targetPoints.map(trans) }
+            : l.mesh;
+          const cornerPins = l.cornerPins
+            ? (l.cornerPins.map(trans) as typeof l.cornerPins)
+            : l.cornerPins;
+          return { ...l, maskPath, mesh, cornerPins };
         });
         return {
           template: patchView(s.template, found.view, { layers }),
@@ -775,17 +791,25 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     scaleLayerMesh: (id, scale, anchor) =>
       set((s) => {
         const found = findLayerById(s.template, id);
-        if (!found || !found.layer.mesh) return {} as Partial<Store>;
+        if (!found) return {} as Partial<Store>;
         if (!Number.isFinite(scale) || scale <= 0 || scale === 1) {
           return {} as Partial<Store>;
         }
+        const sc = (p: Pt): Pt => ({
+          x: anchor.x + (p.x - anchor.x) * scale,
+          y: anchor.y + (p.y - anchor.y) * scale,
+        });
         const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id || !l.mesh) return l;
-          const targetPoints = l.mesh.targetPoints.map((p) => ({
-            x: anchor.x + (p.x - anchor.x) * scale,
-            y: anchor.y + (p.y - anchor.y) * scale,
-          }));
-          return { ...l, mesh: { ...l.mesh, targetPoints } };
+          if (l.id !== id) return l;
+          const anchors = svgPathToAnchors(l.maskPath).map(sc);
+          const maskPath = anchors.length >= 2 ? anchorsToSvgPath(anchors) : l.maskPath;
+          const mesh = l.mesh
+            ? { ...l.mesh, targetPoints: l.mesh.targetPoints.map(sc) }
+            : l.mesh;
+          const cornerPins = l.cornerPins
+            ? (l.cornerPins.map(sc) as typeof l.cornerPins)
+            : l.cornerPins;
+          return { ...l, maskPath, mesh, cornerPins };
         });
         return {
           template: patchView(s.template, found.view, { layers }),
