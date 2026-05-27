@@ -33,6 +33,8 @@ export type HoodiePanelKey =
   | "front_right"
   | "front_left"
   | "front_pocket"
+  | "pocket_left"
+  | "pocket_right"
   | "left_sleeve"
   | "right_sleeve"
   | "left_cuff"
@@ -277,6 +279,8 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "front_right",
     "front_left",
     "front_pocket",
+    "pocket_left",
+    "pocket_right",
     "left_sleeve",
     "right_sleeve",
     "left_cuff",
@@ -300,7 +304,9 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
 export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   front_right: "Front Right",
   front_left: "Front Left",
-  front_pocket: "Front Pocket",
+  front_pocket: "Front Pocket (legacy)",
+  pocket_left: "Pocket Left",
+  pocket_right: "Pocket Right",
   left_sleeve: "Left Sleeve",
   right_sleeve: "Right Sleeve",
   left_cuff: "Left Cuff",
@@ -339,6 +345,8 @@ export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   right_cuff: 50,
   waistband: 60,
   front_pocket: 70,
+  pocket_left: 70,
+  pocket_right: 70,
 };
 
 /** Tier used when a layer has no panelKey assigned yet. Sits in the middle so unassigned scratch layers don't all collapse to the bottom of the stack. */

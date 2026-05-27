@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   ChevronUp,
   ChevronDown,
+  Copy,
   Trash2,
   Sparkles,
   Wand2,
@@ -399,6 +400,15 @@ function SelectedLayerSection({ layer }: { layer: MaskLayer }) {
           onClick={() => moveZ(-1)}
         >
           <ChevronDown className="mr-1 h-3.5 w-3.5" /> Back
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-[11px]"
+          onClick={() => actions.duplicateLayer(layer.id)}
+          title="Clone this layer (polygon + mesh + artwork) so you can fork it into e.g. Pocket Left / Pocket Right"
+        >
+          <Copy className="mr-1 h-3.5 w-3.5" /> Duplicate
         </Button>
         <Button
           size="sm"
