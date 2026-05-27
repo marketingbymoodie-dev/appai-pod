@@ -29,6 +29,16 @@ type Props = {
   onSelect: (id: string) => void;
   /** Alt-click on the layer body — used by HoodieCanvas to insert an anchor at the click. */
   onAltClick?: (id: string, mockupX: number, mockupY: number) => void;
+  /**
+   * Fired when the user mousedowns on the body of an already-selected
+   * polygon (no modifier keys). HoodieCanvas uses this to start a
+   * "translate the polygon as a whole" drag — the user grabs the
+   * polygon, drags somewhere, releases, and the polygon's anchors are
+   * shifted by the delta. Intentionally separate from `onSelect` so
+   * we don't accidentally move polygons during a routine selection
+   * click on a different layer.
+   */
+  onPolygonDragStart?: (id: string, mockupX: number, mockupY: number) => void;
 };
 
 const PANEL_FILL = "rgba(56,189,248,0.08)";
@@ -61,6 +71,7 @@ export default function MaskLayersOverlay(props: Props) {
     onHover,
     onSelect,
     onAltClick,
+    onPolygonDragStart,
   } = props;
 
   const sorted = useMemo(
@@ -126,18 +137,36 @@ export default function MaskLayersOverlay(props: Props) {
                 const evt = e.evt as MouseEvent;
                 if (evt.button !== 0) return;
                 e.cancelBubble = true;
-                if (evt.altKey && onAltClick) {
-                  // Translate stage pointer back into mockup coords.
-                  const stage = e.target.getStage();
-                  if (stage) {
-                    const pt = stage.getPointerPosition();
-                    if (pt) {
-                      const tr = stage.getAbsoluteTransform().copy().invert();
-                      const mp = tr.point(pt);
-                      onAltClick(layer.id, mp.x, mp.y);
-                      return;
-                    }
+                // Map stage pointer back into mockup coords once — both
+                // alt-insert and polygon-drag need it.
+                const stage = e.target.getStage();
+                let mp: { x: number; y: number } | null = null;
+                if (stage) {
+                  const pt = stage.getPointerPosition();
+                  if (pt) {
+                    const tr = stage.getAbsoluteTransform().copy().invert();
+                    mp = tr.point(pt);
                   }
+                }
+                if (evt.altKey && onAltClick && mp) {
+                  onAltClick(layer.id, mp.x, mp.y);
+                  return;
+                }
+                // Drag-to-translate: only when the user grabs the layer
+                // they already had selected, with no modifier keys.
+                // Selecting a *different* layer is still a single click
+                // (no drag) — the parent commits the drag on mouseup
+                // only if it sees real movement.
+                if (
+                  isSelected &&
+                  !evt.shiftKey &&
+                  !evt.ctrlKey &&
+                  !evt.metaKey &&
+                  onPolygonDragStart &&
+                  mp
+                ) {
+                  onPolygonDragStart(layer.id, mp.x, mp.y);
+                  return;
                 }
                 onSelect(layer.id);
               }}

@@ -243,6 +243,15 @@ export type HoodieMapperActions = {
    * no-op. Powers the size slider / corner puck.
    */
   scaleLayerMesh: (id: string, scale: number, anchor: Pt) => void;
+  /**
+   * Translate the polygon (maskPath) by (dx, dy) — independent of mesh
+   * / artwork. This is the gesture the user invokes when they need to
+   * slide the print BOUNDARY (e.g. after duplicating a panel: drop the
+   * dupe somewhere else on the mockup before reshaping it). Does not
+   * touch mesh.targetPoints; the warped artwork stays put unless the
+   * user also moves it via the on-canvas pucks.
+   */
+  translateLayerPolygon: (id: string, dx: number, dy: number) => void;
   setMeshEdit: (patch: Partial<MeshEditState>) => void;
 };
 
@@ -444,44 +453,32 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
       if (!found) return null;
       const src = found.layer;
       const newId = newLayerId();
-      // Small visual offset so the dupe is clearly distinct from the
-      // source on canvas. 12 mockup pixels diagonal — easy to spot at
-      // any zoom but small enough that it doesn't fly off-screen.
-      const OFFSET_X = 12;
-      const OFFSET_Y = 12;
-      // Re-serialise the polygon by parsing its anchors, shifting, and
-      // rebuilding the path string — that way we don't have to invent a
-      // path-translate parser.
-      const shiftedAnchors = svgPathToAnchors(src.maskPath).map((p) => ({
-        x: p.x + OFFSET_X,
-        y: p.y + OFFSET_Y,
-      }));
-      const dupedMaskPath = shiftedAnchors.length >= 2
-        ? anchorsToSvgPath(shiftedAnchors)
-        : src.maskPath;
-      const dupedMesh = src.mesh
-        ? {
-            ...src.mesh,
-            targetPoints: src.mesh.targetPoints.map((p) => ({
-              x: p.x + OFFSET_X,
-              y: p.y + OFFSET_Y,
-            })),
-          }
-        : src.mesh;
-      const cornerPins = src.cornerPins
-        ? (src.cornerPins.map((p) => ({ x: p.x + OFFSET_X, y: p.y + OFFSET_Y })) as typeof src.cornerPins)
-        : src.cornerPins;
+      // Duplicate at IDENTICAL coordinates — no offset. The user moves
+      // the polygon to its new location by dragging it (Move tool) or
+      // via the polygon-translate gesture. Putting the dupe exactly on
+      // top of the source means nothing drifts or gets accidentally
+      // mis-aligned; the LeftSidebar layer list shows both entries
+      // and the new layer is auto-selected so it's already in focus.
       const baseName = src.name.replace(/ Copy(?: \d+)?$/, "");
       const dupedName = `${baseName} Copy`;
       const duped: MaskLayer = {
         ...src,
         id: newId,
         name: dupedName,
-        maskPath: dupedMaskPath,
-        mesh: dupedMesh,
-        cornerPins: cornerPins,
-        // Force highest zIndex in the view so the dupe lands on top of
-        // its source — easy to grab and reshape without weirdness.
+        // Deep-copy the path string and the mesh so future mutations
+        // don't accidentally alias source <-> duplicate.
+        maskPath: src.maskPath,
+        mesh: src.mesh
+          ? {
+              ...src.mesh,
+              targetPoints: src.mesh.targetPoints.map((p) => ({ x: p.x, y: p.y })),
+            }
+          : src.mesh,
+        cornerPins: src.cornerPins
+          ? (src.cornerPins.map((p) => ({ x: p.x, y: p.y })) as typeof src.cornerPins)
+          : src.cornerPins,
+        // Force highest zIndex in the view so the dupe sits on top of
+        // its source — clicks land on the dupe, not the original.
         zIndex: Math.max(
           0,
           ...get().template.views[found.view].layers.map((l) => l.zIndex ?? 0),
@@ -730,7 +727,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     rotateLayerMesh: (id, deltaDeg, anchor) =>
       set((s) => {
         const found = findLayerById(s.template, id);
-        if (!found) return {} as Partial<Store>;
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
         if (!Number.isFinite(deltaDeg) || deltaDeg === 0) return {} as Partial<Store>;
         const rad = (deltaDeg * Math.PI) / 180;
         const cos = Math.cos(rad);
@@ -743,20 +740,19 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
             y: anchor.y + dx * sin + dy * cos,
           };
         };
+        // Mesh + corner pins move together (they describe the WARPED
+        // ARTWORK as a rigid unit). The polygon (maskPath) intentionally
+        // stays put — it's the print boundary on the mockup, set by
+        // tracing the actual mockup region, and shouldn't drift when
+        // the artwork inside it is repositioned. Use the dedicated
+        // polygon move/rotate actions to move the boundary itself.
         const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id) return l;
-          // Polygon and mesh rotate together as one rigid panel — that's
-          // the "rotate the whole panel" gesture from the on-canvas
-          // purple puck or the sidebar steppers.
-          const anchors = svgPathToAnchors(l.maskPath).map(rot);
-          const maskPath = anchors.length >= 2 ? anchorsToSvgPath(anchors) : l.maskPath;
-          const mesh = l.mesh
-            ? { ...l.mesh, targetPoints: l.mesh.targetPoints.map(rot) }
-            : l.mesh;
+          if (l.id !== id || !l.mesh) return l;
+          const targetPoints = l.mesh.targetPoints.map(rot);
           const cornerPins = l.cornerPins
             ? (l.cornerPins.map(rot) as typeof l.cornerPins)
             : l.cornerPins;
-          return { ...l, maskPath, mesh, cornerPins };
+          return { ...l, mesh: { ...l.mesh, targetPoints }, cornerPins };
         });
         return {
           template: patchView(s.template, found.view, { layers }),
@@ -766,22 +762,18 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     translateLayerMesh: (id, dx, dy) =>
       set((s) => {
         const found = findLayerById(s.template, id);
-        if (!found) return {} as Partial<Store>;
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
         if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
           return {} as Partial<Store>;
         }
         const trans = (p: Pt): Pt => ({ x: p.x + dx, y: p.y + dy });
         const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id) return l;
-          const anchors = svgPathToAnchors(l.maskPath).map(trans);
-          const maskPath = anchors.length >= 2 ? anchorsToSvgPath(anchors) : l.maskPath;
-          const mesh = l.mesh
-            ? { ...l.mesh, targetPoints: l.mesh.targetPoints.map(trans) }
-            : l.mesh;
+          if (l.id !== id || !l.mesh) return l;
+          const targetPoints = l.mesh.targetPoints.map(trans);
           const cornerPins = l.cornerPins
             ? (l.cornerPins.map(trans) as typeof l.cornerPins)
             : l.cornerPins;
-          return { ...l, maskPath, mesh, cornerPins };
+          return { ...l, mesh: { ...l.mesh, targetPoints }, cornerPins };
         });
         return {
           template: patchView(s.template, found.view, { layers }),
@@ -791,7 +783,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     scaleLayerMesh: (id, scale, anchor) =>
       set((s) => {
         const found = findLayerById(s.template, id);
-        if (!found) return {} as Partial<Store>;
+        if (!found || !found.layer.mesh) return {} as Partial<Store>;
         if (!Number.isFinite(scale) || scale <= 0 || scale === 1) {
           return {} as Partial<Store>;
         }
@@ -800,16 +792,33 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
           y: anchor.y + (p.y - anchor.y) * scale,
         });
         const layers = s.template.views[found.view].layers.map((l) => {
-          if (l.id !== id) return l;
-          const anchors = svgPathToAnchors(l.maskPath).map(sc);
-          const maskPath = anchors.length >= 2 ? anchorsToSvgPath(anchors) : l.maskPath;
-          const mesh = l.mesh
-            ? { ...l.mesh, targetPoints: l.mesh.targetPoints.map(sc) }
-            : l.mesh;
+          if (l.id !== id || !l.mesh) return l;
+          const targetPoints = l.mesh.targetPoints.map(sc);
           const cornerPins = l.cornerPins
             ? (l.cornerPins.map(sc) as typeof l.cornerPins)
             : l.cornerPins;
-          return { ...l, maskPath, mesh, cornerPins };
+          return { ...l, mesh: { ...l.mesh, targetPoints }, cornerPins };
+        });
+        return {
+          template: patchView(s.template, found.view, { layers }),
+          dirty: true,
+        };
+      }),
+    translateLayerPolygon: (id, dx, dy) =>
+      set((s) => {
+        const found = findLayerById(s.template, id);
+        if (!found) return {} as Partial<Store>;
+        if ((!Number.isFinite(dx) || !Number.isFinite(dy)) || (dx === 0 && dy === 0)) {
+          return {} as Partial<Store>;
+        }
+        const layers = s.template.views[found.view].layers.map((l) => {
+          if (l.id !== id) return l;
+          const anchors = svgPathToAnchors(l.maskPath).map((p) => ({
+            x: p.x + dx,
+            y: p.y + dy,
+          }));
+          if (anchors.length < 2) return l;
+          return { ...l, maskPath: anchorsToSvgPath(anchors) };
         });
         return {
           template: patchView(s.template, found.view, { layers }),

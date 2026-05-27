@@ -1,6 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Eye, EyeOff, Lock, Unlock, Trash2, RefreshCw, Image as ImageIcon } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
+  Trash2,
+  RefreshCw,
+  Image as ImageIcon,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   PANELS_PER_VIEW,
@@ -15,6 +25,101 @@ import {
   type MockupListEntry,
   type TemplateListEntry,
 } from "./api";
+
+/**
+ * Persisted expanded/collapsed state for each LeftSidebar section.
+ * Stored as a single object in localStorage so the user's layout
+ * preference survives reloads. New section keys default to whatever
+ * `defaults` says; missing keys are filled in on read.
+ */
+type SectionId = "layers" | "eligible" | "mockups" | "templates";
+type SectionState = Record<SectionId, boolean>;
+const SECTION_STORAGE_KEY = "hoodie-mapper-sidebar-sections-v1";
+const SECTION_DEFAULTS: SectionState = {
+  // Layers expanded, secondary sections collapsed by default — when
+  // the user opens the mapper we want to show them their tracing
+  // progress, not the static "eligible panels" reference list.
+  layers: true,
+  eligible: false,
+  mockups: false,
+  templates: false,
+};
+
+function loadSectionState(): SectionState {
+  if (typeof window === "undefined") return { ...SECTION_DEFAULTS };
+  try {
+    const raw = window.localStorage.getItem(SECTION_STORAGE_KEY);
+    if (!raw) return { ...SECTION_DEFAULTS };
+    const parsed = JSON.parse(raw) as Partial<SectionState>;
+    return { ...SECTION_DEFAULTS, ...parsed };
+  } catch {
+    return { ...SECTION_DEFAULTS };
+  }
+}
+
+function saveSectionState(state: SectionState) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SECTION_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore quota / privacy errors — collapsing is non-critical UX.
+  }
+}
+
+/**
+ * Collapsible section header. Click anywhere on the row toggles the
+ * body (or the user can click the chevron explicitly). Optional
+ * `actions` slot renders to the right of the title (refresh button,
+ * count badge, etc.) and stops click propagation so action clicks
+ * don't accidentally collapse the section.
+ */
+function SectionHeader({
+  title,
+  expanded,
+  onToggle,
+  count,
+  actions,
+}: {
+  title: string;
+  expanded: boolean;
+  onToggle: () => void;
+  count?: number;
+  actions?: ReactNode;
+}) {
+  return (
+    <div
+      className="flex cursor-pointer items-center justify-between border-t border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400 hover:bg-slate-800/40"
+      onClick={onToggle}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+    >
+      <span className="flex items-center gap-1">
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5 text-slate-500" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-slate-500" />
+        )}
+        <span>{title}</span>
+        {typeof count === "number" && (
+          <span className="ml-1 rounded bg-slate-800 px-1 text-[10px] text-slate-300">
+            {count}
+          </span>
+        )}
+      </span>
+      {actions && (
+        <span onClick={(e) => e.stopPropagation()} className="flex items-center gap-1">
+          {actions}
+        </span>
+      )}
+    </div>
+  );
+}
 
 /**
  * Left sidebar: layer list + eligible panel reference + saved templates.
@@ -55,6 +160,16 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const { toast } = useToast();
+
+  // Per-section expand/collapse, persisted to localStorage so the
+  // user's layout sticks across reloads.
+  const [sections, setSections] = useState<SectionState>(() => loadSectionState());
+  const toggleSection = (id: SectionId) =>
+    setSections((cur) => {
+      const next = { ...cur, [id]: !cur[id] };
+      saveSectionState(next);
+      return next;
+    });
 
   useEffect(() => {
     if (renamingId) renameInputRef.current?.select();
@@ -123,10 +238,21 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
       className="flex h-full w-64 flex-col border-r border-slate-800 bg-slate-900 text-slate-200"
       data-testid="hoodie-left-sidebar"
     >
-      <div className="border-b border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
-        Layers · {view}
-      </div>
-      <div className="flex-1 overflow-y-auto px-2 py-2">
+      <SectionHeader
+        title={`Layers · ${view}`}
+        expanded={sections.layers}
+        onToggle={() => toggleSection("layers")}
+        count={layers.length}
+      />
+      <div
+        className={`overflow-y-auto px-2 py-2 ${
+          // The Layers section is the only one that gets to grow into
+          // remaining vertical space — everything below is scrollable
+          // within itself, so collapsing the others reclaims real
+          // estate for the layer rows.
+          sections.layers ? "flex-1" : "hidden"
+        }`}
+      >
         {layers.length === 0 ? (
           <div className="rounded border border-dashed border-slate-700 px-3 py-4 text-[11px] text-slate-500">
             No mask layers yet. Pick the Polygon (P) or Magnetic (M) pen and click on the mockup to start tracing each panel.
@@ -240,29 +366,42 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
         )}
       </div>
 
-      <div className="border-t border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
-        Eligible panels for {view}
-      </div>
-      <ul className="px-3 pb-2 text-[11px] text-slate-400">
-        {eligiblePanels.map((key) => (
-          <li key={key} className="py-0.5">
-            · {PANEL_DISPLAY_LABEL[key]}
-          </li>
-        ))}
-      </ul>
+      <SectionHeader
+        title={`Eligible panels · ${view}`}
+        expanded={sections.eligible}
+        onToggle={() => toggleSection("eligible")}
+        count={eligiblePanels.length}
+      />
+      {sections.eligible && (
+        <ul className="px-3 pb-2 text-[11px] text-slate-400">
+          {eligiblePanels.map((key) => (
+            <li key={key} className="py-0.5">
+              · {PANEL_DISPLAY_LABEL[key]}
+            </li>
+          ))}
+        </ul>
+      )}
 
-      <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
-        <span>Mockup files</span>
-        <button
-          type="button"
-          onClick={refreshMockups}
-          className="text-slate-300 hover:text-white"
-          title="Refresh"
-        >
-          <RefreshCw className={`h-3 w-3 ${mockupLoading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
-      <div className="max-h-40 overflow-y-auto px-2 pb-2" data-testid="hoodie-mockup-list">
+      <SectionHeader
+        title="Mockup files"
+        expanded={sections.mockups}
+        onToggle={() => toggleSection("mockups")}
+        count={mockups.length}
+        actions={
+          <button
+            type="button"
+            onClick={refreshMockups}
+            className="text-slate-300 hover:text-white"
+            title="Refresh"
+          >
+            <RefreshCw className={`h-3 w-3 ${mockupLoading ? "animate-spin" : ""}`} />
+          </button>
+        }
+      />
+      <div
+        className={`max-h-40 overflow-y-auto px-2 pb-2 ${sections.mockups ? "" : "hidden"}`}
+        data-testid="hoodie-mockup-list"
+      >
         {mockups.length === 0 ? (
           <div className="px-1 py-1 text-[11px] text-slate-500">
             No uploaded mockups yet. Use Upload front / Upload back in the toolbar.
@@ -299,18 +438,23 @@ export default function LeftSidebar({ onLoadTemplate }: { onLoadTemplate: (name:
         )}
       </div>
 
-      <div className="flex items-center justify-between border-t border-slate-800 px-3 py-2 text-[11px] uppercase tracking-wide text-slate-400">
-        <span>Saved templates</span>
-        <button
-          type="button"
-          onClick={refreshTemplates}
-          className="text-slate-300 hover:text-white"
-          title="Refresh"
-        >
-          <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
-      <div className="max-h-40 overflow-y-auto px-2 pb-2">
+      <SectionHeader
+        title="Saved templates"
+        expanded={sections.templates}
+        onToggle={() => toggleSection("templates")}
+        count={templates.length}
+        actions={
+          <button
+            type="button"
+            onClick={refreshTemplates}
+            className="text-slate-300 hover:text-white"
+            title="Refresh"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        }
+      />
+      <div className={`max-h-40 overflow-y-auto px-2 pb-2 ${sections.templates ? "" : "hidden"}`}>
         {templates.length === 0 ? (
           <div className="px-1 py-1 text-[11px] text-slate-500">No saved templates yet.</div>
         ) : (

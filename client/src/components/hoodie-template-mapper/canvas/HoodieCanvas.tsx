@@ -339,7 +339,28 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   // (which would re-serialize the path on every frame). Local state buffers
   // the in-flight drag and we commit once on drag end.
   const [dragAnchors, setDragAnchors] = useState<Pt[] | null>(null);
-  const liveAnchors = dragAnchors ?? selectedAnchors;
+
+  // Polygon-translate drag state — lets the user grab the body of the
+  // already-selected polygon and drag the whole shape to a new location
+  // (the duplicate-and-move workflow). `start` is captured on mousedown
+  // and `last` is updated on every stage mousemove; on mouseup we commit
+  // a single translateLayerPolygon() with the cumulative delta and clear
+  // the override. Mesh + artwork stay put — only the polygon mask moves.
+  const [polyDrag, setPolyDrag] = useState<
+    { id: string; start: Pt; last: Pt; baseAnchors: Pt[] } | null
+  >(null);
+  const polyDragOffset = polyDrag
+    ? { dx: polyDrag.last.x - polyDrag.start.x, dy: polyDrag.last.y - polyDrag.start.y }
+    : null;
+
+  // The anchors we display for the selected layer right now. Anchor
+  // drag wins (only one anchor at a time); polygon drag rewrites the
+  // whole set on the fly.
+  const liveAnchors: Pt[] = dragAnchors
+    ? dragAnchors
+    : polyDrag && polyDragOffset
+      ? polyDrag.baseAnchors.map((a) => ({ x: a.x + polyDragOffset.dx, y: a.y + polyDragOffset.dy }))
+      : selectedAnchors;
 
   // Tracks the last anchor we dropped while in magnetic-pen click-and-drag
   // mode, plus whether the LMB is currently held. Lets mousemove drop new
@@ -435,6 +456,30 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
   const [snapTarget, setSnapTarget] = useState<Pt | null>(null);
   const handleStageMouseMove = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
+      // Polygon-translate drag: follow the pointer and let liveAnchors
+      // re-derive from the new offset. We commit the actual store
+      // mutation on mouseup so a single Cmd-Z undo reverts the whole
+      // gesture rather than the per-frame deltas.
+      const lmbHeld = (e.evt.buttons & 1) === 1;
+      if (polyDrag) {
+        if (!lmbHeld) {
+          // The browser sometimes swallows mouseup (e.g. release outside
+          // the stage). If the button has been released by the time we
+          // see another move, finalize the drag here.
+          const dx = polyDrag.last.x - polyDrag.start.x;
+          const dy = polyDrag.last.y - polyDrag.start.y;
+          if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5) {
+            actions.translateLayerPolygon(polyDrag.id, dx, dy);
+          }
+          setPolyDrag(null);
+        } else {
+          const mp = pointerToMockup();
+          if (mp) {
+            setPolyDrag((cur) => (cur ? { ...cur, last: mp } : cur));
+          }
+          return;
+        }
+      }
       if (!isPenActive) {
         setSnapTarget(null);
         return;
@@ -453,7 +498,6 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
       // an edge freehand. If the LMB has been released by the time we get
       // here (no `1` bit in `evt.buttons`), exit drag mode so the *next*
       // mousedown starts a fresh drop sequence.
-      const lmbHeld = (e.evt.buttons & 1) === 1;
       if (!lmbHeld) {
         dragDropRef.current.active = false;
       }
@@ -487,19 +531,40 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
       magneticTolerance,
       penDraft,
       pointerToMockup,
+      polyDrag,
       tool,
     ],
   );
 
   const handleStageMouseUp = useCallback(() => {
     dragDropRef.current.active = false;
-  }, []);
+    if (polyDrag) {
+      const dx = polyDrag.last.x - polyDrag.start.x;
+      const dy = polyDrag.last.y - polyDrag.start.y;
+      if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5) {
+        actions.translateLayerPolygon(polyDrag.id, dx, dy);
+      }
+      setPolyDrag(null);
+    }
+  }, [actions, polyDrag]);
 
   const handleStageMouseLeave = useCallback(() => {
     setSnapTarget(null);
     dragDropRef.current.active = false;
+    // If the pointer leaves the stage mid-polygon-drag we still want to
+    // commit the move so far — releasing the mouse outside the stage
+    // would otherwise strand the polygon at the last frame and leak
+    // override state.
+    if (polyDrag) {
+      const dx = polyDrag.last.x - polyDrag.start.x;
+      const dy = polyDrag.last.y - polyDrag.start.y;
+      if (Math.abs(dx) >= 0.5 || Math.abs(dy) >= 0.5) {
+        actions.translateLayerPolygon(polyDrag.id, dx, dy);
+      }
+      setPolyDrag(null);
+    }
     if (isPenActive && penDraft) actions.setPenCursor(null, false);
-  }, [actions, isPenActive, penDraft]);
+  }, [actions, isPenActive, penDraft, polyDrag]);
 
   // Track whether the stage is currently mid-drag (left mouse held while
   // spacebar pan is active). Lets us flip the cursor between an open hand
@@ -515,13 +580,15 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
     ? isPanDragging
       ? "grabbing"
       : "grab"
-    : isPenActive
-      ? "crosshair"
-      : tool === "mesh-warp"
-        ? "default"
-        : tool === "move"
+    : polyDrag
+      ? "move"
+      : isPenActive
+        ? "crosshair"
+        : tool === "mesh-warp"
           ? "default"
-          : "default";
+          : tool === "move"
+            ? "default"
+            : "default";
 
   return (
     <div ref={wrapperRef} className="relative h-full w-full" data-testid="hoodie-canvas-root">
@@ -658,10 +725,28 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
             dragOverride={
               dragAnchors && selectedLayer
                 ? { id: selectedLayer.id, anchors: dragAnchors }
-                : null
+                : polyDrag && selectedLayer && polyDragOffset
+                  ? {
+                      id: selectedLayer.id,
+                      anchors: polyDrag.baseAnchors.map((a) => ({
+                        x: a.x + polyDragOffset.dx,
+                        y: a.y + polyDragOffset.dy,
+                      })),
+                    }
+                  : null
             }
             onHover={(id) => actions.setHoverLayer(id)}
             onSelect={(id) => actions.setSelectedLayer(id)}
+            onPolygonDragStart={(id, mx, my) => {
+              const target = layers.find((l) => l.id === id);
+              if (!target) return;
+              setPolyDrag({
+                id,
+                start: { x: mx, y: my },
+                last: { x: mx, y: my },
+                baseAnchors: svgPathToAnchors(target.maskPath),
+              });
+            }}
             onAltClick={(id, mx, my) => {
               const target = layers.find((l) => l.id === id);
               if (!target) return;
