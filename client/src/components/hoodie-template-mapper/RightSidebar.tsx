@@ -1037,14 +1037,21 @@ function PanelTransformControls({ layer, mesh }: { layer: MaskLayer; mesh: MeshG
         </div>
       </div>
 
-      <div className="text-[10px] text-slate-500">
-        On canvas: drag the <span className="text-yellow-300">yellow</span>{" "}
-        puck (centroid) to move,{" "}
-        <span className="text-purple-300">purple</span> puck (above) to
-        rotate, and <span className="text-emerald-300">green</span> puck
-        (bottom-right) to resize uniformly. Hold{" "}
-        <kbd className="rounded bg-slate-800 px-1">Shift</kbd> while
-        rotating to snap to 15°.
+      <div className="space-y-1 text-[10px] text-slate-500">
+        <div>
+          On canvas: drag the <span className="text-yellow-300">yellow</span>{" "}
+          puck (centroid) to move,{" "}
+          <span className="text-purple-300">purple</span> puck (above) to
+          rotate, and <span className="text-emerald-300">green</span> puck
+          (bottom-right) to resize uniformly. Hold{" "}
+          <kbd className="rounded bg-slate-800 px-1">Shift</kbd> while
+          rotating to snap to 15°.
+        </div>
+        <div className="text-slate-400">
+          Moves the <span className="text-amber-300">mesh + artwork only</span>.
+          The polygon mask stays where you traced it — to slide the polygon
+          itself, switch to Move and drag the panel body on canvas.
+        </div>
       </div>
     </div>
   );
