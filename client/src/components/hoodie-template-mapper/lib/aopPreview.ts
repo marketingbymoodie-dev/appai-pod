@@ -91,7 +91,9 @@ export type AopPreviewParams = {
 const PANEL_COLORS: Record<HoodiePanelKey | "unassigned", string> = {
   front_right: "#fb7185",   // rose
   front_left: "#f97316",    // orange
-  front_pocket: "#eab308",  // yellow
+  front_pocket: "#eab308",  // yellow (legacy single-pocket)
+  pocket_left: "#facc15",   // amber – left half
+  pocket_right: "#fde047",  // pale yellow – right half
   left_sleeve: "#84cc16",   // lime
   right_sleeve: "#22c55e",  // green
   left_cuff: "#14b8a6",     // teal

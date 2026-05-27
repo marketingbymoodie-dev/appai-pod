@@ -173,6 +173,15 @@ export type HoodieMapperActions = {
   patchLayer: (id: string, patch: Partial<MaskLayer>) => void;
   reorderLayer: (id: string, newZIndex: number) => void;
   /**
+   * Deep-clone a layer (new id, " Copy" name suffix, slight x/y offset
+   * on polygon + mesh so the duplicate is visually distinguishable).
+   * Used to fork an already-warped panel into two — e.g. take the
+   * existing "Front Pocket" mask and split it into Pocket Left /
+   * Pocket Right without redoing the source artwork + mesh setup.
+   * Returns the new layer's id, or null if the source wasn't found.
+   */
+  duplicateLayer: (id: string) => string | null;
+  /**
    * Replace the geometry of an existing layer. Re-serializes maskPath from
    * the supplied anchors. Used by anchor edits (drag/insert/delete) and the
    * Simplify/Smooth path-utility buttons.
@@ -430,6 +439,66 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
         const nextSelected = s.selectedLayerId === id ? null : s.selectedLayerId;
         return { template: updated, selectedLayerId: nextSelected, dirty: true };
       }),
+    duplicateLayer: (id) => {
+      const found = findLayerById(get().template, id);
+      if (!found) return null;
+      const src = found.layer;
+      const newId = newLayerId();
+      // Small visual offset so the dupe is clearly distinct from the
+      // source on canvas. 12 mockup pixels diagonal — easy to spot at
+      // any zoom but small enough that it doesn't fly off-screen.
+      const OFFSET_X = 12;
+      const OFFSET_Y = 12;
+      // Re-serialise the polygon by parsing its anchors, shifting, and
+      // rebuilding the path string — that way we don't have to invent a
+      // path-translate parser.
+      const shiftedAnchors = svgPathToAnchors(src.maskPath).map((p) => ({
+        x: p.x + OFFSET_X,
+        y: p.y + OFFSET_Y,
+      }));
+      const dupedMaskPath = shiftedAnchors.length >= 2
+        ? anchorsToSvgPath(shiftedAnchors)
+        : src.maskPath;
+      const dupedMesh = src.mesh
+        ? {
+            ...src.mesh,
+            targetPoints: src.mesh.targetPoints.map((p) => ({
+              x: p.x + OFFSET_X,
+              y: p.y + OFFSET_Y,
+            })),
+          }
+        : src.mesh;
+      const cornerPins = src.cornerPins
+        ? (src.cornerPins.map((p) => ({ x: p.x + OFFSET_X, y: p.y + OFFSET_Y })) as typeof src.cornerPins)
+        : src.cornerPins;
+      const baseName = src.name.replace(/ Copy(?: \d+)?$/, "");
+      const dupedName = `${baseName} Copy`;
+      const duped: MaskLayer = {
+        ...src,
+        id: newId,
+        name: dupedName,
+        maskPath: dupedMaskPath,
+        mesh: dupedMesh,
+        cornerPins: cornerPins,
+        // Force highest zIndex in the view so the dupe lands on top of
+        // its source — easy to grab and reshape without weirdness.
+        zIndex: Math.max(
+          0,
+          ...get().template.views[found.view].layers.map((l) => l.zIndex ?? 0),
+        ) + 1,
+      };
+      set((s) => {
+        const view = s.template.views[found.view] ?? EMPTY_HOODIE_VIEW;
+        return {
+          template: patchView(s.template, found.view, {
+            layers: [...view.layers, duped],
+          }),
+          selectedLayerId: newId,
+          dirty: true,
+        };
+      });
+      return newId;
+    },
     patchLayer: (id, patch) =>
       set((s) => {
         let updated = s.template;
