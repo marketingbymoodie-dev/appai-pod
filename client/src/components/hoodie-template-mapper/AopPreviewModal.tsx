@@ -6,14 +6,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Slider } from "@/components/ui/slider";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Image as ImageIcon, Sparkles, Upload } from "lucide-react";
+import { Download, Image as ImageIcon, RotateCcw, Sparkles, Upload } from "lucide-react";
 import type { HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
   renderAopPreview,
   renderAopPreviewToCanvas,
   type AopPreviewMode,
+  type ArtworkPlacement,
+  DEFAULT_ARTWORK_PLACEMENT,
 } from "./lib/aopPreview";
 
 /**
@@ -68,6 +71,17 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // expected end-user flow ("see my artwork on the hoodie") just
   // works without diving through toggles.
   const [preferLayerSources, setPreferLayerSources] = useState(false);
+
+  // Single-sheet artwork placement (scale + 2D offset). Defaults to
+  // identity = previous "stretch across all panels" behaviour. Lets
+  // the admin shrink a portrait down to just the hood / shoulders
+  // and slide it into position without re-exporting from Photoshop.
+  const [placement, setPlacement] = useState<ArtworkPlacement>(DEFAULT_ARTWORK_PLACEMENT);
+  const [showDesignRect, setShowDesignRect] = useState(false);
+  const placementIsDefault =
+    placement.scale === DEFAULT_ARTWORK_PLACEMENT.scale &&
+    placement.offsetX === DEFAULT_ARTWORK_PLACEMENT.offsetX &&
+    placement.offsetY === DEFAULT_ARTWORK_PLACEMENT.offsetY;
 
   // Artwork pipeline — file → blob URL → HTMLImageElement.
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
@@ -210,6 +224,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       layerSources,
       preferLayerSources,
       applyShading,
+      artworkPlacement: placement,
+      showDesignRect,
     });
   }, [
     open,
@@ -224,6 +240,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     layerSources,
     preferLayerSources,
     applyShading,
+    placement,
+    showDesignRect,
   ]);
 
   // Layer summary for the footer.
@@ -267,6 +285,10 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       layerSources,
       preferLayerSources,
       applyShading,
+      artworkPlacement: placement,
+      // Never bake the design-rect outline into the saved PNG —
+      // it's a UI overlay, not part of the customer artwork.
+      showDesignRect: false,
     });
     canvas.toBlob((blob) => {
       if (!blob) {
@@ -406,6 +428,68 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
               )}
             </div>
 
+            {/* Single-sheet placement (scale + offset). Per-panel mode
+                doesn't have a unified design rect, so hide there. */}
+            {mode === "single-sheet" && artworkImg && (
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wide text-slate-400">
+                    Placement
+                  </span>
+                  {!placementIsDefault && (
+                    <button
+                      type="button"
+                      onClick={() => setPlacement(DEFAULT_ARTWORK_PLACEMENT)}
+                      className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-200"
+                      title="Reset to fill-the-hoodie default"
+                    >
+                      <RotateCcw className="h-3 w-3" /> Reset
+                    </button>
+                  )}
+                </div>
+                <PlacementSlider
+                  label="Scale"
+                  unit="×"
+                  precision={2}
+                  value={placement.scale}
+                  min={0.1}
+                  max={4}
+                  step={0.01}
+                  onChange={(scale) => setPlacement((p) => ({ ...p, scale }))}
+                />
+                <PlacementSlider
+                  label="Offset X"
+                  unit="px"
+                  precision={0}
+                  value={placement.offsetX}
+                  min={-800}
+                  max={800}
+                  step={1}
+                  onChange={(offsetX) => setPlacement((p) => ({ ...p, offsetX }))}
+                />
+                <PlacementSlider
+                  label="Offset Y"
+                  unit="px"
+                  precision={0}
+                  value={placement.offsetY}
+                  min={-800}
+                  max={800}
+                  step={1}
+                  onChange={(offsetY) => setPlacement((p) => ({ ...p, offsetY }))}
+                />
+                <ToggleRow
+                  label="Show design rect"
+                  checked={showDesignRect}
+                  onChange={setShowDesignRect}
+                />
+                <div className="mt-1 rounded border border-slate-800 bg-slate-950/60 px-2 py-1 text-[10px] text-slate-500">
+                  Scale shrinks / grows the design rect around the union centre. Offsets
+                  slide it in mockup pixels. Areas outside the rect become transparent —
+                  the mockup pixels (or shading) show through.
+                </div>
+              </div>
+            )}
+
             {/* Toggles */}
             <div>
               <div className="mb-1 text-[11px] uppercase tracking-wide text-slate-400">Display</div>
@@ -531,5 +615,49 @@ function ToggleRow({
         className="h-3.5 w-3.5 cursor-pointer accent-fuchsia-500"
       />
     </label>
+  );
+}
+
+/**
+ * Slider + numeric value display row used by the Placement section.
+ * `precision` controls decimal places shown next to the label;
+ * `unit` is appended after the value.
+ */
+function PlacementSlider({
+  label,
+  unit,
+  value,
+  min,
+  max,
+  step,
+  precision,
+  onChange,
+}: {
+  label: string;
+  unit: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  precision: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="space-y-1 py-1">
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="text-slate-300">{label}</span>
+        <span className="font-mono text-slate-400">
+          {value.toFixed(precision)}
+          {unit}
+        </span>
+      </div>
+      <Slider
+        value={[value]}
+        min={min}
+        max={max}
+        step={step}
+        onValueChange={([v]) => onChange(v)}
+      />
+    </div>
   );
 }
