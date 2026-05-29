@@ -62,6 +62,12 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const [showOutlines, setShowOutlines] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
   const [applyShading, setApplyShading] = useState(true);
+  // When true, each panel renders its calibration triangulated PNG
+  // through the saved mesh — used to verify the mapping looks right
+  // before swapping in customer artwork. Default is OFF so the
+  // expected end-user flow ("see my artwork on the hoodie") just
+  // works without diving through toggles.
+  const [preferLayerSources, setPreferLayerSources] = useState(false);
 
   // Artwork pipeline — file → blob URL → HTMLImageElement.
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
@@ -202,6 +208,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       showOutlines,
       showLabels,
       layerSources,
+      preferLayerSources,
       applyShading,
     });
   }, [
@@ -215,6 +222,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     showOutlines,
     showLabels,
     layerSources,
+    preferLayerSources,
     applyShading,
   ]);
 
@@ -257,6 +265,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       showOutlines,
       showLabels,
       layerSources,
+      preferLayerSources,
       applyShading,
     });
     canvas.toBlob((blob) => {
@@ -296,9 +305,9 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
               AOP Preview · {template.name}
             </DialogTitle>
             <p className="mt-0.5 text-[11px] text-slate-400">
-              Drops AOP artwork onto the hoodie using your traced panel masks. Layers with a
-              mesh + uploaded source artwork render through the warp; the rest fall back to the
-              selected mode.
+              Drops AOP artwork onto the hoodie using your traced panel masks. Each panel
+              with a saved mesh warps the uploaded artwork through it; panels without a mesh
+              fall back to the selected mode.
             </p>
           </div>
 
@@ -391,7 +400,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
               )}
               {!artworkName && mode !== "solid-colors" && (
                 <div className="mt-2 text-[10px] text-slate-500">
-                  No artwork picked — preview will fall back to solid colors.
+                  No artwork picked — panels with meshes will show their calibration art;
+                  others stay empty (mockup pixels show through).
                 </div>
               )}
             </div>
@@ -412,9 +422,33 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
               <ToggleRow label="Mask outlines" checked={showOutlines} onChange={setShowOutlines} />
               <ToggleRow label="Panel labels" checked={showLabels} onChange={setShowLabels} />
               {layerSources.size > 0 && (
+                <ToggleRow
+                  label="Show calibration art instead"
+                  checked={preferLayerSources}
+                  onChange={setPreferLayerSources}
+                />
+              )}
+              {layerSources.size > 0 && (
                 <div className="mt-1 rounded border border-purple-900/40 bg-purple-950/20 px-2 py-1 text-[10px] text-purple-200">
-                  Mesh-warped sources active for {layerSources.size}{" "}
-                  panel{layerSources.size === 1 ? "" : "s"}.
+                  {preferLayerSources ? (
+                    <>
+                      Showing calibration art (Printify triangles) warped through{" "}
+                      {layerSources.size} panel{layerSources.size === 1 ? "" : "s"} — turn this
+                      off to project your uploaded artwork instead.
+                    </>
+                  ) : artworkImg ? (
+                    <>
+                      Your artwork is being warped through {layerSources.size} mesh
+                      {layerSources.size === 1 ? "" : "es"}. Toggle "Show calibration art" to
+                      verify the mapping.
+                    </>
+                  ) : (
+                    <>
+                      Mesh data ready on {layerSources.size} panel
+                      {layerSources.size === 1 ? "" : "s"}. Upload an artwork above to test it
+                      through the warps.
+                    </>
+                  )}
                 </div>
               )}
             </div>
