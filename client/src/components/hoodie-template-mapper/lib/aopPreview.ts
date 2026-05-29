@@ -42,6 +42,34 @@ import { drawMeshWarp } from "./meshWarp";
 
 export type AopPreviewMode = "single-sheet" | "per-panel-stretch" | "solid-colors";
 
+/**
+ * Customer-facing artwork placement (single-sheet mode only). Lets the
+ * user shrink / grow / slide the artwork around inside the union of the
+ * print panels — e.g. position a pet portrait so only the hood + chest
+ * see it, leaving the sleeves blank.
+ *
+ * Coordinate convention:
+ *   - `scale` is uniform around the centre of the union AABB. 1 = the
+ *     artwork is stretched once across the whole AABB (the previous
+ *     hard-coded behaviour). 0.5 = artwork covers half the AABB area
+ *     in mockup px. 2 = the artwork is stretched to twice the AABB,
+ *     so each panel sees a smaller "zoom-in" of the source image.
+ *   - `offsetX` / `offsetY` are mockup pixels added to the artwork's
+ *     centre after scaling. Positive Y = artwork moves down on the
+ *     mockup.
+ */
+export type ArtworkPlacement = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+export const DEFAULT_ARTWORK_PLACEMENT: ArtworkPlacement = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
+
 export type AopPreviewParams = {
   template: HoodieTemplate;
   view: HoodieView;
@@ -94,6 +122,20 @@ export type AopPreviewParams = {
    * Has no effect on `solid-colors` mode.
    */
   applyShading?: boolean;
+  /**
+   * Single-sheet artwork placement (scale + offset). Ignored in
+   * per-panel-stretch and solid-colors modes. When omitted, defaults
+   * to identity (artwork fills the union AABB exactly, equivalent to
+   * the original Phase 3 behaviour).
+   */
+  artworkPlacement?: ArtworkPlacement;
+  /**
+   * When true, draws a dashed rectangle around the effective design
+   * rect on top of the composite. Diagnostic only — lets the admin
+   * see where the artwork "lives" while sliding the placement
+   * sliders. Off by default.
+   */
+  showDesignRect?: boolean;
 };
 
 /**
@@ -206,6 +248,8 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     layerSources,
     preferLayerSources = false,
     applyShading = false,
+    artworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
+    showDesignRect = false,
   } = params;
 
   const W = params.width ?? mockup.naturalWidth ?? mockup.width;
@@ -246,7 +290,31 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   if (!pctx) return;
 
   const useColors = mode === "solid-colors" || !artwork;
-  const totalBbox = mode === "single-sheet" && artwork ? totalPrintAabb(printLayers) : null;
+  // Union AABB of all print polygons — the "design canvas" the user
+  // composes into when artworkPlacement is identity. We compute it
+  // for any single-sheet usage, including when the user has only
+  // calibration art loaded (no `artwork`), so the design-rect outline
+  // still draws.
+  const totalBbox = mode === "single-sheet" ? totalPrintAabb(printLayers) : null;
+  // Apply scale + offset to derive the effective rect the artwork
+  // actually occupies on the mockup. Scale is uniform around the
+  // union centre so resizing feels predictable ("makes the artwork
+  // smaller / larger inside its current footprint").
+  const effectiveDesignRect: Aabb | null = totalBbox
+    ? (() => {
+        const cx = totalBbox.x + totalBbox.width / 2;
+        const cy = totalBbox.y + totalBbox.height / 2;
+        const s = Math.max(0.0001, artworkPlacement.scale || 1);
+        const w = totalBbox.width * s;
+        const h = totalBbox.height * s;
+        return {
+          x: cx - w / 2 + (artworkPlacement.offsetX || 0),
+          y: cy - h / 2 + (artworkPlacement.offsetY || 0),
+          width: w,
+          height: h,
+        };
+      })()
+    : null;
 
   for (const layer of printLayers) {
     const anchors = svgPathToAnchors(layer.maskPath);
@@ -295,14 +363,25 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       const aw = artwork.naturalWidth || artwork.width;
       const ah = artwork.naturalHeight || artwork.height;
       let synthSrc;
-      if (mode === "single-sheet" && totalBbox && totalBbox.width > 0 && totalBbox.height > 0) {
+      if (
+        mode === "single-sheet" &&
+        effectiveDesignRect &&
+        effectiveDesignRect.width > 0 &&
+        effectiveDesignRect.height > 0
+      ) {
         const bb = aabbOf(anchors);
         if (bb) {
+          // The panel's slice of the design rect, expressed as a
+          // sub-rectangle of the artwork image. When the user shrinks
+          // the design rect, panels outside it produce sub-rects with
+          // negative origins / past-image extents — drawMeshWarp will
+          // happily sample those (giving transparent pixels), which
+          // is the natural "no artwork here" behaviour we want.
           synthSrc = {
-            x: ((bb.x - totalBbox.x) / totalBbox.width) * aw,
-            y: ((bb.y - totalBbox.y) / totalBbox.height) * ah,
-            width: (bb.width / totalBbox.width) * aw,
-            height: (bb.height / totalBbox.height) * ah,
+            x: ((bb.x - effectiveDesignRect.x) / effectiveDesignRect.width) * aw,
+            y: ((bb.y - effectiveDesignRect.y) / effectiveDesignRect.height) * ah,
+            width: (bb.width / effectiveDesignRect.width) * aw,
+            height: (bb.height / effectiveDesignRect.height) * ah,
           };
         }
       } else {
@@ -315,8 +394,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw,
       // same behaviour as Phase 3.
-      if (mode === "single-sheet" && totalBbox) {
-        pctx.drawImage(artwork, totalBbox.x, totalBbox.y, totalBbox.width, totalBbox.height);
+      if (mode === "single-sheet" && effectiveDesignRect) {
+        pctx.drawImage(
+          artwork,
+          effectiveDesignRect.x,
+          effectiveDesignRect.y,
+          effectiveDesignRect.width,
+          effectiveDesignRect.height,
+        );
       } else {
         const bb = aabbOf(anchors);
         if (bb) pctx.drawImage(artwork, bb.x, bb.y, bb.width, bb.height);
@@ -367,6 +452,34 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // Step 5: Optional outlines + labels for debugging.
   if (showOutlines) drawOutlines(ctx, visible);
   if (showLabels) drawLabels(ctx, visible);
+  // Step 6: Design-rect overlay — dashed magenta outline + handles
+  // showing where the artwork is currently anchored. Helps the user
+  // make sense of "I shrunk the dog face but where does it actually
+  // sit on the mockup?"
+  if (showDesignRect && mode === "single-sheet" && effectiveDesignRect) {
+    drawDesignRect(ctx, effectiveDesignRect);
+  }
+}
+
+function drawDesignRect(ctx: CanvasRenderingContext2D, rect: Aabb): void {
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 6]);
+  ctx.strokeStyle = "#f0abfc"; // fuchsia-300 to match modal accents
+  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
+  // Centre crosshair so a hard-zoomed user can see the artwork's
+  // anchor point even when the dashed rect is offscreen.
+  ctx.setLineDash([]);
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - 12, cy);
+  ctx.lineTo(cx + 12, cy);
+  ctx.moveTo(cx, cy - 12);
+  ctx.lineTo(cx, cy + 12);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawOutlines(ctx: CanvasRenderingContext2D, layers: MaskLayer[]): void {
