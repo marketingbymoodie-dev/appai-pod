@@ -75,6 +75,19 @@ export type AopPreviewParams = {
    */
   layerSources?: Map<string, HTMLImageElement>;
   /**
+   * When true (and a per-layer `productionPanelSrc` is loaded for the
+   * panel), the layer's calibration artwork wins over the global
+   * `artwork`. This is the "verify the mapping looks right" mode —
+   * each panel gets its triangulated Printify PNG warped through its
+   * mesh, regardless of what the customer uploaded.
+   *
+   * Default: `false`. The expected end-user flow is "drop in a
+   * customer artwork → see it warped onto the hoodie", which means
+   * the global `artwork` should win. The mapper's modal toggles this
+   * back on when the admin wants to re-check their calibration.
+   */
+  preferLayerSources?: boolean;
+  /**
    * When true, multiply the original mockup pixels over each warped
    * panel. Bakes the fabric shadows / highlights of the photo into the
    * artwork so the AOP looks like real cloth rather than a flat decal.
@@ -191,6 +204,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     showOutlines = false,
     showLabels = false,
     layerSources,
+    preferLayerSources = false,
     applyShading = false,
   } = params;
 
@@ -243,20 +257,29 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pctx.clip();
     pctx.globalAlpha = layer.opacity;
 
-    // Per-layer mesh-warped source artwork takes priority over the
-    // mode-driven global artwork, regardless of mode (mesh + source ==
-    // explicit production-panel intent). Layers without a mesh fall back
-    // to the existing single-sheet / per-panel-stretch behaviour.
+    // Source resolution priority — match user mental model:
+    //   1. solid-colors mode → debug fill, ignore artwork.
+    //   2. preferLayerSources mode → if this panel has a calibration
+    //      PNG loaded, warp THAT through the mesh (verifies mapping).
+    //   3. Default behaviour: customer artwork (`artwork`) wins. If the
+    //      panel has a saved mesh, the artwork gets warped through it
+    //      with a synthesised sourceRect — the panel's slice of the
+    //      union (single-sheet) or the whole artwork (per-panel). If
+    //      no mesh, fall back to a flat stretched draw.
+    //   4. No customer artwork → fall back to calibration source if
+    //      available, else nothing (mockup pixels show through).
     const layerSrc =
       layer.productionPanelSrc && layerSources
         ? layerSources.get(layer.productionPanelSrc) ?? null
         : null;
-    const usingLayerMesh = !useColors && layerSrc && layer.mesh;
 
     if (useColors) {
       pctx.fillStyle = colorForLayer(layer, PANEL_COLORS.unassigned);
       pctx.fillRect(0, 0, W, H);
-    } else if (usingLayerMesh && layer.mesh && layerSrc) {
+    } else if (preferLayerSources && layer.mesh && layerSrc) {
+      // Calibration verification: warp the panel's triangulated PNG
+      // through the saved mesh. This is the OLD default — kept behind
+      // a flag so admins can sanity-check their meshes.
       drawMeshWarp(
         pctx,
         layerSrc,
@@ -264,16 +287,50 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         layerSrc.naturalHeight || layerSrc.height,
         layer.mesh,
       );
+    } else if (artwork && layer.mesh) {
+      // Customer artwork warped through the saved mesh. We synthesise
+      // a `sourceRect` so the mesh reads from the right slice of the
+      // customer's image — sourceRotation / sourceFlip / targetPoints
+      // are all preserved from the original calibration.
+      const aw = artwork.naturalWidth || artwork.width;
+      const ah = artwork.naturalHeight || artwork.height;
+      let synthSrc;
+      if (mode === "single-sheet" && totalBbox && totalBbox.width > 0 && totalBbox.height > 0) {
+        const bb = aabbOf(anchors);
+        if (bb) {
+          synthSrc = {
+            x: ((bb.x - totalBbox.x) / totalBbox.width) * aw,
+            y: ((bb.y - totalBbox.y) / totalBbox.height) * ah,
+            width: (bb.width / totalBbox.width) * aw,
+            height: (bb.height / totalBbox.height) * ah,
+          };
+        }
+      } else {
+        // per-panel-stretch — every panel reads the full artwork.
+        synthSrc = { x: 0, y: 0, width: aw, height: ah };
+      }
+      if (synthSrc) {
+        drawMeshWarp(pctx, artwork, aw, ah, { ...layer.mesh, sourceRect: synthSrc });
+      }
     } else if (artwork) {
+      // No mesh on this layer — fall back to a flat stretched draw,
+      // same behaviour as Phase 3.
       if (mode === "single-sheet" && totalBbox) {
-        // Whole artwork stretched once across the entire union of print
-        // panels. Each panel sees its slice of the continuous mural.
         pctx.drawImage(artwork, totalBbox.x, totalBbox.y, totalBbox.width, totalBbox.height);
       } else {
-        // per-panel-stretch — independent stretch per panel.
         const bb = aabbOf(anchors);
         if (bb) pctx.drawImage(artwork, bb.x, bb.y, bb.width, bb.height);
       }
+    } else if (layer.mesh && layerSrc) {
+      // No customer artwork uploaded → render the calibration source
+      // through the mesh so the admin still sees something useful.
+      drawMeshWarp(
+        pctx,
+        layerSrc,
+        layerSrc.naturalWidth || layerSrc.width,
+        layerSrc.naturalHeight || layerSrc.height,
+        layer.mesh,
+      );
     }
 
     // Shading multiply: bake the original mockup's fabric shadows over
