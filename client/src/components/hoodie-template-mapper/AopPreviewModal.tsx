@@ -12,10 +12,12 @@ import { Download, Image as ImageIcon, RotateCcw, Sparkles, Upload } from "lucid
 import type { HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
+  computeDesignRect,
   renderAopPreview,
   renderAopPreviewToCanvas,
   type AopPreviewMode,
   type ArtworkPlacement,
+  type DesignRectInfo,
   DEFAULT_ARTWORK_PLACEMENT,
 } from "./lib/aopPreview";
 
@@ -57,6 +59,7 @@ const MODE_OPTIONS: Array<{ id: AopPreviewMode; label: string; hint: string }> =
 export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const template = useHoodieMapperStore((s) => s.template);
   const activeView = useHoodieMapperStore((s) => s.view);
+  const actions = useHoodieMapperStore((s) => s.actions);
   const { toast } = useToast();
 
   const [view, setView] = useState<HoodieView>(activeView);
@@ -77,11 +80,17 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // the admin shrink a portrait down to just the hood / shoulders
   // and slide it into position without re-exporting from Photoshop.
   const [placement, setPlacement] = useState<ArtworkPlacement>(DEFAULT_ARTWORK_PLACEMENT);
-  const [showDesignRect, setShowDesignRect] = useState(false);
+  const [showDesignRect, setShowDesignRect] = useState(true);
   const placementIsDefault =
     placement.scale === DEFAULT_ARTWORK_PLACEMENT.scale &&
     placement.offsetX === DEFAULT_ARTWORK_PLACEMENT.offsetX &&
     placement.offsetY === DEFAULT_ARTWORK_PLACEMENT.offsetY;
+
+  // Background colour painted under the artwork in every print panel
+  // (and ALL of any panel excluded from single-sheet). null = off.
+  // Stored as state-only so the admin can experiment with colours
+  // without dirtying the template.
+  const [backgroundColor, setBackgroundColor] = useState<string | null>(null);
 
   // Artwork pipeline — file → blob URL → HTMLImageElement.
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
@@ -226,6 +235,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       applyShading,
       artworkPlacement: placement,
       showDesignRect,
+      backgroundColor,
     });
   }, [
     open,
@@ -242,6 +252,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     applyShading,
     placement,
     showDesignRect,
+    backgroundColor,
   ]);
 
   // Layer summary for the footer.
@@ -286,6 +297,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       preferLayerSources,
       applyShading,
       artworkPlacement: placement,
+      backgroundColor,
       // Never bake the design-rect outline into the saved PNG —
       // it's a UI overlay, not part of the customer artwork.
       showDesignRect: false,
@@ -487,7 +499,45 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   slide it in mockup pixels. Areas outside the rect become transparent —
                   the mockup pixels (or shading) show through.
                 </div>
+                <div className="mt-1 text-[10px] text-slate-500">
+                  Design rect now adopts your artwork's aspect ratio so portraits stay tall
+                  and landscapes stay wide. Drag the artwork on the preview to move; drag a
+                  corner to resize uniformly.
+                </div>
               </div>
+            )}
+
+            {/* Background colour picker — base fabric colour. Sits
+                under the artwork inside every print panel and fills
+                panels excluded from single-sheet entirely. Useful for
+                matching Printify's brown / red / etc. base hoodies. */}
+            <BackgroundColorPicker value={backgroundColor} onChange={setBackgroundColor} />
+
+            {/* Single-sheet panel inclusion — multi-select that maps
+                to MaskLayer.includeInSingleSheet. Lets the admin
+                shrink the design canvas to e.g. body+hood only. */}
+            {mode === "single-sheet" && (
+              <SingleSheetPanelPicker
+                layers={template.views[view]?.layers ?? []}
+                onToggle={(id, include) =>
+                  actions.patchLayer(id, { includeInSingleSheet: include })
+                }
+                onPreset={(panelKeys) => {
+                  const layers = template.views[view]?.layers ?? [];
+                  for (const layer of layers) {
+                    if (layer.isExclusion) continue;
+                    const isOn =
+                      panelKeys === "all"
+                        ? true
+                        : panelKeys === "none"
+                          ? false
+                          : layer.panelKey
+                            ? panelKeys.includes(layer.panelKey)
+                            : false;
+                    actions.patchLayer(layer.id, { includeInSingleSheet: isOn });
+                  }
+                }}
+              />
             )}
 
             {/* Toggles */}
@@ -561,12 +611,23 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
 
           {/* Right: preview surface */}
           <div className="relative flex flex-1 items-center justify-center overflow-auto bg-slate-950 p-4">
-            <div className="flex max-h-full max-w-full items-center justify-center">
+            <div className="relative flex max-h-full max-w-full items-center justify-center">
               <canvas
                 ref={canvasRef}
                 className="max-h-[78vh] max-w-full rounded border border-slate-800 bg-black object-contain shadow-xl"
                 data-testid="hoodie-aop-preview-canvas"
               />
+              {mockupImg && mode === "single-sheet" && artworkImg && (
+                <DesignRectHandlesOverlay
+                  canvasRef={canvasRef}
+                  template={template}
+                  view={view}
+                  mockup={mockupImg}
+                  artwork={artworkImg}
+                  placement={placement}
+                  onChange={setPlacement}
+                />
+              )}
             </div>
             {!mockupImg && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-sm text-slate-300">
@@ -658,6 +719,436 @@ function PlacementSlider({
         step={step}
         onValueChange={([v]) => onChange(v)}
       />
+    </div>
+  );
+}
+
+/**
+ * Native colour picker for the AOP background fill. Includes a small
+ * preset palette of common Printify base colours so the admin can
+ * pick "the brown one" without dialling RGB. Set to null disables
+ * the fill (panels show mockup pixels through artwork transparency,
+ * which is the original behaviour).
+ */
+const BG_PRESETS: Array<{ label: string; hex: string }> = [
+  { label: "Brown", hex: "#8a4a2a" },
+  { label: "Charcoal", hex: "#2f2f2f" },
+  { label: "Red", hex: "#a13d2a" },
+  { label: "Forest", hex: "#2d4a2a" },
+  { label: "Navy", hex: "#1f2c4a" },
+  { label: "Cream", hex: "#e8dccd" },
+];
+
+function BackgroundColorPicker({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (v: string | null) => void;
+}) {
+  const enabled = value !== null;
+  const colour = value ?? "#8a4a2a";
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[11px] uppercase tracking-wide text-slate-400">
+          Background colour
+        </span>
+        <label className="flex cursor-pointer items-center gap-1 text-[10px] text-slate-400">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => onChange(e.target.checked ? colour : null)}
+            className="h-3 w-3 cursor-pointer accent-fuchsia-500"
+          />
+          on
+        </label>
+      </div>
+      {enabled && (
+        <>
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={colour}
+              onChange={(e) => onChange(e.target.value)}
+              className="h-7 w-10 cursor-pointer rounded border border-slate-700 bg-slate-950 p-0"
+              title="Pick fabric colour"
+            />
+            <input
+              type="text"
+              value={colour}
+              onChange={(e) => onChange(e.target.value)}
+              className="h-7 flex-1 rounded border border-slate-700 bg-slate-950 px-2 text-[11px] font-mono text-slate-200 focus:border-fuchsia-500 focus:outline-none"
+              spellCheck={false}
+            />
+          </div>
+          <div className="mt-1 grid grid-cols-6 gap-1">
+            {BG_PRESETS.map((p) => (
+              <button
+                key={p.hex}
+                type="button"
+                onClick={() => onChange(p.hex)}
+                title={`${p.label} · ${p.hex}`}
+                className="h-5 w-full rounded border border-slate-800 transition hover:scale-110 hover:border-slate-500"
+                style={{ background: p.hex }}
+              />
+            ))}
+          </div>
+          <div className="mt-1 text-[10px] text-slate-500">
+            Sits under the artwork inside every print panel — fills transparent regions of
+            your art and any panel excluded from single-sheet. Mockup shading multiplies
+            on top so it looks like dyed fabric.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Multi-select picker that drives `MaskLayer.includeInSingleSheet`
+ * via the store. Showing this in the AOP modal keeps the test loop
+ * tight: tweak panel inclusion and immediately see the design canvas
+ * recompute. The persisted flag means the choice survives reloads
+ * unless the admin opts back in.
+ */
+function SingleSheetPanelPicker({
+  layers,
+  onToggle,
+  onPreset,
+}: {
+  layers: import("@shared/hoodieTemplate").MaskLayer[];
+  onToggle: (id: string, include: boolean) => void;
+  onPreset: (
+    panelKeys:
+      | "all"
+      | "none"
+      | Array<import("@shared/hoodieTemplate").HoodiePanelKey>,
+  ) => void;
+}) {
+  const printLayers = layers.filter((l) => !l.isExclusion);
+  if (printLayers.length === 0) return null;
+  const inCount = printLayers.filter((l) => l.includeInSingleSheet !== false).length;
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-wide text-slate-400">
+          Single-sheet panels
+        </span>
+        <span className="text-[10px] text-slate-500">
+          {inCount}/{printLayers.length}
+        </span>
+      </div>
+      {/* Quick presets — common compositions the admin reaches for. */}
+      <div className="mb-1 grid grid-cols-3 gap-1">
+        <button
+          type="button"
+          onClick={() => onPreset("all")}
+          className="rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+        >
+          All
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            onPreset(["front_left", "front_right", "left_hood", "right_hood", "back"])
+          }
+          className="rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+          title="Front body + hood + back only — sleeves / cuffs / waistband / pocket excluded"
+        >
+          Body+hood
+        </button>
+        <button
+          type="button"
+          onClick={() => onPreset("none")}
+          className="rounded border border-slate-800 bg-slate-950 px-1 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+        >
+          None
+        </button>
+      </div>
+      <ul className="max-h-40 space-y-0.5 overflow-y-auto rounded border border-slate-800 bg-slate-950/50 p-1">
+        {printLayers.map((l) => {
+          const include = l.includeInSingleSheet !== false;
+          return (
+            <li key={l.id}>
+              <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[11px] hover:bg-slate-800/60">
+                <input
+                  type="checkbox"
+                  checked={include}
+                  onChange={(e) => onToggle(l.id, e.target.checked)}
+                  className="h-3 w-3 cursor-pointer accent-fuchsia-500"
+                />
+                <span className="flex-1 truncate text-slate-300" title={l.name}>
+                  {l.name}
+                </span>
+                {l.panelKey && (
+                  <span className="text-[10px] text-slate-500">{l.panelKey}</span>
+                )}
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="mt-1 text-[10px] text-slate-500">
+        Excluded panels still show the background colour (and shading), but no artwork.
+        The design canvas shrinks to the bounding box of the included panels only.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Interactive overlay that floats above the AOP preview canvas and
+ * exposes drag-to-translate + corner-drag-to-resize gestures bound
+ * to `ArtworkPlacement`. Aspect ratio is locked — the rect always
+ * reflects the artwork's natural shape (computed by
+ * `computeDesignRect`), so corner drags only ever scale uniformly,
+ * never squish.
+ *
+ * Coordinate model:
+ *   - The overlay is `inset-0` over the canvas's display rect, so a
+ *     mockup-px point (mx, my) maps to CSS by `mx / mockupW * 100%`.
+ *   - Drag gestures convert pointer-px deltas → mockup-px deltas via
+ *     `mockupW / canvas.clientWidth` (and equivalent for Y), so the
+ *     interaction stays accurate at any display size.
+ *   - Corner drag keeps the *opposite* corner pinned and snaps the
+ *     rect's height to the artwork aspect, so the resize feels like
+ *     dragging Photoshop's transform handles.
+ */
+function DesignRectHandlesOverlay({
+  canvasRef,
+  template,
+  view,
+  mockup,
+  artwork,
+  placement,
+  onChange,
+}: {
+  canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
+  template: import("@shared/hoodieTemplate").HoodieTemplate;
+  view: HoodieView;
+  mockup: HTMLImageElement;
+  artwork: HTMLImageElement;
+  placement: ArtworkPlacement;
+  onChange: (next: ArtworkPlacement) => void;
+}) {
+  const info: DesignRectInfo | null = useMemo(
+    () => computeDesignRect(template, view, artwork, placement),
+    [template, view, artwork, placement],
+  );
+
+  // We need to know the canvas's natural (mockup) size to convert
+  // mockup-px positions into % of overlay. The overlay matches the
+  // canvas display rect via inset-0, so % of overlay == % of mockup.
+  const mockupW = mockup.naturalWidth || mockup.width;
+  const mockupH = mockup.naturalHeight || mockup.height;
+
+  // Active drag state. We hold a snapshot of the placement + base
+  // rect at gesture start so each pointermove computes deltas
+  // against the start, never compounding rounding errors.
+  const dragRef = useRef<
+    | null
+    | {
+        mode: "translate" | "scale";
+        corner?: "nw" | "ne" | "sw" | "se";
+        startClientX: number;
+        startClientY: number;
+        startPlacement: ArtworkPlacement;
+        startInfo: DesignRectInfo;
+        canvasRect: DOMRect;
+      }
+  >(null);
+
+  // Convert pointer client-space delta → mockup-space delta using
+  // the canvas's current displayed size. Cached at gesture start.
+  const clientToMockup = (
+    cx: number,
+    cy: number,
+    canvasRect: DOMRect,
+  ): { x: number; y: number } => {
+    const sx = mockupW / canvasRect.width;
+    const sy = mockupH / canvasRect.height;
+    return {
+      x: (cx - canvasRect.left) * sx,
+      y: (cy - canvasRect.top) * sy,
+    };
+  };
+
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const dxClient = e.clientX - drag.startClientX;
+      const dyClient = e.clientY - drag.startClientY;
+      const sx = mockupW / drag.canvasRect.width;
+      const sy = mockupH / drag.canvasRect.height;
+      const dxMock = dxClient * sx;
+      const dyMock = dyClient * sy;
+
+      if (drag.mode === "translate") {
+        onChange({
+          ...drag.startPlacement,
+          offsetX: drag.startPlacement.offsetX + dxMock,
+          offsetY: drag.startPlacement.offsetY + dyMock,
+        });
+        return;
+      }
+
+      // Scale: keep opposite corner pinned, scale uniformly using
+      // whichever axis the pointer moved further along (relative to
+      // baseRect's aspect). This makes diagonal drags feel
+      // monotonic — pulling out always grows, pushing in always
+      // shrinks, regardless of which axis dominates.
+      if (drag.mode === "scale") {
+        const start = drag.startInfo.effective;
+        const aspect = start.width / start.height;
+        const corner = drag.corner ?? "se";
+        // Pointer position in mockup px right now.
+        const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
+        // Opposite corner (pinned) — derived from the rect at drag
+        // start. e.g. dragging "se" pins "nw".
+        const pinned = {
+          x: corner.includes("e") ? start.x : start.x + start.width,
+          y: corner.includes("s") ? start.y : start.y + start.height,
+        };
+        // Raw new dimensions if we ignored aspect lock.
+        const rawW = Math.abs(m.x - pinned.x);
+        const rawH = Math.abs(m.y - pinned.y);
+        // Lock aspect: pick whichever axis demands the larger rect.
+        // Rationale: feels like Photoshop's "shift-resize" — corner
+        // tracks the further-out axis, the other follows.
+        let newW = rawW;
+        let newH = rawH;
+        if (rawW / aspect > rawH) {
+          newH = rawW / aspect;
+        } else {
+          newW = rawH * aspect;
+        }
+        // Minimum size guard — 5% of base rect — so the user can't
+        // collapse the artwork to a single pixel by accident.
+        const minScale = 0.05;
+        const baseW = drag.startInfo.base.width;
+        const baseH = drag.startInfo.base.height;
+        if (newW / baseW < minScale) {
+          newW = baseW * minScale;
+          newH = baseH * minScale;
+        }
+        // Recompute the rect from pinned corner + new dims while
+        // preserving the original direction (which side of pinned
+        // the active corner is on).
+        const signX = corner.includes("e") ? 1 : -1;
+        const signY = corner.includes("s") ? 1 : -1;
+        const activeX = pinned.x + signX * newW;
+        const activeY = pinned.y + signY * newH;
+        const newCx = (pinned.x + activeX) / 2;
+        const newCy = (pinned.y + activeY) / 2;
+        const newScale = newW / baseW;
+        onChange({
+          scale: newScale,
+          offsetX: newCx - drag.startInfo.baseCentre.x,
+          offsetY: newCy - drag.startInfo.baseCentre.y,
+        });
+      }
+    }
+    function onUp() {
+      dragRef.current = null;
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    // onChange is intentionally read fresh from closure each move —
+    // we wire it via a stable ref above by re-binding the listener
+    // on each change. Using state setter from props is fine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mockupW, mockupH, onChange]);
+
+  if (!info) return null;
+
+  const startDrag = (
+    e: React.PointerEvent<HTMLDivElement>,
+    mode: "translate" | "scale",
+    corner?: "nw" | "ne" | "sw" | "se",
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    dragRef.current = {
+      mode,
+      corner,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startPlacement: placement,
+      startInfo: info,
+      canvasRect: canvas.getBoundingClientRect(),
+    };
+    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+  };
+
+  // Position the rect overlay in % of the canvas display so it
+  // tracks correctly even as the modal resizes / the user scrolls.
+  const pctRect = {
+    left: (info.effective.x / mockupW) * 100,
+    top: (info.effective.y / mockupH) * 100,
+    width: (info.effective.width / mockupW) * 100,
+    height: (info.effective.height / mockupH) * 100,
+  };
+
+  const handleSize = 14; // px — fixed visual size regardless of zoom
+  const cornerStyle = (
+    corner: "nw" | "ne" | "sw" | "se",
+  ): React.CSSProperties => {
+    const isE = corner.includes("e");
+    const isS = corner.includes("s");
+    return {
+      position: "absolute",
+      width: handleSize,
+      height: handleSize,
+      [isE ? "right" : "left"]: -handleSize / 2,
+      [isS ? "bottom" : "top"]: -handleSize / 2,
+      cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+    } as React.CSSProperties;
+  };
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-0"
+      data-testid="design-rect-overlay"
+    >
+      <div
+        className="pointer-events-auto absolute select-none"
+        style={{
+          left: `${pctRect.left}%`,
+          top: `${pctRect.top}%`,
+          width: `${pctRect.width}%`,
+          height: `${pctRect.height}%`,
+        }}
+      >
+        {/* Body — drag to translate. Slightly tinted on hover so the
+            user can see it's interactive even when the dashed rect
+            (drawn into the canvas itself) is the visual anchor. */}
+        <div
+          onPointerDown={(e) => startDrag(e, "translate")}
+          className="absolute inset-0 cursor-move ring-2 ring-fuchsia-300/70 transition hover:bg-fuchsia-500/5"
+          style={{ touchAction: "none" }}
+          title="Drag to move artwork"
+        />
+        {/* Four corner handles — uniform aspect-locked scale. */}
+        {(["nw", "ne", "sw", "se"] as const).map((c) => (
+          <div
+            key={c}
+            onPointerDown={(e) => startDrag(e, "scale", c)}
+            style={{ ...cornerStyle(c), touchAction: "none" }}
+            className="rounded-sm border-2 border-fuchsia-200 bg-fuchsia-500/90 shadow-md hover:scale-110"
+            title="Drag corner to resize (aspect locked)"
+          />
+        ))}
+      </div>
     </div>
   );
 }
