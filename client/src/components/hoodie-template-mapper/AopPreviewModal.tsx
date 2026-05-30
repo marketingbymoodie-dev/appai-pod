@@ -1249,73 +1249,51 @@ function DesignRectHandlesOverlay({
         return;
       }
 
-      // Scale: keep opposite corner pinned, scale uniformly using
-      // whichever axis the pointer moved further along (relative to
-      // baseRect's aspect). This makes diagonal drags feel
-      // monotonic — pulling out always grows, pushing in always
-      // shrinks, regardless of which axis dominates.
+      // Scale: corner handles always grow/shrink the rect around
+      // its centre (the group's anchor + current offset), so the
+      // rect stays seam-aligned and matches what the Scale slider
+      // does. Aspect ratio is locked to the artwork's natural
+      // shape, so we pick whichever axis the pointer pushed
+      // furthest from centre and derive the other.
       if (drag.mode === "scale") {
         const start = drag.startInfo.effective;
-        const aspect = start.width / start.height;
-        const corner = drag.corner ?? "se";
-        // Pointer position in mockup px right now.
-        const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
-        // Opposite corner (pinned) — derived from the rect at drag
-        // start. e.g. dragging "se" pins "nw".
-        const pinned = {
-          x: corner.includes("e") ? start.x : start.x + start.width,
-          y: corner.includes("s") ? start.y : start.y + start.height,
-        };
-        // Raw new dimensions if we ignored aspect lock.
-        const rawW = Math.abs(m.x - pinned.x);
-        const rawH = Math.abs(m.y - pinned.y);
-        // Lock aspect: pick whichever axis demands the larger rect.
-        // Rationale: feels like Photoshop's "shift-resize" — corner
-        // tracks the further-out axis, the other follows.
-        let newW = rawW;
-        let newH = rawH;
-        if (rawW / aspect > rawH) {
-          newH = rawW / aspect;
-        } else {
-          newW = rawH * aspect;
-        }
-        // Minimum size guard — 5% of base rect — so the user can't
-        // collapse the artwork to a single pixel by accident.
-        const minScale = 0.05;
         const baseW = drag.startInfo.base.width;
         const baseH = drag.startInfo.base.height;
+        const aspect = start.width / start.height;
+        // Live rect centre at gesture start. Stays constant for the
+        // whole drag because we only emit scale changes (no offset).
+        const centre = {
+          x: start.x + start.width / 2,
+          y: start.y + start.height / 2,
+        };
+        const m = clientToMockup(e.clientX, e.clientY, drag.canvasRect);
+        // Half-extents: how far past centre the pointer is on each
+        // axis. Doubling gives the implied new full width/height.
+        const halfW = Math.abs(m.x - centre.x);
+        const halfH = Math.abs(m.y - centre.y);
+        let newW = halfW * 2;
+        let newH = halfH * 2;
+        if (newW / aspect > newH) {
+          newH = newW / aspect;
+        } else {
+          newW = newH * aspect;
+        }
+        const minScale = 0.05;
         if (newW / baseW < minScale) {
           newW = baseW * minScale;
           newH = baseH * minScale;
         }
-        // Recompute the rect from pinned corner + new dims while
-        // preserving the original direction (which side of pinned
-        // the active corner is on).
-        const signX = corner.includes("e") ? 1 : -1;
-        const signY = corner.includes("s") ? 1 : -1;
-        const activeX = pinned.x + signX * newW;
-        const activeY = pinned.y + signY * newH;
-        const newCx = (pinned.x + activeX) / 2;
-        const newCy = (pinned.y + activeY) / 2;
         const newScale = newW / baseW;
-        if (lockedScaleAroundAnchor) {
-          // Lock toggle on → keep the rect centred on its anchor
-          // (seam line for paired groups). Only scale changes, so
-          // when the modal propagates the same factor to other
-          // groups they all stay seam-aligned, just like dragging
-          // the slider does.
-          onChange({
-            scale: newScale,
-            offsetX: drag.startPlacement.offsetX,
-            offsetY: drag.startPlacement.offsetY,
-          });
-        } else {
-          onChange({
-            scale: newScale,
-            offsetX: newCx - drag.startInfo.anchor.x,
-            offsetY: newCy - drag.startInfo.anchor.y,
-          });
-        }
+        onChange({
+          scale: newScale,
+          offsetX: drag.startPlacement.offsetX,
+          offsetY: drag.startPlacement.offsetY,
+        });
+        // `lockedScaleAroundAnchor` is now redundant (we always
+        // scale around centre), but kept as a prop for forward
+        // compatibility — referencing it here so the linter knows
+        // it's intentional.
+        void lockedScaleAroundAnchor;
       }
     }
     function onUp() {
