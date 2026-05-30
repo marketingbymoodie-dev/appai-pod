@@ -843,6 +843,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   enabledOverrides={enabledOverrides}
                   seamOverrides={seamOverrides}
                   placementOverrides={groupPlacementOverrides}
+                  lockedScaleAroundAnchor={lockRatios}
                   onChange={(next) =>
                     setGroupPlacement(activeGroupId, view, next)
                   }
@@ -1146,6 +1147,7 @@ function DesignRectHandlesOverlay({
   placementOverrides,
   seamOverrides,
   enabledOverrides,
+  lockedScaleAroundAnchor = false,
   onChange,
 }: {
   canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
@@ -1161,6 +1163,15 @@ function DesignRectHandlesOverlay({
   placementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
   seamOverrides?: Record<string, number>;
   enabledOverrides?: Record<string, boolean>;
+  /**
+   * When true (lock-ratio toggle on), corner drags scale uniformly
+   * around the group's anchor instead of pinning the opposite corner.
+   * This keeps the centre/seam alignment when the modal propagates
+   * the same scale to other groups — otherwise the active group's
+   * centre would drift toward the dragged corner while the others
+   * stayed seam-anchored.
+   */
+  lockedScaleAroundAnchor?: boolean;
   /** Patch the active group's placement (modal handles lock-ratio propagation). */
   onChange: (next: ArtworkPlacement) => void;
 }) {
@@ -1287,11 +1298,24 @@ function DesignRectHandlesOverlay({
         const newCx = (pinned.x + activeX) / 2;
         const newCy = (pinned.y + activeY) / 2;
         const newScale = newW / baseW;
-        onChange({
-          scale: newScale,
-          offsetX: newCx - drag.startInfo.anchor.x,
-          offsetY: newCy - drag.startInfo.anchor.y,
-        });
+        if (lockedScaleAroundAnchor) {
+          // Lock toggle on → keep the rect centred on its anchor
+          // (seam line for paired groups). Only scale changes, so
+          // when the modal propagates the same factor to other
+          // groups they all stay seam-aligned, just like dragging
+          // the slider does.
+          onChange({
+            scale: newScale,
+            offsetX: drag.startPlacement.offsetX,
+            offsetY: drag.startPlacement.offsetY,
+          });
+        } else {
+          onChange({
+            scale: newScale,
+            offsetX: newCx - drag.startInfo.anchor.x,
+            offsetY: newCy - drag.startInfo.anchor.y,
+          });
+        }
       }
     }
     function onUp() {

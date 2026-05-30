@@ -590,24 +590,27 @@ function synthesiseSeamAwareSourceRect(
   // Y always maps linearly (no horizontal seam in this version).
   const y = ((bb.y - eff.y) / eff.height) * ah;
   const height = (bb.height / eff.height) * ah;
-  // X with optional seam inset.
+  // X with optional seam inset. We unconditionally apply the L/R
+  // remap based on the *panel's anatomical side*, not the panel's
+  // current position relative to the (possibly offset) design rect.
+  // The earlier "only remap when relLeft/Right is on the natural
+  // half" guard silently ignored seam allowance for any group with
+  // a non-zero offsetX — even an accidental 4 px offset on Front
+  // body — because the rel coords then sat just below/above 0.5.
   const seam = rect.hasSeamPair ? rect.seamAllowance : 0;
   const relLeft = (bb.x - eff.x) / eff.width;
   const relRight = (bb.x + bb.width - eff.x) / eff.width;
   let uLeft: number;
   let uRight: number;
   if (side === "left" && seam > 0) {
-    // Left half: remap [0, 0.5] → [0, 0.5 - seam/2]. Outside the
-    // half, fall through to identity so the panel's left edge can
-    // still hang past 0 if the trace overshoots.
-    uLeft = relLeft <= 0.5 ? relLeft * (1 - seam) : relLeft;
-    uRight = relRight <= 0.5 ? relRight * (1 - seam) : relRight;
+    // Left half compressed: [0, 0.5] → [0, 0.5 - seam/2]. Linear,
+    // applied unconditionally so seam allowance always lands.
+    uLeft = relLeft * (1 - seam);
+    uRight = relRight * (1 - seam);
   } else if (side === "right" && seam > 0) {
-    // Right half: remap [0.5, 1] → [0.5 + seam/2, 1].
-    const remap = (p: number) =>
-      p >= 0.5 ? (p - 0.5) * (1 - seam) + 0.5 + seam / 2 : p;
-    uLeft = remap(relLeft);
-    uRight = remap(relRight);
+    // Right half compressed: [0.5, 1] → [0.5 + seam/2, 1].
+    uLeft = (relLeft - 0.5) * (1 - seam) + 0.5 + seam / 2;
+    uRight = (relRight - 0.5) * (1 - seam) + 0.5 + seam / 2;
   } else {
     uLeft = relLeft;
     uRight = relRight;
