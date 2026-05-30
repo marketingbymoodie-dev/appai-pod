@@ -229,6 +229,111 @@ export type ReferenceOverlayAsset = {
   scale?: number;
 };
 
+/**
+ * Customer-facing artwork placement applied to a single design group.
+ * Mirrors the renderer's ArtworkPlacement (kept duplicated in client
+ * code as well, but the canonical type lives here so the template
+ * file can be parsed without touching client modules).
+ */
+export type GroupPlacement = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+export const DEFAULT_GROUP_PLACEMENT: GroupPlacement = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
+
+/**
+ * A "design group" bundles related panels (e.g. front_left + front_right
+ * = the front body) so they can be scaled/positioned together,
+ * independent of other groups. The artwork still comes from the global
+ * upload — each group just controls how much of that artwork lands on
+ * its panels. A group with an L/R seam pair (front body, hood) can
+ * specify a `seamAllowance` so the customer's design doesn't visually
+ * cross the physical seam.
+ */
+export type DesignGroup = {
+  id: string;
+  /** Human label shown in the UI ("Hood", "Front body", etc.). */
+  name: string;
+  /**
+   * Panel keys that participate in this group. Panels in the same
+   * group share one design rect / placement / seam allowance, so they
+   * appear as a single coherent surface.
+   */
+  panelKeys: HoodiePanelKey[];
+  /**
+   * Per-view placement so the front-body group's offset doesn't
+   * follow the user when they tab to back. Hood placements stay
+   * independent in Phase 2; Phase 3 will optionally link them for
+   * the front↔back wrap.
+   */
+  placement: Record<HoodieView, GroupPlacement>;
+  /**
+   * Width of the seam (centre seam between L and R panels of this
+   * group), expressed as a percentage of the group's design rect
+   * width. The renderer trims this strip out of the artwork's middle
+   * so the L and R panels don't visually share pixels across what
+   * would be a sewn seam in real life. Range 0..15. Only applied
+   * when the group contains a known L/R pair (zip seam for front
+   * body, centre seam for hood). 0 = no seam compensation.
+   */
+  seamAllowance: number;
+  /**
+   * When the lock-ratio toggle is on, this stores the captured scale
+   * for this group at the moment the lock was engaged. Dragging any
+   * locked group's scale rescales the others proportionally so the
+   * captured ratios are preserved. `null` = not currently locked.
+   */
+  lockedRatio: number | null;
+  /** When false, this group's panels render the background colour only (no artwork). */
+  enabled: boolean;
+};
+
+/**
+ * Repeating-tile mode settings — when the AOP mode is `tile`, the
+ * artwork tiles uniformly across every panel under the calibrated
+ * meshes at a real-world size. Independent of design groups (groups
+ * only matter for single-sheet mode).
+ */
+export type TileSettings = {
+  /** Tile pattern arrangement. */
+  pattern: "grid" | "brick" | "half-drop";
+  /**
+   * Real-world size of one tile in inches. The renderer converts this
+   * to mockup pixels using `realWorldCalibration.pixelsPerInch`, so
+   * the same template can output a "1.5 inch tile" preview that
+   * matches what Printify would actually print.
+   */
+  tileSizeInches: number;
+};
+
+export const DEFAULT_TILE_SETTINGS: TileSettings = {
+  pattern: "grid",
+  tileSizeInches: 1.5,
+};
+
+/**
+ * Anchor for converting mockup pixels to real-world units. Required
+ * for the tile-size slider to be physically meaningful. The admin
+ * sets it once based on a known measurement (e.g. "the front-body
+ * panel is 22 inches wide on the size L hoodie") and the renderer
+ * derives the px/inch ratio from there.
+ */
+export type RealWorldCalibration = {
+  /** How many mockup pixels equal one real-world inch on the hoodie's surface. */
+  pixelsPerInch: number;
+};
+
+/** Sensible default for a 1024-px-wide mockup of a size-L hoodie body (~24"). */
+export const DEFAULT_REAL_WORLD_CALIBRATION: RealWorldCalibration = {
+  pixelsPerInch: 1024 / 24,
+};
+
 export type HoodieViewState = {
   mockup: MockupAsset | null;
   referenceOverlay: ReferenceOverlayAsset | null;
@@ -257,6 +362,17 @@ export type HoodieTemplate = {
    * Each entry is the canonical id; matching exclusion mask layers carry the id in their name/notes.
    */
   globalExclusions: string[];
+  /**
+   * Design groups — collections of panels that scale and translate
+   * together in single-sheet mode. Optional for back-compat; older
+   * templates fall back to "everything is one group" inside the
+   * renderer. Edited in the AOP modal and persisted as defaults.
+   */
+  designGroups?: DesignGroup[];
+  /** Repeating-tile mode settings (independent of designGroups). */
+  tileSettings?: TileSettings;
+  /** Mockup-px ↔ real-world conversion. Used by the tile-size slider. */
+  realWorldCalibration?: RealWorldCalibration;
 };
 
 export const EMPTY_HOODIE_VIEW: HoodieViewState = {
@@ -264,6 +380,122 @@ export const EMPTY_HOODIE_VIEW: HoodieViewState = {
   referenceOverlay: null,
   layers: [],
 };
+
+/**
+ * Sensible default design groups for the zip-hoodie-aop template.
+ * Existing templates without a `designGroups` field fall through to
+ * this list at load time so the AOP preview behaves as expected
+ * without needing a manual migration step. Five groups, deliberately
+ * matching the user's mental model:
+ *   - Hood (L+R, paired)
+ *   - Front body (L+R + pocket halves, paired) — pocket joins the
+ *     front zip seam allowance per the user's request
+ *   - Back body (single panel)
+ *   - Sleeves (L+R + cuffs)
+ *   - Trim (waistband + legacy front_pocket)
+ */
+export function defaultDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  return [
+    {
+      id: "hood",
+      name: "Hood",
+      panelKeys: ["left_hood", "right_hood"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "front-body",
+      name: "Front body",
+      // Pocket halves ride with the front body so the customer's
+      // print continues across the pocket / chest boundary using
+      // the same zip-seam allowance.
+      panelKeys: ["front_left", "front_right", "pocket_left", "pocket_right"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-body",
+      name: "Back body",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "sleeves",
+      name: "Sleeves",
+      panelKeys: ["left_sleeve", "right_sleeve", "left_cuff", "right_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "trim",
+      name: "Trim",
+      panelKeys: ["waistband", "front_pocket"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+  // Hint to TS that we're definitely returning the right shape.
+  void blankPair;
+}
+
+/**
+ * Look up which design group a given panel belongs to. Returns null
+ * for unmatched panels — the renderer treats those as "ungrouped"
+ * and falls back to the legacy single-design-rect behaviour.
+ */
+export function findGroupForPanel(
+  groups: DesignGroup[] | undefined,
+  panelKey: HoodiePanelKey | null,
+): DesignGroup | null {
+  if (!groups || !panelKey) return null;
+  for (const g of groups) {
+    if (g.panelKeys.includes(panelKey)) return g;
+  }
+  return null;
+}
+
+/**
+ * Panel keys recognised as the LEFT / RIGHT halves of a centre-seam
+ * pair. Used by the renderer to know which panels in a group
+ * contribute to seam-allowance UV insetting.
+ */
+export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
+  left: ["front_left", "left_hood", "pocket_left"],
+  right: ["front_right", "right_hood", "pocket_right"],
+};
+
+/**
+ * Fill in any optional fields a loaded template might be missing
+ * (older saves predate `designGroups`, `tileSettings`, etc.). Returns
+ * a new shallow-copy with the defaults applied so the loader can
+ * pass the result straight into the store. Existing values are
+ * preserved — defaults only fill genuinely-undefined fields.
+ */
+export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
+  return {
+    ...template,
+    designGroups: template.designGroups ?? defaultDesignGroups(),
+    tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
+    realWorldCalibration:
+      template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
+  };
+}
 
 export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplate {
   const now = new Date().toISOString();
@@ -281,6 +513,9 @@ export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplat
       back: { ...EMPTY_HOODIE_VIEW },
     },
     globalExclusions: [],
+    designGroups: defaultDesignGroups(),
+    tileSettings: { ...DEFAULT_TILE_SETTINGS },
+    realWorldCalibration: { ...DEFAULT_REAL_WORLD_CALIBRATION },
   };
 }
 

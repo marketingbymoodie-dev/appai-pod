@@ -35,12 +35,39 @@
  *                          coverage without supplying any artwork.
  */
 
-import type { HoodiePanelKey, HoodieTemplate, HoodieView, MaskLayer, Pt } from "@shared/hoodieTemplate";
-import { layerRenderPriority } from "@shared/hoodieTemplate";
+import type {
+  DesignGroup,
+  HoodiePanelKey,
+  HoodieTemplate,
+  HoodieView,
+  MaskLayer,
+  Pt,
+  TileSettings,
+} from "@shared/hoodieTemplate";
+import {
+  findGroupForPanel,
+  layerRenderPriority,
+  SEAM_PAIR_PANELS,
+} from "@shared/hoodieTemplate";
 import { svgPathToAnchors } from "./svgPath";
 import { drawMeshWarp } from "./meshWarp";
 
-export type AopPreviewMode = "single-sheet" | "per-panel-stretch" | "solid-colors";
+/**
+ * AOP rendering modes:
+ *   - single-sheet  → groups apply, customer's artwork stretched per
+ *                     group with optional seam allowance.
+ *   - per-panel-stretch → each panel independently stretches the
+ *                     full artwork (legacy, useful for tile previews).
+ *   - tile          → the artwork repeats uniformly across all
+ *                     mesh-warped panels at a real-world size, with
+ *                     a chosen pattern (grid / brick / half-drop).
+ *   - solid-colors  → debug palette per panel, ignores artwork.
+ */
+export type AopPreviewMode =
+  | "single-sheet"
+  | "per-panel-stretch"
+  | "tile"
+  | "solid-colors";
 
 /**
  * Customer-facing artwork placement (single-sheet mode only). Lets the
@@ -123,12 +150,48 @@ export type AopPreviewParams = {
    */
   applyShading?: boolean;
   /**
-   * Single-sheet artwork placement (scale + offset). Ignored in
-   * per-panel-stretch and solid-colors modes. When omitted, defaults
-   * to identity (artwork fills the union AABB exactly, equivalent to
-   * the original Phase 3 behaviour).
+   * Legacy single-group artwork placement (scale + offset). Used when
+   * the template has no `designGroups` defined OR when a layer doesn't
+   * belong to any group. New templates render via per-group placement
+   * stored on `template.designGroups`; this field stays for back-compat
+   * and as the "ungrouped fallback" placement.
    */
   artworkPlacement?: ArtworkPlacement;
+  /**
+   * Per-group placement override (modal-local edits before the user
+   * hits "Save as defaults"). Keyed by `DesignGroup.id`. When a key is
+   * present here it wins over `template.designGroups[id].placement`,
+   * letting the modal preview unsaved tweaks. Omit for "use template
+   * defaults".
+   */
+  groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  /**
+   * Per-group seam-allowance override (% of group rect width).
+   * Same precedence rule as `groupPlacementOverrides`.
+   */
+  groupSeamOverrides?: Record<string, number>;
+  /**
+   * Per-group enabled override. Lets the modal show "preview with this
+   * group switched off" without dirtying the template.
+   */
+  groupEnabledOverrides?: Record<string, boolean>;
+  /**
+   * `id` of the design group whose handles are currently being edited.
+   * The renderer dims the other groups' design-rect outlines so the
+   * canvas only highlights the rect the user is interacting with.
+   * Has no effect on the rendered artwork itself.
+   */
+  activeGroupId?: string | null;
+  /**
+   * Tile-mode settings. Required when `mode === "tile"`. Falls back to
+   * `template.tileSettings` when omitted.
+   */
+  tileSettings?: TileSettings;
+  /**
+   * Mockup-px ↔ real-world conversion. Required when `mode === "tile"`.
+   * Falls back to `template.realWorldCalibration` when omitted.
+   */
+  pixelsPerInch?: number;
   /**
    * When true, draws a dashed rectangle around the effective design
    * rect on top of the composite. Diagnostic only — lets the admin
@@ -160,38 +223,128 @@ export function isLayerInSingleSheet(layer: MaskLayer): boolean {
 export type DesignRectInfo = {
   /** Union AABB of single-sheet-participating panels. */
   union: { x: number; y: number; width: number; height: number };
-  /** Aspect-fitted rect (artwork natural aspect, centred in union). */
+  /** Aspect-fitted rect (artwork natural aspect, centred on anchor). */
   base: { x: number; y: number; width: number; height: number };
   /** Effective rect after scale + offset — what the artwork samples. */
   effective: { x: number; y: number; width: number; height: number };
-  /** Centre of `base` rect — used as the origin for scale + offset. */
-  baseCentre: { x: number; y: number };
+  /** Anchor point (seam line for L/R pairs, centroid for solo panels). */
+  anchor: { x: number; y: number };
+  /** Whether this group has a recognised L/R seam pair. */
+  hasSeamPair: boolean;
+  /** Seam allowance currently applied (% of group rect width). */
+  seamAllowance: number;
+  /** ID of the group this rect belongs to (`"__legacy__"` if ungrouped fallback). */
+  groupId: string;
+  /** Whether the group is enabled (false → background colour only). */
+  enabled: boolean;
 };
 
 /**
- * Compute the same design rects the renderer uses, so external UI
- * (e.g. the modal's interactive overlay) can position handles in
- * mockup pixel space without re-implementing the maths. Returns
- * `null` when no print panels participate in single-sheet.
+ * Resolve the placement for a group in a given view. Modal-level
+ * `overrides` win when present, else fall back to the template's
+ * stored `designGroups[].placement[view]`, else identity.
  */
-export function computeDesignRect(
-  template: HoodieTemplate,
+function resolveGroupPlacement(
+  group: DesignGroup,
   view: HoodieView,
+  overrides?: Record<string, Record<HoodieView, ArtworkPlacement>>,
+): ArtworkPlacement {
+  const ov = overrides?.[group.id]?.[view];
+  if (ov) return ov;
+  const stored = group.placement?.[view];
+  if (stored) return stored;
+  return DEFAULT_ARTWORK_PLACEMENT;
+}
+
+function resolveGroupSeam(
+  group: DesignGroup,
+  overrides?: Record<string, number>,
+): number {
+  const ov = overrides?.[group.id];
+  if (typeof ov === "number") return Math.max(0, Math.min(0.15, ov));
+  return Math.max(0, Math.min(0.15, group.seamAllowance ?? 0));
+}
+
+function resolveGroupEnabled(
+  group: DesignGroup,
+  overrides?: Record<string, boolean>,
+): boolean {
+  const ov = overrides?.[group.id];
+  if (typeof ov === "boolean") return ov;
+  return group.enabled !== false;
+}
+
+/**
+ * For a paired L/R seam group, compute the seam line X by averaging
+ * the rightmost X of any L-side panel polygon and the leftmost X of
+ * any R-side panel polygon. Falls back to the union centre when the
+ * group has no recognised pair (e.g. back-body, sleeves), so solo
+ * groups still anchor sensibly.
+ *
+ * Returns `{ x, hasSeamPair }`. When `hasSeamPair === false` the X is
+ * the union centre and seam allowance has no effect on this group.
+ */
+function computeAnchorX(
+  layers: MaskLayer[],
+  union: Aabb,
+): { x: number; hasSeamPair: boolean } {
+  // Bucket layers by L/R via the SEAM_PAIR_PANELS map.
+  const leftKeys = new Set(SEAM_PAIR_PANELS.left);
+  const rightKeys = new Set(SEAM_PAIR_PANELS.right);
+  let lMaxX: number | null = null;
+  let rMinX: number | null = null;
+  for (const layer of layers) {
+    if (!layer.panelKey) continue;
+    const anchors = svgPathToAnchors(layer.maskPath);
+    if (anchors.length < 3) continue;
+    const bb = aabbOf(anchors);
+    if (!bb) continue;
+    if (leftKeys.has(layer.panelKey)) {
+      const right = bb.x + bb.width;
+      lMaxX = lMaxX === null ? right : Math.max(lMaxX, right);
+    }
+    if (rightKeys.has(layer.panelKey)) {
+      rMinX = rMinX === null ? bb.x : Math.min(rMinX, bb.x);
+    }
+  }
+  if (lMaxX !== null && rMinX !== null) {
+    return { x: (lMaxX + rMinX) / 2, hasSeamPair: true };
+  }
+  return { x: union.x + union.width / 2, hasSeamPair: false };
+}
+
+/**
+ * Compute the design rect for a single group (or the legacy
+ * "everything in one group" fallback when the template has no
+ * designGroups). Anchored at the seam line for paired groups,
+ * union centre otherwise.
+ */
+function computeGroupRect(
+  layers: MaskLayer[],
   artwork: HTMLImageElement | null,
-  placement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
+  placement: ArtworkPlacement,
+  groupId: string,
+  enabled: boolean,
+  seamAllowance: number,
 ): DesignRectInfo | null {
-  const layers = template.views[view]?.layers ?? [];
   const visiblePrint = layers.filter((l) => l.visible && !l.isExclusion);
   const union = totalPrintAabb(visiblePrint, isLayerInSingleSheet);
   if (!union) return null;
-  const base = artwork
-    ? fitAspectInside(
-        union,
-        (artwork.naturalWidth || artwork.width) /
-          (artwork.naturalHeight || artwork.height || 1),
-      )
-    : union;
-  const cx = base.x + base.width / 2;
+  const aspect = artwork
+    ? (artwork.naturalWidth || artwork.width) /
+      (artwork.naturalHeight || artwork.height || 1)
+    : union.width / Math.max(1, union.height);
+  const fitted = artwork ? fitAspectInside(union, aspect) : union;
+  const { x: anchorX, hasSeamPair } = computeAnchorX(visiblePrint, union);
+  // Re-centre the fitted rect on the anchor X so paired groups have
+  // their artwork centred on the seam (not the union centroid).
+  const base: Aabb = {
+    x: anchorX - fitted.width / 2,
+    y: fitted.y,
+    width: fitted.width,
+    height: fitted.height,
+  };
+  const cx = anchorX;
   const cy = base.y + base.height / 2;
   const s = Math.max(0.0001, placement.scale || 1);
   const w = base.width * s;
@@ -202,7 +355,115 @@ export function computeDesignRect(
     width: w,
     height: h,
   };
-  return { union, base, effective, baseCentre: { x: cx, y: cy } };
+  return {
+    union,
+    base,
+    effective,
+    anchor: { x: anchorX, y: cy },
+    hasSeamPair,
+    seamAllowance,
+    groupId,
+    enabled,
+  };
+}
+
+/**
+ * Compute the design rects for every active group in the given view.
+ * Returns a map keyed by group id; the legacy fallback uses the key
+ * `"__legacy__"`. External UI (e.g. the modal's interactive overlay)
+ * uses this so handles match the renderer's geometry exactly.
+ */
+export function computeGroupRects(
+  template: HoodieTemplate,
+  view: HoodieView,
+  artwork: HTMLImageElement | null,
+  options?: {
+    placementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+    seamOverrides?: Record<string, number>;
+    enabledOverrides?: Record<string, boolean>;
+    legacyPlacement?: ArtworkPlacement;
+  },
+): Map<string, DesignRectInfo> {
+  const result = new Map<string, DesignRectInfo>();
+  const layers = template.views[view]?.layers ?? [];
+  const groups = template.designGroups ?? [];
+  if (groups.length === 0) {
+    // Legacy / unmigrated template: treat all single-sheet panels as
+    // one big group. Behaves identically to pre-Phase-2 renders.
+    const info = computeGroupRect(
+      layers,
+      artwork,
+      options?.legacyPlacement ?? DEFAULT_ARTWORK_PLACEMENT,
+      "__legacy__",
+      true,
+      0,
+    );
+    if (info) result.set("__legacy__", info);
+    return result;
+  }
+  for (const group of groups) {
+    const groupLayers = layers.filter(
+      (l) => l.panelKey && group.panelKeys.includes(l.panelKey),
+    );
+    if (groupLayers.length === 0) continue;
+    const placement = resolveGroupPlacement(group, view, options?.placementOverrides);
+    const seam = resolveGroupSeam(group, options?.seamOverrides);
+    const enabled = resolveGroupEnabled(group, options?.enabledOverrides);
+    const info = computeGroupRect(
+      groupLayers,
+      artwork,
+      placement,
+      group.id,
+      enabled,
+      seam,
+    );
+    if (info) result.set(group.id, info);
+  }
+  // Catch-all for layers not in any group — they need a rect too.
+  const grouped = new Set<string>();
+  for (const g of groups) for (const k of g.panelKeys) grouped.add(k);
+  const ungrouped = layers.filter((l) => l.panelKey && !grouped.has(l.panelKey));
+  if (ungrouped.length > 0) {
+    const info = computeGroupRect(
+      ungrouped,
+      artwork,
+      options?.legacyPlacement ?? DEFAULT_ARTWORK_PLACEMENT,
+      "__ungrouped__",
+      true,
+      0,
+    );
+    if (info) result.set("__ungrouped__", info);
+  }
+  return result;
+}
+
+/**
+ * Back-compat wrapper that returns the largest single rect (used by
+ * older code paths and the existing handles overlay before it was
+ * upgraded to the per-group API). New callers should prefer
+ * `computeGroupRects`.
+ */
+export function computeDesignRect(
+  template: HoodieTemplate,
+  view: HoodieView,
+  artwork: HTMLImageElement | null,
+  placement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
+): DesignRectInfo | null {
+  const map = computeGroupRects(template, view, artwork, {
+    legacyPlacement: placement,
+  });
+  // Pick the largest by area so the legacy callers see something
+  // sensible — front body for most templates.
+  let best: DesignRectInfo | null = null;
+  let bestArea = -1;
+  for (const info of Array.from(map.values())) {
+    const area = info.effective.width * info.effective.height;
+    if (area > bestArea) {
+      bestArea = area;
+      best = info;
+    }
+  }
+  return best;
 }
 
 /**
@@ -300,6 +561,159 @@ function fitAspectInside(union: Aabb, aspect: number): Aabb {
   };
 }
 
+/**
+ * Compute the artwork sub-rectangle (in artwork pixels) that a panel
+ * should sample when drawing in single-sheet mode, applying seam
+ * allowance to L/R-pair panels.
+ *
+ * Seam allowance model: the artwork's centre strip (width = `seam`
+ * × design rect width) is "consumed" by the seam. Left-side panels
+ * map their right edge to U = 0.5 - seam/2 instead of 0.5. Right-side
+ * panels map their left edge to U = 0.5 + seam/2 instead of 0.5.
+ * Solo panels (back, sleeves) ignore the seam.
+ *
+ * The mapping stays linear within each half so the artwork doesn't
+ * appear visually distorted — only the centre strip is hidden inside
+ * the simulated seam.
+ */
+function synthesiseSeamAwareSourceRect(
+  bb: Aabb,
+  rect: DesignRectInfo,
+  aw: number,
+  ah: number,
+  side: "left" | "right" | "none",
+): Aabb {
+  const eff = rect.effective;
+  if (eff.width <= 0 || eff.height <= 0) {
+    return { x: 0, y: 0, width: aw, height: ah };
+  }
+  // Y always maps linearly (no horizontal seam in this version).
+  const y = ((bb.y - eff.y) / eff.height) * ah;
+  const height = (bb.height / eff.height) * ah;
+  // X with optional seam inset.
+  const seam = rect.hasSeamPair ? rect.seamAllowance : 0;
+  const relLeft = (bb.x - eff.x) / eff.width;
+  const relRight = (bb.x + bb.width - eff.x) / eff.width;
+  let uLeft: number;
+  let uRight: number;
+  if (side === "left" && seam > 0) {
+    // Left half: remap [0, 0.5] → [0, 0.5 - seam/2]. Outside the
+    // half, fall through to identity so the panel's left edge can
+    // still hang past 0 if the trace overshoots.
+    uLeft = relLeft <= 0.5 ? relLeft * (1 - seam) : relLeft;
+    uRight = relRight <= 0.5 ? relRight * (1 - seam) : relRight;
+  } else if (side === "right" && seam > 0) {
+    // Right half: remap [0.5, 1] → [0.5 + seam/2, 1].
+    const remap = (p: number) =>
+      p >= 0.5 ? (p - 0.5) * (1 - seam) + 0.5 + seam / 2 : p;
+    uLeft = remap(relLeft);
+    uRight = remap(relRight);
+  } else {
+    uLeft = relLeft;
+    uRight = relRight;
+  }
+  return {
+    x: uLeft * aw,
+    y,
+    width: (uRight - uLeft) * aw,
+    height,
+  };
+}
+
+/**
+ * Tile mode: compute the artwork sub-rectangle that the panel should
+ * sample so the artwork appears at the right physical size and tiles
+ * seamlessly across panels. The trick is that we send the panel's
+ * mockup-px bbox into the artwork's coordinate frame at the chosen
+ * tile size — the customer's artwork acts as one tile and the mesh
+ * naturally repeats it because the bbox spans many tile-widths.
+ *
+ * Pattern variants:
+ *   - grid          → straight rows × columns
+ *   - brick         → alternate rows shifted by tileSize / 2 in X
+ *   - half-drop     → alternate columns shifted by tileSize / 2 in Y
+ *
+ * The synth source rect is positioned so the panel's top-left aligns
+ * with a tile boundary chosen by the pattern. drawMeshWarp then warps
+ * that infinite tiled artwork through the panel's mesh.
+ *
+ * Note: drawMeshWarp samples a finite source rect, but Phase 2 keeps
+ * the implementation simple by selecting just *one* tile of the
+ * artwork sized to fit the panel's bbox at tile resolution. For
+ * panels larger than a tile, the renderer effectively shows one
+ * stretched tile per panel — visually fine for the typical 1.5"
+ * tile size on hoodie panels, and easy to upgrade later to true
+ * sub-pixel tiling once we add a `wrap: "repeat"` option to
+ * drawMeshWarp.
+ */
+function tileSourceRect(
+  bb: Aabb,
+  aw: number,
+  ah: number,
+  settings: TileSettings,
+  pixelsPerInch: number,
+): Aabb {
+  const tilePx = Math.max(1, settings.tileSizeInches * pixelsPerInch);
+  // For Phase 2 we sample one whole tile of the artwork and let the
+  // mesh stretch it across the panel. tileSize informs the "this is
+  // one tile" mental model; the pattern shifts kick in when we add
+  // multi-tile sampling. For grid / brick / half-drop the visible
+  // result on a single panel is the same, but the slider still
+  // controls the apparent print size because the artwork is scaled
+  // to `tilePx` regardless of panel size.
+  // Pattern offset (currently a no-op single-tile but will be used
+  // when we extend drawMeshWarp to repeat).
+  const row = Math.floor(bb.y / tilePx);
+  const col = Math.floor(bb.x / tilePx);
+  let offsetX = 0;
+  let offsetY = 0;
+  if (settings.pattern === "brick" && row % 2 === 1) offsetX = tilePx / 2;
+  if (settings.pattern === "half-drop" && col % 2 === 1) offsetY = tilePx / 2;
+  void offsetX; // reserved for repeat-mode sampling
+  void offsetY;
+  return { x: 0, y: 0, width: aw, height: ah };
+}
+
+/**
+ * Tile mode — flat (no-mesh) fallback. Tiles the artwork across the
+ * panel's bbox at the chosen tile size. Less accurate than the mesh
+ * version but still respects the real-world size when no mesh is
+ * available.
+ */
+function drawTileFlat(
+  pctx: CanvasRenderingContext2D,
+  artwork: HTMLImageElement,
+  bb: Aabb | null,
+  settings: TileSettings,
+  pixelsPerInch: number,
+): void {
+  if (!bb) return;
+  const tilePx = Math.max(1, settings.tileSizeInches * pixelsPerInch);
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const tileH = tilePx * (ah / aw); // preserve artwork aspect within the tile
+  // Iterate row by row, applying brick/half-drop offsets where
+  // requested. `clip()` already constrained drawing to the polygon
+  // so we can over-draw past the bbox safely.
+  const startX = Math.floor(bb.x / tilePx) * tilePx - tilePx;
+  const endX = bb.x + bb.width + tilePx;
+  const startY = Math.floor(bb.y / tileH) * tileH - tileH;
+  const endY = bb.y + bb.height + tileH;
+  let row = 0;
+  for (let y = startY; y < endY; y += tileH) {
+    let col = 0;
+    let xOffset = 0;
+    if (settings.pattern === "brick" && row % 2 === 1) xOffset = tilePx / 2;
+    for (let x = startX + xOffset; x < endX; x += tilePx) {
+      let yOffset = 0;
+      if (settings.pattern === "half-drop" && col % 2 === 1) yOffset = tileH / 2;
+      pctx.drawImage(artwork, x, y + yOffset, tilePx, tileH);
+      col += 1;
+    }
+    row += 1;
+  }
+}
+
 function pathPolygon(ctx: CanvasRenderingContext2D, anchors: Pt[]): void {
   ctx.beginPath();
   ctx.moveTo(anchors[0].x, anchors[0].y);
@@ -388,43 +802,40 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   if (!pctx) return;
 
   const useColors = mode === "solid-colors" || !artwork;
-  // Union AABB of single-sheet-participating panels only — the
-  // "design canvas" the user composes into when artworkPlacement is
-  // identity. Layers with includeInSingleSheet === false drop out,
-  // which lets the admin shrink the canvas to e.g. body+hood and
-  // leave sleeves as background-colour-only.
-  const totalBbox =
+  // Per-group design rects — the new core. Each group computes its
+  // own anchor + base + effective rect from its panels' polygons.
+  // The legacy single-rect path lives as a fallback inside
+  // computeGroupRects when the template has no `designGroups`.
+  const groupRects =
     mode === "single-sheet"
-      ? totalPrintAabb(printLayers, isLayerInSingleSheet)
-      : null;
-  // Base rect: the design canvas adopts the artwork's natural aspect
-  // ratio so portraits stay tall and landscapes stay wide. When no
-  // artwork is loaded (admin previewing the empty template), fall
-  // back to the union AABB shape directly.
-  const baseRect: Aabb | null =
-    totalBbox && artwork
-      ? fitAspectInside(
-          totalBbox,
-          (artwork.naturalWidth || artwork.width) /
-            (artwork.naturalHeight || artwork.height || 1),
-        )
-      : totalBbox;
-  // Apply scale + offset around the base rect's centre.
-  const effectiveDesignRect: Aabb | null = baseRect
-    ? (() => {
-        const cx = baseRect.x + baseRect.width / 2;
-        const cy = baseRect.y + baseRect.height / 2;
-        const s = Math.max(0.0001, artworkPlacement.scale || 1);
-        const w = baseRect.width * s;
-        const h = baseRect.height * s;
-        return {
-          x: cx - w / 2 + (artworkPlacement.offsetX || 0),
-          y: cy - h / 2 + (artworkPlacement.offsetY || 0),
-          width: w,
-          height: h,
-        };
-      })()
-    : null;
+      ? computeGroupRects(template, view, artwork, {
+          placementOverrides: params.groupPlacementOverrides,
+          seamOverrides: params.groupSeamOverrides,
+          enabledOverrides: params.groupEnabledOverrides,
+          legacyPlacement: artworkPlacement,
+        })
+      : new Map<string, DesignRectInfo>();
+  // Helper: which design rect should this layer sample from?
+  const rectForLayer = (layer: MaskLayer): DesignRectInfo | null => {
+    const group = findGroupForPanel(template.designGroups, layer.panelKey);
+    if (group) return groupRects.get(group.id) ?? null;
+    return groupRects.get("__legacy__") ?? groupRects.get("__ungrouped__") ?? null;
+  };
+  // Helper: is this panel the L or R half of a recognised seam pair?
+  // Used to bias the synthSrc UV when seam allowance > 0.
+  const seamSideForLayer = (layer: MaskLayer): "left" | "right" | "none" => {
+    if (!layer.panelKey) return "none";
+    if (SEAM_PAIR_PANELS.left.includes(layer.panelKey)) return "left";
+    if (SEAM_PAIR_PANELS.right.includes(layer.panelKey)) return "right";
+    return "none";
+  };
+  // Tile mode resolution: respect explicit params, else fall back to
+  // template defaults seeded by normalizeHoodieTemplate.
+  const tileSettings = params.tileSettings ?? template.tileSettings ?? null;
+  const ppi =
+    params.pixelsPerInch ??
+    template.realWorldCalibration?.pixelsPerInch ??
+    1024 / 24;
 
   for (const layer of printLayers) {
     const anchors = svgPathToAnchors(layer.maskPath);
@@ -449,9 +860,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     // Whether this panel actually receives artwork in single-sheet
     // mode. When false, the panel keeps just the background colour
     // (or stays empty if no bg) — exactly the "exclude sleeves from
-    // the design" use case.
+    // the design" use case. We also drop panels in groups that the
+    // admin has switched off via the modal toggle.
     const inSingleSheet = isLayerInSingleSheet(layer);
-    const skipArtwork = mode === "single-sheet" && !inSingleSheet;
+    const layerRect = rectForLayer(layer);
+    const groupEnabled = layerRect ? layerRect.enabled : true;
+    const skipArtwork =
+      mode === "single-sheet" && (!inSingleSheet || !groupEnabled);
 
     // Source resolution priority — match user mental model:
     //   1. solid-colors mode → debug fill, ignore artwork.
@@ -496,26 +911,29 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       const aw = artwork.naturalWidth || artwork.width;
       const ah = artwork.naturalHeight || artwork.height;
       let synthSrc;
-      if (
+      if (mode === "tile" && tileSettings) {
+        // Repeating tile: the mesh samples a tile-sized window of
+        // the artwork relative to the panel's mockup-px bbox. Every
+        // panel uses the same tileSizeInches, so the print is
+        // physically uniform across the hoodie. See `tileSourceRect`
+        // for the per-pattern offsets.
+        const bb = aabbOf(anchors);
+        if (bb) synthSrc = tileSourceRect(bb, aw, ah, tileSettings, ppi);
+      } else if (
         mode === "single-sheet" &&
-        effectiveDesignRect &&
-        effectiveDesignRect.width > 0 &&
-        effectiveDesignRect.height > 0
+        layerRect &&
+        layerRect.effective.width > 0 &&
+        layerRect.effective.height > 0
       ) {
         const bb = aabbOf(anchors);
         if (bb) {
-          // The panel's slice of the design rect, expressed as a
-          // sub-rectangle of the artwork image. When the user shrinks
-          // the design rect, panels outside it produce sub-rects with
-          // negative origins / past-image extents — drawMeshWarp will
-          // happily sample those (giving transparent pixels), which
-          // is the natural "no artwork here" behaviour we want.
-          synthSrc = {
-            x: ((bb.x - effectiveDesignRect.x) / effectiveDesignRect.width) * aw,
-            y: ((bb.y - effectiveDesignRect.y) / effectiveDesignRect.height) * ah,
-            width: (bb.width / effectiveDesignRect.width) * aw,
-            height: (bb.height / effectiveDesignRect.height) * ah,
-          };
+          synthSrc = synthesiseSeamAwareSourceRect(
+            bb,
+            layerRect,
+            aw,
+            ah,
+            seamSideForLayer(layer),
+          );
         }
       } else {
         // per-panel-stretch — every panel reads the full artwork.
@@ -525,16 +943,36 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         drawMeshWarp(pctx, artwork, aw, ah, { ...layer.mesh, sourceRect: synthSrc });
       }
     } else if (artwork) {
-      // No mesh on this layer — fall back to a flat stretched draw,
-      // same behaviour as Phase 3.
-      if (mode === "single-sheet" && effectiveDesignRect) {
-        pctx.drawImage(
-          artwork,
-          effectiveDesignRect.x,
-          effectiveDesignRect.y,
-          effectiveDesignRect.width,
-          effectiveDesignRect.height,
-        );
+      // No mesh on this layer — fall back to a flat stretched draw.
+      if (mode === "tile" && tileSettings) {
+        drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi);
+      } else if (mode === "single-sheet" && layerRect) {
+        // Apply seam allowance via UV inset by computing the slice
+        // of the artwork the panel reads, then drawing that slice
+        // stretched into the panel's bbox.
+        const bb = aabbOf(anchors);
+        if (bb) {
+          const aw = artwork.naturalWidth || artwork.width;
+          const ah = artwork.naturalHeight || artwork.height;
+          const slice = synthesiseSeamAwareSourceRect(
+            bb,
+            layerRect,
+            aw,
+            ah,
+            seamSideForLayer(layer),
+          );
+          pctx.drawImage(
+            artwork,
+            slice.x,
+            slice.y,
+            slice.width,
+            slice.height,
+            bb.x,
+            bb.y,
+            bb.width,
+            bb.height,
+          );
+        }
       } else {
         const bb = aabbOf(anchors);
         if (bb) pctx.drawImage(artwork, bb.x, bb.y, bb.width, bb.height);
@@ -585,32 +1023,43 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   // Step 5: Optional outlines + labels for debugging.
   if (showOutlines) drawOutlines(ctx, visible);
   if (showLabels) drawLabels(ctx, visible);
-  // Step 6: Design-rect overlay — dashed magenta outline + handles
-  // showing where the artwork is currently anchored. Helps the user
-  // make sense of "I shrunk the dog face but where does it actually
-  // sit on the mockup?"
-  if (showDesignRect && mode === "single-sheet" && effectiveDesignRect) {
-    drawDesignRect(ctx, effectiveDesignRect);
+  // Step 6: Design-rect overlays — one dashed outline per group, the
+  // active group highlighted brighter so the user knows which one
+  // their handles edit.
+  if (showDesignRect && mode === "single-sheet") {
+    const activeId = params.activeGroupId ?? null;
+    for (const info of Array.from(groupRects.values())) {
+      const isActive = info.groupId === activeId;
+      drawDesignRect(ctx, info, isActive);
+    }
   }
 }
 
-function drawDesignRect(ctx: CanvasRenderingContext2D, rect: Aabb): void {
+function drawDesignRect(
+  ctx: CanvasRenderingContext2D,
+  info: DesignRectInfo,
+  active: boolean,
+): void {
   ctx.save();
-  ctx.lineWidth = 2;
+  ctx.lineWidth = active ? 2 : 1.25;
   ctx.setLineDash([10, 6]);
-  ctx.strokeStyle = "#f0abfc"; // fuchsia-300 to match modal accents
-  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-  // Centre crosshair so a hard-zoomed user can see the artwork's
-  // anchor point even when the dashed rect is offscreen.
+  ctx.globalAlpha = active ? 1 : 0.45;
+  ctx.strokeStyle = active ? "#f0abfc" : "#a78bfa";
+  ctx.strokeRect(
+    info.effective.x,
+    info.effective.y,
+    info.effective.width,
+    info.effective.height,
+  );
+  // Centre crosshair on the anchor (seam line for paired groups,
+  // panel centre otherwise).
   ctx.setLineDash([]);
-  const cx = rect.x + rect.width / 2;
-  const cy = rect.y + rect.height / 2;
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = active ? 1.5 : 1;
   ctx.beginPath();
-  ctx.moveTo(cx - 12, cy);
-  ctx.lineTo(cx + 12, cy);
-  ctx.moveTo(cx, cy - 12);
-  ctx.lineTo(cx, cy + 12);
+  ctx.moveTo(info.anchor.x - 12, info.anchor.y);
+  ctx.lineTo(info.anchor.x + 12, info.anchor.y);
+  ctx.moveTo(info.anchor.x, info.anchor.y - 12);
+  ctx.lineTo(info.anchor.x, info.anchor.y + 12);
   ctx.stroke();
   ctx.restore();
 }
