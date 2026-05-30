@@ -9,10 +9,15 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useToast } from "@/hooks/use-toast";
 import { Download, Image as ImageIcon, RotateCcw, Sparkles, Upload } from "lucide-react";
-import type { HoodieView } from "@shared/hoodieTemplate";
+import type {
+  DesignGroup,
+  HoodieView,
+  TileSettings,
+} from "@shared/hoodieTemplate";
+import { defaultDesignGroups } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
-  computeDesignRect,
+  computeGroupRects,
   renderAopPreview,
   renderAopPreviewToCanvas,
   type AopPreviewMode,
@@ -42,7 +47,12 @@ const MODE_OPTIONS: Array<{ id: AopPreviewMode; label: string; hint: string }> =
   {
     id: "single-sheet",
     label: "Single sheet",
-    hint: "Artwork stretched once across all panels — typical AOP look.",
+    hint: "One design split across panel groups — pet portraits, scenes.",
+  },
+  {
+    id: "tile",
+    label: "Repeating",
+    hint: "Artwork tiles uniformly at a real-world size — fabric prints.",
   },
   {
     id: "per-panel-stretch",
@@ -54,6 +64,15 @@ const MODE_OPTIONS: Array<{ id: AopPreviewMode; label: string; hint: string }> =
     label: "Solid colors",
     hint: "No artwork — each panel filled with a debug colour to verify masks.",
   },
+];
+
+const TILE_PATTERN_OPTIONS: Array<{
+  id: TileSettings["pattern"];
+  label: string;
+}> = [
+  { id: "grid", label: "Grid" },
+  { id: "brick", label: "Brick offset" },
+  { id: "half-drop", label: "Half-drop" },
 ];
 
 export default function AopPreviewModal({ open, onOpenChange }: Props) {
@@ -75,16 +94,172 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // works without diving through toggles.
   const [preferLayerSources, setPreferLayerSources] = useState(false);
 
-  // Single-sheet artwork placement (scale + 2D offset). Defaults to
-  // identity = previous "stretch across all panels" behaviour. Lets
-  // the admin shrink a portrait down to just the hood / shoulders
-  // and slide it into position without re-exporting from Photoshop.
-  const [placement, setPlacement] = useState<ArtworkPlacement>(DEFAULT_ARTWORK_PLACEMENT);
+  // Per-group, per-view artwork placement. Modal-local overrides win
+  // over template defaults until "Save as defaults" copies them back.
+  // Shape: { [groupId]: { front: ArtworkPlacement; back: ArtworkPlacement } }.
+  const [groupPlacementOverrides, setGroupPlacementOverrides] = useState<
+    Record<string, Record<HoodieView, ArtworkPlacement>>
+  >({});
+  // Per-group seam allowance overrides (% of group rect width).
+  const [seamOverrides, setSeamOverrides] = useState<Record<string, number>>({});
+  // Per-group enabled overrides — toggles a group off without
+  // dirtying the template.
+  const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>(
+    {},
+  );
+  // Which group's on-canvas handles are currently editable. `null`
+  // (or unknown id) = no handles shown. Defaults to the first group
+  // with eligible panels in the active view.
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  // Lock-ratio toggle: when on, dragging any group's scale rescales
+  // the others to preserve the captured ratios snapshot.
+  const [lockRatios, setLockRatios] = useState(false);
+  const [lockedRatios, setLockedRatios] = useState<Record<string, number> | null>(
+    null,
+  );
+  // Tile-mode settings (modal-local). Falls back to template's stored
+  // defaults via normalizeHoodieTemplate.
+  const [tileOverride, setTileOverride] = useState<TileSettings | null>(null);
+  const [ppiOverride, setPpiOverride] = useState<number | null>(null);
   const [showDesignRect, setShowDesignRect] = useState(true);
-  const placementIsDefault =
-    placement.scale === DEFAULT_ARTWORK_PLACEMENT.scale &&
-    placement.offsetX === DEFAULT_ARTWORK_PLACEMENT.offsetX &&
-    placement.offsetY === DEFAULT_ARTWORK_PLACEMENT.offsetY;
+
+  // Resolved (read-only) helpers — read template defaults whenever an
+  // override is missing.
+  const designGroups: DesignGroup[] = useMemo(
+    () => template.designGroups ?? defaultDesignGroups(),
+    [template.designGroups],
+  );
+  const tileSettings: TileSettings = useMemo(() => {
+    if (tileOverride) return tileOverride;
+    return template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 };
+  }, [tileOverride, template.tileSettings]);
+  const pixelsPerInch =
+    ppiOverride ?? template.realWorldCalibration?.pixelsPerInch ?? 1024 / 24;
+
+  /** Read the effective placement for a group + view (override → template default → identity). */
+  const getPlacement = useMemo(
+    () => (groupId: string, v: HoodieView): ArtworkPlacement => {
+      const ov = groupPlacementOverrides[groupId]?.[v];
+      if (ov) return ov;
+      const stored = designGroups.find((g) => g.id === groupId)?.placement?.[v];
+      return stored ? { ...stored } : { ...DEFAULT_ARTWORK_PLACEMENT };
+    },
+    [groupPlacementOverrides, designGroups],
+  );
+  const getSeam = (groupId: string): number => {
+    const ov = seamOverrides[groupId];
+    if (typeof ov === "number") return ov;
+    return designGroups.find((g) => g.id === groupId)?.seamAllowance ?? 0;
+  };
+  const getEnabled = (groupId: string): boolean => {
+    const ov = enabledOverrides[groupId];
+    if (typeof ov === "boolean") return ov;
+    return designGroups.find((g) => g.id === groupId)?.enabled !== false;
+  };
+
+  /**
+   * Patch a group's placement for the current view. When lock-ratio
+   * is engaged, propagates the same scale-factor change to every
+   * other group so the captured ratios stay constant.
+   */
+  const setGroupPlacement = (
+    groupId: string,
+    v: HoodieView,
+    patch: Partial<ArtworkPlacement>,
+  ) => {
+    setGroupPlacementOverrides((prev) => {
+      const next = { ...prev };
+      const current = prev[groupId]?.[v] ?? getPlacement(groupId, v);
+      const updated: ArtworkPlacement = { ...current, ...patch };
+      const otherView: HoodieView = v === "front" ? "back" : "front";
+      next[groupId] = {
+        ...(prev[groupId] ?? {
+          front: getPlacement(groupId, "front"),
+          back: getPlacement(groupId, "back"),
+        }),
+        [v]: updated,
+        [otherView]:
+          prev[groupId]?.[otherView] ?? getPlacement(groupId, otherView),
+      } as Record<HoodieView, ArtworkPlacement>;
+
+      // Lock-ratio propagation — only when scale changed and ratios
+      // were captured for this group.
+      if (
+        lockRatios &&
+        lockedRatios &&
+        typeof patch.scale === "number" &&
+        lockedRatios[groupId]
+      ) {
+        const oldScale = lockedRatios[groupId];
+        const newScale = patch.scale;
+        const factor = newScale / Math.max(0.0001, oldScale);
+        for (const g of designGroups) {
+          if (g.id === groupId) continue;
+          const otherCaptured = lockedRatios[g.id];
+          if (typeof otherCaptured !== "number") continue;
+          const linkedScale = otherCaptured * factor;
+          const baseline =
+            prev[g.id]?.[v] ?? getPlacement(g.id, v);
+          next[g.id] = {
+            ...(prev[g.id] ?? {
+              front: getPlacement(g.id, "front"),
+              back: getPlacement(g.id, "back"),
+            }),
+            [v]: { ...baseline, scale: linkedScale },
+            [otherView]:
+              prev[g.id]?.[otherView] ?? getPlacement(g.id, otherView),
+          } as Record<HoodieView, ArtworkPlacement>;
+        }
+      }
+      return next;
+    });
+  };
+
+  /** Engage / disengage the lock toggle. Engaging captures current scales. */
+  const toggleLockRatios = (next: boolean) => {
+    if (next) {
+      const snapshot: Record<string, number> = {};
+      for (const g of designGroups) {
+        snapshot[g.id] = getPlacement(g.id, view).scale;
+      }
+      setLockedRatios(snapshot);
+    } else {
+      setLockedRatios(null);
+    }
+    setLockRatios(next);
+  };
+
+  /** Re-snapshot ratios while still locked. */
+  const recaptureLockedRatios = () => {
+    const snapshot: Record<string, number> = {};
+    for (const g of designGroups) {
+      snapshot[g.id] = getPlacement(g.id, view).scale;
+    }
+    setLockedRatios(snapshot);
+  };
+
+  // Default the active group to the first one that has eligible
+  // panels traced in the current view, so the handles immediately
+  // show something useful.
+  useEffect(() => {
+    if (!open || mode !== "single-sheet") return;
+    if (activeGroupId && designGroups.some((g) => g.id === activeGroupId)) return;
+    const layers = template.views[view]?.layers ?? [];
+    const first = designGroups.find((g) =>
+      layers.some(
+        (l) => l.panelKey && g.panelKeys.includes(l.panelKey) && l.visible && !l.isExclusion,
+      ),
+    );
+    setActiveGroupId(first?.id ?? null);
+  }, [open, mode, view, designGroups, template.views, activeGroupId]);
+
+  // Has the modal been edited? Used to enable Save / Reset buttons.
+  const hasOverrides =
+    Object.keys(groupPlacementOverrides).length > 0 ||
+    Object.keys(seamOverrides).length > 0 ||
+    Object.keys(enabledOverrides).length > 0 ||
+    tileOverride !== null ||
+    ppiOverride !== null;
 
   // Background colour painted under the artwork in every print panel
   // (and ALL of any panel excluded from single-sheet). null = off.
@@ -233,7 +408,12 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       layerSources,
       preferLayerSources,
       applyShading,
-      artworkPlacement: placement,
+      groupPlacementOverrides,
+      groupSeamOverrides: seamOverrides,
+      groupEnabledOverrides: enabledOverrides,
+      activeGroupId,
+      tileSettings,
+      pixelsPerInch,
       showDesignRect,
       backgroundColor,
     });
@@ -250,7 +430,12 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     layerSources,
     preferLayerSources,
     applyShading,
-    placement,
+    groupPlacementOverrides,
+    seamOverrides,
+    enabledOverrides,
+    activeGroupId,
+    tileSettings,
+    pixelsPerInch,
     showDesignRect,
     backgroundColor,
   ]);
@@ -296,7 +481,11 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
       layerSources,
       preferLayerSources,
       applyShading,
-      artworkPlacement: placement,
+      groupPlacementOverrides,
+      groupSeamOverrides: seamOverrides,
+      groupEnabledOverrides: enabledOverrides,
+      tileSettings,
+      pixelsPerInch,
       backgroundColor,
       // Never bake the design-rect outline into the saved PNG —
       // it's a UI overlay, not part of the customer artwork.
@@ -440,71 +629,96 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
               )}
             </div>
 
-            {/* Single-sheet placement (scale + offset). Per-panel mode
-                doesn't have a unified design rect, so hide there. */}
+            {/* Single-sheet groups — per-group placement, seam, lock-ratio. */}
             {mode === "single-sheet" && artworkImg && (
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-[11px] uppercase tracking-wide text-slate-400">
-                    Placement
-                  </span>
-                  {!placementIsDefault && (
-                    <button
-                      type="button"
-                      onClick={() => setPlacement(DEFAULT_ARTWORK_PLACEMENT)}
-                      className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-200"
-                      title="Reset to fill-the-hoodie default"
-                    >
-                      <RotateCcw className="h-3 w-3" /> Reset
-                    </button>
-                  )}
-                </div>
-                <PlacementSlider
-                  label="Scale"
-                  unit="×"
-                  precision={2}
-                  value={placement.scale}
-                  min={0.1}
-                  max={4}
-                  step={0.01}
-                  onChange={(scale) => setPlacement((p) => ({ ...p, scale }))}
-                />
-                <PlacementSlider
-                  label="Offset X"
-                  unit="px"
-                  precision={0}
-                  value={placement.offsetX}
-                  min={-800}
-                  max={800}
-                  step={1}
-                  onChange={(offsetX) => setPlacement((p) => ({ ...p, offsetX }))}
-                />
-                <PlacementSlider
-                  label="Offset Y"
-                  unit="px"
-                  precision={0}
-                  value={placement.offsetY}
-                  min={-800}
-                  max={800}
-                  step={1}
-                  onChange={(offsetY) => setPlacement((p) => ({ ...p, offsetY }))}
-                />
-                <ToggleRow
-                  label="Show design rect"
-                  checked={showDesignRect}
-                  onChange={setShowDesignRect}
-                />
-                <div className="mt-1 rounded border border-slate-800 bg-slate-950/60 px-2 py-1 text-[10px] text-slate-500">
-                  Scale shrinks / grows the design rect around the union centre. Offsets
-                  slide it in mockup pixels. Areas outside the rect become transparent —
-                  the mockup pixels (or shading) show through.
-                </div>
-                <div className="mt-1 text-[10px] text-slate-500">
-                  Design rect now adopts your artwork's aspect ratio so portraits stay tall
-                  and landscapes stay wide. Drag the artwork on the preview to move; drag a
-                  corner to resize uniformly.
-                </div>
-              </div>
+              <GroupsPanel
+                designGroups={designGroups}
+                view={view}
+                layers={template.views[view]?.layers ?? []}
+                activeGroupId={activeGroupId}
+                onActiveGroupChange={setActiveGroupId}
+                getPlacement={getPlacement}
+                getSeam={getSeam}
+                getEnabled={getEnabled}
+                onPlacementChange={(gid, patch) => setGroupPlacement(gid, view, patch)}
+                onSeamChange={(gid, val) =>
+                  setSeamOverrides((prev) => ({ ...prev, [gid]: val }))
+                }
+                onEnabledChange={(gid, val) =>
+                  setEnabledOverrides((prev) => ({ ...prev, [gid]: val }))
+                }
+                lockRatios={lockRatios}
+                onLockToggle={toggleLockRatios}
+                onRecaptureRatios={recaptureLockedRatios}
+                hasOverrides={hasOverrides}
+                onSaveDefaults={() => {
+                  // Bake current modal state into the template's
+                  // designGroups defaults, then clear overrides so the
+                  // template + modal are perfectly in sync.
+                  const next = designGroups.map((g) => ({
+                    ...g,
+                    placement: {
+                      front: getPlacement(g.id, "front"),
+                      back: getPlacement(g.id, "back"),
+                    },
+                    seamAllowance: getSeam(g.id),
+                    enabled: getEnabled(g.id),
+                    lockedRatio:
+                      lockRatios && lockedRatios && lockedRatios[g.id] !== undefined
+                        ? lockedRatios[g.id]
+                        : null,
+                  }));
+                  actions.setDesignGroups(next);
+                  setGroupPlacementOverrides({});
+                  setSeamOverrides({});
+                  setEnabledOverrides({});
+                  toast({
+                    title: "Defaults saved",
+                    description: "Group placements stored on this template.",
+                  });
+                }}
+                onResetOverrides={() => {
+                  setGroupPlacementOverrides({});
+                  setSeamOverrides({});
+                  setEnabledOverrides({});
+                }}
+                showDesignRect={showDesignRect}
+                onShowDesignRectChange={setShowDesignRect}
+              />
+            )}
+
+            {/* Tile-mode controls — pattern picker + tile size + ppi. */}
+            {mode === "tile" && (
+              <TilePanel
+                tileSettings={tileSettings}
+                pixelsPerInch={pixelsPerInch}
+                onTileChange={(patch) =>
+                  setTileOverride((prev) => ({
+                    ...(prev ??
+                      template.tileSettings ?? {
+                        pattern: "grid",
+                        tileSizeInches: 1.5,
+                      }),
+                    ...patch,
+                  }))
+                }
+                onPpiChange={(v) => setPpiOverride(v)}
+                onSaveDefaults={() => {
+                  actions.setTileSettings(tileSettings);
+                  actions.setRealWorldCalibration({ pixelsPerInch });
+                  setTileOverride(null);
+                  setPpiOverride(null);
+                  toast({
+                    title: "Tile defaults saved",
+                    description: "Pattern + size + calibration stored on this template.",
+                  });
+                }}
+                onResetOverrides={() => {
+                  setTileOverride(null);
+                  setPpiOverride(null);
+                }}
+                hasOverrides={tileOverride !== null || ppiOverride !== null}
+              />
             )}
 
             {/* Background colour picker — base fabric colour. Sits
@@ -617,15 +831,21 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 className="max-h-[78vh] max-w-full rounded border border-slate-800 bg-black object-contain shadow-xl"
                 data-testid="hoodie-aop-preview-canvas"
               />
-              {mockupImg && mode === "single-sheet" && artworkImg && (
+              {mockupImg && mode === "single-sheet" && artworkImg && activeGroupId && (
                 <DesignRectHandlesOverlay
                   canvasRef={canvasRef}
                   template={template}
                   view={view}
                   mockup={mockupImg}
                   artwork={artworkImg}
-                  placement={placement}
-                  onChange={setPlacement}
+                  groupId={activeGroupId}
+                  placement={getPlacement(activeGroupId, view)}
+                  enabledOverrides={enabledOverrides}
+                  seamOverrides={seamOverrides}
+                  placementOverrides={groupPlacementOverrides}
+                  onChange={(next) =>
+                    setGroupPlacement(activeGroupId, view, next)
+                  }
                 />
               )}
             </div>
@@ -921,7 +1141,11 @@ function DesignRectHandlesOverlay({
   view,
   mockup,
   artwork,
+  groupId,
   placement,
+  placementOverrides,
+  seamOverrides,
+  enabledOverrides,
   onChange,
 }: {
   canvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
@@ -929,13 +1153,33 @@ function DesignRectHandlesOverlay({
   view: HoodieView;
   mockup: HTMLImageElement;
   artwork: HTMLImageElement;
+  /** Which design group's rect we're showing handles for. */
+  groupId: string;
+  /** Effective placement (overrides → defaults) for the active group. */
   placement: ArtworkPlacement;
+  /** Modal-local overrides — passed through so computeGroupRects sees them. */
+  placementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  seamOverrides?: Record<string, number>;
+  enabledOverrides?: Record<string, boolean>;
+  /** Patch the active group's placement (modal handles lock-ratio propagation). */
   onChange: (next: ArtworkPlacement) => void;
 }) {
-  const info: DesignRectInfo | null = useMemo(
-    () => computeDesignRect(template, view, artwork, placement),
-    [template, view, artwork, placement],
-  );
+  const info: DesignRectInfo | null = useMemo(() => {
+    const map = computeGroupRects(template, view, artwork, {
+      placementOverrides,
+      seamOverrides,
+      enabledOverrides,
+    });
+    return map.get(groupId) ?? null;
+  }, [
+    template,
+    view,
+    artwork,
+    groupId,
+    placementOverrides,
+    seamOverrides,
+    enabledOverrides,
+  ]);
 
   // We need to know the canvas's natural (mockup) size to convert
   // mockup-px positions into % of overlay. The overlay matches the
@@ -1045,8 +1289,8 @@ function DesignRectHandlesOverlay({
         const newScale = newW / baseW;
         onChange({
           scale: newScale,
-          offsetX: newCx - drag.startInfo.baseCentre.x,
-          offsetY: newCy - drag.startInfo.baseCentre.y,
+          offsetX: newCx - drag.startInfo.anchor.x,
+          offsetY: newCy - drag.startInfo.anchor.y,
         });
       }
     }
@@ -1148,6 +1392,363 @@ function DesignRectHandlesOverlay({
             title="Drag corner to resize (aspect locked)"
           />
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sidebar panel for single-sheet mode — exposes per-group placement,
+ * seam allowance, lock-ratio, and the active-group selector. Each
+ * group has an accordion row that collapses to its summary stats.
+ *
+ * Edits stay transient (modal-local) until the admin hits "Save as
+ * defaults", which calls back into the store to persist the current
+ * values onto `template.designGroups`. Reset clears overrides.
+ */
+function GroupsPanel({
+  designGroups,
+  view,
+  layers,
+  activeGroupId,
+  onActiveGroupChange,
+  getPlacement,
+  getSeam,
+  getEnabled,
+  onPlacementChange,
+  onSeamChange,
+  onEnabledChange,
+  lockRatios,
+  onLockToggle,
+  onRecaptureRatios,
+  hasOverrides,
+  onSaveDefaults,
+  onResetOverrides,
+  showDesignRect,
+  onShowDesignRectChange,
+}: {
+  designGroups: DesignGroup[];
+  view: HoodieView;
+  layers: import("@shared/hoodieTemplate").MaskLayer[];
+  activeGroupId: string | null;
+  onActiveGroupChange: (id: string) => void;
+  getPlacement: (groupId: string, v: HoodieView) => ArtworkPlacement;
+  getSeam: (groupId: string) => number;
+  getEnabled: (groupId: string) => boolean;
+  onPlacementChange: (groupId: string, patch: Partial<ArtworkPlacement>) => void;
+  onSeamChange: (groupId: string, value: number) => void;
+  onEnabledChange: (groupId: string, value: boolean) => void;
+  lockRatios: boolean;
+  onLockToggle: (next: boolean) => void;
+  onRecaptureRatios: () => void;
+  hasOverrides: boolean;
+  onSaveDefaults: () => void;
+  onResetOverrides: () => void;
+  showDesignRect: boolean;
+  onShowDesignRectChange: (v: boolean) => void;
+}) {
+  // Filter to groups that have at least one traced layer in this
+  // view — empty groups would otherwise clutter the UI with unusable
+  // sliders.
+  const populatedGroups = useMemo(
+    () =>
+      designGroups.filter((g) =>
+        layers.some(
+          (l) =>
+            l.panelKey &&
+            g.panelKeys.includes(l.panelKey) &&
+            l.visible &&
+            !l.isExclusion,
+        ),
+      ),
+    [designGroups, layers],
+  );
+
+  if (populatedGroups.length === 0) {
+    return (
+      <div className="rounded border border-amber-900/40 bg-amber-950/30 px-2 py-1.5 text-[10px] text-amber-200">
+        No traced panels in this view yet — trace polygons in the mapper to enable
+        per-group artwork placement.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-wide text-slate-400">
+          Groups
+        </span>
+        <ToggleRow
+          label="Show rects"
+          checked={showDesignRect}
+          onChange={onShowDesignRectChange}
+        />
+      </div>
+
+      {/* Lock-ratio toggle row */}
+      <div className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+        <label className="flex cursor-pointer items-center justify-between text-[11px]">
+          <span className="text-slate-300">Lock group scale ratios</span>
+          <input
+            type="checkbox"
+            checked={lockRatios}
+            onChange={(e) => onLockToggle(e.target.checked)}
+            className="h-3.5 w-3.5 cursor-pointer accent-fuchsia-500"
+          />
+        </label>
+        {lockRatios && (
+          <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-slate-500">
+            <span>Other groups follow this group's scale.</span>
+            <button
+              type="button"
+              onClick={onRecaptureRatios}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+              title="Re-snapshot current scales as the new locked ratios"
+            >
+              Recapture
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Per-group accordion */}
+      <div className="space-y-1.5">
+        {populatedGroups.map((g) => {
+          const isActive = g.id === activeGroupId;
+          const placement = getPlacement(g.id, view);
+          const seam = getSeam(g.id);
+          const enabled = getEnabled(g.id);
+          // Heuristic: group has L/R seam pair when its panelKeys
+          // include any of the known L+R pair members.
+          const hasSeam = g.panelKeys.some(
+            (k) =>
+              k === "front_left" ||
+              k === "left_hood" ||
+              k === "pocket_left" ||
+              k === "front_right" ||
+              k === "right_hood" ||
+              k === "pocket_right",
+          );
+          return (
+            <div
+              key={g.id}
+              className={`rounded border ${
+                isActive
+                  ? "border-fuchsia-500/70 bg-fuchsia-500/5"
+                  : "border-slate-800 bg-slate-950"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onActiveGroupChange(g.id)}
+                className="flex w-full items-center justify-between px-2 py-1.5 text-left"
+              >
+                <span className="text-[12px] font-medium text-slate-200">
+                  {g.name}
+                </span>
+                <span className="font-mono text-[10px] text-slate-400">
+                  ×{placement.scale.toFixed(2)}
+                </span>
+              </button>
+              {isActive && (
+                <div className="space-y-1 border-t border-slate-800 px-2 pb-2 pt-1">
+                  <ToggleRow
+                    label="Enabled"
+                    checked={enabled}
+                    onChange={(v) => onEnabledChange(g.id, v)}
+                  />
+                  {enabled && (
+                    <>
+                      <PlacementSlider
+                        label="Scale"
+                        unit="×"
+                        value={placement.scale}
+                        min={0.1}
+                        max={3}
+                        step={0.01}
+                        precision={2}
+                        onChange={(scale) =>
+                          onPlacementChange(g.id, { scale })
+                        }
+                      />
+                      <PlacementSlider
+                        label="Offset X"
+                        unit="px"
+                        value={placement.offsetX}
+                        min={-600}
+                        max={600}
+                        step={1}
+                        precision={0}
+                        onChange={(offsetX) =>
+                          onPlacementChange(g.id, { offsetX })
+                        }
+                      />
+                      <PlacementSlider
+                        label="Offset Y"
+                        unit="px"
+                        value={placement.offsetY}
+                        min={-600}
+                        max={600}
+                        step={1}
+                        precision={0}
+                        onChange={(offsetY) =>
+                          onPlacementChange(g.id, { offsetY })
+                        }
+                      />
+                      {hasSeam && (
+                        <PlacementSlider
+                          label="Seam allowance"
+                          unit="%"
+                          value={seam * 100}
+                          min={0}
+                          max={15}
+                          step={0.5}
+                          precision={1}
+                          onChange={(v) => onSeamChange(g.id, v / 100)}
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Save / Reset row */}
+      <div className="flex gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          className="flex-1 text-[11px]"
+          onClick={onSaveDefaults}
+          disabled={!hasOverrides}
+          data-testid="aop-save-defaults"
+        >
+          Save defaults
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-[11px]"
+          onClick={onResetOverrides}
+          disabled={!hasOverrides}
+          title="Discard modal edits"
+        >
+          <RotateCcw className="h-3 w-3" />
+        </Button>
+      </div>
+      <div className="text-[10px] text-slate-500">
+        Edits stay in this preview until you click Save defaults — that copies the
+        current placements / seams / enable flags onto the template so future
+        artworks render the same way.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sidebar panel for repeating-tile mode — pattern picker, tile size
+ * slider (in real-world inches), and a real-world calibration entry
+ * so the slider's "1.5 inches" is physically accurate. Save defaults
+ * persists onto template.tileSettings + realWorldCalibration.
+ */
+function TilePanel({
+  tileSettings,
+  pixelsPerInch,
+  onTileChange,
+  onPpiChange,
+  onSaveDefaults,
+  onResetOverrides,
+  hasOverrides,
+}: {
+  tileSettings: TileSettings;
+  pixelsPerInch: number;
+  onTileChange: (patch: Partial<TileSettings>) => void;
+  onPpiChange: (v: number) => void;
+  onSaveDefaults: () => void;
+  onResetOverrides: () => void;
+  hasOverrides: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] uppercase tracking-wide text-slate-400">
+        Tile pattern
+      </div>
+      <div className="grid grid-cols-3 gap-1">
+        {TILE_PATTERN_OPTIONS.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => onTileChange({ pattern: opt.id })}
+            className={`rounded border px-1.5 py-1 text-[10px] transition ${
+              tileSettings.pattern === opt.id
+                ? "border-fuchsia-500 bg-fuchsia-500/10 text-fuchsia-100"
+                : "border-slate-800 bg-slate-950 text-slate-300 hover:bg-slate-800"
+            }`}
+            data-testid={`tile-pattern-${opt.id}`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <PlacementSlider
+        label="Tile size"
+        unit='"'
+        value={tileSettings.tileSizeInches}
+        min={0.25}
+        max={6}
+        step={0.05}
+        precision={2}
+        onChange={(v) => onTileChange({ tileSizeInches: v })}
+      />
+      <div>
+        <label className="flex items-center justify-between text-[11px] text-slate-300">
+          <span>Calibration</span>
+          <span className="font-mono text-[10px] text-slate-400">
+            {pixelsPerInch.toFixed(1)} px/in
+          </span>
+        </label>
+        <input
+          type="number"
+          value={Math.round(pixelsPerInch * 10) / 10}
+          step="0.1"
+          min="1"
+          onChange={(e) => {
+            const v = parseFloat(e.target.value);
+            if (!Number.isNaN(v) && v > 0) onPpiChange(v);
+          }}
+          className="mt-1 h-7 w-full rounded border border-slate-700 bg-slate-950 px-2 text-[11px] font-mono text-slate-200 focus:border-fuchsia-500 focus:outline-none"
+        />
+        <div className="mt-1 text-[10px] text-slate-500">
+          Mockup pixels per real inch. Tile size × this number = on-mockup tile
+          width. Default assumes a 1024-px mockup represents 24 inches of fabric.
+        </div>
+      </div>
+
+      <div className="flex gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          className="flex-1 text-[11px]"
+          onClick={onSaveDefaults}
+          disabled={!hasOverrides}
+          data-testid="tile-save-defaults"
+        >
+          Save defaults
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="text-[11px]"
+          onClick={onResetOverrides}
+          disabled={!hasOverrides}
+          title="Discard modal edits"
+        >
+          <RotateCcw className="h-3 w-3" />
+        </Button>
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   EMPTY_HOODIE_VIEW,
   emptyHoodieTemplate,
+  normalizeHoodieTemplate,
   HOODIE_TEMPLATE_VERSION,
   createDefaultMesh,
   resizeMesh,
@@ -167,6 +168,14 @@ export type HoodieMapperActions = {
   setMockup: (view: HoodieView, mockup: MockupAsset | null) => void;
   setReferenceOverlay: (view: HoodieView, overlay: ReferenceOverlayAsset | null) => void;
   setTemplateMeta: (patch: Partial<Pick<HoodieTemplate, "name" | "label" | "hoodieType" | "productTypeId" | "blueprintId" | "size">>) => void;
+  /** Replace the full designGroups array (used by AOP modal save-as-defaults). */
+  setDesignGroups: (groups: import("@shared/hoodieTemplate").DesignGroup[]) => void;
+  /** Patch tile-mode settings (pattern, tile size, etc.). */
+  setTileSettings: (patch: Partial<import("@shared/hoodieTemplate").TileSettings>) => void;
+  /** Patch the real-world calibration. */
+  setRealWorldCalibration: (
+    patch: Partial<import("@shared/hoodieTemplate").RealWorldCalibration>,
+  ) => void;
   /** Mask layer mutations. */
   upsertLayer: (layer: MaskLayer) => void;
   removeLayer: (id: string) => void;
@@ -372,7 +381,7 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
   actions: {
     loadTemplate: (template) =>
       set(() => ({
-        template,
+        template: normalizeHoodieTemplate(template),
         selectedLayerId: null,
         hoverLayerId: null,
         penDraft: null,
@@ -420,6 +429,30 @@ export const useHoodieMapperStore = create<Store>((set, get) => ({
     setTemplateMeta: (patch) =>
       set((s) => ({
         template: bumpUpdatedAt({ ...s.template, ...patch }),
+        dirty: true,
+      })),
+    setDesignGroups: (groups) =>
+      set((s) => ({
+        template: bumpUpdatedAt({ ...s.template, designGroups: groups }),
+        dirty: true,
+      })),
+    setTileSettings: (patch) =>
+      set((s) => ({
+        template: bumpUpdatedAt({
+          ...s.template,
+          tileSettings: { ...(s.template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 }), ...patch },
+        }),
+        dirty: true,
+      })),
+    setRealWorldCalibration: (patch) =>
+      set((s) => ({
+        template: bumpUpdatedAt({
+          ...s.template,
+          realWorldCalibration: {
+            ...(s.template.realWorldCalibration ?? { pixelsPerInch: 1024 / 24 }),
+            ...patch,
+          },
+        }),
         dirty: true,
       })),
     upsertLayer: (layer) =>
