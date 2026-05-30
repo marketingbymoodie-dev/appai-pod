@@ -179,6 +179,20 @@ export type MaskLayer = {
   productionPanelSrc: string | null;
   /** True for exclusion masks that block artwork (zipper, hood interior, etc.). */
   isExclusion: boolean;
+  /**
+   * In single-sheet AOP mode, controls whether this panel participates
+   * in the design (i.e. receives the customer artwork and contributes
+   * its bounding box to the union design canvas). Default: undefined
+   * → treated as `true` for back-compat with templates traced before
+   * this flag existed.
+   *
+   * Setting this to `false` lets an admin keep the panel polygon
+   * around (still useful for per-panel modes, calibration verification,
+   * exclusion punching) while pulling it out of the single-sheet
+   * composition — e.g. excluding sleeves so a portrait artwork only
+   * spans hood + body and the sleeves take the background colour.
+   */
+  includeInSingleSheet?: boolean;
   /** Free-form admin notes. */
   notes?: string;
 };

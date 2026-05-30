@@ -136,7 +136,74 @@ export type AopPreviewParams = {
    * sliders. Off by default.
    */
   showDesignRect?: boolean;
+  /**
+   * Optional CSS colour painted as a base fill across every print
+   * panel before the artwork draws. Lets the admin preview the
+   * "dyed fabric" look (e.g. brown body) without having to bake the
+   * colour into the artwork PNG. The fill is clipped to each panel's
+   * polygon so exclusions still show mockup pixels through. Pass
+   * `null` / undefined to disable (panels stay transparent under the
+   * artwork — current behaviour).
+   */
+  backgroundColor?: string | null;
 };
+
+/**
+ * Read-only helper: should this panel participate in single-sheet
+ * mode? Treats undefined as `true` for back-compat — templates traced
+ * before the flag existed continue to behave as if they opted in.
+ */
+export function isLayerInSingleSheet(layer: MaskLayer): boolean {
+  return layer.includeInSingleSheet !== false;
+}
+
+export type DesignRectInfo = {
+  /** Union AABB of single-sheet-participating panels. */
+  union: { x: number; y: number; width: number; height: number };
+  /** Aspect-fitted rect (artwork natural aspect, centred in union). */
+  base: { x: number; y: number; width: number; height: number };
+  /** Effective rect after scale + offset — what the artwork samples. */
+  effective: { x: number; y: number; width: number; height: number };
+  /** Centre of `base` rect — used as the origin for scale + offset. */
+  baseCentre: { x: number; y: number };
+};
+
+/**
+ * Compute the same design rects the renderer uses, so external UI
+ * (e.g. the modal's interactive overlay) can position handles in
+ * mockup pixel space without re-implementing the maths. Returns
+ * `null` when no print panels participate in single-sheet.
+ */
+export function computeDesignRect(
+  template: HoodieTemplate,
+  view: HoodieView,
+  artwork: HTMLImageElement | null,
+  placement: ArtworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
+): DesignRectInfo | null {
+  const layers = template.views[view]?.layers ?? [];
+  const visiblePrint = layers.filter((l) => l.visible && !l.isExclusion);
+  const union = totalPrintAabb(visiblePrint, isLayerInSingleSheet);
+  if (!union) return null;
+  const base = artwork
+    ? fitAspectInside(
+        union,
+        (artwork.naturalWidth || artwork.width) /
+          (artwork.naturalHeight || artwork.height || 1),
+      )
+    : union;
+  const cx = base.x + base.width / 2;
+  const cy = base.y + base.height / 2;
+  const s = Math.max(0.0001, placement.scale || 1);
+  const w = base.width * s;
+  const h = base.height * s;
+  const effective = {
+    x: cx - w / 2 + (placement.offsetX || 0),
+    y: cy - h / 2 + (placement.offsetY || 0),
+    width: w,
+    height: h,
+  };
+  return { union, base, effective, baseCentre: { x: cx, y: cy } };
+}
 
 /**
  * Fixed palette for `solid-colors` mode. Each known panel key gets a
@@ -188,12 +255,18 @@ function unionAabb(a: Aabb, b: Aabb): Aabb {
   return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
 }
 
-/** Compute the union AABB of all print-eligible polygons. */
-function totalPrintAabb(layers: MaskLayer[]): Aabb | null {
+/**
+ * Compute the union AABB of print-eligible polygons. When `filter` is
+ * provided, only matching layers contribute — used to restrict the
+ * single-sheet design canvas to the panels the admin wants in their
+ * composition (e.g. exclude sleeves).
+ */
+function totalPrintAabb(layers: MaskLayer[], filter?: (l: MaskLayer) => boolean): Aabb | null {
   let total: Aabb | null = null;
   for (const layer of layers) {
     if (layer.isExclusion) continue;
     if (!layer.visible) continue;
+    if (filter && !filter(layer)) continue;
     const anchors = svgPathToAnchors(layer.maskPath);
     if (anchors.length < 3) continue;
     const bb = aabbOf(anchors);
@@ -201,6 +274,30 @@ function totalPrintAabb(layers: MaskLayer[]): Aabb | null {
     total = total ? unionAabb(total, bb) : bb;
   }
   return total;
+}
+
+/**
+ * Fit a rectangle of the given `aspect` (width / height) inside `union`,
+ * preserving aspect ratio and centring it. Returns the largest such
+ * rectangle that's fully contained — same convention as CSS
+ * `object-fit: contain`. Used so the design rect adopts the artwork's
+ * natural shape instead of the union's shape, which prevents portraits
+ * being squished into a square or landscapes being squished tall.
+ */
+function fitAspectInside(union: Aabb, aspect: number): Aabb {
+  if (!Number.isFinite(aspect) || aspect <= 0) return union;
+  let w = union.width;
+  let h = w / aspect;
+  if (h > union.height) {
+    h = union.height;
+    w = h * aspect;
+  }
+  return {
+    x: union.x + (union.width - w) / 2,
+    y: union.y + (union.height - h) / 2,
+    width: w,
+    height: h,
+  };
 }
 
 function pathPolygon(ctx: CanvasRenderingContext2D, anchors: Pt[]): void {
@@ -250,6 +347,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     applyShading = false,
     artworkPlacement = DEFAULT_ARTWORK_PLACEMENT,
     showDesignRect = false,
+    backgroundColor = null,
   } = params;
 
   const W = params.width ?? mockup.naturalWidth ?? mockup.width;
@@ -290,23 +388,35 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   if (!pctx) return;
 
   const useColors = mode === "solid-colors" || !artwork;
-  // Union AABB of all print polygons — the "design canvas" the user
-  // composes into when artworkPlacement is identity. We compute it
-  // for any single-sheet usage, including when the user has only
-  // calibration art loaded (no `artwork`), so the design-rect outline
-  // still draws.
-  const totalBbox = mode === "single-sheet" ? totalPrintAabb(printLayers) : null;
-  // Apply scale + offset to derive the effective rect the artwork
-  // actually occupies on the mockup. Scale is uniform around the
-  // union centre so resizing feels predictable ("makes the artwork
-  // smaller / larger inside its current footprint").
-  const effectiveDesignRect: Aabb | null = totalBbox
+  // Union AABB of single-sheet-participating panels only — the
+  // "design canvas" the user composes into when artworkPlacement is
+  // identity. Layers with includeInSingleSheet === false drop out,
+  // which lets the admin shrink the canvas to e.g. body+hood and
+  // leave sleeves as background-colour-only.
+  const totalBbox =
+    mode === "single-sheet"
+      ? totalPrintAabb(printLayers, isLayerInSingleSheet)
+      : null;
+  // Base rect: the design canvas adopts the artwork's natural aspect
+  // ratio so portraits stay tall and landscapes stay wide. When no
+  // artwork is loaded (admin previewing the empty template), fall
+  // back to the union AABB shape directly.
+  const baseRect: Aabb | null =
+    totalBbox && artwork
+      ? fitAspectInside(
+          totalBbox,
+          (artwork.naturalWidth || artwork.width) /
+            (artwork.naturalHeight || artwork.height || 1),
+        )
+      : totalBbox;
+  // Apply scale + offset around the base rect's centre.
+  const effectiveDesignRect: Aabb | null = baseRect
     ? (() => {
-        const cx = totalBbox.x + totalBbox.width / 2;
-        const cy = totalBbox.y + totalBbox.height / 2;
+        const cx = baseRect.x + baseRect.width / 2;
+        const cy = baseRect.y + baseRect.height / 2;
         const s = Math.max(0.0001, artworkPlacement.scale || 1);
-        const w = totalBbox.width * s;
-        const h = totalBbox.height * s;
+        const w = baseRect.width * s;
+        const h = baseRect.height * s;
         return {
           x: cx - w / 2 + (artworkPlacement.offsetX || 0),
           y: cy - h / 2 + (artworkPlacement.offsetY || 0),
@@ -324,6 +434,24 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pathPolygon(pctx, anchors);
     pctx.clip();
     pctx.globalAlpha = layer.opacity;
+
+    // Background colour fill — sits UNDER the artwork inside each
+    // panel's polygon, so transparent regions of the artwork (and
+    // panels intentionally excluded from single-sheet via
+    // includeInSingleSheet === false) show as dyed fabric instead of
+    // showing the original mockup pixels. Skipped in solid-colors
+    // mode because that mode owns the colour scheme.
+    if (backgroundColor && !useColors) {
+      pctx.fillStyle = backgroundColor;
+      pctx.fillRect(0, 0, W, H);
+    }
+
+    // Whether this panel actually receives artwork in single-sheet
+    // mode. When false, the panel keeps just the background colour
+    // (or stays empty if no bg) — exactly the "exclude sleeves from
+    // the design" use case.
+    const inSingleSheet = isLayerInSingleSheet(layer);
+    const skipArtwork = mode === "single-sheet" && !inSingleSheet;
 
     // Source resolution priority — match user mental model:
     //   1. solid-colors mode → debug fill, ignore artwork.
@@ -344,6 +472,11 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     if (useColors) {
       pctx.fillStyle = colorForLayer(layer, PANEL_COLORS.unassigned);
       pctx.fillRect(0, 0, W, H);
+    } else if (skipArtwork) {
+      // Excluded from single-sheet — bg colour (already painted) is
+      // all we draw. Still want the shading multiply to apply, so
+      // fall through to that step below by intentionally drawing
+      // nothing here.
     } else if (preferLayerSources && layer.mesh && layerSrc) {
       // Calibration verification: warp the panel's triangulated PNG
       // through the saved mesh. This is the OLD default — kept behind
