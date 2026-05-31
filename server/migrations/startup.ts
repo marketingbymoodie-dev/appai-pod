@@ -43,6 +43,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
   { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "aop_template_id",             type: "TEXT" },
+  { table: "product_types",         column: "panel_mapping_template",      type: "TEXT" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
 ];
 
@@ -53,6 +54,12 @@ const DATA_MIGRATIONS: string[] = [
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)
      AND (aop_template_id IS NULL OR aop_template_id = '')`,
+  // Pin product 20 (unisex zip hoodie) to the new mesh-warp panel-mapping
+  // template. When this is set, embed-design.tsx renders the new
+  // HoodieAopPlacer instead of the legacy PatternCustomizer for this product.
+  `UPDATE product_types SET panel_mapping_template = 'unisex-zip-hoodie-aop-L'
+   WHERE id = 20
+     AND (panel_mapping_template IS NULL OR panel_mapping_template = '')`,
   // Backfill materialized balances from the legacy customer columns.
   `INSERT INTO credit_balances (
       customer_id,

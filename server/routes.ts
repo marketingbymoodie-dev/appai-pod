@@ -32,6 +32,11 @@ import {
   uploadDesignFileToSupabase,
   getSupabaseDesignPublicUrl,
 } from "./supabaseDesigns";
+import {
+  getPublishedHoodieTemplate,
+  isPublicTemplateName,
+  listPublicTemplateNames,
+} from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
@@ -5003,6 +5008,7 @@ ${textEdgeRestrictions}
         variantMap,
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
+        panelMappingTemplate: (productType as any).panelMappingTemplate || null,
         placeholderPositions: typeof productType.placeholderPositions === "string"
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
@@ -5286,6 +5292,7 @@ ${textEdgeRestrictions}
       doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
       isAllOverPrint: productTypeToUse.isAllOverPrint || false,
       aopTemplateId: productTypeToUse.aopTemplateId || null,
+      panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],
@@ -6123,6 +6130,45 @@ ${textEdgeRestrictions}
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.send(body);
   }));
+
+  // ==================== STOREFRONT HOODIE PANEL-MAPPING TEMPLATES ====================
+  // Returns the published template JSON + base mockup URLs for the new
+  // mesh-warp HoodieAopPlacer (Stage 1 of replacing PatternCustomizer for
+  // panel-mapped products). Public, no shop required — templates are
+  // non-sensitive calibration data and are explicitly allowlisted server-
+  // side to prevent enumeration. URL: GET /api/storefront/hoodie-template/:name
+  app.get(
+    "/api/storefront/hoodie-template/:name",
+    asyncHandler(async (req: Request, res: Response) => {
+      const name = String(req.params.name || "");
+      if (!/^[a-zA-Z0-9_\-]{1,64}$/.test(name)) {
+        return res.status(400).json({ error: "Invalid template name" });
+      }
+      if (!isPublicTemplateName(name)) {
+        return res.status(404).json({
+          error: "Template not found",
+          available: listPublicTemplateNames(),
+        });
+      }
+      try {
+        const published = await getPublishedHoodieTemplate(name);
+        res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=3600");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.json({
+          name: published.name,
+          template: published.template,
+          mockups: published.mockups,
+          cachedAt: published.cachedAt,
+        });
+      } catch (err: any) {
+        console.error(`[hoodie-template] load failed for ${name}:`, err?.message || err);
+        return res.status(503).json({
+          error: "Template temporarily unavailable",
+          detail: err?.message || String(err),
+        });
+      }
+    }),
+  );
 
   // Storefront ping endpoint - quick health check for embed to verify connectivity
   app.get("/api/storefront/ping", (req: Request, res: Response) => {
