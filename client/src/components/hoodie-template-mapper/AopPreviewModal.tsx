@@ -278,6 +278,26 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     setActiveGroupId(first?.id ?? null);
   }, [open, mode, view, designGroups, template.views, activeGroupId]);
 
+  // Restore persisted link state from the template whenever the
+  // modal opens. Save Defaults writes each linked group's captured
+  // scale into `DesignGroup.lockedRatio`, so groups with a non-null
+  // lockedRatio are part of the saved link set and we re-hydrate
+  // them here. Re-running on `designGroups` identity also keeps the
+  // modal in sync immediately after Save Defaults.
+  useEffect(() => {
+    if (!open) return;
+    const linked: Record<string, boolean> = {};
+    const ratios: Record<string, number> = {};
+    for (const g of designGroups) {
+      if (typeof g.lockedRatio === "number") {
+        linked[g.id] = true;
+        ratios[g.id] = g.lockedRatio;
+      }
+    }
+    setLinkedGroupIds(linked);
+    setLockedRatios(ratios);
+  }, [open, designGroups]);
+
   // Has the modal been edited? Used to enable Save / Reset buttons.
   const hasOverrides =
     Object.keys(groupPlacementOverrides).length > 0 ||
@@ -858,7 +878,14 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 className="max-h-[78vh] max-w-full rounded border border-slate-800 bg-black object-contain shadow-xl"
                 data-testid="hoodie-aop-preview-canvas"
               />
-              {mockupImg && mode === "single-sheet" && artworkImg && activeGroupId && (
+              {mockupImg &&
+                mode === "single-sheet" &&
+                artworkImg &&
+                activeGroupId &&
+                // Hood placement on the back view is inherited from
+                // the front view — render no drag handles so the
+                // admin can't accidentally edit it from here.
+                !(view === "back" && activeGroupId === "hood") && (
                 <DesignRectHandlesOverlay
                   canvasRef={canvasRef}
                   template={template}
@@ -878,6 +905,21 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   }
                 />
               )}
+              {/* Read-only hint when the active group is the hood
+                  on the back view — its placement mirrors the front
+                  view, so we surface that intent inline instead of
+                  letting the admin drag handles that wouldn't stick. */}
+              {mockupImg &&
+                mode === "single-sheet" &&
+                view === "back" &&
+                activeGroupId === "hood" && (
+                  <div className="pointer-events-none absolute inset-x-4 top-4 flex justify-center">
+                    <div className="rounded-md border border-fuchsia-500/40 bg-fuchsia-900/60 px-3 py-1.5 text-[11px] text-fuchsia-100 shadow">
+                      Hood artwork on the back view inherits the front-view
+                      placement. Switch to FRONT to adjust it.
+                    </div>
+                  </div>
+                )}
             </div>
             {!mockupImg && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-sm text-slate-300">
@@ -1270,10 +1312,25 @@ function DesignRectHandlesOverlay({
       const dyMock = dyClient * sy;
 
       if (drag.mode === "translate") {
+        let nextOffsetX = drag.startPlacement.offsetX + dxMock;
+        const nextOffsetY = drag.startPlacement.offsetY + dyMock;
+        // Zip-seam snap: groups anchored at a real fabric seam
+        // (front body, hood — anything where computeAnchorX found
+        // an L+R pair) snap their centre to the seam line when the
+        // proposed offset is within 3 mockup pixels of zero. This
+        // gives the click-and-hold drag a tactile centre-line lock
+        // without preventing fine adjustment past the threshold.
+        const SNAP_PX = 3;
+        if (
+          drag.startInfo.anchorIsSeam &&
+          Math.abs(nextOffsetX) <= SNAP_PX
+        ) {
+          nextOffsetX = 0;
+        }
         onChange({
           ...drag.startPlacement,
-          offsetX: drag.startPlacement.offsetX + dxMock,
-          offsetY: drag.startPlacement.offsetY + dyMock,
+          offsetX: nextOffsetX,
+          offsetY: nextOffsetY,
         });
         return;
       }
@@ -1572,6 +1629,10 @@ function GroupsPanel({
               k === "pocket_right",
           );
           const isLinked = linkedGroupIds[g.id] === true;
+          // Hood placement on the back view inherits from the front
+          // view, so disable its inputs here. The admin sees the
+          // current scale + a hint and can switch to FRONT to edit.
+          const hoodReadOnly = g.id === "hood" && view === "back";
           return (
             <div
               key={g.id}
@@ -1619,60 +1680,69 @@ function GroupsPanel({
               </div>
               {isActive && (
                 <div className="space-y-1 border-t border-slate-800 px-2 pb-2 pt-1">
-                  <ToggleRow
-                    label="Enabled"
-                    checked={enabled}
-                    onChange={(v) => onEnabledChange(g.id, v)}
-                  />
-                  {enabled && (
+                  {hoodReadOnly ? (
+                    <div className="rounded border border-fuchsia-500/40 bg-fuchsia-950/30 px-2 py-1.5 text-[10px] text-fuchsia-200">
+                      Mirrors the front-view placement. Switch to FRONT to
+                      adjust the hood artwork.
+                    </div>
+                  ) : (
                     <>
-                      <PlacementSlider
-                        label="Scale"
-                        unit="×"
-                        value={placement.scale}
-                        min={0.1}
-                        max={3}
-                        step={0.01}
-                        precision={2}
-                        onChange={(scale) =>
-                          onPlacementChange(g.id, { scale })
-                        }
+                      <ToggleRow
+                        label="Enabled"
+                        checked={enabled}
+                        onChange={(v) => onEnabledChange(g.id, v)}
                       />
-                      <PlacementSlider
-                        label="Offset X"
-                        unit="px"
-                        value={placement.offsetX}
-                        min={-600}
-                        max={600}
-                        step={1}
-                        precision={0}
-                        onChange={(offsetX) =>
-                          onPlacementChange(g.id, { offsetX })
-                        }
-                      />
-                      <PlacementSlider
-                        label="Offset Y"
-                        unit="px"
-                        value={placement.offsetY}
-                        min={-600}
-                        max={600}
-                        step={1}
-                        precision={0}
-                        onChange={(offsetY) =>
-                          onPlacementChange(g.id, { offsetY })
-                        }
-                      />
-                      {hasSeam && (
-                        <PlacementSlider
-                          label="Seam allowance"
-                          unit="%"
-                          value={seam * 100}
-                          min={0}
-                          max={15}
-                          step={0.5}
-                          precision={1}
-                          onChange={(v) => onSeamChange(g.id, v / 100)}
-                        />
+                      {enabled && (
+                        <>
+                          <PlacementSlider
+                            label="Scale"
+                            unit="×"
+                            value={placement.scale}
+                            min={0.1}
+                            max={3}
+                            step={0.01}
+                            precision={2}
+                            onChange={(scale) =>
+                              onPlacementChange(g.id, { scale })
+                            }
+                          />
+                          <PlacementSlider
+                            label="Offset X"
+                            unit="px"
+                            value={placement.offsetX}
+                            min={-600}
+                            max={600}
+                            step={1}
+                            precision={0}
+                            onChange={(offsetX) =>
+                              onPlacementChange(g.id, { offsetX })
+                            }
+                          />
+                          <PlacementSlider
+                            label="Offset Y"
+                            unit="px"
+                            value={placement.offsetY}
+                            min={-600}
+                            max={600}
+                            step={1}
+                            precision={0}
+                            onChange={(offsetY) =>
+                              onPlacementChange(g.id, { offsetY })
+                            }
+                          />
+                          {hasSeam && (
+                            <PlacementSlider
+                              label="Seam allowance"
+                              unit="%"
+                              value={seam * 100}
+                              min={0}
+                              max={15}
+                              step={0.5}
+                              precision={1}
+                              onChange={(v) => onSeamChange(g.id, v / 100)}
+                            />
+                          )}
+                        </>
                       )}
                     </>
                   )}

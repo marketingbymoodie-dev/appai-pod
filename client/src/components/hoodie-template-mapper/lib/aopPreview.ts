@@ -231,6 +231,13 @@ export type DesignRectInfo = {
   anchor: { x: number; y: number };
   /** Whether this group has a recognised L/R seam pair. */
   hasSeamPair: boolean;
+  /**
+   * True when the anchor X represents a fabric seam (zip / hood
+   * separation) rather than a generic union centroid. The modal's
+   * drag overlay uses this to gate "snap to seam" behaviour so we
+   * only snap groups that genuinely have a seam line.
+   */
+  anchorIsSeam: boolean;
   /** Seam allowance currently applied (% of group rect width). */
   seamAllowance: number;
   /** ID of the group this rect belongs to (`"__legacy__"` if ungrouped fallback). */
@@ -361,6 +368,7 @@ function computeGroupRect(
     effective,
     anchor: { x: anchorX, y: cy },
     hasSeamPair,
+    anchorIsSeam: hasSeamPair,
     seamAllowance,
     groupId,
     enabled,
@@ -406,7 +414,18 @@ export function computeGroupRects(
       (l) => l.panelKey && group.panelKeys.includes(l.panelKey),
     );
     if (groupLayers.length === 0) continue;
-    const placement = resolveGroupPlacement(group, view, options?.placementOverrides);
+    // Hood wrap-around: the hood is one continuous fabric piece, so
+    // the back view inherits its placement from the front view. This
+    // means moving the hood artwork on the front automatically
+    // shifts what's visible on the back, and the back view never
+    // shows independent hood controls.
+    const placementView: HoodieView =
+      group.id === "hood" && view === "back" ? "front" : view;
+    const placement = resolveGroupPlacement(
+      group,
+      placementView,
+      options?.placementOverrides,
+    );
     const seam = resolveGroupSeam(group, options?.seamOverrides);
     const enabled = resolveGroupEnabled(group, options?.enabledOverrides);
     const info = computeGroupRect(
