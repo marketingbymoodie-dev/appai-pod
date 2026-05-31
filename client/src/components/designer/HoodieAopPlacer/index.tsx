@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Image as ImageIcon,
-  Pipette,
-  RotateCcw,
-  Upload,
-  Loader2,
-} from "lucide-react";
+import { Pipette, RotateCcw, Upload, Loader2, Link2, Link2Off } from "lucide-react";
 import {
   defaultDesignGroups,
   type DesignGroup,
   type HoodieTemplate,
   type HoodieView,
+  type TileSettings,
 } from "@shared/hoodieTemplate";
 import {
   renderAopPreview,
@@ -23,31 +18,30 @@ import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
 /**
  * Customer-facing AOP artwork placer.
  *
- * Reuses the live preview / mesh-warp pipeline from the admin
- * `AopPreviewModal` but trims it down to the controls a buyer
- * actually needs:
+ * The middle control column mirrors the legacy `PatternCustomizer`'s order
+ * so customers see a familiar layout when we swap this in for product 20:
  *
- *   - Front / Back view switch
- *   - "Hood" + "Front body" group pair, **on by default + linked**.
- *     The user can break the link to position each pair independently.
- *   - "Back body" group, **off by default**. Toggle to turn on.
- *   - Background colour picker + eyedropper + 6 swatches sampled from
- *     the artwork (median-cut palette).
- *   - Drag/resize handles via the shared `DesignRectHandlesOverlay`,
- *     with snap behaviour:
- *       * Front + Hood: X-only (zip / hood-opening seams).
- *       * Back: X + Y (no seam — just centre snap on both axes).
- *   - Disabled "Pattern" tab as a placeholder for Stage 4.
+ *   1. Place / Pattern segmented control
+ *   2. Scale slider (drives the active group)
+ *   3. View row: Front / Back / Hood
+ *   4. Artwork Enabled (per-active-group)
+ *   5. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
+ *   6. Reset
  *
- * Stage 2 lives at `/dev/hoodie-placer` so we can iterate on the
- * standalone component before wiring it into `embed-design.tsx` for
- * product 20 (Stage 3).
+ * View row notes:
+ *   - `Front` and `Back` switch the canvas view.
+ *   - `Hood` is **not** a separate view (the hood is rendered on both Front
+ *     and Back). Tapping `Hood` selects the hood group as the active scale /
+ *     enable target and toggles its link state with the front body. While
+ *     linked, hood placement mirrors front-body placement (admin default).
+ *     Unlinked, the customer can drag/scale the hood independently.
  *
- * The component is intentionally **uncontrolled** at the page level:
- * it owns its placement / colour state internally and emits an
- * `onApply` event with the final canvas bitmaps + metadata so the
- * Stage 3 wiring can call the same `panelUrls` upload pipeline the
- * legacy `PatternCustomizer` already uses.
+ * Snap behaviour (3 px):
+ *   - Front / Hood (seam-anchored)  → X-only.
+ *   - Back (centroid-anchored)      → X + Y.
+ *
+ * Stage 2 lives at `/dev/hoodie-placer` so we can iterate before wiring it
+ * into `embed-design.tsx` for product 20 (Stage 3).
  */
 
 export type HoodieAopPlacerProps = {
@@ -55,18 +49,7 @@ export type HoodieAopPlacerProps = {
   templateName: string;
   /** Initial / restored state, when resuming a customer's design. Optional. */
   initialState?: HoodieAopPlacerState | null;
-  /**
-   * Optional callback invoked when the customer hits "Apply" — Stage 3
-   * will hook this up to the storefront's panel-upload pipeline. The
-   * payload exposes the live state plus a synchronous render API so
-   * the embed page can grab per-view canvases for upload.
-   */
   onApply?: (result: HoodieAopPlacerApplyResult) => void;
-  /**
-   * Optional callback fired on any state change (debounced by React's
-   * batch) — Stage 5 will wire this to designState autosave on the
-   * generation job. Safe to omit during Stage 2.
-   */
   onChange?: (state: HoodieAopPlacerState) => void;
 };
 
@@ -75,17 +58,24 @@ export type HoodieAopPlacerProps = {
  * `generations.designState` so the customer can resume mid-edit.
  */
 export type HoodieAopPlacerState = {
+  /** "place" = single-sheet drag/scale, "pattern" = repeating tile. */
+  mode: "place" | "pattern";
+  /** Currently visible view (Front / Back). */
   view: HoodieView;
+  /** Currently active design group — what Scale & Enabled act on. */
+  activeGroupId: string;
   /** `null` until the customer uploads or picks an artwork. */
   artworkUrl: string | null;
   /** Per-group placement keyed by group id. */
   placements: Record<string, Record<HoodieView, ArtworkPlacement>>;
-  /** Per-group enabled flag. Back is `false` by default. */
+  /** Per-group enabled flag. */
   enabled: Record<string, boolean>;
-  /** Whether the front + hood pair is currently linked. */
-  linkFrontHood: boolean;
+  /** Whether the hood group's placement is linked to the front body. */
+  hoodLinked: boolean;
   /** Background fill colour (CSS) painted under the artwork. */
   backgroundColor: string;
+  /** Tile settings (pattern mode). Falls back to template defaults. */
+  tileSettings: TileSettings;
 };
 
 export type HoodieAopPlacerApplyResult = {
@@ -102,40 +92,67 @@ type ApiResponse = {
 };
 
 const DEFAULT_BG_COLOR = "#FFFFFF";
+const ARTWORK_PALETTE_COUNT = 4;
+const FIXED_PALETTE: PaletteSwatch[] = [
+  { hex: "#000000", weight: 0 },
+  { hex: "#FFFFFF", weight: 0 },
+];
 
-/** Group ids the customer placer surfaces as toggles in the sidebar. */
-const CUSTOMER_GROUP_IDS = ["hood", "front-body", "back-body"] as const;
+const SCALE_MIN = 0.2;
+const SCALE_MAX = 2.5;
+const TILE_SIZE_MIN = 0.5;
+const TILE_SIZE_MAX = 8;
 
-const GROUP_LABELS: Record<string, string> = {
-  hood: "Hood",
-  "front-body": "Front body",
-  "back-body": "Back body",
-};
+const TILE_PATTERN_OPTIONS: Array<{
+  id: TileSettings["pattern"];
+  label: string;
+}> = [
+  { id: "grid", label: "Grid" },
+  { id: "brick", label: "Brick" },
+  { id: "half-drop", label: "Offset" },
+];
 
 /**
- * Default state seed. Hood + front body on, back off, hood/front
- * linked. Identity placement on every group.
+ * Build the customer state from a fetched template + (optional) saved
+ * customer state. Inherits the admin's per-group defaults (placement,
+ * enabled, locked-ratio) so the placer opens with the layout the admin
+ * has dialed in.
  */
-function buildDefaultState(): HoodieAopPlacerState {
+function buildInitialState(
+  template: HoodieTemplate,
+  saved?: HoodieAopPlacerState | null,
+): HoodieAopPlacerState {
+  const groups = template.designGroups ?? defaultDesignGroups();
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
-  for (const g of defaultDesignGroups()) {
+  for (const g of groups) {
     placements[g.id] = {
-      front: { ...DEFAULT_ARTWORK_PLACEMENT },
-      back: { ...DEFAULT_ARTWORK_PLACEMENT },
+      front: { ...(g.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
+      back: { ...(g.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
     };
-    enabled[g.id] = g.id === "back-body" ? false : g.id !== "trim";
-    // Trim and the sleeves can stay on — they pick up the artwork
-    // via the legacy ungrouped fallback. The sidebar UI just hides
-    // them to keep the customer-facing surface simple.
+    // Admin's default. Customer can flip these via "Artwork enabled".
+    enabled[g.id] = g.id === "back-body" ? false : g.enabled !== false;
   }
-  return {
+  const base: HoodieAopPlacerState = {
+    mode: "place",
     view: "front",
+    activeGroupId: "front-body",
     artworkUrl: null,
     placements,
     enabled,
-    linkFrontHood: true,
+    hoodLinked: true,
     backgroundColor: DEFAULT_BG_COLOR,
+    tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
+  };
+  if (!saved) return base;
+  // Merge saved customer state onto the template defaults so any new groups
+  // the admin adds later still appear, while customer customisations win.
+  return {
+    ...base,
+    ...saved,
+    placements: { ...base.placements, ...(saved.placements ?? {}) },
+    enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
+    tileSettings: { ...base.tileSettings, ...(saved.tileSettings ?? {}) },
   };
 }
 
@@ -174,10 +191,11 @@ export default function HoodieAopPlacer({
     };
   }, [templateName]);
 
-  // ---------- Mockup + artwork preloading ----------
-  const [mockups, setMockups] = useState<Record<HoodieView, HTMLImageElement | null>>(
-    { front: null, back: null },
-  );
+  // ---------- Mockup preloading ----------
+  const [mockups, setMockups] = useState<Record<HoodieView, HTMLImageElement | null>>({
+    front: null,
+    back: null,
+  });
   useEffect(() => {
     if (!data) return;
     let cancelled = false;
@@ -205,26 +223,30 @@ export default function HoodieAopPlacer({
     };
   }, [data]);
 
-  // ---------- Customer state ----------
-  const [state, setState] = useState<HoodieAopPlacerState>(
-    () => initialState ?? buildDefaultState(),
-  );
-
-  // Apply incoming initialState if it changes (e.g. resume edit).
+  // ---------- Customer state (derived once template is in) ----------
+  const [state, setState] = useState<HoodieAopPlacerState | null>(null);
   useEffect(() => {
-    if (initialState) setState(initialState);
-  }, [initialState]);
+    if (!data) return;
+    setState((prev) => {
+      // First load → seed from template + optional saved state.
+      if (!prev) return buildInitialState(data.template, initialState);
+      return prev;
+    });
+    // initialState is intentionally only consumed on first seed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   // Notify parent of state changes.
   useEffect(() => {
-    onChange?.(state);
+    if (state) onChange?.(state);
   }, [state, onChange]);
 
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
   const [artworkLoading, setArtworkLoading] = useState(false);
   const [palette, setPalette] = useState<PaletteSwatch[]>([]);
   useEffect(() => {
-    if (!state.artworkUrl) {
+    const url = state?.artworkUrl ?? null;
+    if (!url) {
       setArtworkImg(null);
       setPalette([]);
       return;
@@ -237,12 +259,10 @@ export default function HoodieAopPlacer({
       if (cancelled) return;
       setArtworkImg(img);
       setArtworkLoading(false);
-      // Palette extraction is sync but not free — defer to next tick
-      // so we don't block the render-after-load animation.
       requestAnimationFrame(() => {
         if (cancelled) return;
         try {
-          setPalette(extractArtworkPalette(img, 6));
+          setPalette(extractArtworkPalette(img, ARTWORK_PALETTE_COUNT));
         } catch {
           setPalette([]);
         }
@@ -255,33 +275,16 @@ export default function HoodieAopPlacer({
         setPalette([]);
       }
     };
-    img.src = state.artworkUrl;
+    img.src = url;
     return () => {
       cancelled = true;
     };
-  }, [state.artworkUrl]);
-
-  // ---------- Active group selection ----------
-  // The drag overlay needs a single active group. We pick the first
-  // enabled customer group, preferring the hood/front pair so the
-  // most likely target is selected by default.
-  const [activeGroupId, setActiveGroupId] = useState<string>("front-body");
-  useEffect(() => {
-    // If the active group gets disabled, hop to the next enabled
-    // customer-visible group so the overlay stays meaningful.
-    if (!state.enabled[activeGroupId]) {
-      const fallback = CUSTOMER_GROUP_IDS.find((id) => state.enabled[id]);
-      if (fallback && fallback !== activeGroupId) {
-        setActiveGroupId(fallback);
-      }
-    }
-  }, [state.enabled, activeGroupId]);
+  }, [state?.artworkUrl]);
 
   // ---------- Canvas rendering ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
   useEffect(() => {
-    if (!data) return;
+    if (!data || !state) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const mockup = mockups[state.view];
@@ -290,54 +293,131 @@ export default function HoodieAopPlacer({
     canvas.height = mockup.naturalHeight || mockup.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    // Hood-link: when linked, the hood group mirrors front-body's placement.
+    // We synthesise an override into the renderer rather than mutating state.
+    const placementOverrides: Record<string, Record<HoodieView, ArtworkPlacement>> = {
+      ...state.placements,
+    };
+    if (state.hoodLinked && state.placements["front-body"]) {
+      placementOverrides["hood"] = {
+        front: { ...(state.placements["front-body"].front ?? DEFAULT_ARTWORK_PLACEMENT) },
+        back: state.placements["hood"]?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
+      };
+    }
     renderAopPreview(ctx, {
       template: data.template,
       view: state.view,
       mockup,
       artwork: artworkImg,
-      mode: "single-sheet",
+      mode: state.mode === "pattern" ? "tile" : "single-sheet",
       showExclusions: true,
-      showOutlines: false,
-      showLabels: false,
       applyShading: true,
-      groupPlacementOverrides: state.placements,
+      groupPlacementOverrides: placementOverrides,
       groupEnabledOverrides: state.enabled,
-      activeGroupId: artworkImg ? activeGroupId : null,
+      activeGroupId: state.mode === "place" && artworkImg ? state.activeGroupId : null,
       backgroundColor: state.backgroundColor,
+      tileSettings: state.tileSettings,
+      pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
     });
-  }, [data, mockups, state, artworkImg, activeGroupId]);
+  }, [data, state, mockups, artworkImg]);
 
   // ---------- Helpers ----------
   const updatePlacement = useCallback(
     (groupId: string, view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
+        if (!prev) return prev;
         const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {
           ...prev.placements,
-          [groupId]: { ...(prev.placements[groupId] ?? {}), [view]: next } as Record<
-            HoodieView,
-            ArtworkPlacement
-          >,
+          [groupId]: {
+            ...(prev.placements[groupId] ?? {}),
+            [view]: next,
+          } as Record<HoodieView, ArtworkPlacement>,
         };
-        // Front/hood link: when linked, scale + offset propagate
-        // between the pair on the *current* view only. Back-view
-        // placements stay independent so customers can park the
-        // back artwork where they want it without front edits
-        // dragging it around.
-        if (
-          prev.linkFrontHood &&
-          (groupId === "hood" || groupId === "front-body")
-        ) {
+        // Hood-link: front-body edits propagate to hood while linked.
+        // Hood edits also propagate to front-body so they stay in sync.
+        if (prev.hoodLinked && (groupId === "hood" || groupId === "front-body")) {
           const partner = groupId === "hood" ? "front-body" : "hood";
-          const partnerPrev =
-            prev.placements[partner]?.[view] ?? { ...DEFAULT_ARTWORK_PLACEMENT };
+          if (view === "front") {
+            placements[partner] = {
+              ...(prev.placements[partner] ?? {}),
+              front: { ...next },
+            } as Record<HoodieView, ArtworkPlacement>;
+          }
+        }
+        return { ...prev, placements };
+      });
+    },
+    [],
+  );
+
+  const setMode = useCallback((mode: "place" | "pattern") => {
+    setState((prev) => (prev ? { ...prev, mode } : prev));
+  }, []);
+
+  const setView = useCallback((view: HoodieView) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      // Switching to back focuses the back-body group.
+      if (view === "back") return { ...prev, view, activeGroupId: "back-body" };
+      // Switching to front focuses front-body unless we were already on hood.
+      const next: HoodieAopPlacerState = {
+        ...prev,
+        view,
+        activeGroupId:
+          prev.activeGroupId === "hood" ? "hood" : "front-body",
+      };
+      return next;
+    });
+  }, []);
+
+  const onHoodButton = useCallback(() => {
+    // Tap-and-tap-again pattern: first tap selects hood as the active group
+    // (so the scale slider drives the hood). A second tap toggles the link
+    // state. We expose the link state via the tooltip text so customers
+    // discover it.
+    setState((prev) => {
+      if (!prev) return prev;
+      // Bring the user to the front view if they were on back — hood is
+      // visible on both views but the active overlay only renders on front
+      // because the back-of-hood inherits via the flat-panel bridge.
+      const view: HoodieView = prev.view === "back" ? "front" : prev.view;
+      // First click on hood while another group was active → select it.
+      if (prev.activeGroupId !== "hood") {
+        return { ...prev, view, activeGroupId: "hood" };
+      }
+      // Already on hood → toggle link.
+      return { ...prev, view, hoodLinked: !prev.hoodLinked };
+    });
+  }, []);
+
+  const setEnabled = useCallback((groupId: string, on: boolean) => {
+    setState((prev) =>
+      prev ? { ...prev, enabled: { ...prev.enabled, [groupId]: on } } : prev,
+    );
+  }, []);
+
+  const setBgColor = useCallback((hex: string) => {
+    setState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
+  }, []);
+
+  const setActiveScale = useCallback(
+    (groupId: string, view: HoodieView, scale: number) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        const cur = prev.placements[groupId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        const next: ArtworkPlacement = { ...cur, scale };
+        const placements = {
+          ...prev.placements,
+          [groupId]: {
+            ...(prev.placements[groupId] ?? {}),
+            [view]: next,
+          } as Record<HoodieView, ArtworkPlacement>,
+        };
+        if (prev.hoodLinked && (groupId === "hood" || groupId === "front-body") && view === "front") {
+          const partner = groupId === "hood" ? "front-body" : "hood";
           placements[partner] = {
             ...(prev.placements[partner] ?? {}),
-            [view]: {
-              ...partnerPrev,
-              scale: next.scale,
-              offsetX: next.offsetX,
-              offsetY: next.offsetY,
-            },
+            front: { ...next },
           } as Record<HoodieView, ArtworkPlacement>;
         }
         return { ...prev, placements };
@@ -346,52 +426,10 @@ export default function HoodieAopPlacer({
     [],
   );
 
-  const setEnabled = useCallback((groupId: string, on: boolean) => {
-    setState((prev) => ({
-      ...prev,
-      enabled: { ...prev.enabled, [groupId]: on },
-    }));
-  }, []);
-
-  const setView = useCallback((v: HoodieView) => {
-    setState((prev) => ({ ...prev, view: v }));
-  }, []);
-
-  const setBgColor = useCallback((hex: string) => {
-    setState((prev) => ({ ...prev, backgroundColor: hex }));
-  }, []);
-
-  const toggleLink = useCallback(() => {
-    setState((prev) => {
-      // When re-linking, snap the partner's current placement to
-      // the active one so the customer sees the pair "click together"
-      // visually instead of a confusing pop.
-      const next = { ...prev, linkFrontHood: !prev.linkFrontHood };
-      if (next.linkFrontHood) {
-        const v = prev.view;
-        const source =
-          activeGroupId === "hood" || activeGroupId === "front-body"
-            ? activeGroupId
-            : "front-body";
-        const target = source === "hood" ? "front-body" : "hood";
-        const sourceP = prev.placements[source]?.[v] ?? DEFAULT_ARTWORK_PLACEMENT;
-        next.placements = {
-          ...prev.placements,
-          [target]: {
-            ...(prev.placements[target] ?? {}),
-            [v]: { ...sourceP },
-          } as Record<HoodieView, ArtworkPlacement>,
-        };
-      }
-      return next;
-    });
-  }, [activeGroupId]);
-
   const handleArtworkUpload = (file: File) => {
     const url = URL.createObjectURL(file);
     setState((prev) => {
-      // Revoke any previous blob URL we created so we don't leak
-      // memory across uploads.
+      if (!prev) return prev;
       if (prev.artworkUrl?.startsWith("blob:")) {
         try {
           URL.revokeObjectURL(prev.artworkUrl);
@@ -403,17 +441,28 @@ export default function HoodieAopPlacer({
     });
   };
 
-  const resetPlacement = useCallback(() => {
+  const resetAll = useCallback(() => {
+    if (!data) return;
     setState((prev) => {
-      const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
-      for (const id of Object.keys(prev.placements)) {
-        placements[id] = {
-          front: { ...DEFAULT_ARTWORK_PLACEMENT },
-          back: { ...DEFAULT_ARTWORK_PLACEMENT },
-        };
-      }
-      return { ...prev, placements };
+      if (!prev) return prev;
+      const fresh = buildInitialState(data.template, null);
+      // Preserve the things customers expect to survive a reset:
+      // their uploaded artwork, BG colour, mode, view, tile settings.
+      return {
+        ...fresh,
+        artworkUrl: prev.artworkUrl,
+        backgroundColor: prev.backgroundColor,
+        mode: prev.mode,
+        view: prev.view,
+        tileSettings: prev.tileSettings,
+      };
     });
+  }, [data]);
+
+  const setTileSettings = useCallback((patch: Partial<TileSettings>) => {
+    setState((prev) =>
+      prev ? { ...prev, tileSettings: { ...prev.tileSettings, ...patch } } : prev,
+    );
   }, []);
 
   const triggerEyedropper = useCallback(async () => {
@@ -428,16 +477,10 @@ export default function HoodieAopPlacer({
     }
   }, [setBgColor]);
 
-  // ---------- Snap mode for active group ----------
-  const snapMode: "seam" | "x" | "y" | "both" | "none" = useMemo(() => {
-    if (activeGroupId === "back-body") return "both";
-    return "seam";
-  }, [activeGroupId]);
-
   // ---------- Apply hand-off (Stage 3 will subscribe) ----------
   const renderViewToCanvas = useCallback(
     (v: HoodieView): HTMLCanvasElement | null => {
-      if (!data) return null;
+      if (!data || !state) return null;
       const mockup = mockups[v];
       if (!mockup) return null;
       const c = document.createElement("canvas");
@@ -445,32 +488,41 @@ export default function HoodieAopPlacer({
       c.height = mockup.naturalHeight || mockup.height;
       const ctx = c.getContext("2d");
       if (!ctx) return null;
+      const placementOverrides: Record<string, Record<HoodieView, ArtworkPlacement>> = {
+        ...state.placements,
+      };
+      if (state.hoodLinked && state.placements["front-body"]) {
+        placementOverrides["hood"] = {
+          front: { ...(state.placements["front-body"].front ?? DEFAULT_ARTWORK_PLACEMENT) },
+          back: state.placements["hood"]?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
+        };
+      }
       renderAopPreview(ctx, {
         template: data.template,
         view: v,
         mockup,
         artwork: artworkImg,
-        mode: "single-sheet",
+        mode: state.mode === "pattern" ? "tile" : "single-sheet",
         showExclusions: true,
         applyShading: true,
-        groupPlacementOverrides: state.placements,
+        groupPlacementOverrides: placementOverrides,
         groupEnabledOverrides: state.enabled,
         backgroundColor: state.backgroundColor,
+        tileSettings: state.tileSettings,
+        pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
       });
       return c;
     },
-    [data, mockups, artworkImg, state],
+    [data, state, mockups, artworkImg],
   );
 
   const handleApply = useCallback(() => {
-    onApply?.({
-      state,
-      renderView: renderViewToCanvas,
-    });
+    if (!state) return;
+    onApply?.({ state, renderView: renderViewToCanvas });
   }, [onApply, state, renderViewToCanvas]);
 
-  // ---------- Render ----------
-  if (loading) {
+  // ---------- Render guards ----------
+  if (loading || !state) {
     return (
       <div className="flex h-[400px] items-center justify-center text-sm text-slate-400">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading template…
@@ -486,61 +538,47 @@ export default function HoodieAopPlacer({
     );
   }
 
-  const groups: DesignGroup[] =
-    data.template.designGroups ?? defaultDesignGroups();
-  const visibleGroups = CUSTOMER_GROUP_IDS.map((id) =>
-    groups.find((g) => g.id === id),
-  ).filter((g): g is DesignGroup => Boolean(g));
+  // ---------- Derived UI state ----------
+  const groups: DesignGroup[] = data.template.designGroups ?? defaultDesignGroups();
+  const activeGroup = groups.find((g) => g.id === state.activeGroupId);
   const mockup = mockups[state.view];
+  const placement =
+    state.placements[state.activeGroupId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const showOverlay =
     !!mockup &&
     !!artworkImg &&
-    state.enabled[activeGroupId] &&
-    !(state.view === "back" && activeGroupId === "hood");
-  const placement =
-    state.placements[activeGroupId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+    state.mode === "place" &&
+    !!state.enabled[state.activeGroupId] &&
+    // Hood handles only render on front view (back hood inherits via the
+    // flat-panel bridge, no draggable equivalent).
+    !(state.view === "back" && state.activeGroupId === "hood");
+  const snapMode: "seam" | "x" | "y" | "both" | "none" =
+    state.activeGroupId === "back-body" ? "both" : "seam";
+
+  // Hood button: clicking the active hood group toggles link state. While
+  // hood is active and unlinked, the customer can drag/scale it freely.
+  const hoodSelected = state.activeGroupId === "hood";
+  const hoodTooltip = state.hoodLinked
+    ? hoodSelected
+      ? "Hood linked to front — click again to unlink"
+      : "Hood is linked to the front body. Click to edit independently."
+    : "Hood unlinked — click again to relink to front body.";
+
+  // Six swatches: 4 from artwork, plus black + white.
+  const swatches: PaletteSwatch[] = [
+    ...palette.slice(0, ARTWORK_PALETTE_COUNT),
+    ...FIXED_PALETTE,
+  ];
 
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
       {/* Left: live mockup with overlay */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
-        <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2">
-          <div role="tablist" className="flex gap-1">
-            {(["front", "back"] as HoodieView[]).map((v) => (
-              <button
-                key={v}
-                role="tab"
-                aria-selected={state.view === v}
-                onClick={() => setView(v)}
-                className={`rounded px-3 py-1 text-xs font-medium transition ${
-                  state.view === v
-                    ? "bg-fuchsia-600 text-white"
-                    : "bg-slate-900 text-slate-300 hover:bg-slate-800"
-                }`}
-              >
-                {v === "front" ? "Front" : "Back"}
-              </button>
-            ))}
-            <button
-              disabled
-              className="rounded px-3 py-1 text-xs font-medium text-slate-500 cursor-not-allowed"
-              title="Repeating-pattern mode coming soon"
-            >
-              Pattern (soon)
-            </button>
-          </div>
-          <button
-            onClick={resetPlacement}
-            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-slate-300 hover:bg-slate-800"
-          >
-            <RotateCcw className="h-3 w-3" /> Reset placement
-          </button>
-        </div>
         <div className="relative flex aspect-square items-center justify-center bg-black p-4">
           <div className="relative max-h-full max-w-full">
             <canvas
               ref={canvasRef}
-              className="max-h-[70vh] max-w-full rounded object-contain"
+              className="max-h-[78vh] max-w-full rounded object-contain"
               data-testid="hoodie-aop-placer-canvas"
             />
             {showOverlay && mockup && artworkImg && (
@@ -550,19 +588,19 @@ export default function HoodieAopPlacer({
                 view={state.view}
                 mockup={mockup}
                 artwork={artworkImg}
-                groupId={activeGroupId}
+                groupId={state.activeGroupId}
                 placement={placement}
                 placementOverrides={state.placements}
                 enabledOverrides={state.enabled}
                 snapMode={snapMode}
                 onChange={(next) =>
-                  updatePlacement(activeGroupId, state.view, next)
+                  updatePlacement(state.activeGroupId, state.view, next)
                 }
               />
             )}
             {!artworkImg && !artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-400">
-                Upload an artwork on the right to start placing it →
+                Upload an artwork to start placing it →
               </div>
             )}
             {artworkLoading && (
@@ -574,9 +612,26 @@ export default function HoodieAopPlacer({
         </div>
       </div>
 
-      {/* Right: controls */}
+      {/* Right: controls (mirrors legacy customizer's middle-column order) */}
       <div className="w-full shrink-0 space-y-4 lg:w-80">
-        {/* Artwork upload */}
+        {/* Pattern / Place segmented toggle */}
+        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-700 bg-slate-900">
+          {(["pattern", "place"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`px-3 py-2 text-xs font-medium transition ${
+                state.mode === m
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              {m === "pattern" ? "Pattern" : "Place on item"}
+            </button>
+          ))}
+        </div>
+
+        {/* Artwork upload (separate row since legacy assumes art is already chosen) */}
         <Section title="Artwork">
           <label className="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-slate-700 bg-slate-900/60 p-3 text-xs text-slate-200 hover:border-fuchsia-500/60 hover:bg-slate-900">
             <Upload className="h-4 w-4" />
@@ -592,16 +647,144 @@ export default function HoodieAopPlacer({
               }}
             />
           </label>
-          {state.artworkUrl && (
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
-              <ImageIcon className="h-3 w-3" />
-              <span className="truncate">Loaded</span>
-            </div>
-          )}
         </Section>
 
+        {/* PLACE mode: Scale slider drives active group */}
+        {state.mode === "place" && (
+          <div>
+            <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+              <span>Artwork scale</span>
+              <span className="text-slate-400">{Math.round(placement.scale * 100)}%</span>
+            </div>
+            <input
+              type="range"
+              min={SCALE_MIN}
+              max={SCALE_MAX}
+              step={0.01}
+              value={placement.scale}
+              onChange={(e) =>
+                setActiveScale(state.activeGroupId, state.view, Number(e.target.value))
+              }
+              className="w-full accent-fuchsia-500"
+              aria-label="Artwork scale"
+            />
+            <div className="mt-1 text-[10px] text-slate-500">
+              Adjusting <span className="text-slate-300">{activeGroup?.name ?? state.activeGroupId}</span>
+              {state.hoodLinked && (state.activeGroupId === "hood" || state.activeGroupId === "front-body") && (
+                <> • linked with {state.activeGroupId === "hood" ? "front body" : "hood"}</>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* PATTERN mode: tile-size slider + pattern style */}
+        {state.mode === "pattern" && (
+          <>
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+                <span>Tile size</span>
+                <span className="text-slate-400">
+                  {state.tileSettings.tileSizeInches.toFixed(1)}″
+                </span>
+              </div>
+              <input
+                type="range"
+                min={TILE_SIZE_MIN}
+                max={TILE_SIZE_MAX}
+                step={0.1}
+                value={state.tileSettings.tileSizeInches}
+                onChange={(e) =>
+                  setTileSettings({ tileSizeInches: Number(e.target.value) })
+                }
+                className="w-full accent-fuchsia-500"
+                aria-label="Tile size"
+              />
+            </div>
+            <div>
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+                Pattern
+              </div>
+              <div className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-700">
+                {TILE_PATTERN_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => setTileSettings({ pattern: opt.id })}
+                    className={`px-2 py-1.5 text-xs font-medium transition ${
+                      state.tileSettings.pattern === opt.id
+                        ? "bg-fuchsia-600 text-white"
+                        : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* View row: Front / Back / Hood (Hood is link toggle) */}
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+            View
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            {(["front", "back"] as HoodieView[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                aria-pressed={state.view === v && state.activeGroupId !== "hood"}
+                className={`rounded px-2 py-1.5 text-xs font-medium transition ${
+                  state.view === v && state.activeGroupId !== "hood"
+                    ? "bg-slate-100 text-slate-900"
+                    : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                {v === "front" ? "Front" : "Back"}
+              </button>
+            ))}
+            <button
+              onClick={onHoodButton}
+              title={hoodTooltip}
+              aria-label={hoodTooltip}
+              aria-pressed={hoodSelected}
+              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-medium transition ${
+                hoodSelected
+                  ? "bg-fuchsia-600 text-white"
+                  : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              {state.hoodLinked ? (
+                <Link2 className="h-3 w-3" />
+              ) : (
+                <Link2Off className="h-3 w-3" />
+              )}
+              Hood
+            </button>
+          </div>
+          {hoodSelected && (
+            <div className="mt-1 text-[10px] text-slate-400">{hoodTooltip}</div>
+          )}
+        </div>
+
+        {/* Artwork enabled — toggles the active group (place mode only) */}
+        {state.mode === "place" && (
+          <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+              Artwork enabled
+            </span>
+            <Toggle
+              checked={!!state.enabled[state.activeGroupId]}
+              onChange={(on) => setEnabled(state.activeGroupId, on)}
+            />
+          </div>
+        )}
+
         {/* Background colour */}
-        <Section title="Background colour">
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+            Background
+          </div>
           <div className="flex items-center gap-2">
             <input
               type="color"
@@ -628,84 +811,31 @@ export default function HoodieAopPlacer({
               </button>
             )}
           </div>
-          {palette.length > 0 && (
-            <div className="mt-3">
-              <div className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">
-                Suggested from artwork
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {palette.map((s) => (
-                  <button
-                    key={s.hex}
-                    onClick={() => setBgColor(s.hex)}
-                    title={s.hex}
-                    aria-label={`Use ${s.hex} as background`}
-                    className={`h-6 w-6 rounded border-2 transition ${
-                      state.backgroundColor.toUpperCase() === s.hex.toUpperCase()
-                        ? "border-fuchsia-400 ring-2 ring-fuchsia-500/40"
-                        : "border-slate-700 hover:border-slate-500"
-                    }`}
-                    style={{ backgroundColor: s.hex }}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </Section>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {swatches.map((s) => (
+              <button
+                key={s.hex}
+                onClick={() => setBgColor(s.hex)}
+                title={s.hex}
+                aria-label={`Use ${s.hex} as background`}
+                className={`h-6 w-6 rounded border-2 transition ${
+                  state.backgroundColor.toUpperCase() === s.hex.toUpperCase()
+                    ? "border-fuchsia-400 ring-2 ring-fuchsia-500/40"
+                    : "border-slate-700 hover:border-slate-500"
+                }`}
+                style={{ backgroundColor: s.hex }}
+              />
+            ))}
+          </div>
+        </div>
 
-        {/* Group toggles */}
-        <Section title="Panels">
-          <div className="space-y-2">
-            {visibleGroups.map((g) => {
-              const on = !!state.enabled[g.id];
-              const isActive = activeGroupId === g.id;
-              const showLink = g.id === "hood" || g.id === "front-body";
-              return (
-                <div
-                  key={g.id}
-                  className={`rounded border p-2 transition ${
-                    isActive
-                      ? "border-fuchsia-500/60 bg-fuchsia-950/20"
-                      : "border-slate-800 bg-slate-900/50"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <button
-                      onClick={() => on && setActiveGroupId(g.id)}
-                      disabled={!on}
-                      className="flex-1 text-left text-xs font-medium text-slate-200 disabled:text-slate-500"
-                    >
-                      {GROUP_LABELS[g.id] ?? g.name}
-                    </button>
-                    <label className="flex cursor-pointer items-center gap-1 text-[10px] text-slate-400">
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={(e) => setEnabled(g.id, e.target.checked)}
-                      />
-                      On
-                    </label>
-                  </div>
-                  {showLink && (
-                    <label className="mt-1 flex cursor-pointer items-center gap-1 text-[10px] text-slate-400">
-                      <input
-                        type="checkbox"
-                        checked={state.linkFrontHood}
-                        onChange={toggleLink}
-                      />
-                      Link with {g.id === "hood" ? "front body" : "hood"}
-                    </label>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <div className="mt-2 text-[10px] leading-snug text-slate-500">
-            Click a panel name to make its drag-handle active. Hood + front body
-            stay locked together by default — uncheck "Link" to move them
-            separately.
-          </div>
-        </Section>
+        {/* Reset */}
+        <button
+          onClick={resetAll}
+          className="flex w-full items-center justify-center gap-1 text-xs text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+        >
+          <RotateCcw className="h-3 w-3" /> Reset
+        </button>
 
         {onApply && (
           <button
@@ -723,11 +853,35 @@ export default function HoodieAopPlacer({
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded border border-slate-800 bg-slate-900/30 p-3">
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+    <div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
         {title}
       </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * Minimal switch primitive — keeps the placer self-contained without dragging
+ * in shadcn's Switch (which we'd prefer to wire later through the embed shell
+ * once we have full theming context).
+ */
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
+        checked ? "bg-fuchsia-600" : "bg-slate-700"
+      }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
+          checked ? "translate-x-4" : "translate-x-0.5"
+        }`}
+      />
+    </button>
   );
 }
