@@ -75,6 +75,13 @@ interface ProductTypeConfig {
   baseMockupImages?: Record<string, any>;
   isAllOverPrint?: boolean;
   aopTemplateId?: string | null;
+  /**
+   * Optional published hoodie panel-mapping template name. When set, this
+   * product uses the new mesh-warp HoodieAopPlacer (Stage 1+ rollout) instead
+   * of the legacy PatternCustomizer. Server-side handle only — never shown
+   * to customers.
+   */
+  panelMappingTemplate?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
@@ -1108,6 +1115,7 @@ export default function EmbedDesign() {
       baseMockupImages: dc.baseMockupImages || undefined,
       isAllOverPrint: dc.isAllOverPrint || false,
       aopTemplateId: dc.aopTemplateId ?? null,
+      panelMappingTemplate: dc.panelMappingTemplate ?? null,
       placeholderPositions: dc.placeholderPositions || [],
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
@@ -1425,6 +1433,7 @@ export default function EmbedDesign() {
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             aopTemplateId: designerConfig.aopTemplateId ?? null,
+            panelMappingTemplate: designerConfig.panelMappingTemplate ?? null,
             placeholderPositions: designerConfig.placeholderPositions || [],
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",

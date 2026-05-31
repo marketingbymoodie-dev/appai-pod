@@ -362,6 +362,15 @@ export const productTypes = pgTable("product_types", {
   panelFlatLayImages: text("panel_flat_lay_images").default("{}"),
   /** Optional AOP layout template (e.g. leggings_v1) — overrides name-based layout inference in PatternCustomizer. */
   aopTemplateId: text("aop_template_id"),
+  /**
+   * Optional published hoodie panel-mapping template name (e.g.
+   * `unisex-zip-hoodie-aop-L`). When set, the storefront uses the new
+   * mesh-warp HoodieAopPlacer instead of the legacy PatternCustomizer for
+   * this product. Looked up in the Supabase `hoodie-templates` bucket via
+   * `server/hoodieTemplateStore.ts`. Server-side handle only — never shown
+   * to customers.
+   */
+  panelMappingTemplate: text("panel_mapping_template"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
