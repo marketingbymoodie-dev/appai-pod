@@ -111,12 +111,16 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // (or unknown id) = no handles shown. Defaults to the first group
   // with eligible panels in the active view.
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
-  // Lock-ratio toggle: when on, dragging any group's scale rescales
-  // the others to preserve the captured ratios snapshot.
-  const [lockRatios, setLockRatios] = useState(false);
-  const [lockedRatios, setLockedRatios] = useState<Record<string, number> | null>(
-    null,
+  // Per-group link membership. A group is linked when its checkbox
+  // is on. When two or more groups are linked, dragging any one's
+  // body or corner translates / scales every linked group together.
+  // `lockedRatios` snapshots each linked group's scale at the
+  // moment it joined the link set, so scale propagation preserves
+  // the ratios you saw when you turned linking on.
+  const [linkedGroupIds, setLinkedGroupIds] = useState<Record<string, boolean>>(
+    {},
   );
+  const [lockedRatios, setLockedRatios] = useState<Record<string, number>>({});
   // Tile-mode settings (modal-local). Falls back to template's stored
   // defaults via normalizeHoodieTemplate.
   const [tileOverride, setTileOverride] = useState<TileSettings | null>(null);
@@ -158,9 +162,12 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   };
 
   /**
-   * Patch a group's placement for the current view. When lock-ratio
-   * is engaged, propagates the same scale-factor change to every
-   * other group so the captured ratios stay constant.
+   * Patch a group's placement for the current view. When the active
+   * group is part of the linked set (≥2 linked groups), propagates
+   * both translate deltas and scale factors to the other linked
+   * groups so they move + rescale together. Translate uses raw
+   * delta; scale uses the captured-ratio factor so the original
+   * proportions stay intact.
    */
   const setGroupPlacement = (
     groupId: string,
@@ -182,32 +189,42 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
           prev[groupId]?.[otherView] ?? getPlacement(groupId, otherView),
       } as Record<HoodieView, ArtworkPlacement>;
 
-      // Lock-ratio propagation — only when scale changed and ratios
-      // were captured for this group.
-      if (
-        lockRatios &&
-        lockedRatios &&
-        typeof patch.scale === "number" &&
-        lockedRatios[groupId]
-      ) {
-        const oldScale = lockedRatios[groupId];
-        const newScale = patch.scale;
-        const factor = newScale / Math.max(0.0001, oldScale);
-        for (const g of designGroups) {
-          if (g.id === groupId) continue;
-          const otherCaptured = lockedRatios[g.id];
-          if (typeof otherCaptured !== "number") continue;
-          const linkedScale = otherCaptured * factor;
-          const baseline =
-            prev[g.id]?.[v] ?? getPlacement(g.id, v);
-          next[g.id] = {
-            ...(prev[g.id] ?? {
-              front: getPlacement(g.id, "front"),
-              back: getPlacement(g.id, "back"),
+      const linkedIds = Object.keys(linkedGroupIds).filter(
+        (id) => linkedGroupIds[id],
+      );
+      if (linkedIds.length >= 2 && linkedIds.includes(groupId)) {
+        const dx =
+          typeof patch.offsetX === "number"
+            ? patch.offsetX - current.offsetX
+            : 0;
+        const dy =
+          typeof patch.offsetY === "number"
+            ? patch.offsetY - current.offsetY
+            : 0;
+        let scaleFactor: number | null = null;
+        if (typeof patch.scale === "number" && lockedRatios[groupId]) {
+          scaleFactor = patch.scale / Math.max(0.0001, lockedRatios[groupId]);
+        }
+        for (const linkedId of linkedIds) {
+          if (linkedId === groupId) continue;
+          const otherCurrent =
+            prev[linkedId]?.[v] ?? getPlacement(linkedId, v);
+          const otherScale =
+            scaleFactor !== null && typeof lockedRatios[linkedId] === "number"
+              ? lockedRatios[linkedId] * scaleFactor
+              : otherCurrent.scale;
+          next[linkedId] = {
+            ...(prev[linkedId] ?? {
+              front: getPlacement(linkedId, "front"),
+              back: getPlacement(linkedId, "back"),
             }),
-            [v]: { ...baseline, scale: linkedScale },
+            [v]: {
+              scale: otherScale,
+              offsetX: otherCurrent.offsetX + dx,
+              offsetY: otherCurrent.offsetY + dy,
+            },
             [otherView]:
-              prev[g.id]?.[otherView] ?? getPlacement(g.id, otherView),
+              prev[linkedId]?.[otherView] ?? getPlacement(linkedId, otherView),
           } as Record<HoodieView, ArtworkPlacement>;
         }
       }
@@ -215,28 +232,36 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     });
   };
 
-  /** Engage / disengage the lock toggle. Engaging captures current scales. */
-  const toggleLockRatios = (next: boolean) => {
-    if (next) {
-      const snapshot: Record<string, number> = {};
-      for (const g of designGroups) {
-        snapshot[g.id] = getPlacement(g.id, view).scale;
+  /**
+   * Toggle a single group's link membership. Engaging snapshots the
+   * group's current scale into lockedRatios so future drags preserve
+   * the ratio captured at link time. Disengaging removes the entry.
+   */
+  const toggleGroupLink = (groupId: string, next: boolean) => {
+    setLinkedGroupIds((prev) => ({ ...prev, [groupId]: next }));
+    setLockedRatios((prev) => {
+      const out = { ...prev };
+      if (next) {
+        out[groupId] = getPlacement(groupId, view).scale;
+      } else {
+        delete out[groupId];
       }
-      setLockedRatios(snapshot);
-    } else {
-      setLockedRatios(null);
-    }
-    setLockRatios(next);
+      return out;
+    });
   };
 
-  /** Re-snapshot ratios while still locked. */
+  /** Re-snapshot all currently linked groups' scales. */
   const recaptureLockedRatios = () => {
-    const snapshot: Record<string, number> = {};
-    for (const g of designGroups) {
-      snapshot[g.id] = getPlacement(g.id, view).scale;
+    const snap: Record<string, number> = {};
+    for (const id of Object.keys(linkedGroupIds)) {
+      if (linkedGroupIds[id]) {
+        snap[id] = getPlacement(id, view).scale;
+      }
     }
-    setLockedRatios(snapshot);
+    setLockedRatios(snap);
   };
+
+  const linkedCount = Object.values(linkedGroupIds).filter(Boolean).length;
 
   // Default the active group to the first one that has eligible
   // panels traced in the current view, so the handles immediately
@@ -647,9 +672,11 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 onEnabledChange={(gid, val) =>
                   setEnabledOverrides((prev) => ({ ...prev, [gid]: val }))
                 }
-                lockRatios={lockRatios}
-                onLockToggle={toggleLockRatios}
+                linkedGroupIds={linkedGroupIds}
+                lockedRatios={lockedRatios}
+                onToggleGroupLink={toggleGroupLink}
                 onRecaptureRatios={recaptureLockedRatios}
+                linkedCount={linkedCount}
                 hasOverrides={hasOverrides}
                 onSaveDefaults={() => {
                   // Bake current modal state into the template's
@@ -664,7 +691,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                     seamAllowance: getSeam(g.id),
                     enabled: getEnabled(g.id),
                     lockedRatio:
-                      lockRatios && lockedRatios && lockedRatios[g.id] !== undefined
+                      linkedGroupIds[g.id] && lockedRatios[g.id] !== undefined
                         ? lockedRatios[g.id]
                         : null,
                   }));
@@ -843,7 +870,9 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   enabledOverrides={enabledOverrides}
                   seamOverrides={seamOverrides}
                   placementOverrides={groupPlacementOverrides}
-                  lockedScaleAroundAnchor={lockRatios}
+                  lockedScaleAroundAnchor={
+                    linkedCount >= 2 && !!linkedGroupIds[activeGroupId]
+                  }
                   onChange={(next) =>
                     setGroupPlacement(activeGroupId, view, next)
                   }
@@ -1420,9 +1449,11 @@ function GroupsPanel({
   onPlacementChange,
   onSeamChange,
   onEnabledChange,
-  lockRatios,
-  onLockToggle,
+  linkedGroupIds,
+  lockedRatios,
+  onToggleGroupLink,
   onRecaptureRatios,
+  linkedCount,
   hasOverrides,
   onSaveDefaults,
   onResetOverrides,
@@ -1440,9 +1471,11 @@ function GroupsPanel({
   onPlacementChange: (groupId: string, patch: Partial<ArtworkPlacement>) => void;
   onSeamChange: (groupId: string, value: number) => void;
   onEnabledChange: (groupId: string, value: boolean) => void;
-  lockRatios: boolean;
-  onLockToggle: (next: boolean) => void;
+  linkedGroupIds: Record<string, boolean>;
+  lockedRatios: Record<string, number>;
+  onToggleGroupLink: (groupId: string, next: boolean) => void;
   onRecaptureRatios: () => void;
+  linkedCount: number;
   hasOverrides: boolean;
   onSaveDefaults: () => void;
   onResetOverrides: () => void;
@@ -1488,30 +1521,36 @@ function GroupsPanel({
         />
       </div>
 
-      {/* Lock-ratio toggle row */}
-      <div className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
-        <label className="flex cursor-pointer items-center justify-between text-[11px]">
-          <span className="text-slate-300">Lock group scale ratios</span>
-          <input
-            type="checkbox"
-            checked={lockRatios}
-            onChange={(e) => onLockToggle(e.target.checked)}
-            className="h-3.5 w-3.5 cursor-pointer accent-fuchsia-500"
-          />
-        </label>
-        {lockRatios && (
-          <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-slate-500">
-            <span>Other groups follow this group's scale.</span>
+      {/* Link-ratio summary row — replaces the old global toggle.
+          Each group has its own link checkbox now (in the row
+          header); when ≥2 are linked we surface the recapture
+          control here so the admin can re-snapshot ratios after
+          adjusting individual groups. */}
+      <div className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-500">
+        <div className="flex items-center justify-between gap-2">
+          <span>
+            {linkedCount >= 2 ? (
+              <>
+                <span className="text-fuchsia-300">{linkedCount}</span> groups
+                linked — they translate + scale together.
+              </>
+            ) : linkedCount === 1 ? (
+              <>1 group linked — pick one more to enable group drag.</>
+            ) : (
+              <>Click the chain icon on any group to link it.</>
+            )}
+          </span>
+          {linkedCount >= 2 && (
             <button
               type="button"
               onClick={onRecaptureRatios}
-              className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
+              className="shrink-0 rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
               title="Re-snapshot current scales as the new locked ratios"
             >
               Recapture
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Per-group accordion */}
@@ -1532,6 +1571,7 @@ function GroupsPanel({
               k === "right_hood" ||
               k === "pocket_right",
           );
+          const isLinked = linkedGroupIds[g.id] === true;
           return (
             <div
               key={g.id}
@@ -1541,18 +1581,42 @@ function GroupsPanel({
                   : "border-slate-800 bg-slate-950"
               }`}
             >
-              <button
-                type="button"
-                onClick={() => onActiveGroupChange(g.id)}
-                className="flex w-full items-center justify-between px-2 py-1.5 text-left"
-              >
-                <span className="text-[12px] font-medium text-slate-200">
-                  {g.name}
-                </span>
-                <span className="font-mono text-[10px] text-slate-400">
-                  ×{placement.scale.toFixed(2)}
-                </span>
-              </button>
+              <div className="flex w-full items-center gap-2 px-2 py-1.5">
+                <label
+                  className="flex cursor-pointer items-center gap-1 text-[10px] text-slate-400"
+                  title={
+                    isLinked
+                      ? "Linked — uncheck to free this group from the linked set"
+                      : "Click to link this group with other linked groups"
+                  }
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isLinked}
+                    onChange={(e) => onToggleGroupLink(g.id, e.target.checked)}
+                    className="h-3 w-3 cursor-pointer accent-fuchsia-500"
+                    data-testid={`group-link-${g.id}`}
+                  />
+                  <span
+                    className={`select-none ${isLinked ? "text-fuchsia-300" : "text-slate-500"}`}
+                  >
+                    Link
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => onActiveGroupChange(g.id)}
+                  className="flex flex-1 items-center justify-between text-left"
+                >
+                  <span className="text-[12px] font-medium text-slate-200">
+                    {g.name}
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-400">
+                    ×{placement.scale.toFixed(2)}
+                  </span>
+                </button>
+              </div>
               {isActive && (
                 <div className="space-y-1 border-t border-slate-800 px-2 pb-2 pt-1">
                   <ToggleRow
