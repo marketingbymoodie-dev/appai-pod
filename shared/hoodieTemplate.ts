@@ -432,9 +432,22 @@ export function defaultDesignGroups(): DesignGroup[] {
       enabled: true,
     },
     {
-      id: "sleeves",
-      name: "Sleeves",
-      panelKeys: ["left_sleeve", "right_sleeve", "left_cuff", "right_cuff"],
+      // Sleeves are physically separate fabric tubes, NOT an L/R
+      // seam pair — splitting them into independent groups means
+      // their union AABBs don't collide across the front torso when
+      // both are enabled.
+      id: "left-sleeve",
+      name: "Left sleeve",
+      panelKeys: ["left_sleeve", "left_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-sleeve",
+      name: "Right sleeve",
+      panelKeys: ["right_sleeve", "right_cuff"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -488,9 +501,42 @@ export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
  * preserved — defaults only fill genuinely-undefined fields.
  */
 export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
+  let designGroups = template.designGroups ?? defaultDesignGroups();
+  // Migrate legacy single-Sleeves group → Left/Right sleeve groups.
+  // Older templates persisted before this split contained one group
+  // covering all four sleeve+cuff panels, which made the design rect
+  // explode across the front when both sides were enabled.
+  const legacyIdx = designGroups.findIndex((g) => g.id === "sleeves");
+  if (legacyIdx >= 0) {
+    const legacy = designGroups[legacyIdx];
+    const has = (k: HoodiePanelKey) => legacy.panelKeys.includes(k);
+    if (
+      has("left_sleeve") &&
+      has("right_sleeve") &&
+      has("left_cuff") &&
+      has("right_cuff")
+    ) {
+      designGroups = [
+        ...designGroups.slice(0, legacyIdx),
+        {
+          ...legacy,
+          id: "left-sleeve",
+          name: "Left sleeve",
+          panelKeys: ["left_sleeve", "left_cuff"],
+        },
+        {
+          ...legacy,
+          id: "right-sleeve",
+          name: "Right sleeve",
+          panelKeys: ["right_sleeve", "right_cuff"],
+        },
+        ...designGroups.slice(legacyIdx + 1),
+      ];
+    }
+  }
   return {
     ...template,
-    designGroups: template.designGroups ?? defaultDesignGroups(),
+    designGroups,
     tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration:
       template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
