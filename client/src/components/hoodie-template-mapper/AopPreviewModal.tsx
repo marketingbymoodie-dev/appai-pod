@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Download, Image as ImageIcon, RotateCcw, Sparkles, Upload } from "lucide-react";
 import type {
   DesignGroup,
+  HoodieTemplate,
   HoodieView,
   TileSettings,
 } from "@shared/hoodieTemplate";
@@ -20,6 +21,7 @@ import {
   computeGroupRects,
   renderAopPreview,
   renderAopPreviewToCanvas,
+  renderHoodFlatPanel,
   type AopPreviewMode,
   type ArtworkPlacement,
   type DesignRectInfo,
@@ -93,6 +95,10 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // expected end-user flow ("see my artwork on the hoodie") just
   // works without diving through toggles.
   const [preferLayerSources, setPreferLayerSources] = useState(false);
+  // Debug toggle: surface the front-derived flat printable panels as
+  // thumbnails in the sidebar so the admin can eyeball what would be
+  // sent to Printify (and what the back-view hood is reading from).
+  const [showFlatPanels, setShowFlatPanels] = useState(false);
 
   // Per-group, per-view artwork placement. Modal-local overrides win
   // over template defaults until "Save as defaults" copies them back.
@@ -823,6 +829,22 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   onChange={setPreferLayerSources}
                 />
               )}
+              {mode === "single-sheet" && artworkImg && (
+                <ToggleRow
+                  label="Show flat print panels"
+                  checked={showFlatPanels}
+                  onChange={setShowFlatPanels}
+                />
+              )}
+              {showFlatPanels && mode === "single-sheet" && artworkImg && (
+                <FlatPanelThumbnails
+                  template={template}
+                  artwork={artworkImg}
+                  groupPlacementOverrides={groupPlacementOverrides}
+                  groupSeamOverrides={seamOverrides}
+                  groupEnabledOverrides={enabledOverrides}
+                />
+              )}
               {layerSources.size > 0 && (
                 <div className="mt-1 rounded border border-purple-900/40 bg-purple-950/20 px-2 py-1 text-[10px] text-purple-200">
                   {preferLayerSources ? (
@@ -915,8 +937,9 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 activeGroupId === "hood" && (
                   <div className="pointer-events-none absolute inset-x-4 top-4 flex justify-center">
                     <div className="rounded-md border border-fuchsia-500/40 bg-fuchsia-900/60 px-3 py-1.5 text-[11px] text-fuchsia-100 shadow">
-                      Hood artwork on the back view inherits the front-view
-                      placement. Switch to FRONT to adjust it.
+                      Back-of-hood is warped from the front-view flat print
+                      panel — what's visible here is exactly what Printify
+                      receives. Switch to FRONT to adjust the artwork.
                     </div>
                   </div>
                 )}
@@ -946,6 +969,110 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Thumbnail strip showing the flat printable panels derived from
+ * the FRONT-view layers + the user's current placement. These are
+ * the bitmaps that would be uploaded to Printify on add-to-cart, and
+ * they're also what the back-view hood reader warps through its own
+ * mesh — so this view doubles as a sanity check before deploying
+ * artwork to print.
+ */
+function FlatPanelThumbnails({
+  template,
+  artwork,
+  groupPlacementOverrides,
+  groupSeamOverrides,
+  groupEnabledOverrides,
+}: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  groupSeamOverrides?: Record<string, number>;
+  groupEnabledOverrides?: Record<string, boolean>;
+}) {
+  // Compute flat panels for any front-view layer that has a mesh +
+  // belongs to a single-sheet design group. This intentionally
+  // covers more than just the hood — admins want to see every panel
+  // that would be sent to Printify, not just the bridged ones.
+  const panels = useMemo(() => {
+    const frontLayers = template.views.front?.layers ?? [];
+    const frontRects = computeGroupRects(template, "front", artwork, {
+      placementOverrides: groupPlacementOverrides,
+      seamOverrides: groupSeamOverrides,
+      enabledOverrides: groupEnabledOverrides,
+    });
+    const out: Array<{ id: string; label: string; dataUrl: string | null }> = [];
+    for (const layer of frontLayers) {
+      if (!layer.mesh || !layer.visible || layer.isExclusion || !layer.panelKey) {
+        continue;
+      }
+      if (layer.includeInSingleSheet === false) continue;
+      const group = template.designGroups?.find((g) =>
+        layer.panelKey ? g.panelKeys.includes(layer.panelKey) : false,
+      );
+      const rect = group ? frontRects.get(group.id) : null;
+      if (!rect || !rect.enabled) continue;
+      const flat = renderHoodFlatPanel(layer, artwork, rect);
+      out.push({
+        id: layer.id,
+        label: layer.name || layer.panelKey,
+        dataUrl: flat ? flat.toDataURL("image/png") : null,
+      });
+    }
+    return out;
+  }, [
+    template,
+    artwork,
+    groupPlacementOverrides,
+    groupSeamOverrides,
+    groupEnabledOverrides,
+  ]);
+
+  if (panels.length === 0) {
+    return (
+      <div className="mt-1 rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[10px] text-slate-500">
+        No flat panels — front view has no meshed single-sheet layers.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1 rounded border border-purple-900/40 bg-purple-950/20 px-2 py-1.5">
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-purple-200">
+        Flat print panels · {panels.length}
+      </div>
+      <div className="grid grid-cols-3 gap-1">
+        {panels.map((p) => (
+          <div
+            key={p.id}
+            className="overflow-hidden rounded border border-slate-800 bg-slate-900"
+            title={p.label}
+          >
+            {p.dataUrl ? (
+              <img
+                src={p.dataUrl}
+                alt={p.label}
+                className="block h-16 w-full object-contain"
+              />
+            ) : (
+              <div className="flex h-16 items-center justify-center text-[9px] text-slate-500">
+                —
+              </div>
+            )}
+            <div className="truncate px-1 py-0.5 text-[9px] text-slate-300">
+              {p.label}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-1 text-[10px] text-purple-200/70">
+        These are the bitmaps that go to Printify. The back-of-hood reads
+        from the matching front-of-hood panel above.
+      </div>
+    </div>
   );
 }
 
@@ -1682,8 +1809,9 @@ function GroupsPanel({
                 <div className="space-y-1 border-t border-slate-800 px-2 pb-2 pt-1">
                   {hoodReadOnly ? (
                     <div className="rounded border border-fuchsia-500/40 bg-fuchsia-950/30 px-2 py-1.5 text-[10px] text-fuchsia-200">
-                      Mirrors the front-view placement. Switch to FRONT to
-                      adjust the hood artwork.
+                      Derived from the front-view flat print panel —
+                      whatever you'll send to Printify is exactly what
+                      shows here. Switch to FRONT to change it.
                     </div>
                   ) : (
                     <>

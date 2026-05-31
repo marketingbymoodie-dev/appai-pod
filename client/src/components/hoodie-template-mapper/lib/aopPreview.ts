@@ -414,16 +414,15 @@ export function computeGroupRects(
       (l) => l.panelKey && group.panelKeys.includes(l.panelKey),
     );
     if (groupLayers.length === 0) continue;
-    // Hood wrap-around: the hood is one continuous fabric piece, so
-    // the back view inherits its placement from the front view. This
-    // means moving the hood artwork on the front automatically
-    // shifts what's visible on the back, and the back view never
-    // shows independent hood controls.
-    const placementView: HoodieView =
-      group.id === "hood" && view === "back" ? "front" : view;
+    // Note: the back-view hood placement-inherit hack lived here in
+    // an earlier pass. It's been removed because the renderer now
+    // bridges the back-view hood through a flat printable panel
+    // derived from the front-view layer's mesh + placement (see
+    // `renderHoodFlatPanel`). The back-view hood group's stored
+    // placement is therefore unused at render time.
     const placement = resolveGroupPlacement(
       group,
-      placementView,
+      view,
       options?.placementOverrides,
     );
     const seam = resolveGroupSeam(group, options?.seamOverrides);
@@ -643,6 +642,131 @@ function synthesiseSeamAwareSourceRect(
 }
 
 /**
+ * Render the flat printable panel for one front-view layer with a
+ * mesh, given the user's artwork + the front-view group rect that
+ * controls where the artwork lands on the union of single-sheet
+ * panels.
+ *
+ * The output canvas is sized to the layer's mesh sourceRect — i.e.
+ * the calibrated Printify panel resolution. Pixel (0, 0) of the
+ * canvas corresponds to the top-left of the source rect; pixel
+ * (W, H) to the bottom-right. So feeding this canvas into
+ * drawMeshWarp with `sourceRect = { 0, 0, W, H }` is geometrically
+ * equivalent to drawing the user's artwork through the mesh with
+ * the synthesised UV — but the intermediate canvas is now reusable
+ * by *any* mesh that shares the same flat-panel coordinate system
+ * (e.g. the matching back-view layer's mesh).
+ *
+ * This is the bridge that makes the back-of-hood automatically show
+ * "what's behind the dog's head" given the front-of-hood placement.
+ * As long as the back-view hood mesh was calibrated against the
+ * same Printify triangle artwork as the front, both meshes share
+ * coordinates and the same flat panel feeds both.
+ */
+export function renderHoodFlatPanel(
+  frontLayer: MaskLayer,
+  artwork: HTMLImageElement,
+  frontRect: DesignRectInfo,
+  options?: {
+    /** Optional override for the synthesised source rect on the
+     *  artwork. Lets callers pass a custom slice (e.g. for tile
+     *  mode previews). Defaults to the seam-aware single-sheet
+     *  synthesis used by the live front-view renderer. */
+    artworkSlice?: Aabb;
+  },
+): HTMLCanvasElement | null {
+  if (!frontLayer.mesh) return null;
+  const src = frontLayer.mesh.sourceRect;
+  if (!src || src.width <= 0 || src.height <= 0) return null;
+
+  const flatW = Math.max(1, Math.round(src.width));
+  const flatH = Math.max(1, Math.round(src.height));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = flatW;
+  canvas.height = flatH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  // Decide which slice of the user's artwork lands on this panel.
+  // Falls back to the seam-aware synthesis (the same logic the
+  // front-view renderer uses) so the flat panel matches what the
+  // admin already sees on the front mockup.
+  let slice = options?.artworkSlice ?? null;
+  if (!slice) {
+    const anchors = svgPathToAnchors(frontLayer.maskPath);
+    const bb = aabbOf(anchors);
+    if (!bb) return null;
+    const aw = artwork.naturalWidth || artwork.width;
+    const ah = artwork.naturalHeight || artwork.height;
+    const side: "left" | "right" | "none" = frontLayer.panelKey
+      ? SEAM_PAIR_PANELS.left.includes(frontLayer.panelKey)
+        ? "left"
+        : SEAM_PAIR_PANELS.right.includes(frontLayer.panelKey)
+          ? "right"
+          : "none"
+      : "none";
+    slice = synthesiseSeamAwareSourceRect(bb, frontRect, aw, ah, side);
+  }
+  if (slice.width <= 0 || slice.height <= 0) return null;
+
+  // Honour the front-view mesh's source UV transform (rotation /
+  // flip) so the flat panel matches the orientation the admin
+  // calibrated. Without this, a 90°-rotated mesh would feed the
+  // back-view warp an unrotated image and the result would be
+  // misaligned.
+  const rotation = frontLayer.mesh.sourceRotation ?? 0;
+  const flipX = frontLayer.mesh.sourceFlipX ?? false;
+  const flipY = frontLayer.mesh.sourceFlipY ?? false;
+  ctx.save();
+  if (rotation || flipX || flipY) {
+    ctx.translate(flatW / 2, flatH / 2);
+    if (rotation) ctx.rotate((rotation * Math.PI) / 180);
+    ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+    ctx.translate(-flatW / 2, -flatH / 2);
+  }
+  ctx.drawImage(
+    artwork,
+    slice.x,
+    slice.y,
+    slice.width,
+    slice.height,
+    0,
+    0,
+    flatW,
+    flatH,
+  );
+  ctx.restore();
+  return canvas;
+}
+
+/**
+ * Panel keys that participate in the front→back flat-panel bridge.
+ * Hood is the only continuous fabric piece that needs it today
+ * (sleeves get tile mode, back body has no front view, etc.).
+ */
+const HOOD_BRIDGE_PANEL_KEYS = new Set<string>(["left_hood", "right_hood"]);
+
+/**
+ * Find a matching front-view layer by panel key. Used by the back-
+ * view renderer to resolve which front-view layer + group rect to
+ * derive the flat panel from for hood bridging.
+ */
+function findFrontLayerByPanelKey(
+  template: HoodieTemplate,
+  panelKey: HoodiePanelKey | null | undefined,
+): MaskLayer | null {
+  if (!panelKey) return null;
+  const layers = template.views.front?.layers ?? [];
+  for (const l of layers) {
+    if (l.panelKey === panelKey && l.mesh && l.visible && !l.isExclusion) {
+      return l;
+    }
+  }
+  return null;
+}
+
+/**
  * Tile mode: compute the artwork sub-rectangle that the panel should
  * sample so the artwork appears at the right physical size and tiles
  * seamlessly across panels. The trick is that we send the panel's
@@ -843,6 +967,37 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     if (group) return groupRects.get(group.id) ?? null;
     return groupRects.get("__legacy__") ?? groupRects.get("__ungrouped__") ?? null;
   };
+
+  // Lazily-computed front-view group rects. Only the back-view hood
+  // bridge needs them, so we avoid the (small but pointless) cost of
+  // running computeGroupRects twice for non-back renders or for
+  // templates without hood layers.
+  let frontRectsCache: Map<string, DesignRectInfo> | null = null;
+  const getFrontRects = (): Map<string, DesignRectInfo> => {
+    if (frontRectsCache) return frontRectsCache;
+    if (view === "front") {
+      frontRectsCache = groupRects;
+    } else {
+      frontRectsCache =
+        mode === "single-sheet"
+          ? computeGroupRects(template, "front", artwork, {
+              placementOverrides: params.groupPlacementOverrides,
+              seamOverrides: params.groupSeamOverrides,
+              enabledOverrides: params.groupEnabledOverrides,
+              legacyPlacement: artworkPlacement,
+            })
+          : new Map<string, DesignRectInfo>();
+    }
+    return frontRectsCache;
+  };
+  const frontRectForPanel = (
+    panelKey: HoodiePanelKey | null | undefined,
+  ): DesignRectInfo | null => {
+    if (!panelKey) return null;
+    const group = findGroupForPanel(template.designGroups, panelKey);
+    if (!group) return null;
+    return getFrontRects().get(group.id) ?? null;
+  };
   // Helper: is this panel the L or R half of a recognised seam pair?
   // Used to bias the synthSrc UV when seam allowance > 0.
   const seamSideForLayer = (layer: MaskLayer): "left" | "right" | "none" => {
@@ -925,6 +1080,53 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         layerSrc.naturalHeight || layerSrc.height,
         layer.mesh,
       );
+    } else if (
+      view === "back" &&
+      mode === "single-sheet" &&
+      artwork &&
+      layer.mesh &&
+      layer.panelKey &&
+      HOOD_BRIDGE_PANEL_KEYS.has(layer.panelKey)
+    ) {
+      // Hood flat-panel bridge: the back-of-hood is anatomically the
+      // continuation of the front-of-hood (one fabric piece). We
+      // build the flat printable panel from the FRONT-view layer's
+      // mesh + the user's front-view placement, then warp THAT
+      // through this back-view layer's mesh. Because both meshes
+      // share calibration coordinates (admin used the same Printify
+      // triangle artwork on both views), `sourceRect = full panel`
+      // is the correct override.
+      const frontLayer = findFrontLayerByPanelKey(template, layer.panelKey);
+      const frontRect = frontRectForPanel(layer.panelKey);
+      let drewBridge = false;
+      if (frontLayer && frontRect && frontLayer.mesh) {
+        const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect);
+        if (flat) {
+          drawMeshWarp(pctx, flat, flat.width, flat.height, {
+            ...layer.mesh,
+            sourceRect: { x: 0, y: 0, width: flat.width, height: flat.height },
+            // The flat panel already bakes in the front mesh's source
+            // UV transform, so reset these on the back warp to avoid
+            // double-applying.
+            sourceRotation: 0,
+            sourceFlipX: false,
+            sourceFlipY: false,
+          });
+          drewBridge = true;
+        }
+      }
+      if (!drewBridge && layerSrc) {
+        // Bridge couldn't run (no front mesh / no front rect) →
+        // fall back to calibration art so the admin still sees
+        // SOMETHING and isn't confused by a blank back hood.
+        drawMeshWarp(
+          pctx,
+          layerSrc,
+          layerSrc.naturalWidth || layerSrc.width,
+          layerSrc.naturalHeight || layerSrc.height,
+          layer.mesh,
+        );
+      }
     } else if (artwork && layer.mesh) {
       // Customer artwork warped through the saved mesh. We synthesise
       // a `sourceRect` so the mesh reads from the right slice of the
