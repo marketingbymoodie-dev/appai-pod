@@ -673,14 +673,38 @@ export function renderHoodFlatPanel(
      *  mode previews). Defaults to the seam-aware single-sheet
      *  synthesis used by the live front-view renderer. */
     artworkSlice?: Aabb;
+    /** Fallback flat-panel dimensions when `mesh.sourceRect` is
+     *  null. The mapper UI doesn't currently set sourceRect on
+     *  newly-created meshes (the dedicated action exists but isn't
+     *  wired into any control), so callers should pass the
+     *  calibration source image's natural size here — that's the
+     *  coordinate system the mesh's targetPoints were calibrated
+     *  against, so it's the right flat-panel size by construction. */
+    fallbackSize?: { width: number; height: number };
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
   const src = frontLayer.mesh.sourceRect;
-  if (!src || src.width <= 0 || src.height <= 0) return null;
-
-  const flatW = Math.max(1, Math.round(src.width));
-  const flatH = Math.max(1, Math.round(src.height));
+  let flatW: number;
+  let flatH: number;
+  if (src && src.width > 0 && src.height > 0) {
+    flatW = Math.max(1, Math.round(src.width));
+    flatH = Math.max(1, Math.round(src.height));
+  } else if (
+    options?.fallbackSize &&
+    options.fallbackSize.width > 0 &&
+    options.fallbackSize.height > 0
+  ) {
+    flatW = Math.max(1, Math.round(options.fallbackSize.width));
+    flatH = Math.max(1, Math.round(options.fallbackSize.height));
+  } else {
+    // Last resort: use the user's artwork natural dims. This matches
+    // drawMeshWarp's own implicit fallback when sourceRect is null,
+    // so the flat panel + back-view warp still produce a coherent
+    // image (just at artwork-resolution rather than print-resolution).
+    flatW = Math.max(1, artwork.naturalWidth || artwork.width);
+    flatH = Math.max(1, artwork.naturalHeight || artwork.height);
+  }
 
   const canvas = document.createElement("canvas");
   canvas.width = flatW;
@@ -1100,7 +1124,32 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       const frontRect = frontRectForPanel(layer.panelKey);
       let drewBridge = false;
       if (frontLayer && frontRect && frontLayer.mesh) {
-        const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect);
+        // Resolve the calibration art image so we can size the flat
+        // panel even when the mesh's sourceRect is null (which it
+        // currently always is — the setLayerMeshSourceRect action
+        // exists in the store but isn't wired to any UI). Prefer
+        // the FRONT layer's calibration source; if it's missing
+        // for some reason, fall back to the BACK layer's (admin
+        // calibrated both views with the same Printify triangle
+        // artwork, so dims match either way).
+        const frontCalib =
+          frontLayer.productionPanelSrc && layerSources
+            ? layerSources.get(frontLayer.productionPanelSrc) ?? null
+            : null;
+        const backCalib =
+          layer.productionPanelSrc && layerSources
+            ? layerSources.get(layer.productionPanelSrc) ?? null
+            : null;
+        const calibImg = frontCalib ?? backCalib;
+        const fallbackSize = calibImg
+          ? {
+              width: calibImg.naturalWidth || calibImg.width,
+              height: calibImg.naturalHeight || calibImg.height,
+            }
+          : undefined;
+        const flat = renderHoodFlatPanel(frontLayer, artwork, frontRect, {
+          fallbackSize,
+        });
         if (flat) {
           drawMeshWarp(pctx, flat, flat.width, flat.height, {
             ...layer.mesh,

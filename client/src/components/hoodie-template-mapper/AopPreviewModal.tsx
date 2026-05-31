@@ -840,6 +840,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                 <FlatPanelThumbnails
                   template={template}
                   artwork={artworkImg}
+                  layerSources={layerSources}
                   groupPlacementOverrides={groupPlacementOverrides}
                   groupSeamOverrides={seamOverrides}
                   groupEnabledOverrides={enabledOverrides}
@@ -983,12 +984,17 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
 function FlatPanelThumbnails({
   template,
   artwork,
+  layerSources,
   groupPlacementOverrides,
   groupSeamOverrides,
   groupEnabledOverrides,
 }: {
   template: HoodieTemplate;
   artwork: HTMLImageElement;
+  /** Map of `productionPanelSrc` URL → loaded calibration image.
+   *  Used to derive a flat-panel size when the layer's mesh has no
+   *  explicit sourceRect (the common case today). */
+  layerSources: Map<string, HTMLImageElement>;
   groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
   groupSeamOverrides?: Record<string, number>;
   groupEnabledOverrides?: Record<string, boolean>;
@@ -1015,7 +1021,15 @@ function FlatPanelThumbnails({
       );
       const rect = group ? frontRects.get(group.id) : null;
       if (!rect || !rect.enabled) continue;
-      const flat = renderHoodFlatPanel(layer, artwork, rect);
+      const calibImg =
+        layer.productionPanelSrc && layerSources.get(layer.productionPanelSrc);
+      const fallbackSize = calibImg
+        ? {
+            width: calibImg.naturalWidth || calibImg.width,
+            height: calibImg.naturalHeight || calibImg.height,
+          }
+        : undefined;
+      const flat = renderHoodFlatPanel(layer, artwork, rect, { fallbackSize });
       out.push({
         id: layer.id,
         label: layer.name || layer.panelKey,
@@ -1026,6 +1040,7 @@ function FlatPanelThumbnails({
   }, [
     template,
     artwork,
+    layerSources,
     groupPlacementOverrides,
     groupSeamOverrides,
     groupEnabledOverrides,
