@@ -70,6 +70,19 @@ export type HoodieAopPlacerState = {
   placements: Record<string, Record<HoodieView, ArtworkPlacement>>;
   /** Per-group enabled flag. */
   enabled: Record<string, boolean>;
+  /**
+   * Customer-level "Trim on/off" — fills cuffs + waistband with just the
+   * background colour (no artwork) when `false`. Cuffs live inside the
+   * sleeve groups in the admin schema, so this is implemented as a
+   * panel-key override at render time rather than a group toggle.
+   */
+  trimEnabled: boolean;
+  /**
+   * Customer-level "Pockets on/off" — fills the kangaroo pocket and the
+   * pocket halves with background only when `false`. Same panel-key
+   * override mechanism as `trimEnabled`.
+   */
+  pocketsEnabled: boolean;
   /** Whether the hood group's placement is linked to the front body. */
   hoodLinked: boolean;
   /** Background fill colour (CSS) painted under the artwork. */
@@ -77,6 +90,30 @@ export type HoodieAopPlacerState = {
   /** Tile settings (pattern mode). Falls back to template defaults. */
   tileSettings: TileSettings;
 };
+
+/** Panel keys treated as "Trim" by the customer toggle. */
+const TRIM_PANEL_KEYS = ["waistband", "left_cuff", "right_cuff"] as const;
+/** Panel keys treated as "Pockets" by the customer toggle. */
+const POCKET_PANEL_KEYS = ["pocket_left", "pocket_right", "front_pocket"] as const;
+
+/**
+ * Build the `panelEnabledOverrides` map the renderer expects from the
+ * placer's customer-level Trim / Pockets toggles. Only emits explicit
+ * `false` values when a toggle is off — leaves untouched panels alone
+ * so the renderer can fall back to its group-level decisions.
+ */
+function buildPanelOverrides(
+  state: HoodieAopPlacerState,
+): Partial<Record<string, boolean>> {
+  const out: Partial<Record<string, boolean>> = {};
+  if (!state.trimEnabled) {
+    for (const k of TRIM_PANEL_KEYS) out[k] = false;
+  }
+  if (!state.pocketsEnabled) {
+    for (const k of POCKET_PANEL_KEYS) out[k] = false;
+  }
+  return out;
+}
 
 export type HoodieAopPlacerApplyResult = {
   state: HoodieAopPlacerState;
@@ -140,6 +177,8 @@ function buildInitialState(
     artworkUrl: null,
     placements,
     enabled,
+    trimEnabled: true,
+    pocketsEnabled: true,
     hoodLinked: true,
     backgroundColor: DEFAULT_BG_COLOR,
     tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
@@ -307,8 +346,12 @@ export default function HoodieAopPlacer({
       mode: state.mode === "pattern" ? "tile" : "single-sheet",
       showExclusions: true,
       applyShading: true,
+      // Customer placer wants "no artwork = plain hoodie", not the
+      // admin debug-colour fill that the renderer defaults to.
+      solidColorFallback: false,
       groupPlacementOverrides: state.placements,
       groupEnabledOverrides: state.enabled,
+      panelEnabledOverrides: buildPanelOverrides(state),
       activeGroupId: state.mode === "place" && artworkImg ? state.activeGroupId : null,
       backgroundColor: state.backgroundColor,
       tileSettings: state.tileSettings,
@@ -529,8 +572,10 @@ export default function HoodieAopPlacer({
         mode: state.mode === "pattern" ? "tile" : "single-sheet",
         showExclusions: true,
         applyShading: true,
+        solidColorFallback: false,
         groupPlacementOverrides: state.placements,
         groupEnabledOverrides: state.enabled,
+        panelEnabledOverrides: buildPanelOverrides(state),
         backgroundColor: state.backgroundColor,
         tileSettings: state.tileSettings,
         pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
@@ -803,6 +848,38 @@ export default function HoodieAopPlacer({
             />
           </div>
         )}
+
+        {/* Trim & Pockets — panel-key toggles, work in both modes */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+            <span
+              className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
+              title="Cuffs and waistband"
+            >
+              Trim
+            </span>
+            <Toggle
+              checked={state.trimEnabled}
+              onChange={(on) =>
+                setState((prev) => (prev ? { ...prev, trimEnabled: on } : prev))
+              }
+            />
+          </div>
+          <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+            <span
+              className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
+              title="Front pocket and pocket panels"
+            >
+              Pockets
+            </span>
+            <Toggle
+              checked={state.pocketsEnabled}
+              onChange={(on) =>
+                setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
+              }
+            />
+          </div>
+        </div>
 
         {/* Background colour */}
         <div>
