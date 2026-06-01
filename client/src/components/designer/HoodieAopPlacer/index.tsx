@@ -282,6 +282,12 @@ export default function HoodieAopPlacer({
   }, [state?.artworkUrl]);
 
   // ---------- Canvas rendering ----------
+  // The renderer reads `state.placements` directly — each group keeps its
+  // own admin-saved placement at all times. The hood-link state only
+  // determines how *future* edits propagate (delta-based, see
+  // `propagateLinkedDelta`), so at render time we don't synthesise any
+  // overrides for "linked". This preserves admin-tuned hood scale /
+  // offset values that are deliberately different from front-body.
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     if (!data || !state) return;
@@ -293,17 +299,6 @@ export default function HoodieAopPlacer({
     canvas.height = mockup.naturalHeight || mockup.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    // Hood-link: when linked, the hood group mirrors front-body's placement.
-    // We synthesise an override into the renderer rather than mutating state.
-    const placementOverrides: Record<string, Record<HoodieView, ArtworkPlacement>> = {
-      ...state.placements,
-    };
-    if (state.hoodLinked && state.placements["front-body"]) {
-      placementOverrides["hood"] = {
-        front: { ...(state.placements["front-body"].front ?? DEFAULT_ARTWORK_PLACEMENT) },
-        back: state.placements["hood"]?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
-      };
-    }
     renderAopPreview(ctx, {
       template: data.template,
       view: state.view,
@@ -312,7 +307,7 @@ export default function HoodieAopPlacer({
       mode: state.mode === "pattern" ? "tile" : "single-sheet",
       showExclusions: true,
       applyShading: true,
-      groupPlacementOverrides: placementOverrides,
+      groupPlacementOverrides: state.placements,
       groupEnabledOverrides: state.enabled,
       activeGroupId: state.mode === "place" && artworkImg ? state.activeGroupId : null,
       backgroundColor: state.backgroundColor,
@@ -322,27 +317,65 @@ export default function HoodieAopPlacer({
   }, [data, state, mockups, artworkImg]);
 
   // ---------- Helpers ----------
+
+  /**
+   * Propagate a placement change from `groupId` to its hood-link partner
+   * when linked. Uses **deltas** (translation) and **ratios** (scale) so
+   * the admin's saved offset and scale relationship is preserved.
+   *
+   * Example: admin saves hood scale=1.25 (anchored 91 px down on the hood
+   * panels) and front-body scale=1.00 (anchored on the chest). Linked
+   * means dragging front-body 30 px right also moves hood 30 px right,
+   * and scaling front-body to 1.20 scales hood to 1.50 (×1.25 ratio
+   * preserved). Hood does NOT inherit front-body's absolute placement.
+   */
+  function propagateLinkedDelta(
+    placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
+    sourceId: string,
+    view: HoodieView,
+    prevSource: ArtworkPlacement,
+    nextSource: ArtworkPlacement,
+  ): Record<string, Record<HoodieView, ArtworkPlacement>> {
+    if (sourceId !== "hood" && sourceId !== "front-body") return placements;
+    if (view !== "front") return placements;
+    const partner = sourceId === "hood" ? "front-body" : "hood";
+    const partnerCur = placements[partner]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
+    const dx = nextSource.offsetX - prevSource.offsetX;
+    const dy = nextSource.offsetY - prevSource.offsetY;
+    const ratio = prevSource.scale > 0 ? nextSource.scale / prevSource.scale : 1;
+    return {
+      ...placements,
+      [partner]: {
+        ...(placements[partner] ?? {}),
+        front: {
+          scale: partnerCur.scale * ratio,
+          offsetX: partnerCur.offsetX + dx,
+          offsetY: partnerCur.offsetY + dy,
+        },
+      } as Record<HoodieView, ArtworkPlacement>,
+    };
+  }
+
   const updatePlacement = useCallback(
     (groupId: string, view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev) return prev;
-        const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {
+        const prevForGroup = prev.placements[groupId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        let placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {
           ...prev.placements,
           [groupId]: {
             ...(prev.placements[groupId] ?? {}),
             [view]: next,
           } as Record<HoodieView, ArtworkPlacement>,
         };
-        // Hood-link: front-body edits propagate to hood while linked.
-        // Hood edits also propagate to front-body so they stay in sync.
-        if (prev.hoodLinked && (groupId === "hood" || groupId === "front-body")) {
-          const partner = groupId === "hood" ? "front-body" : "hood";
-          if (view === "front") {
-            placements[partner] = {
-              ...(prev.placements[partner] ?? {}),
-              front: { ...next },
-            } as Record<HoodieView, ArtworkPlacement>;
-          }
+        if (prev.hoodLinked) {
+          placements = propagateLinkedDelta(
+            placements,
+            groupId,
+            view,
+            prevForGroup,
+            next,
+          );
         }
         return { ...prev, placements };
       });
@@ -354,38 +387,39 @@ export default function HoodieAopPlacer({
     setState((prev) => (prev ? { ...prev, mode } : prev));
   }, []);
 
+  /**
+   * View-row button handler. Each button always sets BOTH the visible
+   * view and the active group to a deterministic value, so the customer
+   * never gets stuck unable to switch back to e.g. front-body after
+   * picking hood (previous bug: clicking Front while hood was active
+   * preserved hood as the active group, leaving no path back).
+   */
   const setView = useCallback((view: HoodieView) => {
     setState((prev) => {
       if (!prev) return prev;
-      // Switching to back focuses the back-body group.
-      if (view === "back") return { ...prev, view, activeGroupId: "back-body" };
-      // Switching to front focuses front-body unless we were already on hood.
-      const next: HoodieAopPlacerState = {
-        ...prev,
-        view,
-        activeGroupId:
-          prev.activeGroupId === "hood" ? "hood" : "front-body",
-      };
-      return next;
+      const activeGroupId = view === "back" ? "back-body" : "front-body";
+      return { ...prev, view, activeGroupId };
     });
   }, []);
 
+  /**
+   * Hood button handler. Tap-and-tap-again pattern surfaced through the
+   * tooltip:
+   *   - 1st tap (when hood not active): select hood as the active group
+   *     so the Scale slider drives it. View clamps to front because the
+   *     hood drag handles only render on the front view (the back hood
+   *     inherits via the flat-panel bridge — no draggable equivalent).
+   *   - 2nd tap (already on hood): toggle the link with front-body.
+   *     Linked = future edits propagate as deltas + ratios; the original
+   *     admin-tuned hood placement stays intact.
+   */
   const onHoodButton = useCallback(() => {
-    // Tap-and-tap-again pattern: first tap selects hood as the active group
-    // (so the scale slider drives the hood). A second tap toggles the link
-    // state. We expose the link state via the tooltip text so customers
-    // discover it.
     setState((prev) => {
       if (!prev) return prev;
-      // Bring the user to the front view if they were on back — hood is
-      // visible on both views but the active overlay only renders on front
-      // because the back-of-hood inherits via the flat-panel bridge.
-      const view: HoodieView = prev.view === "back" ? "front" : prev.view;
-      // First click on hood while another group was active → select it.
+      const view: HoodieView = "front";
       if (prev.activeGroupId !== "hood") {
         return { ...prev, view, activeGroupId: "hood" };
       }
-      // Already on hood → toggle link.
       return { ...prev, view, hoodLinked: !prev.hoodLinked };
     });
   }, []);
@@ -406,19 +440,15 @@ export default function HoodieAopPlacer({
         if (!prev) return prev;
         const cur = prev.placements[groupId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
         const next: ArtworkPlacement = { ...cur, scale };
-        const placements = {
+        let placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {
           ...prev.placements,
           [groupId]: {
             ...(prev.placements[groupId] ?? {}),
             [view]: next,
           } as Record<HoodieView, ArtworkPlacement>,
         };
-        if (prev.hoodLinked && (groupId === "hood" || groupId === "front-body") && view === "front") {
-          const partner = groupId === "hood" ? "front-body" : "hood";
-          placements[partner] = {
-            ...(prev.placements[partner] ?? {}),
-            front: { ...next },
-          } as Record<HoodieView, ArtworkPlacement>;
+        if (prev.hoodLinked) {
+          placements = propagateLinkedDelta(placements, groupId, view, cur, next);
         }
         return { ...prev, placements };
       });
@@ -488,15 +518,9 @@ export default function HoodieAopPlacer({
       c.height = mockup.naturalHeight || mockup.height;
       const ctx = c.getContext("2d");
       if (!ctx) return null;
-      const placementOverrides: Record<string, Record<HoodieView, ArtworkPlacement>> = {
-        ...state.placements,
-      };
-      if (state.hoodLinked && state.placements["front-body"]) {
-        placementOverrides["hood"] = {
-          front: { ...(state.placements["front-body"].front ?? DEFAULT_ARTWORK_PLACEMENT) },
-          back: state.placements["hood"]?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
-        };
-      }
+      // Each group keeps its own admin-tuned placement (hood-link only
+      // affects how *future* edits propagate); pass `state.placements`
+      // through verbatim so export matches the live preview pixel-for-pixel.
       renderAopPreview(ctx, {
         template: data.template,
         view: v,
@@ -505,7 +529,7 @@ export default function HoodieAopPlacer({
         mode: state.mode === "pattern" ? "tile" : "single-sheet",
         showExclusions: true,
         applyShading: true,
-        groupPlacementOverrides: placementOverrides,
+        groupPlacementOverrides: state.placements,
         groupEnabledOverrides: state.enabled,
         backgroundColor: state.backgroundColor,
         tileSettings: state.tileSettings,
