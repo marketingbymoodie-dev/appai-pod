@@ -849,37 +849,41 @@ export default function HoodieAopPlacer({
           </div>
         )}
 
-        {/* Trim & Pockets — panel-key toggles, work in both modes */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
-            <span
-              className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
-              title="Cuffs and waistband"
-            >
-              Trim
-            </span>
-            <Toggle
-              checked={state.trimEnabled}
-              onChange={(on) =>
-                setState((prev) => (prev ? { ...prev, trimEnabled: on } : prev))
-              }
-            />
+        {/* Trim & Pockets — Pattern mode only. In Place mode the
+            customer can already disable groups via "Artwork enabled",
+            and these panels are usually full-art anyway. */}
+        {state.mode === "pattern" && (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+              <span
+                className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
+                title="Cuffs and waistband — when off they fill with the background colour"
+              >
+                Trim
+              </span>
+              <Toggle
+                checked={state.trimEnabled}
+                onChange={(on) =>
+                  setState((prev) => (prev ? { ...prev, trimEnabled: on } : prev))
+                }
+              />
+            </div>
+            <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+              <span
+                className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
+                title="Kangaroo pocket and pocket halves — when off they fill with the background colour"
+              >
+                Pockets
+              </span>
+              <Toggle
+                checked={state.pocketsEnabled}
+                onChange={(on) =>
+                  setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
+                }
+              />
+            </div>
           </div>
-          <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
-            <span
-              className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
-              title="Front pocket and pocket panels"
-            >
-              Pockets
-            </span>
-            <Toggle
-              checked={state.pocketsEnabled}
-              onChange={(on) =>
-                setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
-              }
-            />
-          </div>
-        </div>
+        )}
 
         {/* Background colour */}
         <div>
