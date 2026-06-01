@@ -209,6 +209,29 @@ export type AopPreviewParams = {
    * artwork — current behaviour).
    */
   backgroundColor?: string | null;
+  /**
+   * Per-panel-key override for "is this panel printed?". Wins over
+   * the group-level `groupEnabledOverrides`. When a key maps to
+   * `false`, the panel renders just the background colour (clipped
+   * to its polygon) — same as a disabled group, but at panel
+   * granularity so customers can toggle e.g. "cuffs & waistband
+   * blank" or "pockets blank" without touching admin design groups.
+   * Omit a key to leave its group-level decision untouched.
+   */
+  panelEnabledOverrides?: Partial<Record<string, boolean>>;
+  /**
+   * Controls what happens when `artwork` is null (no upload yet) and
+   * mode is `single-sheet` / `tile` / `per-panel-stretch`.
+   *
+   * - `true` (default) — paint each panel's debug colour. Admin
+   *   behaviour: useful for verifying mask coverage before the
+   *   customer drops in artwork.
+   * - `false` — skip the debug paint. Panels show just the background
+   *   colour (or stay transparent if `backgroundColor` is null) so
+   *   the customer sees a "plain hoodie" preview when they haven't
+   *   uploaded yet. Used by `HoodieAopPlacer`.
+   */
+  solidColorFallback?: boolean;
 };
 
 /**
@@ -971,7 +994,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   const pctx = printCanvas.getContext("2d");
   if (!pctx) return;
 
-  const useColors = mode === "solid-colors" || !artwork;
+  // `useColors` controls whether each panel paints the debug colour fill
+  // instead of artwork. Solid-colors mode is the explicit "show me the
+  // mask palette" mode. Missing artwork normally also shows debug fills
+  // so the admin can verify mask coverage; the customer-facing placer
+  // opts out with `solidColorFallback: false` so a freshly-loaded
+  // template renders as a plain (background-tinted) hoodie.
+  const solidColorFallback = params.solidColorFallback !== false;
+  const useColors = mode === "solid-colors" || (!artwork && solidColorFallback);
   // Per-group design rects — the new core. Each group computes its
   // own anchor + base + effective rect from its panels' polygons.
   // The legacy single-rect path lives as a fallback inside
@@ -1058,16 +1088,33 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       pctx.fillRect(0, 0, W, H);
     }
 
-    // Whether this panel actually receives artwork in single-sheet
-    // mode. When false, the panel keeps just the background colour
-    // (or stays empty if no bg) — exactly the "exclude sleeves from
-    // the design" use case. We also drop panels in groups that the
-    // admin has switched off via the modal toggle.
+    // Whether this panel actually receives artwork. When false, the
+    // panel keeps just the background colour (or stays empty if no
+    // bg) — exactly the "exclude sleeves from the design" use case.
+    //
+    // Three signals can mute a panel, in priority order:
+    //   1. `panelEnabledOverrides[panelKey] === false` — customer-
+    //      level toggle (e.g. "cuffs & waistband off").
+    //   2. `isLayerInSingleSheet === false` — admin opted this panel
+    //      out of single-sheet via the per-layer toggle.
+    //   3. The layer's design group is disabled (group-level toggle).
+    //
+    // Tile mode also honours the customer panelEnabledOverrides so
+    // "trim off / pockets off" works the same way for repeating
+    // patterns. Per-panel-stretch ignores all three (every panel
+    // unconditionally takes the full artwork).
     const inSingleSheet = isLayerInSingleSheet(layer);
     const layerRect = rectForLayer(layer);
     const groupEnabled = layerRect ? layerRect.enabled : true;
+    const panelOverride =
+      layer.panelKey && params.panelEnabledOverrides
+        ? params.panelEnabledOverrides[layer.panelKey]
+        : undefined;
+    const panelMutedByCustomer = panelOverride === false;
     const skipArtwork =
-      mode === "single-sheet" && (!inSingleSheet || !groupEnabled);
+      panelMutedByCustomer ||
+      (mode === "single-sheet" && (!inSingleSheet || !groupEnabled)) ||
+      (mode === "tile" && (!groupEnabled || !inSingleSheet));
 
     // Source resolution priority — match user mental model:
     //   1. solid-colors mode → debug fill, ignore artwork.
@@ -1176,6 +1223,24 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           layer.mesh,
         );
       }
+    } else if (mode === "tile" && tileSettings && artwork) {
+      // Tile (repeating-pattern) mode: draw a real tile pattern
+      // across the panel's bbox at the chosen real-world tileSize,
+      // honouring brick / half-drop offsets between rows / columns.
+      //
+      // We deliberately bypass mesh warping here. The mesh path
+      // collapses tile mode into "stretch one full artwork copy
+      // across the panel" because `tileSourceRect` returns the
+      // whole artwork — that loses the pattern entirely. The flat
+      // tile draw is what the legacy customizer used and it gives
+      // the visually-distinct grid / brick / offset patterns
+      // customers expect. Trade-off: less fabric drape than the
+      // mesh-warp path, but tile prints are inherently scale-
+      // invariant so the loss is small.
+      drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi);
+      // Reference unused helper symbol so the import stays valid
+      // for any future tile-mesh hybrid path.
+      void tileSourceRect;
     } else if (artwork && layer.mesh) {
       // Customer artwork warped through the saved mesh. We synthesise
       // a `sourceRect` so the mesh reads from the right slice of the
@@ -1184,15 +1249,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       const aw = artwork.naturalWidth || artwork.width;
       const ah = artwork.naturalHeight || artwork.height;
       let synthSrc;
-      if (mode === "tile" && tileSettings) {
-        // Repeating tile: the mesh samples a tile-sized window of
-        // the artwork relative to the panel's mockup-px bbox. Every
-        // panel uses the same tileSizeInches, so the print is
-        // physically uniform across the hoodie. See `tileSourceRect`
-        // for the per-pattern offsets.
-        const bb = aabbOf(anchors);
-        if (bb) synthSrc = tileSourceRect(bb, aw, ah, tileSettings, ppi);
-      } else if (
+      if (
         mode === "single-sheet" &&
         layerRect &&
         layerRect.effective.width > 0 &&
