@@ -868,6 +868,102 @@ function tileSourceRect(
 }
 
 /**
+ * Tile mode — render a per-panel **flat tile sheet** for a layer with
+ * a mesh. Mirrors the place-on-item pipeline: tile the artwork in the
+ * panel's flat coordinate system (so the pattern runs along the
+ * panel's natural axis — sleeves run along the sleeve length, hood
+ * panels along the hood arc, etc.), then feed that flat tile sheet
+ * through the panel's mesh. The mesh deforms the tile pattern
+ * according to fabric drape, exactly the way Printify will print
+ * each panel and the way the cloth will hang on the wearer.
+ *
+ * Sizing strategy:
+ *   - Prefer `mesh.sourceRect` if set (the calibrated panel size).
+ *   - Otherwise fall back to a **scaled-up version of the polygon
+ *     bbox** — we target ~1024 px on the longer side so tiles still
+ *     have decent resolution after the mesh resamples the canvas.
+ *
+ * Tile size is computed in flat-canvas pixels such that the **on-
+ * screen** tile size matches `tileSizeInches × pixelsPerInch` in
+ * mockup pixels. That way the slider works the same in mesh-warped
+ * tile mode as it did in the no-mesh fallback.
+ *
+ * Returns `null` if the layer has no mesh, the polygon bbox is
+ * degenerate, or the canvas couldn't be created.
+ */
+function renderTiledFlatPanel(
+  layer: MaskLayer,
+  artwork: HTMLImageElement,
+  bb: Aabb,
+  settings: TileSettings,
+  pixelsPerInch: number,
+): HTMLCanvasElement | null {
+  if (!layer.mesh || bb.width <= 0 || bb.height <= 0) return null;
+
+  // Decide flat-panel canvas dimensions.
+  let flatW: number;
+  let flatH: number;
+  const src = layer.mesh.sourceRect;
+  if (src && src.width > 0 && src.height > 0) {
+    flatW = Math.max(1, Math.round(src.width));
+    flatH = Math.max(1, Math.round(src.height));
+  } else {
+    // Aim for ~1024px on the longer axis so the mesh has ample
+    // resolution to resample from when warping the tile pattern
+    // onto the polygon.
+    const TARGET = 1024;
+    if (bb.width >= bb.height) {
+      flatW = TARGET;
+      flatH = Math.max(1, Math.round(TARGET * (bb.height / bb.width)));
+    } else {
+      flatH = TARGET;
+      flatW = Math.max(1, Math.round(TARGET * (bb.width / bb.height)));
+    }
+  }
+
+  // Tile size in flat-canvas pixels, scaled so the on-screen tile
+  // (after mesh warp shrinks the flat canvas onto the polygon)
+  // matches the requested tile size in mockup px.
+  const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
+  const tilePxFlat = tilePxMockup * (flatW / Math.max(1, bb.width));
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = flatW;
+  canvas.height = flatH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  // Anchor the grid at the flat canvas center so each panel's tile
+  // pattern is symmetric about its own centerline. (Cross-panel grid
+  // alignment doesn't apply here — Printify prints each panel from
+  // its own flat tile sheet, so we mirror that here.)
+  const anchorX = flatW / 2;
+  const anchorY = flatH / 2;
+  const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
+  const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
+  const startCol = colOf(0) - 1;
+  const endCol = colOf(flatW) + 1;
+  const startRow = rowOf(0) - 1;
+  const endRow = rowOf(flatH) + 1;
+  for (let row = startRow; row <= endRow; row += 1) {
+    const y = anchorY + row * tileHFlat;
+    const xOffset =
+      settings.pattern === "brick" && row % 2 !== 0 ? tilePxFlat / 2 : 0;
+    for (let col = startCol; col <= endCol; col += 1) {
+      const x = anchorX + col * tilePxFlat + xOffset;
+      const yOffset =
+        settings.pattern === "half-drop" && col % 2 !== 0 ? tileHFlat / 2 : 0;
+      ctx.drawImage(artwork, x, y + yOffset, tilePxFlat, tileHFlat);
+    }
+  }
+
+  return canvas;
+}
+
+/**
  * Tile mode — flat (no-mesh) fallback. Tiles the artwork across the
  * panel's bbox at the chosen tile size. Less accurate than the mesh
  * version but still respects the real-world size when no mesh is
@@ -1238,30 +1334,63 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         );
       }
     } else if (mode === "tile" && tileSettings && artwork) {
-      // Tile (repeating-pattern) mode: draw a real tile pattern
-      // across the panel's bbox at the chosen real-world tileSize,
-      // honouring brick / half-drop offsets between rows / columns.
+      // Tile (repeating-pattern) mode.
       //
-      // We deliberately bypass mesh warping here. The mesh path
-      // collapses tile mode into "stretch one full artwork copy
-      // across the panel" because `tileSourceRect` returns the
-      // whole artwork — that loses the pattern entirely. The flat
-      // tile draw is what the legacy customizer used and it gives
-      // the visually-distinct grid / brick / offset patterns
-      // customers expect. Trade-off: less fabric drape than the
-      // mesh-warp path, but tile prints are inherently scale-
-      // invariant so the loss is small.
+      // Mesh path (preferred): build a per-panel **flat tile sheet**
+      // — tile the artwork in the panel's flat coordinate system so
+      // the pattern runs along the panel's natural axis (sleeves
+      // along the sleeve, hood along the hood arc, etc.) — then
+      // warp that sheet through the panel's mesh. This mirrors how
+      // Printify actually prints each panel and gives the customer
+      // a preview that matches what they'll receive: the pattern
+      // follows the panel's grain, gets fabric drape from the mesh,
+      // and tiles uniformly within each panel.
       //
-      // We anchor the global grid to canvas center so the zip seam
-      // (vertical centerline) becomes a tile edge — giving symmetric
-      // patterns across the zip on the front view and across the
-      // hood opening. Without this anchor the pattern aligned to
-      // (0, 0) which left a fractional-tile slice on the right and
-      // looked off-center.
-      drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi, {
-        x: W / 2,
-        y: H / 2,
-      });
+      // The grid is anchored at the flat-canvas center so each
+      // panel's tile pattern is symmetric about its own centerline
+      // — a deliberate mirror of how the mockup-coord version
+      // anchors at canvas center. Cross-panel grid alignment isn't
+      // attempted because Printify prints each panel from its own
+      // flat tile sheet (no continuity at seams in the real garment).
+      //
+      // Fallback (no mesh): the legacy mockup-coord tile draw —
+      // anchored at canvas center to keep the zip / hood-opening
+      // symmetric.
+      const bb = aabbOf(anchors);
+      let drewTile = false;
+      if (layer.mesh && bb) {
+        const flatTile = renderTiledFlatPanel(
+          layer,
+          artwork,
+          bb,
+          tileSettings,
+          ppi,
+        );
+        if (flatTile) {
+          drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
+            ...layer.mesh,
+            sourceRect: {
+              x: 0,
+              y: 0,
+              width: flatTile.width,
+              height: flatTile.height,
+            },
+            // Tile pattern is omnidirectional and already lives in
+            // the panel's flat coord system — reset the calibration's
+            // source UV transform so the mesh samples it as-is.
+            sourceRotation: 0,
+            sourceFlipX: false,
+            sourceFlipY: false,
+          });
+          drewTile = true;
+        }
+      }
+      if (!drewTile) {
+        drawTileFlat(pctx, artwork, bb, tileSettings, ppi, {
+          x: W / 2,
+          y: H / 2,
+        });
+      }
       // Reference unused helper symbol so the import stays valid
       // for any future tile-mesh hybrid path.
       void tileSourceRect;
