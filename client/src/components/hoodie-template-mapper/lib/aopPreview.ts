@@ -872,6 +872,13 @@ function tileSourceRect(
  * panel's bbox at the chosen tile size. Less accurate than the mesh
  * version but still respects the real-world size when no mesh is
  * available.
+ *
+ * `anchor` is a canvas-space point that the global tile grid aligns
+ * to — a tile edge (or row edge for Y) falls at `anchor`. For hoodies
+ * we anchor at canvas center so the zip seam (vertical centerline)
+ * becomes a tile boundary, giving mirror-symmetric patterns across
+ * the front zip and the hood opening. Defaults to (0, 0) for
+ * backward compatibility.
  */
 function drawTileFlat(
   pctx: CanvasRenderingContext2D,
@@ -879,6 +886,7 @@ function drawTileFlat(
   bb: Aabb | null,
   settings: TileSettings,
   pixelsPerInch: number,
+  anchor: { x: number; y: number } = { x: 0, y: 0 },
 ): void {
   if (!bb) return;
   const tilePx = Math.max(1, settings.tileSizeInches * pixelsPerInch);
@@ -888,22 +896,27 @@ function drawTileFlat(
   // Iterate row by row, applying brick/half-drop offsets where
   // requested. `clip()` already constrained drawing to the polygon
   // so we can over-draw past the bbox safely.
-  const startX = Math.floor(bb.x / tilePx) * tilePx - tilePx;
-  const endX = bb.x + bb.width + tilePx;
-  const startY = Math.floor(bb.y / tileH) * tileH - tileH;
-  const endY = bb.y + bb.height + tileH;
-  let row = 0;
-  for (let y = startY; y < endY; y += tileH) {
-    let col = 0;
-    let xOffset = 0;
-    if (settings.pattern === "brick" && row % 2 === 1) xOffset = tilePx / 2;
-    for (let x = startX + xOffset; x < endX; x += tilePx) {
-      let yOffset = 0;
-      if (settings.pattern === "half-drop" && col % 2 === 1) yOffset = tileH / 2;
+  //
+  // The grid is anchored to `anchor` (NOT canvas (0,0)) so adjacent
+  // panels share grid lines AND the centerline of the canvas falls on
+  // a tile boundary. The `Math.floor(...) - 1` step gives us a one-
+  // tile-border safety margin so the polygon clip never reveals empty
+  // canvas at the panel edges.
+  const colOf = (x: number) => Math.floor((x - anchor.x) / tilePx);
+  const rowOf = (y: number) => Math.floor((y - anchor.y) / tileH);
+  const startCol = colOf(bb.x) - 1;
+  const endCol = colOf(bb.x + bb.width) + 1;
+  const startRow = rowOf(bb.y) - 1;
+  const endRow = rowOf(bb.y + bb.height) + 1;
+  for (let row = startRow; row <= endRow; row += 1) {
+    const y = anchor.y + row * tileH;
+    const xOffset = settings.pattern === "brick" && row % 2 !== 0 ? tilePx / 2 : 0;
+    for (let col = startCol; col <= endCol; col += 1) {
+      const x = anchor.x + col * tilePx + xOffset;
+      const yOffset =
+        settings.pattern === "half-drop" && col % 2 !== 0 ? tileH / 2 : 0;
       pctx.drawImage(artwork, x, y + yOffset, tilePx, tileH);
-      col += 1;
     }
-    row += 1;
   }
 }
 
@@ -1092,17 +1105,18 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     // panel keeps just the background colour (or stays empty if no
     // bg) — exactly the "exclude sleeves from the design" use case.
     //
-    // Three signals can mute a panel, in priority order:
+    // Signals that mute a panel, in priority order:
     //   1. `panelEnabledOverrides[panelKey] === false` — customer-
-    //      level toggle (e.g. "cuffs & waistband off").
-    //   2. `isLayerInSingleSheet === false` — admin opted this panel
-    //      out of single-sheet via the per-layer toggle.
-    //   3. The layer's design group is disabled (group-level toggle).
+    //      level toggle (e.g. "cuffs & waistband off"). Always wins.
+    //   2. The layer's design group is disabled (group-level toggle).
+    //   3. `isLayerInSingleSheet === false` — admin opted this panel
+    //      out of single-sheet's union bounding box. Only relevant in
+    //      single-sheet mode (in tile mode every panel tiles by
+    //      default — `includeInSingleSheet` is a single-sheet concept,
+    //      not a "this panel is unprintable" flag).
     //
-    // Tile mode also honours the customer panelEnabledOverrides so
-    // "trim off / pockets off" works the same way for repeating
-    // patterns. Per-panel-stretch ignores all three (every panel
-    // unconditionally takes the full artwork).
+    // Per-panel-stretch ignores all three (every panel unconditionally
+    // takes the full artwork).
     const inSingleSheet = isLayerInSingleSheet(layer);
     const layerRect = rectForLayer(layer);
     const groupEnabled = layerRect ? layerRect.enabled : true;
@@ -1114,7 +1128,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     const skipArtwork =
       panelMutedByCustomer ||
       (mode === "single-sheet" && (!inSingleSheet || !groupEnabled)) ||
-      (mode === "tile" && (!groupEnabled || !inSingleSheet));
+      (mode === "tile" && !groupEnabled);
 
     // Source resolution priority — match user mental model:
     //   1. solid-colors mode → debug fill, ignore artwork.
@@ -1237,7 +1251,17 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       // customers expect. Trade-off: less fabric drape than the
       // mesh-warp path, but tile prints are inherently scale-
       // invariant so the loss is small.
-      drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi);
+      //
+      // We anchor the global grid to canvas center so the zip seam
+      // (vertical centerline) becomes a tile edge — giving symmetric
+      // patterns across the zip on the front view and across the
+      // hood opening. Without this anchor the pattern aligned to
+      // (0, 0) which left a fractional-tile slice on the right and
+      // looked off-center.
+      drawTileFlat(pctx, artwork, aabbOf(anchors), tileSettings, ppi, {
+        x: W / 2,
+        y: H / 2,
+      });
       // Reference unused helper symbol so the import stays valid
       // for any future tile-mesh hybrid path.
       void tileSourceRect;
