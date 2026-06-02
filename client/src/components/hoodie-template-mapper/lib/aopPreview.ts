@@ -926,6 +926,7 @@ function renderTiledFlatPanel(
   artwork: HTMLImageElement,
   settings: TileSettings,
   pixelsPerInch: number,
+  canvasW: number,
 ): HTMLCanvasElement | null {
   if (!layer.mesh) return null;
 
@@ -964,11 +965,50 @@ function renderTiledFlatPanel(
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  // Anchor the grid at the flat canvas center so each panel's tile
-  // pattern is symmetric about its own centerline. (Cross-panel grid
-  // alignment doesn't apply here — Printify prints each panel from
-  // its own flat tile sheet, so we mirror that here.)
-  const anchorX = flatW / 2;
+  // Anchor strategy.
+  //   - Default: flat-canvas center → pattern symmetric about each
+  //     panel's own centerline. Right for centered panels (back body,
+  //     waistband, kangaroo pocket).
+  //   - Seam panels: when the panel polygon has an edge that sits on
+  //     the mockup canvas X-center (within ~4% tolerance), that edge
+  //     is a seam (front zip, hood opening, pocket halves). Anchor the
+  //     tile grid at the flat-canvas edge that maps onto that seam
+  //     edge so a tile boundary lands EXACTLY at the seam — both
+  //     paired panels' patterns then mirror outward from the seam,
+  //     which is what the customer visually expects (and matches how
+  //     Printify-printed garments look when the print is symmetric
+  //     about the seams).
+  let anchorX = flatW / 2;
+  const cx = canvasW / 2;
+  const polyAnchors = svgPathToAnchors(layer.maskPath);
+  const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
+  if (
+    polyBb &&
+    layer.mesh.cols >= 2 &&
+    layer.mesh.rows >= 1 &&
+    canvasW > 0
+  ) {
+    const polyLDist = Math.abs(polyBb.x - cx);
+    const polyRDist = Math.abs(polyBb.x + polyBb.width - cx);
+    const SEAM_PX = canvasW * 0.04;
+    if (Math.min(polyLDist, polyRDist) < SEAM_PX) {
+      // Resolve which flat-canvas edge corresponds to the seam side
+      // by comparing the mockup-X average of the mesh's first vs
+      // last column. Whichever average sits closer to the canvas
+      // center is the column that projects to the seam.
+      const cols = layer.mesh.cols;
+      const rows = layer.mesh.rows;
+      let leftMockupX = 0;
+      let rightMockupX = 0;
+      for (let r = 0; r < rows; r += 1) {
+        leftMockupX += layer.mesh.targetPoints[r * cols].x;
+        rightMockupX += layer.mesh.targetPoints[r * cols + cols - 1].x;
+      }
+      leftMockupX /= rows;
+      rightMockupX /= rows;
+      anchorX = Math.abs(leftMockupX - cx) < Math.abs(rightMockupX - cx) ? 0 : flatW;
+    }
+  }
   const anchorY = flatH / 2;
   const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
   const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
@@ -1392,6 +1432,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           artwork,
           tileSettings,
           ppi,
+          W,
         );
         if (flatTile) {
           drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
