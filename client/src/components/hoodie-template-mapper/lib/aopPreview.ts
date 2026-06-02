@@ -41,6 +41,7 @@ import type {
   HoodieTemplate,
   HoodieView,
   MaskLayer,
+  MeshGrid,
   Pt,
   TileSettings,
 } from "@shared/hoodieTemplate";
@@ -868,6 +869,32 @@ function tileSourceRect(
 }
 
 /**
+ * Compute the bounding box of a mesh's `targetPoints` in mockup
+ * coordinates. This is the area the mesh actually maps the flat
+ * source canvas into — different from the layer's polygon bbox when
+ * the admin extended the mesh for overscan / seam allowance, which
+ * is the case for sleeves, hood, and waistband on the production
+ * `unisex-zip-hoodie-aop-L` template.
+ */
+function meshTargetBbox(mesh: MeshGrid): Aabb | null {
+  if (!mesh.targetPoints || mesh.targetPoints.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of mesh.targetPoints) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const w = maxX - minX;
+  const h = maxY - minY;
+  if (w <= 0 || h <= 0) return null;
+  return { x: minX, y: minY, width: w, height: h };
+}
+
+/**
  * Tile mode — render a per-panel **flat tile sheet** for a layer with
  * a mesh. Mirrors the place-on-item pipeline: tile the artwork in the
  * panel's flat coordinate system (so the pattern runs along the
@@ -877,28 +904,30 @@ function tileSourceRect(
  * according to fabric drape, exactly the way Printify will print
  * each panel and the way the cloth will hang on the wearer.
  *
- * Sizing strategy:
+ * Sizing strategy (uniform tile size across panels):
  *   - Prefer `mesh.sourceRect` if set (the calibrated panel size).
- *   - Otherwise fall back to a **scaled-up version of the polygon
- *     bbox** — we target ~1024 px on the longer side so tiles still
- *     have decent resolution after the mesh resamples the canvas.
+ *   - Else size the flat canvas to match the **mesh's targetPoints
+ *     bbox** in mockup px. This is the area the mesh actually maps
+ *     onto, so flat-px == mockup-px in mesh space → tiles render at
+ *     a uniform `tileSizeInches × pixelsPerInch` regardless of which
+ *     panel they're on. Using the polygon bbox here would oversize
+ *     tiles on panels where the mesh extends past the polygon (admin
+ *     adds overscan / seam allowance on hood, sleeves, waistband).
  *
- * Tile size is computed in flat-canvas pixels such that the **on-
- * screen** tile size matches `tileSizeInches × pixelsPerInch` in
- * mockup pixels. That way the slider works the same in mesh-warped
- * tile mode as it did in the no-mesh fallback.
+ * Tile size is `tileSizeInches × pixelsPerInch` directly — no scale
+ * compensation needed because the flat canvas already lives in the
+ * same coord space the mesh projects into.
  *
- * Returns `null` if the layer has no mesh, the polygon bbox is
- * degenerate, or the canvas couldn't be created.
+ * Returns `null` if the layer has no mesh, the mesh is degenerate, or
+ * the canvas couldn't be created.
  */
 function renderTiledFlatPanel(
   layer: MaskLayer,
   artwork: HTMLImageElement,
-  bb: Aabb,
   settings: TileSettings,
   pixelsPerInch: number,
 ): HTMLCanvasElement | null {
-  if (!layer.mesh || bb.width <= 0 || bb.height <= 0) return null;
+  if (!layer.mesh) return null;
 
   // Decide flat-panel canvas dimensions.
   let flatW: number;
@@ -908,24 +937,23 @@ function renderTiledFlatPanel(
     flatW = Math.max(1, Math.round(src.width));
     flatH = Math.max(1, Math.round(src.height));
   } else {
-    // Aim for ~1024px on the longer axis so the mesh has ample
-    // resolution to resample from when warping the tile pattern
-    // onto the polygon.
-    const TARGET = 1024;
-    if (bb.width >= bb.height) {
-      flatW = TARGET;
-      flatH = Math.max(1, Math.round(TARGET * (bb.height / bb.width)));
-    } else {
-      flatH = TARGET;
-      flatW = Math.max(1, Math.round(TARGET * (bb.width / bb.height)));
-    }
+    // Use the mesh's projected area in mockup coordinates so the flat
+    // canvas is in the same coord space the mesh maps onto. Critical
+    // for tile-size uniformity across panels — the polygon bbox is
+    // not a reliable proxy because admin meshes typically extend past
+    // the polygon by 2× or more on sleeves / hood / waistband.
+    const tb = meshTargetBbox(layer.mesh);
+    if (!tb) return null;
+    flatW = Math.max(1, Math.round(tb.width));
+    flatH = Math.max(1, Math.round(tb.height));
   }
 
-  // Tile size in flat-canvas pixels, scaled so the on-screen tile
-  // (after mesh warp shrinks the flat canvas onto the polygon)
-  // matches the requested tile size in mockup px.
+  // Tile size in flat-canvas px. Because flatW/H matches the mesh's
+  // projected area in mockup px, a tile that's `tilePxMockup` flat-px
+  // wide will render at the same `tilePxMockup` mockup-px wide on
+  // screen (modulo per-triangle deformation from fabric drape).
   const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
-  const tilePxFlat = tilePxMockup * (flatW / Math.max(1, bb.width));
+  const tilePxFlat = tilePxMockup;
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
   const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
@@ -1358,11 +1386,10 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       // symmetric.
       const bb = aabbOf(anchors);
       let drewTile = false;
-      if (layer.mesh && bb) {
+      if (layer.mesh) {
         const flatTile = renderTiledFlatPanel(
           layer,
           artwork,
-          bb,
           tileSettings,
           ppi,
         );
