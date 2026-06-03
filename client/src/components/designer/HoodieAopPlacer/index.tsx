@@ -221,18 +221,35 @@ export default function HoodieAopPlacer({
     // (e.g. appai-2.myshopify.com), not our Railway app, and 404s. The
     // dev playground used a relative URL and worked because it runs on
     // the app's own origin; the embed needs API_BASE.
-    fetch(`${API_BASE}/api/storefront/hoodie-template/${encodeURIComponent(templateName)}`)
+    const fetchUrl = `${API_BASE}/api/storefront/hoodie-template/${encodeURIComponent(templateName)}`;
+    // Diagnostic: log the resolved URL so we can verify in storefront-iframe
+    // console output what the placer is actually hitting (cross-origin
+    // iframe network traffic is sometimes invisible to the parent page's
+    // devtools network tab — console logs are still aggregated).
+    // eslint-disable-next-line no-console
+    console.log("[HoodieAopPlacer] fetching template:", fetchUrl, {
+      API_BASE,
+      templateName,
+      origin: typeof window !== "undefined" ? window.location.origin : null,
+    });
+    fetch(fetchUrl)
       .then(async (r) => {
+        // eslint-disable-next-line no-console
+        console.log("[HoodieAopPlacer] template response:", r.status, r.headers.get("content-type"));
         if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
         return r.json();
       })
       .then((j: ApiResponse) => {
         if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.log("[HoodieAopPlacer] template loaded:", j.name, "groups=", (j.template?.designGroups ?? []).length);
         setData(j);
         setLoading(false);
       })
       .catch((e) => {
         if (cancelled) return;
+        // eslint-disable-next-line no-console
+        console.error("[HoodieAopPlacer] template fetch FAILED:", e?.message || e);
         setLoadError(e?.message || String(e));
         setLoading(false);
       });
