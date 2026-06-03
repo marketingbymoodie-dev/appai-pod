@@ -29,6 +29,8 @@ import AdminPlanPicker from "@/pages/admin/plan-picker-page";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
+// DEV-ONLY: Hoodie AOP Placer playground (Stage 2 — pre-embed integration)
+import DevHoodiePlacerPage from "@/pages/dev-hoodie-placer";
 
 function AppRouter() {
   return (
@@ -64,6 +66,10 @@ function AppRouter() {
       {/* DEV-ONLY: Storefront preview launcher */}
       {import.meta.env.DEV && (
         <Route path="/dev/storefront" component={DevStorefrontPreview} />
+      )}
+      {/* DEV-ONLY: Hoodie AOP Placer playground */}
+      {import.meta.env.DEV && (
+        <Route path="/dev/hoodie-placer" component={DevHoodiePlacerPage} />
       )}
 
       {/* Fallback */}

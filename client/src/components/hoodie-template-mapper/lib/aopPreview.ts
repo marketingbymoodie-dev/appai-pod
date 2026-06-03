@@ -41,6 +41,7 @@ import type {
   HoodieTemplate,
   HoodieView,
   MaskLayer,
+  MeshGrid,
   Pt,
   TileSettings,
 } from "@shared/hoodieTemplate";
@@ -209,6 +210,29 @@ export type AopPreviewParams = {
    * artwork — current behaviour).
    */
   backgroundColor?: string | null;
+  /**
+   * Per-panel-key override for "is this panel printed?". Wins over
+   * the group-level `groupEnabledOverrides`. When a key maps to
+   * `false`, the panel renders just the background colour (clipped
+   * to its polygon) — same as a disabled group, but at panel
+   * granularity so customers can toggle e.g. "cuffs & waistband
+   * blank" or "pockets blank" without touching admin design groups.
+   * Omit a key to leave its group-level decision untouched.
+   */
+  panelEnabledOverrides?: Partial<Record<string, boolean>>;
+  /**
+   * Controls what happens when `artwork` is null (no upload yet) and
+   * mode is `single-sheet` / `tile` / `per-panel-stretch`.
+   *
+   * - `true` (default) — paint each panel's debug colour. Admin
+   *   behaviour: useful for verifying mask coverage before the
+   *   customer drops in artwork.
+   * - `false` — skip the debug paint. Panels show just the background
+   *   colour (or stay transparent if `backgroundColor` is null) so
+   *   the customer sees a "plain hoodie" preview when they haven't
+   *   uploaded yet. Used by `HoodieAopPlacer`.
+   */
+  solidColorFallback?: boolean;
 };
 
 /**
@@ -845,10 +869,180 @@ function tileSourceRect(
 }
 
 /**
+ * Compute the bounding box of a mesh's `targetPoints` in mockup
+ * coordinates. This is the area the mesh actually maps the flat
+ * source canvas into — different from the layer's polygon bbox when
+ * the admin extended the mesh for overscan / seam allowance, which
+ * is the case for sleeves, hood, and waistband on the production
+ * `unisex-zip-hoodie-aop-L` template.
+ */
+function meshTargetBbox(mesh: MeshGrid): Aabb | null {
+  if (!mesh.targetPoints || mesh.targetPoints.length === 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of mesh.targetPoints) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const w = maxX - minX;
+  const h = maxY - minY;
+  if (w <= 0 || h <= 0) return null;
+  return { x: minX, y: minY, width: w, height: h };
+}
+
+/**
+ * Tile mode — render a per-panel **flat tile sheet** for a layer with
+ * a mesh. Mirrors the place-on-item pipeline: tile the artwork in the
+ * panel's flat coordinate system (so the pattern runs along the
+ * panel's natural axis — sleeves run along the sleeve length, hood
+ * panels along the hood arc, etc.), then feed that flat tile sheet
+ * through the panel's mesh. The mesh deforms the tile pattern
+ * according to fabric drape, exactly the way Printify will print
+ * each panel and the way the cloth will hang on the wearer.
+ *
+ * Sizing strategy (uniform tile size across panels):
+ *   - Prefer `mesh.sourceRect` if set (the calibrated panel size).
+ *   - Else size the flat canvas to match the **mesh's targetPoints
+ *     bbox** in mockup px. This is the area the mesh actually maps
+ *     onto, so flat-px == mockup-px in mesh space → tiles render at
+ *     a uniform `tileSizeInches × pixelsPerInch` regardless of which
+ *     panel they're on. Using the polygon bbox here would oversize
+ *     tiles on panels where the mesh extends past the polygon (admin
+ *     adds overscan / seam allowance on hood, sleeves, waistband).
+ *
+ * Tile size is `tileSizeInches × pixelsPerInch` directly — no scale
+ * compensation needed because the flat canvas already lives in the
+ * same coord space the mesh projects into.
+ *
+ * Returns `null` if the layer has no mesh, the mesh is degenerate, or
+ * the canvas couldn't be created.
+ */
+function renderTiledFlatPanel(
+  layer: MaskLayer,
+  artwork: HTMLImageElement,
+  settings: TileSettings,
+  pixelsPerInch: number,
+  canvasW: number,
+): HTMLCanvasElement | null {
+  if (!layer.mesh) return null;
+
+  // Decide flat-panel canvas dimensions.
+  let flatW: number;
+  let flatH: number;
+  const src = layer.mesh.sourceRect;
+  if (src && src.width > 0 && src.height > 0) {
+    flatW = Math.max(1, Math.round(src.width));
+    flatH = Math.max(1, Math.round(src.height));
+  } else {
+    // Use the mesh's projected area in mockup coordinates so the flat
+    // canvas is in the same coord space the mesh maps onto. Critical
+    // for tile-size uniformity across panels — the polygon bbox is
+    // not a reliable proxy because admin meshes typically extend past
+    // the polygon by 2× or more on sleeves / hood / waistband.
+    const tb = meshTargetBbox(layer.mesh);
+    if (!tb) return null;
+    flatW = Math.max(1, Math.round(tb.width));
+    flatH = Math.max(1, Math.round(tb.height));
+  }
+
+  // Tile size in flat-canvas px. Because flatW/H matches the mesh's
+  // projected area in mockup px, a tile that's `tilePxMockup` flat-px
+  // wide will render at the same `tilePxMockup` mockup-px wide on
+  // screen (modulo per-triangle deformation from fabric drape).
+  const tilePxMockup = Math.max(1, settings.tileSizeInches * pixelsPerInch);
+  const tilePxFlat = tilePxMockup;
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const tileHFlat = tilePxFlat * (ah / Math.max(1, aw));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = flatW;
+  canvas.height = flatH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  // Anchor strategy.
+  //   - Default: flat-canvas center → pattern symmetric about each
+  //     panel's own centerline. Right for centered panels (back body,
+  //     waistband, kangaroo pocket).
+  //   - Seam panels: when the panel polygon has an edge that sits on
+  //     the mockup canvas X-center (within ~4% tolerance), that edge
+  //     is a seam (front zip, hood opening, pocket halves). Anchor the
+  //     tile grid at the flat-canvas edge that maps onto that seam
+  //     edge so a tile boundary lands EXACTLY at the seam — both
+  //     paired panels' patterns then mirror outward from the seam,
+  //     which is what the customer visually expects (and matches how
+  //     Printify-printed garments look when the print is symmetric
+  //     about the seams).
+  let anchorX = flatW / 2;
+  const cx = canvasW / 2;
+  const polyAnchors = svgPathToAnchors(layer.maskPath);
+  const polyBb = polyAnchors.length >= 3 ? aabbOf(polyAnchors) : null;
+  if (
+    polyBb &&
+    layer.mesh.cols >= 2 &&
+    layer.mesh.rows >= 1 &&
+    canvasW > 0
+  ) {
+    const polyLDist = Math.abs(polyBb.x - cx);
+    const polyRDist = Math.abs(polyBb.x + polyBb.width - cx);
+    const SEAM_PX = canvasW * 0.04;
+    if (Math.min(polyLDist, polyRDist) < SEAM_PX) {
+      // Resolve which flat-canvas edge corresponds to the seam side
+      // by comparing the mockup-X average of the mesh's first vs
+      // last column. Whichever average sits closer to the canvas
+      // center is the column that projects to the seam.
+      const cols = layer.mesh.cols;
+      const rows = layer.mesh.rows;
+      let leftMockupX = 0;
+      let rightMockupX = 0;
+      for (let r = 0; r < rows; r += 1) {
+        leftMockupX += layer.mesh.targetPoints[r * cols].x;
+        rightMockupX += layer.mesh.targetPoints[r * cols + cols - 1].x;
+      }
+      leftMockupX /= rows;
+      rightMockupX /= rows;
+      anchorX = Math.abs(leftMockupX - cx) < Math.abs(rightMockupX - cx) ? 0 : flatW;
+    }
+  }
+  const anchorY = flatH / 2;
+  const colOf = (x: number) => Math.floor((x - anchorX) / tilePxFlat);
+  const rowOf = (y: number) => Math.floor((y - anchorY) / tileHFlat);
+  const startCol = colOf(0) - 1;
+  const endCol = colOf(flatW) + 1;
+  const startRow = rowOf(0) - 1;
+  const endRow = rowOf(flatH) + 1;
+  for (let row = startRow; row <= endRow; row += 1) {
+    const y = anchorY + row * tileHFlat;
+    const xOffset =
+      settings.pattern === "brick" && row % 2 !== 0 ? tilePxFlat / 2 : 0;
+    for (let col = startCol; col <= endCol; col += 1) {
+      const x = anchorX + col * tilePxFlat + xOffset;
+      const yOffset =
+        settings.pattern === "half-drop" && col % 2 !== 0 ? tileHFlat / 2 : 0;
+      ctx.drawImage(artwork, x, y + yOffset, tilePxFlat, tileHFlat);
+    }
+  }
+
+  return canvas;
+}
+
+/**
  * Tile mode — flat (no-mesh) fallback. Tiles the artwork across the
  * panel's bbox at the chosen tile size. Less accurate than the mesh
  * version but still respects the real-world size when no mesh is
  * available.
+ *
+ * `anchor` is a canvas-space point that the global tile grid aligns
+ * to — a tile edge (or row edge for Y) falls at `anchor`. For hoodies
+ * we anchor at canvas center so the zip seam (vertical centerline)
+ * becomes a tile boundary, giving mirror-symmetric patterns across
+ * the front zip and the hood opening. Defaults to (0, 0) for
+ * backward compatibility.
  */
 function drawTileFlat(
   pctx: CanvasRenderingContext2D,
@@ -856,6 +1050,7 @@ function drawTileFlat(
   bb: Aabb | null,
   settings: TileSettings,
   pixelsPerInch: number,
+  anchor: { x: number; y: number } = { x: 0, y: 0 },
 ): void {
   if (!bb) return;
   const tilePx = Math.max(1, settings.tileSizeInches * pixelsPerInch);
@@ -865,22 +1060,27 @@ function drawTileFlat(
   // Iterate row by row, applying brick/half-drop offsets where
   // requested. `clip()` already constrained drawing to the polygon
   // so we can over-draw past the bbox safely.
-  const startX = Math.floor(bb.x / tilePx) * tilePx - tilePx;
-  const endX = bb.x + bb.width + tilePx;
-  const startY = Math.floor(bb.y / tileH) * tileH - tileH;
-  const endY = bb.y + bb.height + tileH;
-  let row = 0;
-  for (let y = startY; y < endY; y += tileH) {
-    let col = 0;
-    let xOffset = 0;
-    if (settings.pattern === "brick" && row % 2 === 1) xOffset = tilePx / 2;
-    for (let x = startX + xOffset; x < endX; x += tilePx) {
-      let yOffset = 0;
-      if (settings.pattern === "half-drop" && col % 2 === 1) yOffset = tileH / 2;
+  //
+  // The grid is anchored to `anchor` (NOT canvas (0,0)) so adjacent
+  // panels share grid lines AND the centerline of the canvas falls on
+  // a tile boundary. The `Math.floor(...) - 1` step gives us a one-
+  // tile-border safety margin so the polygon clip never reveals empty
+  // canvas at the panel edges.
+  const colOf = (x: number) => Math.floor((x - anchor.x) / tilePx);
+  const rowOf = (y: number) => Math.floor((y - anchor.y) / tileH);
+  const startCol = colOf(bb.x) - 1;
+  const endCol = colOf(bb.x + bb.width) + 1;
+  const startRow = rowOf(bb.y) - 1;
+  const endRow = rowOf(bb.y + bb.height) + 1;
+  for (let row = startRow; row <= endRow; row += 1) {
+    const y = anchor.y + row * tileH;
+    const xOffset = settings.pattern === "brick" && row % 2 !== 0 ? tilePx / 2 : 0;
+    for (let col = startCol; col <= endCol; col += 1) {
+      const x = anchor.x + col * tilePx + xOffset;
+      const yOffset =
+        settings.pattern === "half-drop" && col % 2 !== 0 ? tileH / 2 : 0;
       pctx.drawImage(artwork, x, y + yOffset, tilePx, tileH);
-      col += 1;
     }
-    row += 1;
   }
 }
 
@@ -971,7 +1171,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   const pctx = printCanvas.getContext("2d");
   if (!pctx) return;
 
-  const useColors = mode === "solid-colors" || !artwork;
+  // `useColors` controls whether each panel paints the debug colour fill
+  // instead of artwork. Solid-colors mode is the explicit "show me the
+  // mask palette" mode. Missing artwork normally also shows debug fills
+  // so the admin can verify mask coverage; the customer-facing placer
+  // opts out with `solidColorFallback: false` so a freshly-loaded
+  // template renders as a plain (background-tinted) hoodie.
+  const solidColorFallback = params.solidColorFallback !== false;
+  const useColors = mode === "solid-colors" || (!artwork && solidColorFallback);
   // Per-group design rects — the new core. Each group computes its
   // own anchor + base + effective rect from its panels' polygons.
   // The legacy single-rect path lives as a fallback inside
@@ -1058,16 +1265,34 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       pctx.fillRect(0, 0, W, H);
     }
 
-    // Whether this panel actually receives artwork in single-sheet
-    // mode. When false, the panel keeps just the background colour
-    // (or stays empty if no bg) — exactly the "exclude sleeves from
-    // the design" use case. We also drop panels in groups that the
-    // admin has switched off via the modal toggle.
+    // Whether this panel actually receives artwork. When false, the
+    // panel keeps just the background colour (or stays empty if no
+    // bg) — exactly the "exclude sleeves from the design" use case.
+    //
+    // Signals that mute a panel, in priority order:
+    //   1. `panelEnabledOverrides[panelKey] === false` — customer-
+    //      level toggle (e.g. "cuffs & waistband off"). Always wins.
+    //   2. The layer's design group is disabled (group-level toggle).
+    //   3. `isLayerInSingleSheet === false` — admin opted this panel
+    //      out of single-sheet's union bounding box. Only relevant in
+    //      single-sheet mode (in tile mode every panel tiles by
+    //      default — `includeInSingleSheet` is a single-sheet concept,
+    //      not a "this panel is unprintable" flag).
+    //
+    // Per-panel-stretch ignores all three (every panel unconditionally
+    // takes the full artwork).
     const inSingleSheet = isLayerInSingleSheet(layer);
     const layerRect = rectForLayer(layer);
     const groupEnabled = layerRect ? layerRect.enabled : true;
+    const panelOverride =
+      layer.panelKey && params.panelEnabledOverrides
+        ? params.panelEnabledOverrides[layer.panelKey]
+        : undefined;
+    const panelMutedByCustomer = panelOverride === false;
     const skipArtwork =
-      mode === "single-sheet" && (!inSingleSheet || !groupEnabled);
+      panelMutedByCustomer ||
+      (mode === "single-sheet" && (!inSingleSheet || !groupEnabled)) ||
+      (mode === "tile" && !groupEnabled);
 
     // Source resolution priority — match user mental model:
     //   1. solid-colors mode → debug fill, ignore artwork.
@@ -1176,6 +1401,67 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           layer.mesh,
         );
       }
+    } else if (mode === "tile" && tileSettings && artwork) {
+      // Tile (repeating-pattern) mode.
+      //
+      // Mesh path (preferred): build a per-panel **flat tile sheet**
+      // — tile the artwork in the panel's flat coordinate system so
+      // the pattern runs along the panel's natural axis (sleeves
+      // along the sleeve, hood along the hood arc, etc.) — then
+      // warp that sheet through the panel's mesh. This mirrors how
+      // Printify actually prints each panel and gives the customer
+      // a preview that matches what they'll receive: the pattern
+      // follows the panel's grain, gets fabric drape from the mesh,
+      // and tiles uniformly within each panel.
+      //
+      // The grid is anchored at the flat-canvas center so each
+      // panel's tile pattern is symmetric about its own centerline
+      // — a deliberate mirror of how the mockup-coord version
+      // anchors at canvas center. Cross-panel grid alignment isn't
+      // attempted because Printify prints each panel from its own
+      // flat tile sheet (no continuity at seams in the real garment).
+      //
+      // Fallback (no mesh): the legacy mockup-coord tile draw —
+      // anchored at canvas center to keep the zip / hood-opening
+      // symmetric.
+      const bb = aabbOf(anchors);
+      let drewTile = false;
+      if (layer.mesh) {
+        const flatTile = renderTiledFlatPanel(
+          layer,
+          artwork,
+          tileSettings,
+          ppi,
+          W,
+        );
+        if (flatTile) {
+          drawMeshWarp(pctx, flatTile, flatTile.width, flatTile.height, {
+            ...layer.mesh,
+            sourceRect: {
+              x: 0,
+              y: 0,
+              width: flatTile.width,
+              height: flatTile.height,
+            },
+            // Tile pattern is omnidirectional and already lives in
+            // the panel's flat coord system — reset the calibration's
+            // source UV transform so the mesh samples it as-is.
+            sourceRotation: 0,
+            sourceFlipX: false,
+            sourceFlipY: false,
+          });
+          drewTile = true;
+        }
+      }
+      if (!drewTile) {
+        drawTileFlat(pctx, artwork, bb, tileSettings, ppi, {
+          x: W / 2,
+          y: H / 2,
+        });
+      }
+      // Reference unused helper symbol so the import stays valid
+      // for any future tile-mesh hybrid path.
+      void tileSourceRect;
     } else if (artwork && layer.mesh) {
       // Customer artwork warped through the saved mesh. We synthesise
       // a `sourceRect` so the mesh reads from the right slice of the
@@ -1184,15 +1470,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       const aw = artwork.naturalWidth || artwork.width;
       const ah = artwork.naturalHeight || artwork.height;
       let synthSrc;
-      if (mode === "tile" && tileSettings) {
-        // Repeating tile: the mesh samples a tile-sized window of
-        // the artwork relative to the panel's mockup-px bbox. Every
-        // panel uses the same tileSizeInches, so the print is
-        // physically uniform across the hoodie. See `tileSourceRect`
-        // for the per-pattern offsets.
-        const bb = aabbOf(anchors);
-        if (bb) synthSrc = tileSourceRect(bb, aw, ah, tileSettings, ppi);
-      } else if (
+      if (
         mode === "single-sheet" &&
         layerRect &&
         layerRect.effective.width > 0 &&
