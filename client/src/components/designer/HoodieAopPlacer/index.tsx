@@ -14,6 +14,7 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import DesignRectHandlesOverlay from "@/components/hoodie-template-mapper/DesignRectHandlesOverlay";
 import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
+import { API_BASE } from "@/lib/urlBase";
 
 /**
  * Customer-facing AOP artwork placer.
@@ -215,7 +216,12 @@ export default function HoodieAopPlacer({
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
-    fetch(`/api/storefront/hoodie-template/${encodeURIComponent(templateName)}`)
+    // IMPORTANT: must be an absolute URL via API_BASE — in the Shopify
+    // storefront iframe, a relative `/api/...` resolves to the *shop* domain
+    // (e.g. appai-2.myshopify.com), not our Railway app, and 404s. The
+    // dev playground used a relative URL and worked because it runs on
+    // the app's own origin; the embed needs API_BASE.
+    fetch(`${API_BASE}/api/storefront/hoodie-template/${encodeURIComponent(templateName)}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
         return r.json();
