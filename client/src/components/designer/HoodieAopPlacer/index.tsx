@@ -47,8 +47,13 @@ import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
 export type HoodieAopPlacerProps = {
   /** Server name of the published template, e.g. `unisex-zip-hoodie-aop-L`. */
   templateName: string;
-  /** Initial / restored state, when resuming a customer's design. Optional. */
-  initialState?: HoodieAopPlacerState | null;
+  /**
+   * Initial / restored state, when resuming a customer's design. Accepts a
+   * partial so callers can seed just one field (e.g. `artworkUrl`) without
+   * having to construct the entire state shape — the placer fills in
+   * remaining fields from the loaded template's defaults.
+   */
+  initialState?: Partial<HoodieAopPlacerState> | null;
   onApply?: (result: HoodieAopPlacerApplyResult) => void;
   onChange?: (state: HoodieAopPlacerState) => void;
 };
@@ -157,7 +162,7 @@ const TILE_PATTERN_OPTIONS: Array<{
  */
 function buildInitialState(
   template: HoodieTemplate,
-  saved?: HoodieAopPlacerState | null,
+  saved?: Partial<HoodieAopPlacerState> | null,
 ): HoodieAopPlacerState {
   const groups = template.designGroups ?? defaultDesignGroups();
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};

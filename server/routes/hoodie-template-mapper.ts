@@ -23,11 +23,12 @@
 // hits Save and does NOT see a `[hoodie-mapper] save start` line in the
 // server log, their dev server is still running the OLD module — restart
 // `npm run dev` to pick up the change.
-const HOODIE_MAPPER_HANDLER_VERSION = "2026-05-24-save-rawbody+timeout";
+const HOODIE_MAPPER_HANDLER_VERSION = "2026-06-03-save+auto-publish";
 
 import { type Express, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
+import { autoPublishHoodieTemplate } from "../hoodieTemplateAutoPublish";
 
 const PROJECT_ROOT = process.cwd();
 const ROOT_DIR = path.resolve(PROJECT_ROOT, "tmp", "hoodie-templates");
@@ -240,6 +241,62 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
         `[hoodie-mapper] save done name=${name} bytes=${stat.size} ` +
           `body-source=${bodySource} elapsed=${Date.now() - t0}ms`,
       );
+
+      // Auto-publish to Supabase so production stores see the update without
+      // a separate `npx tsx scripts/publish-hoodie-template.ts` step. Run
+      // inline (with a tight timeout) so the response can carry the result
+      // back to the admin UI; if Supabase is unreachable or unconfigured we
+      // surface that as `publish.skipped` rather than failing the save.
+      let publishResult: Awaited<ReturnType<typeof autoPublishHoodieTemplate>> | null =
+        null;
+      try {
+        publishResult = await Promise.race([
+          autoPublishHoodieTemplate(name),
+          new Promise<Awaited<ReturnType<typeof autoPublishHoodieTemplate>>>(
+            (resolve) =>
+              setTimeout(
+                () =>
+                  resolve({
+                    ok: false,
+                    skipped: false,
+                    error: "auto-publish timed out (8s)",
+                    elapsedMs: 8000,
+                  }),
+                8000,
+              ),
+          ),
+        ]);
+        if (publishResult.ok) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[hoodie-mapper] auto-publish OK name=${name} → ${publishResult.publicName} ` +
+              `mockups=[${publishResult.uploadedMockups.join(", ") || "none"}] ` +
+              `elapsed=${publishResult.elapsedMs}ms`,
+          );
+        } else if ("skipped" in publishResult && publishResult.skipped) {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[hoodie-mapper] auto-publish skipped name=${name}: ${publishResult.reason}`,
+          );
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[hoodie-mapper] auto-publish failed name=${name}: ${(publishResult as any).error}`,
+          );
+        }
+      } catch (publishErr: any) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[hoodie-mapper] auto-publish threw name=${name}: ${publishErr?.message ?? publishErr}`,
+        );
+        publishResult = {
+          ok: false,
+          skipped: false,
+          error: publishErr?.message ?? String(publishErr),
+          elapsedMs: 0,
+        };
+      }
+
       res.json({
         ok: true,
         file: path.relative(PROJECT_ROOT, file),
@@ -248,6 +305,7 @@ export function registerHoodieTemplateMapperRoutes(app: Express) {
         handler: HOODIE_MAPPER_HANDLER_VERSION,
         bodySource,
         elapsedMs: Date.now() - t0,
+        publish: publishResult,
       });
     } catch (err: any) {
       clearTimeout(timer);
