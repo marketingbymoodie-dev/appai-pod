@@ -34,6 +34,22 @@ export async function loadTemplate(name: string): Promise<HoodieTemplate> {
   return (await r.json()) as HoodieTemplate;
 }
 
+/**
+ * Result of the server's auto-publish hook (Supabase upload). Mirrors the
+ * `AutoPublishResult` union in `server/hoodieTemplateAutoPublish.ts`.
+ */
+export type SaveTemplatePublishResult =
+  | {
+      ok: true;
+      publicName: string;
+      jsonUrl: string;
+      mockups: { front?: string; back?: string };
+      uploadedMockups: string[];
+      elapsedMs: number;
+    }
+  | { ok: false; skipped: true; reason: string }
+  | { ok: false; skipped: false; error: string; elapsedMs: number };
+
 export type SaveTemplateResult = {
   ok: true;
   file: string;
@@ -43,6 +59,12 @@ export type SaveTemplateResult = {
   handler?: string;
   bodySource?: "rawBody" | "parsedBody" | "stream";
   elapsedMs?: number;
+  /**
+   * Result of the server's auto-publish to Supabase. `null` only on legacy
+   * server builds that pre-date the auto-publish hook — the toolbar should
+   * surface a "publish skipped" notice in that case.
+   */
+  publish?: SaveTemplatePublishResult | null;
 };
 
 export async function saveTemplate(name: string, template: HoodieTemplate): Promise<SaveTemplateResult> {

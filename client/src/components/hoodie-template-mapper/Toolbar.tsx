@@ -124,10 +124,50 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       ]
         .filter(Boolean)
         .join(" · ");
-      toast({
-        title: "Template saved",
-        description: meta ? `${result.file}\n${meta}` : result.file,
-      });
+
+      // Surface the auto-publish result so the admin knows whether the
+      // save also pushed to Supabase (production storefront) or only landed
+      // on local disk. Three cases:
+      //   1. publish.ok           → "Published to Supabase".
+      //   2. publish.skipped      → "Published skipped" (e.g. dev with no SB env).
+      //   3. publish.error        → red toast so they know to retry/check creds.
+      const publish = result.publish;
+      if (publish && publish.ok) {
+        const mockupSummary =
+          publish.uploadedMockups.length > 0
+            ? `mockups: ${publish.uploadedMockups.join(", ")}`
+            : "JSON only (mockups unchanged)";
+        toast({
+          title: "Saved & published",
+          description: [
+            `${result.file} → ${publish.publicName}`,
+            mockupSummary,
+            meta,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        });
+      } else if (publish && !publish.ok && publish.skipped) {
+        toast({
+          title: "Saved (publish skipped)",
+          description: [result.file, publish.reason, meta]
+            .filter(Boolean)
+            .join("\n"),
+        });
+      } else if (publish && !publish.ok && !publish.skipped) {
+        toast({
+          title: "Saved, but publish FAILED",
+          description: [result.file, publish.error, meta]
+            .filter(Boolean)
+            .join("\n"),
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Template saved",
+          description: meta ? `${result.file}\n${meta}` : result.file,
+        });
+      }
     } catch (err: any) {
       toast({ title: "Save failed", description: err?.message || String(err), variant: "destructive" });
     } finally {

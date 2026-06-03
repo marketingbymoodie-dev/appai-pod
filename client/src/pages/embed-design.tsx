@@ -33,6 +33,10 @@ import {
   type CanvasConfig,
   type AopPlacementSettings,
 } from "@/components/designer";
+import HoodieAopPlacer, {
+  type HoodieAopPlacerState,
+  type HoodieAopPlacerApplyResult,
+} from "@/components/designer/HoodieAopPlacer";
 
 declare global {
   interface Window {
@@ -955,6 +959,17 @@ export default function EmbedDesign() {
   // Persisted Place on Item placement — survive close/reopen
   const [aopPlacementSettings, setAopPlacementSettings] = useState<AopPlacementSettings | undefined>(undefined);
 
+  /**
+   * Stage 3 — persisted state for the new mesh-warp HoodieAopPlacer.
+   * Only used when `productTypeConfig.panelMappingTemplate` is set
+   * (currently product 20). Saved into `designState.hoodieAopPlacerState`
+   * so the customer can resume mid-edit, and used as the source of truth
+   * for the cart/checkout mockup image (rendered locally — no Printify
+   * roundtrip until Stage 5 ships per-panel reverse-warp export).
+   */
+  const [hoodieAopPlacerState, setHoodieAopPlacerState] =
+    useState<HoodieAopPlacerState | null>(null);
+
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
@@ -1646,6 +1661,13 @@ export default function EmbedDesign() {
       if (typeof ds.aopPatternUrl === 'string' && ds.aopPatternUrl) {
         setAopPatternUrl(abs(ds.aopPatternUrl) || ds.aopPatternUrl);
       }
+      // Stage 3 — restore the new mesh-warp HoodieAopPlacer state. The
+      // placer reads this via its `initialState` prop on first render and
+      // seeds the customer's last placement / mode / link state so they
+      // resume exactly where they left off.
+      if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
+        setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
+      }
     } else {
       if (topLevel.size) setSelectedSize(topLevel.size);
       if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
@@ -1737,6 +1759,7 @@ export default function EmbedDesign() {
       setAopPatternUrl(null);
       setAopPlacementSettings(undefined);
       setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+      setHoodieAopPlacerState(null);
       lastAopPanelUrlsRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
@@ -3874,6 +3897,92 @@ export default function EmbedDesign() {
       setIsAddingToCart(false);
     }
   };
+
+  /**
+   * Stage 3 — handle the customer's "Apply" tap from the new mesh-warp
+   * `HoodieAopPlacer`. Mirrors the legacy `PatternCustomizer.onApply` shape
+   * just enough to feed the existing cart/checkout pipeline: render the
+   * front + back placer mockups locally, upload them, and pin the front
+   * raster as `printifyMockupImages[front]` so `getPreferredMockupUrl()`
+   * returns it (cart `_mockup_url` line property, ATC enabled state, etc).
+   *
+   * Stage 5 will layer in the per-panel reverse-mesh-warp print files and
+   * the optional Printify "Printers Mockup" background-fire on top of this
+   * — for now we deliberately ship without it because (a) the user already
+   * gets a high-fidelity local preview that matches what Printify will
+   * produce, and (b) Printify mockup generation needs the per-panel print
+   * files we don't compute yet.
+   */
+  const handleHoodieAopApply = useCallback(async (
+    result: HoodieAopPlacerApplyResult,
+  ) => {
+    setHoodieAopPlacerState(result.state);
+    setShowPatternStep(false);
+
+    // Front is the canonical "preferred" mockup the cart references.
+    const frontCanvas = result.renderView("front");
+    const backCanvas = result.renderView("back");
+    if (!frontCanvas) {
+      console.warn("[HoodieAopApply] No front canvas — placer not ready?");
+      return;
+    }
+    const frontDataUrl = frontCanvas.toDataURL("image/png");
+    const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+
+    setMockupLoading(true);
+    setMockupTriggered(true);
+    try {
+      const [frontHosted, backHosted] = await Promise.all([
+        ensureHostedUrl(frontDataUrl),
+        backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
+      ]);
+
+      const images: { url: string; label: string }[] = [
+        { url: frontHosted, label: "front" },
+      ];
+      if (backHosted) images.push({ url: backHosted, label: "back" });
+      const urls = images.map((i) => i.url);
+
+      setPrintifyMockupImages(images);
+      setPrintifyMockups(urls);
+      setSelectedMockupIndex(0);
+      // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
+      // ATC. The hoodie placer has no separate "pattern" — the local
+      // composite IS the artwork — so we point it at the front raster.
+      setAopPatternUrl(frontHosted);
+      setMockupFailed(false);
+      setMockupError(null);
+      setMockupsStale(false);
+
+      // Persist customer state + the rendered cart image on the saved
+      // generation job so Edit-from-cart and reload-after-close both
+      // resume the customer at exactly this point.
+      if (isStorefront && savedJobIdRef.current && shopDomain) {
+        void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: savedJobIdRef.current,
+            shop: shopDomain,
+            designState: {
+              hoodieAopPlacerState: result.state,
+              aopPatternUrl: frontHosted,
+              hoodieAopMockups: { front: frontHosted, back: backHosted },
+            },
+          }),
+        }).catch((e) => {
+          console.error("[HoodieAopApply] Failed to persist designState:", e);
+        });
+      }
+    } catch (err: any) {
+      console.error("[HoodieAopApply] Upload failed:", err);
+      setMockupError(err?.message || "Failed to apply design");
+      setMockupFailed(true);
+    } finally {
+      setMockupLoading(false);
+      setMockupTriggered(false);
+    }
+  }, [isStorefront, shopDomain]);
 
   const handleShare = async () => {
     if (!generatedDesign) return;
@@ -6165,6 +6274,62 @@ export default function EmbedDesign() {
 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
+              productTypeConfig?.panelMappingTemplate ? (
+                <div className="flex flex-col gap-2 min-h-0">
+                  {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
+                      Apply lives inside the placer itself ("Apply to product"). */}
+                  {(isStorefront || isShopify) && (
+                    <div className="flex w-full gap-2 justify-stretch">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={() => setShowPatternStep(false)}
+                        title="Return to product preview without applying"
+                        data-testid="button-back-from-hoodie-placer"
+                      >
+                        <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
+                        <span className="text-xs truncate">Back</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={handleShare}
+                        disabled={isSharing || !generatedDesign?.imageUrl}
+                        data-testid="button-share-hoodie-placer"
+                      >
+                        {isSharing ? (
+                          <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                        ) : (
+                          <Share2 className="w-4 h-4 mr-1 shrink-0" />
+                        )}
+                        <span className="text-xs truncate">Share</span>
+                      </Button>
+                    </div>
+                  )}
+                  <HoodieAopPlacer
+                    // Re-mount when the customer regenerates artwork or
+                    // switches products so the placer re-seeds initialState
+                    // from the fresh motif. Keeping the saved customer state
+                    // mid-edit is handled by `hoodieAopPlacerState` flowing
+                    // back in via initialState below.
+                    key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
+                    templateName={productTypeConfig.panelMappingTemplate}
+                    initialState={{
+                      ...(hoodieAopPlacerState ?? {}),
+                      // Always seed the latest AI-generated motif as the
+                      // active artwork, even if the saved state pointed at
+                      // an older one — fresh generations should take over.
+                      artworkUrl: aopPendingMotifUrl,
+                    }}
+                    onChange={(s) => setHoodieAopPlacerState(s)}
+                    onApply={handleHoodieAopApply}
+                  />
+                </div>
+              ) : (
               <PatternCustomizer
                 key={`aop-pc-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}-${patternPanelPositions.length}`}
                 motifUrl={aopPendingMotifUrl}
@@ -6317,6 +6482,7 @@ export default function EmbedDesign() {
                   ) : undefined
                 }
               />
+              )
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
