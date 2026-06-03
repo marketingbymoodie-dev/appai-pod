@@ -15,6 +15,7 @@ import {
 import DesignRectHandlesOverlay from "@/components/hoodie-template-mapper/DesignRectHandlesOverlay";
 import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
 import { API_BASE } from "@/lib/urlBase";
+import { safeFetch } from "@/lib/safeFetch";
 
 /**
  * Customer-facing AOP artwork placer.
@@ -232,27 +233,61 @@ export default function HoodieAopPlacer({
       templateName,
       origin: typeof window !== "undefined" ? window.location.origin : null,
     });
-    fetch(fetchUrl)
-      .then(async (r) => {
+
+    // Robustness: AbortController + 12-second timeout per attempt + 1 retry.
+    // Without this a transient hang (Supabase cold start, App Proxy stall,
+    // browser connection-pool exhaustion) leaves the placer stuck on
+    // "Loading template..." forever. With it the worst case is ~24s before
+    // the user sees an actionable error.
+    const FETCH_TIMEOUT_MS = 12_000;
+    const MAX_ATTEMPTS = 2;
+
+    const attempt = async (n: number): Promise<void> => {
+      const ctrl = new AbortController();
+      const timer = window.setTimeout(() => ctrl.abort("timeout"), FETCH_TIMEOUT_MS);
+      try {
+        // eslint-disable-next-line no-console
+        if (n > 1) console.log("[HoodieAopPlacer] template retry attempt:", n);
+        // CRITICAL: Use safeFetch (XHR in storefront iframe). Shopify's
+        // service worker on the storefront domain intercepts window.fetch()
+        // and never resolves it for App Proxy paths — XHR bypasses the SW.
+        // See client/src/lib/safeFetch.ts.
+        const r = await safeFetch(fetchUrl, { signal: ctrl.signal, cache: "no-store" });
         // eslint-disable-next-line no-console
         console.log("[HoodieAopPlacer] template response:", r.status, r.headers.get("content-type"));
         if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-        return r.json();
-      })
-      .then((j: ApiResponse) => {
+        const j: ApiResponse = await r.json();
         if (cancelled) return;
         // eslint-disable-next-line no-console
         console.log("[HoodieAopPlacer] template loaded:", j.name, "groups=", (j.template?.designGroups ?? []).length);
         setData(j);
         setLoading(false);
-      })
-      .catch((e) => {
+      } catch (e: unknown) {
         if (cancelled) return;
+        const msg = (e as { message?: string })?.message || String(e);
+        const aborted = (e as { name?: string })?.name === "AbortError" || /aborted|timeout/i.test(msg);
         // eslint-disable-next-line no-console
-        console.error("[HoodieAopPlacer] template fetch FAILED:", e?.message || e);
-        setLoadError(e?.message || String(e));
+        console.warn(
+          `[HoodieAopPlacer] template fetch attempt ${n}/${MAX_ATTEMPTS} failed:`,
+          aborted ? "aborted/timeout" : msg,
+        );
+        if (n < MAX_ATTEMPTS) {
+          // brief backoff before retry
+          await new Promise((res) => setTimeout(res, 500));
+          if (cancelled) return;
+          return attempt(n + 1);
+        }
+        // eslint-disable-next-line no-console
+        console.error("[HoodieAopPlacer] template fetch FAILED after retries:", msg);
+        setLoadError(aborted ? "Template request timed out" : msg);
         setLoading(false);
-      });
+      } finally {
+        window.clearTimeout(timer);
+      }
+    };
+
+    void attempt(1);
+
     return () => {
       cancelled = true;
     };
