@@ -218,6 +218,38 @@ function adjustHSLLightness(hsl: string, delta: number): string {
 }
 
 /**
+ * Lightness 0-100 from an "H S% L%" HSL string, or null if unparseable.
+ */
+function hslLightness(hsl: string | null | undefined): number | null {
+  if (!hsl) return null;
+  const parts = hsl.match(/^(\d+)\s+(\d+)%\s+(\d+)%$/);
+  if (!parts) return null;
+  return parseInt(parts[3]);
+}
+
+/**
+ * Guarantee that `fgHSL` has enough contrast with `bgHSL`. If the lightness
+ * delta between them is below `minDelta`, returns a forced black or white
+ * instead. Used to bulletproof `--primary-foreground` when a merchant's
+ * storefront extractor returns a non-contrasting pair (some themes set
+ * button text via inheritance / CSS that resolves to the same colour as
+ * the bg in computed styles).
+ */
+function ensureContrastingForeground(
+  bgHSL: string | null,
+  fgHSL: string | null,
+  minDelta = 35,
+): string | null {
+  if (!bgHSL) return fgHSL;
+  const bgL = hslLightness(bgHSL);
+  if (bgL === null) return fgHSL;
+  const fgL = hslLightness(fgHSL);
+  if (fgL !== null && Math.abs(bgL - fgL) >= minDelta) return fgHSL;
+  // Insufficient contrast (or no fg given) → pick black/white from bg.
+  return bgL < 50 ? "0 0% 100%" : "0 0% 9%";
+}
+
+/**
  * Resolve an image URL to an absolute URL suitable for sending to the backend.
  * Handles three cases:
  * - Already absolute (http/https) → pass through
@@ -3961,12 +3993,22 @@ export default function EmbedDesign() {
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
       // resume the customer at exactly this point.
+      //
+      // We fire two requests in parallel:
+      //   1. save-state  — merges the placer's full state into designState
+      //      so the placer can re-open mid-edit on next visit.
+      //   2. save-mockups — writes the rendered front/back URLs into the
+      //      job's `mockupUrls` field. This is what the Saved Designs nav
+      //      gallery reads as the thumbnail, so without it product-20
+      //      designs would fall back to the raw artwork on a flat hoodie
+      //      instead of the customer's actual placement preview.
       if (isStorefront && savedJobIdRef.current && shopDomain) {
+        const jobId = savedJobIdRef.current;
         void safeFetch(`${API_BASE}/api/storefront/save-state`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            jobId: savedJobIdRef.current,
+            jobId,
             shop: shopDomain,
             designState: {
               hoodieAopPlacerState: result.state,
@@ -3976,6 +4018,19 @@ export default function EmbedDesign() {
           }),
         }).catch((e) => {
           console.error("[HoodieAopApply] Failed to persist designState:", e);
+        });
+
+        void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId,
+            shop: shopDomain,
+            // Front first (gallery thumbnail), back second.
+            mockupUrls: backHosted ? [frontHosted, backHosted] : [frontHosted],
+          }),
+        }).catch((e) => {
+          console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
         });
       }
     } catch (err: any) {
@@ -4175,6 +4230,9 @@ export default function EmbedDesign() {
         if (bgHSL) root.setProperty('--background', bgHSL);
         if (fgHSL) {
           root.setProperty('--foreground', fgHSL);
+          // Tentative card-foreground = body text. Re-validated against
+          // --card below once it's set, since input bg can differ from
+          // body bg and would otherwise leave invisible card text.
           root.setProperty('--card-foreground', fgHSL);
         }
 
@@ -4187,8 +4245,14 @@ export default function EmbedDesign() {
           root.setProperty('--sidebar-primary', btnBgHSL);
           // Derive primary-border as slightly darker
           root.setProperty('--primary-border', adjustHSLLightness(btnBgHSL, -8));
-        }
-        if (btnFgHSL) {
+          // Bulletproof: if the merchant's button text colour didn't
+          // extract (or extracted to something low-contrast like inherited
+          // body text), force a black/white pair against the button bg.
+          // Without this, active segmented buttons render as solid black
+          // rectangles with invisible text on themes that use color: inherit.
+          const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
+          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
+        } else if (btnFgHSL) {
           root.setProperty('--primary-foreground', btnFgHSL);
         }
         if (t.buttonRadius) {
@@ -4224,6 +4288,11 @@ export default function EmbedDesign() {
         const inputBgHSL = cssColorToHSL(t.inputBg);
         if (inputBgHSL) {
           root.setProperty('--card', inputBgHSL);
+          // Bulletproof card-foreground against the (possibly different)
+          // card bg. If body text doesn't contrast with input bg, fall
+          // back to black/white based on luminance.
+          const safeCardFg = ensureContrastingForeground(inputBgHSL, fgHSL);
+          if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
         }
 
         // -- Accent (links) --

@@ -821,7 +821,7 @@ export default function HoodieAopPlacer({
               className={`px-3 py-2 text-xs font-semibold transition ${
                 state.mode === m
                   ? "bg-primary text-primary-foreground"
-                  : "text-foreground hover:bg-muted"
+                  : "text-card-foreground hover:bg-muted"
               }`}
             >
               {m === "pattern" ? "Pattern" : "Place on item"}
@@ -831,7 +831,7 @@ export default function HoodieAopPlacer({
 
         {/* Artwork upload (separate row since legacy assumes art is already chosen) */}
         <Section title="Artwork">
-          <label className="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-border bg-muted/40 p-3 text-xs text-foreground hover:border-primary/60 hover:bg-muted">
+          <label className="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-border bg-muted/40 p-3 text-xs font-semibold text-foreground hover:border-primary/60 hover:bg-muted">
             <Upload className="h-4 w-4" />
             {state.artworkUrl ? "Replace artwork" : "Upload artwork"}
             <input
@@ -931,7 +931,7 @@ export default function HoodieAopPlacer({
                     className={`px-2 py-1.5 text-xs font-semibold transition ${
                       state.tileSettings.pattern === opt.id
                         ? "bg-primary text-primary-foreground"
-                        : "bg-card text-foreground hover:bg-muted"
+                        : "bg-card text-card-foreground hover:bg-muted"
                     }`}
                   >
                     {opt.label}
@@ -956,7 +956,7 @@ export default function HoodieAopPlacer({
                 className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
                   state.view === v && state.activeGroupId !== "hood"
                     ? "bg-primary text-primary-foreground"
-                    : "bg-card text-foreground hover:bg-muted border border-border"
+                    : "bg-card text-card-foreground hover:bg-muted border border-border"
                 }`}
               >
                 {v === "front" ? "Front" : "Back"}
@@ -970,7 +970,7 @@ export default function HoodieAopPlacer({
               className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
                 hoodSelected
                   ? "bg-primary text-primary-foreground"
-                  : "bg-card text-foreground hover:bg-muted border border-border"
+                  : "bg-card text-card-foreground hover:bg-muted border border-border"
               }`}
             >
               {state.hoodLinked ? (
@@ -1052,13 +1052,13 @@ export default function HoodieAopPlacer({
               type="text"
               value={state.backgroundColor}
               onChange={(e) => setBgColor(e.target.value)}
-              className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-foreground"
+              className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
               spellCheck={false}
             />
             {typeof window !== "undefined" && "EyeDropper" in window && (
               <button
                 onClick={triggerEyedropper}
-                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-foreground hover:bg-muted"
+                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
                 title="Pick a colour from anywhere on screen"
                 aria-label="Eyedropper"
               >
