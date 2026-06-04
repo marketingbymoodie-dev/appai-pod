@@ -4020,18 +4020,43 @@ export default function EmbedDesign() {
           console.error("[HoodieAopApply] Failed to persist designState:", e);
         });
 
-        void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId,
-            shop: shopDomain,
-            // Front first (gallery thumbnail), back second.
-            mockupUrls: backHosted ? [frontHosted, backHosted] : [frontHosted],
-          }),
-        }).catch((e) => {
-          console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
-        });
+        // `save-mockups` only persists URLs that start with "http" (it was
+        // built for Printify CDN URLs). Our local renders come back from
+        // ensureHostedUrl as a *relative* App Proxy path
+        // (`/apps/appai/objects/...`), which the endpoint would silently
+        // drop — leaving `mockupUrls` empty so the Saved Designs gallery
+        // falls back to the raw artwork. Convert to an absolute app-origin
+        // URL so it survives the filter AND renders as an <img> in the
+        // gallery (which passes http URLs through unchanged).
+        const toAbsoluteMockupUrl = (u: string | null): string | null => {
+          if (!u) return null;
+          if (u.startsWith("http://") || u.startsWith("https://")) return u;
+          const resolved = toAbsoluteImageUrl(u);
+          if (resolved.startsWith("http")) return resolved;
+          // Still relative → force onto the app origin, stripping the
+          // proxy prefix so it hits the app's /objects/ route directly.
+          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
+          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+        };
+        const frontAbs = toAbsoluteMockupUrl(frontHosted);
+        const backAbs = toAbsoluteMockupUrl(backHosted);
+        const mockupUrls = [frontAbs, backAbs].filter(
+          (u): u is string => !!u,
+        );
+        if (mockupUrls.length > 0) {
+          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop: shopDomain,
+              // Front first (gallery thumbnail), back second.
+              mockupUrls,
+            }),
+          }).catch((e) => {
+            console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
+          });
+        }
       }
     } catch (err: any) {
       console.error("[HoodieAopApply] Upload failed:", err);
