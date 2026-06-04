@@ -818,10 +818,10 @@ export default function HoodieAopPlacer({
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 py-2 text-xs font-medium transition ${
+              className={`px-3 py-2 text-xs font-semibold transition ${
                 state.mode === m
                   ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted"
+                  : "text-foreground hover:bg-muted"
               }`}
             >
               {m === "pattern" ? "Pattern" : "Place on item"}
@@ -928,10 +928,10 @@ export default function HoodieAopPlacer({
                   <button
                     key={opt.id}
                     onClick={() => setTileSettings({ pattern: opt.id })}
-                    className={`px-2 py-1.5 text-xs font-medium transition ${
+                    className={`px-2 py-1.5 text-xs font-semibold transition ${
                       state.tileSettings.pattern === opt.id
                         ? "bg-primary text-primary-foreground"
-                        : "bg-card text-muted-foreground hover:bg-muted"
+                        : "bg-card text-foreground hover:bg-muted"
                     }`}
                   >
                     {opt.label}
@@ -953,10 +953,10 @@ export default function HoodieAopPlacer({
                 key={v}
                 onClick={() => setView(v)}
                 aria-pressed={state.view === v && state.activeGroupId !== "hood"}
-                className={`rounded px-2 py-1.5 text-xs font-medium transition ${
+                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
                   state.view === v && state.activeGroupId !== "hood"
                     ? "bg-primary text-primary-foreground"
-                    : "bg-card text-muted-foreground hover:bg-muted border border-border"
+                    : "bg-card text-foreground hover:bg-muted border border-border"
                 }`}
               >
                 {v === "front" ? "Front" : "Back"}
@@ -967,10 +967,10 @@ export default function HoodieAopPlacer({
               title={hoodTooltip}
               aria-label={hoodTooltip}
               aria-pressed={hoodSelected}
-              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-medium transition ${
+              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
                 hoodSelected
                   ? "bg-primary text-primary-foreground"
-                  : "bg-card text-muted-foreground hover:bg-muted border border-border"
+                  : "bg-card text-foreground hover:bg-muted border border-border"
               }`}
             >
               {state.hoodLinked ? (
