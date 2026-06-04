@@ -3917,7 +3917,11 @@ export default function EmbedDesign() {
     result: HoodieAopPlacerApplyResult,
   ) => {
     setHoodieAopPlacerState(result.state);
-    setShowPatternStep(false);
+    // NOTE: Do NOT call `setShowPatternStep(false)` here. The placer is now
+    // live-editing — auto-apply fires 1.5 s after every change to keep the
+    // cart preview in sync, so closing the step on every apply would boot
+    // the customer out of the placer immediately after they open it. The
+    // customer leaves the placer via the explicit "Back" toolbar button.
 
     // Front is the canonical "preferred" mockup the cart references.
     const frontCanvas = result.renderView("front");
