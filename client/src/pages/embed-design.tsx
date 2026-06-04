@@ -6277,7 +6277,10 @@ export default function EmbedDesign() {
               productTypeConfig?.panelMappingTemplate ? (
                 <div className="flex flex-col gap-2 min-h-0">
                   {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
-                      Apply lives inside the placer itself ("Apply to product"). */}
+                      The placer auto-saves on every change (no Apply button) —
+                      handleHoodieAopApply is fired ~1.5 s after the customer's
+                      last edit and uploads the local front+back render to
+                      Supabase so the cart preview is always in sync. */}
                   {(isStorefront || isShopify) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button

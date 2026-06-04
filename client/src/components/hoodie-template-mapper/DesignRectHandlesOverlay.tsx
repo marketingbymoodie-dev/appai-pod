@@ -298,10 +298,15 @@ export default function DesignRectHandlesOverlay({
           width: `${pctRect.width}%`,
           height: `${pctRect.height}%`,
         }}
+        // Stop clicks on the rect from bubbling to the canvas backdrop
+        // (which uses onClick to toggle overlay visibility in the
+        // customer placer). Drag/resize gestures use onPointerDown
+        // separately and are unaffected.
+        onClick={(e) => e.stopPropagation()}
       >
         <div
           onPointerDown={(e) => startDrag(e, "translate")}
-          className="absolute inset-0 cursor-move ring-2 ring-fuchsia-300/70 transition hover:bg-fuchsia-500/5"
+          className="absolute inset-0 cursor-move ring-2 ring-primary/70 transition hover:bg-primary/5"
           style={{ touchAction: "none" }}
           title="Drag to move artwork"
         />
@@ -310,7 +315,7 @@ export default function DesignRectHandlesOverlay({
             key={c}
             onPointerDown={(e) => startDrag(e, "scale", c)}
             style={{ ...cornerStyle(c), touchAction: "none" }}
-            className="rounded-sm border-2 border-fuchsia-200 bg-fuchsia-500/90 shadow-md hover:scale-110"
+            className="rounded-sm border-2 border-primary/40 bg-primary shadow-md hover:scale-110"
             title="Drag corner to resize (aspect locked)"
           />
         ))}
