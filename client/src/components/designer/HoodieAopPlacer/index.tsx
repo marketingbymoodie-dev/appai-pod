@@ -138,6 +138,29 @@ export type HoodieAopPlacerApplyResult = {
   renderView: (view: HoodieView) => HTMLCanvasElement | null;
 };
 
+/**
+ * Stable signature of the *output-affecting* parts of the placer state.
+ *
+ * Used to skip needless auto-apply uploads: if the current signature
+ * matches the last-applied (or restored) one, the rendered mockup hasn't
+ * changed so there's nothing to re-upload. Deliberately excludes purely
+ * navigational / UI fields (`view`, `activeGroupId`, `hoodLinked`) — those
+ * never alter the front+back render that gets uploaded, so switching views
+ * or selecting the hood shouldn't trigger a save.
+ */
+function outputSignature(s: HoodieAopPlacerState): string {
+  return JSON.stringify({
+    mode: s.mode,
+    artworkUrl: s.artworkUrl,
+    placements: s.placements,
+    enabled: s.enabled,
+    trimEnabled: s.trimEnabled,
+    pocketsEnabled: s.pocketsEnabled,
+    backgroundColor: s.backgroundColor,
+    tileSettings: s.tileSettings,
+  });
+}
+
 type ApiResponse = {
   name: string;
   template: HoodieTemplate;
@@ -358,11 +381,32 @@ export default function HoodieAopPlacer({
   const [autoApplyStatus, setAutoApplyStatus] = useState<
     "idle" | "pending" | "saving" | "saved" | "error"
   >("idle");
+
+  // Signature of the last state we uploaded (or that was restored from a
+  // saved design). When the current output signature matches this, the
+  // auto-apply effect skips the upload — so re-opening an unchanged saved
+  // design, or just switching views, doesn't trigger a pointless re-render
+  // and re-upload of the mockups.
+  const appliedSignatureRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!data) return;
     setState((prev) => {
       // First load → seed from template + optional saved state.
-      if (!prev) return buildInitialState(data.template, initialState);
+      if (!prev) {
+        const seeded = buildInitialState(data.template, initialState);
+        // If we're restoring a previously-saved placement (initialState
+        // carried real placer fields, not just a fresh artworkUrl), pre-seed
+        // the applied signature so the first auto-apply is a no-op until the
+        // customer actually changes something.
+        const restoredFromSave =
+          !!initialState &&
+          Object.keys(initialState).some((k) => k !== "artworkUrl");
+        if (restoredFromSave) {
+          appliedSignatureRef.current = outputSignature(seeded);
+        }
+        return seeded;
+      }
       return prev;
     });
     // initialState is intentionally only consumed on first seed.
@@ -684,18 +728,28 @@ export default function HoodieAopPlacer({
     onApply?.({ state, renderView: renderViewToCanvas });
   }, [onApply, state, renderViewToCanvas]);
 
-  // Debounced auto-apply: any change to placer state schedules an apply
-  // 1.5 s later, collapsing rapid edits into a single upload. The first
-  // apply also gets the same debounce — that's intentional: it avoids
-  // racing an in-flight artwork-load against the upload.
+  // Debounced auto-apply: a *meaningful* change to placer state schedules
+  // an apply 1.5 s later, collapsing rapid edits into a single upload.
+  // We skip entirely when the current output signature matches what was
+  // last applied/restored — so re-opening an unchanged saved design (or
+  // just switching Front/Back/Hood) doesn't re-render and re-upload.
   useEffect(() => {
     if (!onApply) return;
     if (!state || !data || !artworkImg) return;
+
+    const sig = outputSignature(state);
+    if (sig === appliedSignatureRef.current) {
+      // Nothing that affects the rendered mockup has changed.
+      setAutoApplyStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
+      return;
+    }
+
     setAutoApplyStatus("pending");
     const t = window.setTimeout(() => {
       setAutoApplyStatus("saving");
       try {
         onApply({ state, renderView: renderViewToCanvas });
+        appliedSignatureRef.current = sig;
         // Optimistic — the parent's upload runs async; we flip to
         // "saved" after a short visual delay so the customer sees
         // confirmation. If the parent reports a real failure it'd
