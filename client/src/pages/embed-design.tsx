@@ -779,6 +779,26 @@ export default function EmbedDesign() {
   // The effective loadDesignId — prefer parent URL (most reliable), then bridge, then iframe URL param
   const effectiveLoadDesignId = parentLoadDesignId || bridgeLoadDesignId || loadDesignId;
 
+  // loadMockup: the gallery passes the clicked design's mockup URL so we can
+  // paint it instantly while the full design data loads over the App Proxy
+  // (~3-4s), instead of showing the grey skeleton scan. Read from the parent
+  // URL first (most reliable; iframe liquid can be CDN-cached), then iframe URL.
+  const initialPreviewMockupUrl = (() => {
+    let raw = "";
+    try {
+      raw = new URLSearchParams(window.parent.location.search).get("loadMockup") || "";
+    } catch {
+      /* cross-origin guard */
+    }
+    if (!raw) raw = searchParams.get("loadMockup") || "";
+    if (!raw) return "";
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  })();
+
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
   const [sharedDesignError, setSharedDesignError] = useState<string | null>(null);
@@ -6731,6 +6751,10 @@ export default function EmbedDesign() {
                       mockupUrl={selectedMockupUrl}
                       isLoading={isGeneratingArtwork || isGeneratingMockups || isAopReapplying || isLoadingSaved}
                       loadingStage={loadingStage}
+                      // Paint the gallery's mockup instantly while a saved
+                      // design loads, instead of the grey skeleton scan. Only
+                      // relevant before the real design data arrives.
+                      initialPreviewUrl={!generatedDesign?.imageUrl ? (initialPreviewMockupUrl || null) : null}
                       isAop={isAopProduct}
                       selectedSize={selectedSizeConfig}
                       selectedFrameColor={selectedFrameColorConfig}

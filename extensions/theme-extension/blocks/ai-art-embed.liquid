@@ -379,6 +379,10 @@
     if (loadDesignId) {
       params.set('loadDesignId', loadDesignId);
     }
+    const loadMockup = urlParams.get('loadMockup');
+    if (loadMockup) {
+      params.set('loadMockup', loadMockup);
+    }
     
     const iframe = document.createElement('iframe');
     // Use App Proxy path so the iframe loads on the Shopify domain (first-party, no cross-origin fetch issues).
