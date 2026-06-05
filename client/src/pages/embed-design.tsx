@@ -290,25 +290,6 @@ function isTemporaryPrintifyMockupUrl(url: string): boolean {
 }
 
 /**
- * Returns true only for a clean, durable mockup URL — a single absolute
- * http(s) URL that does NOT point at the app's ephemeral local disk.
- *
- * Rejects (→ force a heal re-render + re-persist on open):
- *  - empty / relative paths
- *  - ephemeral `/objects/uploads/...` (Railway wipes local disk on deploy)
- *  - mangled proxy-wrapped URLs like `.../apps/appai/https://...` produced by
- *    an earlier double-resolution bug (they contain two `://` schemes)
- */
-function isDurableMockupUrl(url: string): boolean {
-  if (typeof url !== "string" || !url) return false;
-  if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
-  const schemes = url.match(/https?:\/\//g);
-  if (!schemes || schemes.length !== 1) return false; // mangled double-scheme
-  if (/\/objects\/uploads\//.test(url)) return false; // ephemeral local disk
-  return true;
-}
-
-/**
  * Convert a data URL to a Blob for upload.
  */
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -6484,19 +6465,17 @@ export default function EmbedDesign() {
                     onChange={(s) => setHoodieAopPlacerState(s)}
                     onApply={handleHoodieAopApply}
                     // Resuming a saved design (we have a restored placer
-                    // state) → normally don't re-render + re-upload on open;
-                    // the saved mockup is already current. BUT if the saved
-                    // mockup points at the app's ephemeral /objects/uploads
-                    // disk (wiped on every deploy → broken thumbnail), or no
-                    // durable mockup survived, fall through and auto-apply once
-                    // so the design self-heals by re-rendering and persisting
-                    // to Supabase. Fresh designs (no restored state) also
-                    // auto-apply once to generate the initial cart image.
-                    skipInitialAutoApply={
-                      !!hoodieAopPlacerState &&
-                      printifyMockups.length > 0 &&
-                      printifyMockups.every(isDurableMockupUrl)
-                    }
+                    // state) → don't re-render + re-upload on open. The saved
+                    // mockup is already restored into the preview, so firing
+                    // the auto-apply here would just replay the grey scanning
+                    // animation for no reason. This flag is true immediately
+                    // from the restored state (no async/timing gap), so the
+                    // initial apply is reliably skipped. Fresh designs (no
+                    // restored state) still auto-apply once to generate the
+                    // initial cart image. Broken/missing thumbnails are already
+                    // repaired server-side at read time, so we no longer need
+                    // to heal-on-open.
+                    skipInitialAutoApply={!!hoodieAopPlacerState}
                   />
                 </div>
               ) : (
