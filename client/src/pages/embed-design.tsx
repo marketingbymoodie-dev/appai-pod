@@ -5740,9 +5740,12 @@ export default function EmbedDesign() {
                                         window.location.reload();
                                       }
                                     } else {
-                                      // Update both the parent page URL and the iframe URL so
-                                      // parentLoadDesignId (which takes priority) picks up the
-                                      // correct design after the iframe reloads.
+                                      // Same product → load IN-PLACE. No iframe reload means no
+                                      // blank/stale frame and no flash: we just update the URLs
+                                      // (so a manual refresh still restores this design) and bump
+                                      // bridgeLoadDesignId, which drives the restore effect to swap
+                                      // the design via React state. The placer remounts cleanly
+                                      // because its key includes generatedDesign.id.
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
                                         parentUrl.searchParams.set('loadDesignId', d.id);
@@ -5753,7 +5756,7 @@ export default function EmbedDesign() {
                                       const params = new URLSearchParams(window.location.search);
                                       params.set('loadDesignId', d.id);
                                       window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                      window.location.reload();
+                                      setBridgeLoadDesignId(d.id);
                                     }
                                   }}
                                 >
