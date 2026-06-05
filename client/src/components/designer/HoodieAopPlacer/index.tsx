@@ -401,11 +401,31 @@ export default function HoodieAopPlacer({
   // its product-preview loading scan).
   const baselineSignatureRef = useRef<string | null>(null);
 
+  // Set true at first state-seed when initialState carried a saved placement
+  // (i.e. we're resuming a previously-saved design). Used to suppress the
+  // initial auto-apply regardless of the parent prop's render timing.
+  const seededAsResumeRef = useRef(false);
+
   useEffect(() => {
     if (!data) return;
     setState((prev) => {
       // First load → seed from template + optional saved state.
-      if (!prev) return buildInitialState(data.template, initialState);
+      if (!prev) {
+        // Detect a *resume*: the parent passes initialState as
+        // `{ ...savedPlacerState, artworkUrl }`, so any key beyond
+        // `artworkUrl` means we restored a real saved placement. Capturing it
+        // here — at the exact moment the placement is restored — is more
+        // reliable than the `skipInitialAutoApply` prop, which depends on the
+        // parent's async state being settled by the placer's first ready
+        // cycle. If we resumed, the saved mockup already exists, so the
+        // initial auto-apply (and its grey scanning animation) must be
+        // suppressed.
+        seededAsResumeRef.current = !!(
+          initialState &&
+          Object.keys(initialState).some((k) => k !== "artworkUrl")
+        );
+        return buildInitialState(data.template, initialState);
+      }
       return prev;
     });
     // initialState is intentionally only consumed on first seed.
@@ -738,7 +758,10 @@ export default function HoodieAopPlacer({
     // First ready cycle → establish the baseline.
     if (baselineSignatureRef.current === null) {
       baselineSignatureRef.current = sig;
-      if (skipInitialAutoApply) {
+      // Skip the initial apply when resuming a saved design. We trust EITHER
+      // the parent prop OR our own mount-time detection (seededAsResumeRef),
+      // so a render-timing gap on the prop can't cause a spurious re-render.
+      if (skipInitialAutoApply || seededAsResumeRef.current) {
         // Resuming a saved design whose mockup is already persisted — show
         // it as saved and don't re-upload until the customer changes
         // something. This is what prevents the "open, then reload with the
