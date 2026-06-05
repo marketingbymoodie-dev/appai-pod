@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pipette, RotateCcw, Upload, Loader2, Link2, Link2Off } from "lucide-react";
+import {
+  Pipette,
+  RotateCcw,
+  Upload,
+  Loader2,
+  Link2,
+  Link2Off,
+  Eye,
+  EyeOff,
+  Check,
+} from "lucide-react";
 import {
   defaultDesignGroups,
   type DesignGroup,
@@ -58,6 +68,15 @@ export type HoodieAopPlacerProps = {
   initialState?: Partial<HoodieAopPlacerState> | null;
   onApply?: (result: HoodieAopPlacerApplyResult) => void;
   onChange?: (state: HoodieAopPlacerState) => void;
+  /**
+   * When `true`, the placer does NOT fire its first auto-apply on open —
+   * it just records the opened state as the baseline. Used when resuming a
+   * previously-saved design whose cart mockup is already persisted, so
+   * re-opening it doesn't trigger a needless re-render + re-upload (and the
+   * product-preview "loading" scan that comes with it). Any subsequent
+   * customer edit still auto-applies normally.
+   */
+  skipInitialAutoApply?: boolean;
 };
 
 /**
@@ -127,6 +146,29 @@ export type HoodieAopPlacerApplyResult = {
   /** Returns a freshly-rendered front-view canvas at full mockup size. */
   renderView: (view: HoodieView) => HTMLCanvasElement | null;
 };
+
+/**
+ * Stable signature of the *output-affecting* parts of the placer state.
+ *
+ * Used to skip needless auto-apply uploads: if the current signature
+ * matches the last-applied (or restored) one, the rendered mockup hasn't
+ * changed so there's nothing to re-upload. Deliberately excludes purely
+ * navigational / UI fields (`view`, `activeGroupId`, `hoodLinked`) — those
+ * never alter the front+back render that gets uploaded, so switching views
+ * or selecting the hood shouldn't trigger a save.
+ */
+function outputSignature(s: HoodieAopPlacerState): string {
+  return JSON.stringify({
+    mode: s.mode,
+    artworkUrl: s.artworkUrl,
+    placements: s.placements,
+    enabled: s.enabled,
+    trimEnabled: s.trimEnabled,
+    pocketsEnabled: s.pocketsEnabled,
+    backgroundColor: s.backgroundColor,
+    tileSettings: s.tileSettings,
+  });
+}
 
 type ApiResponse = {
   name: string;
@@ -207,6 +249,7 @@ export default function HoodieAopPlacer({
   initialState,
   onApply,
   onChange,
+  skipInitialAutoApply = false,
 }: HoodieAopPlacerProps) {
   // ---------- Template fetch ----------
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -327,6 +370,37 @@ export default function HoodieAopPlacer({
 
   // ---------- Customer state (derived once template is in) ----------
   const [state, setState] = useState<HoodieAopPlacerState | null>(null);
+
+  // ---------- Bounding-box overlay visibility ----------
+  // Default visible. Tapping the canvas backdrop (anywhere outside the
+  // rect) toggles it; clicking the rect itself stops propagation so the
+  // box stays visible while dragging/resizing. There's also an Eye/EyeOff
+  // toggle next to "Artwork scale" for explicit control.
+  const [overlayVisible, setOverlayVisible] = useState(true);
+
+  // ---------- Auto-apply (debounced) ----------
+  // We removed the "Apply to product" button — the cart/checkout preview
+  // is kept in sync automatically. `onApply` fires ~1.5 s after the last
+  // state change so a customer dragging/scaling doesn't trigger dozens
+  // of uploads. We surface the status as a small indicator next to the
+  // controls so the customer knows their changes are being saved.
+  //
+  // Note: this is a *local* render upload (front + back PNG → Supabase),
+  // not a Printify mockup call. Printify mockup generation is deferred to
+  // Stage 5 because it needs per-panel print files we don't compute yet.
+  const [autoApplyStatus, setAutoApplyStatus] = useState<
+    "idle" | "pending" | "saving" | "saved" | "error"
+  >("idle");
+
+  // Baseline output signature. The first time the placer has both state and
+  // artwork ready, we record the current signature as the baseline (and,
+  // when `skipInitialAutoApply` is set, do NOT fire an apply for it). After
+  // that, the auto-apply effect only fires when the signature diverges from
+  // the baseline — so re-opening an unchanged saved design, or just
+  // switching views, never triggers a pointless re-render + re-upload (and
+  // its product-preview loading scan).
+  const baselineSignatureRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!data) return;
     setState((prev) => {
@@ -653,19 +727,67 @@ export default function HoodieAopPlacer({
     onApply?.({ state, renderView: renderViewToCanvas });
   }, [onApply, state, renderViewToCanvas]);
 
+  // Debounced auto-apply: a *meaningful* change to placer state schedules
+  // an apply 1.5 s later, collapsing rapid edits into a single upload.
+  useEffect(() => {
+    if (!onApply) return;
+    if (!state || !data || !artworkImg) return;
+
+    const sig = outputSignature(state);
+
+    // First ready cycle → establish the baseline.
+    if (baselineSignatureRef.current === null) {
+      baselineSignatureRef.current = sig;
+      if (skipInitialAutoApply) {
+        // Resuming a saved design whose mockup is already persisted — show
+        // it as saved and don't re-upload until the customer changes
+        // something. This is what prevents the "open, then reload with the
+        // scanning box" behaviour.
+        setAutoApplyStatus("saved");
+        return;
+      }
+      // Fresh design (no saved mockup yet) → fall through and apply once so
+      // the cart/checkout image gets generated.
+    } else if (sig === baselineSignatureRef.current) {
+      // Nothing that affects the rendered mockup has changed (e.g. the
+      // customer just switched Front/Back/Hood).
+      setAutoApplyStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
+      return;
+    }
+
+    setAutoApplyStatus("pending");
+    const t = window.setTimeout(() => {
+      setAutoApplyStatus("saving");
+      try {
+        onApply({ state, renderView: renderViewToCanvas });
+        baselineSignatureRef.current = sig;
+        // Optimistic — the parent's upload runs async; we flip to
+        // "saved" after a short visual delay so the customer sees
+        // confirmation. If the parent reports a real failure it'd
+        // surface via the parent's mockupError state, not here.
+        window.setTimeout(() => setAutoApplyStatus("saved"), 800);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error("[HoodieAopPlacer] auto-apply error:", e);
+        setAutoApplyStatus("error");
+      }
+    }, 1500);
+    return () => window.clearTimeout(t);
+  }, [state, data, artworkImg, onApply, renderViewToCanvas, skipInitialAutoApply]);
+
   // ---------- Render guards ----------
   if (loading || !state) {
     return (
-      <div className="flex h-[400px] items-center justify-center text-sm text-slate-400">
+      <div className="flex h-[400px] items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading template…
       </div>
     );
   }
   if (loadError || !data) {
     return (
-      <div className="flex h-[400px] flex-col items-center justify-center gap-2 rounded border border-rose-700/50 bg-rose-950/40 p-6 text-sm text-rose-200">
+      <div className="flex h-[400px] flex-col items-center justify-center gap-2 rounded border border-destructive/40 bg-destructive/5 p-6 text-sm text-destructive">
         <div className="font-medium">Couldn't load template</div>
-        <div className="text-xs text-rose-300/80">{loadError ?? "unknown error"}</div>
+        <div className="text-xs opacity-80">{loadError ?? "unknown error"}</div>
       </div>
     );
   }
@@ -705,15 +827,24 @@ export default function HoodieAopPlacer({
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
       {/* Left: live mockup with overlay */}
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
-        <div className="relative flex aspect-square items-center justify-center bg-black p-4">
+      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
+        <div
+          className="relative flex aspect-square items-center justify-center bg-zinc-100 p-4"
+          onClick={() => {
+            // Tap on the canvas backdrop / mockup toggles the bounding box.
+            // The rect itself stops propagation so dragging/resizing works.
+            if (state.mode !== "place") return;
+            setOverlayVisible((v) => !v);
+          }}
+          data-testid="hoodie-aop-canvas-area"
+        >
           <div className="relative max-h-full max-w-full">
             <canvas
               ref={canvasRef}
               className="max-h-[78vh] max-w-full rounded object-contain"
               data-testid="hoodie-aop-placer-canvas"
             />
-            {showOverlay && mockup && artworkImg && (
+            {showOverlay && overlayVisible && mockup && artworkImg && (
               <DesignRectHandlesOverlay
                 canvasRef={canvasRef}
                 template={data.template}
@@ -731,12 +862,12 @@ export default function HoodieAopPlacer({
               />
             )}
             {!artworkImg && !artworkLoading && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-slate-400">
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
                 Upload an artwork to start placing it →
               </div>
             )}
             {artworkLoading && (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-slate-400">
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
               </div>
             )}
@@ -747,15 +878,15 @@ export default function HoodieAopPlacer({
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}
       <div className="w-full shrink-0 space-y-4 lg:w-80">
         {/* Pattern / Place segmented toggle */}
-        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-slate-700 bg-slate-900">
+        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
           {(["pattern", "place"] as const).map((m) => (
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 py-2 text-xs font-medium transition ${
+              className={`px-3 py-2 text-xs font-semibold transition ${
                 state.mode === m
-                  ? "bg-slate-100 text-slate-900"
-                  : "text-slate-300 hover:bg-slate-800"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-card-foreground hover:bg-muted"
               }`}
             >
               {m === "pattern" ? "Pattern" : "Place on item"}
@@ -765,7 +896,7 @@ export default function HoodieAopPlacer({
 
         {/* Artwork upload (separate row since legacy assumes art is already chosen) */}
         <Section title="Artwork">
-          <label className="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-slate-700 bg-slate-900/60 p-3 text-xs text-slate-200 hover:border-fuchsia-500/60 hover:bg-slate-900">
+          <label className="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-border bg-muted/40 p-3 text-xs font-semibold text-foreground hover:border-primary/60 hover:bg-muted">
             <Upload className="h-4 w-4" />
             {state.artworkUrl ? "Replace artwork" : "Upload artwork"}
             <input
@@ -784,9 +915,28 @@ export default function HoodieAopPlacer({
         {/* PLACE mode: Scale slider drives active group */}
         {state.mode === "place" && (
           <div>
-            <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-300">
-              <span>Artwork scale</span>
-              <span className="text-slate-400">{Math.round(placement.scale * 100)}%</span>
+            <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span className="flex items-center gap-2">
+                Artwork scale
+                {artworkImg && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOverlayVisible((v) => !v);
+                    }}
+                    title={overlayVisible ? "Hide bounding box" : "Show bounding box"}
+                    aria-label={overlayVisible ? "Hide bounding box" : "Show bounding box"}
+                    className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    {overlayVisible ? (
+                      <Eye className="h-3.5 w-3.5" />
+                    ) : (
+                      <EyeOff className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                )}
+              </span>
+              <span className="text-muted-foreground/80">{Math.round(placement.scale * 100)}%</span>
             </div>
             <input
               type="range"
@@ -797,11 +947,12 @@ export default function HoodieAopPlacer({
               onChange={(e) =>
                 setActiveScale(state.activeGroupId, state.view, Number(e.target.value))
               }
-              className="w-full accent-fuchsia-500"
+              className="w-full"
+              style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
-            <div className="mt-1 text-[10px] text-slate-500">
-              Adjusting <span className="text-slate-300">{activeGroup?.name ?? state.activeGroupId}</span>
+            <div className="mt-1 text-[10px] text-muted-foreground/80">
+              Adjusting <span className="text-foreground">{activeGroup?.name ?? state.activeGroupId}</span>
               {state.hoodLinked && (state.activeGroupId === "hood" || state.activeGroupId === "front-body") && (
                 <> • linked with {state.activeGroupId === "hood" ? "front body" : "hood"}</>
               )}
@@ -813,9 +964,9 @@ export default function HoodieAopPlacer({
         {state.mode === "pattern" && (
           <>
             <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+              <div className="mb-1 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 <span>Tile size</span>
-                <span className="text-slate-400">
+                <span className="text-muted-foreground/80">
                   {state.tileSettings.tileSizeInches.toFixed(1)}″
                 </span>
               </div>
@@ -828,23 +979,24 @@ export default function HoodieAopPlacer({
                 onChange={(e) =>
                   setTileSettings({ tileSizeInches: Number(e.target.value) })
                 }
-                className="w-full accent-fuchsia-500"
+                className="w-full"
+                style={{ accentColor: "hsl(var(--primary))" }}
                 aria-label="Tile size"
               />
             </div>
             <div>
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 Pattern
               </div>
-              <div className="grid grid-cols-3 overflow-hidden rounded-md border border-slate-700">
+              <div className="grid grid-cols-3 overflow-hidden rounded-md border border-border">
                 {TILE_PATTERN_OPTIONS.map((opt) => (
                   <button
                     key={opt.id}
                     onClick={() => setTileSettings({ pattern: opt.id })}
-                    className={`px-2 py-1.5 text-xs font-medium transition ${
+                    className={`px-2 py-1.5 text-xs font-semibold transition ${
                       state.tileSettings.pattern === opt.id
-                        ? "bg-fuchsia-600 text-white"
-                        : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-card text-card-foreground hover:bg-muted"
                     }`}
                   >
                     {opt.label}
@@ -857,7 +1009,7 @@ export default function HoodieAopPlacer({
 
         {/* View row: Front / Back / Hood (Hood is link toggle) */}
         <div>
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             View
           </div>
           <div className="grid grid-cols-3 gap-1">
@@ -866,10 +1018,10 @@ export default function HoodieAopPlacer({
                 key={v}
                 onClick={() => setView(v)}
                 aria-pressed={state.view === v && state.activeGroupId !== "hood"}
-                className={`rounded px-2 py-1.5 text-xs font-medium transition ${
+                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
                   state.view === v && state.activeGroupId !== "hood"
-                    ? "bg-slate-100 text-slate-900"
-                    : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-card-foreground hover:bg-muted border border-border"
                 }`}
               >
                 {v === "front" ? "Front" : "Back"}
@@ -880,10 +1032,10 @@ export default function HoodieAopPlacer({
               title={hoodTooltip}
               aria-label={hoodTooltip}
               aria-pressed={hoodSelected}
-              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-medium transition ${
+              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
                 hoodSelected
-                  ? "bg-fuchsia-600 text-white"
-                  : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card text-card-foreground hover:bg-muted border border-border"
               }`}
             >
               {state.hoodLinked ? (
@@ -895,14 +1047,14 @@ export default function HoodieAopPlacer({
             </button>
           </div>
           {hoodSelected && (
-            <div className="mt-1 text-[10px] text-slate-400">{hoodTooltip}</div>
+            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
           )}
         </div>
 
         {/* Artwork enabled — toggles the active group (place mode only) */}
         {state.mode === "place" && (
-          <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+          <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Artwork enabled
             </span>
             <Toggle
@@ -917,9 +1069,9 @@ export default function HoodieAopPlacer({
             and these panels are usually full-art anyway. */}
         {state.mode === "pattern" && (
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+            <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
               <span
-                className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
+                className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
                 title="Cuffs and waistband — when off they fill with the background colour"
               >
                 Trim
@@ -931,9 +1083,9 @@ export default function HoodieAopPlacer({
                 }
               />
             </div>
-            <div className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
+            <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
               <span
-                className="text-[11px] font-semibold uppercase tracking-wide text-slate-300"
+                className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
                 title="Kangaroo pocket and pocket halves — when off they fill with the background colour"
               >
                 Pockets
@@ -950,7 +1102,7 @@ export default function HoodieAopPlacer({
 
         {/* Background colour */}
         <div>
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Background
           </div>
           <div className="flex items-center gap-2">
@@ -958,20 +1110,20 @@ export default function HoodieAopPlacer({
               type="color"
               value={state.backgroundColor}
               onChange={(e) => setBgColor(e.target.value)}
-              className="h-8 w-10 cursor-pointer rounded border border-slate-700 bg-slate-900"
+              className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
               aria-label="Background colour"
             />
             <input
               type="text"
               value={state.backgroundColor}
               onChange={(e) => setBgColor(e.target.value)}
-              className="h-8 flex-1 rounded border border-slate-700 bg-slate-900 px-2 text-xs text-slate-200"
+              className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
               spellCheck={false}
             />
             {typeof window !== "undefined" && "EyeDropper" in window && (
               <button
                 onClick={triggerEyedropper}
-                className="flex h-8 w-8 items-center justify-center rounded border border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
                 title="Pick a colour from anywhere on screen"
                 aria-label="Eyedropper"
               >
@@ -988,8 +1140,8 @@ export default function HoodieAopPlacer({
                 aria-label={`Use ${s.hex} as background`}
                 className={`h-6 w-6 rounded border-2 transition ${
                   state.backgroundColor.toUpperCase() === s.hex.toUpperCase()
-                    ? "border-fuchsia-400 ring-2 ring-fuchsia-500/40"
-                    : "border-slate-700 hover:border-slate-500"
+                    ? "border-primary ring-2 ring-primary/40"
+                    : "border-border hover:border-foreground/40"
                 }`}
                 style={{ backgroundColor: s.hex }}
               />
@@ -1000,19 +1152,32 @@ export default function HoodieAopPlacer({
         {/* Reset */}
         <button
           onClick={resetAll}
-          className="flex w-full items-center justify-center gap-1 text-xs text-slate-400 underline-offset-2 hover:text-slate-200 hover:underline"
+          className="flex w-full items-center justify-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         >
           <RotateCcw className="h-3 w-3" /> Reset
         </button>
 
-        {onApply && (
-          <button
-            onClick={handleApply}
-            disabled={!artworkImg}
-            className="w-full rounded bg-fuchsia-600 px-3 py-2 text-sm font-medium text-white shadow hover:bg-fuchsia-500 disabled:opacity-50"
-          >
-            Apply to product
-          </button>
+        {/* Auto-save indicator (replaces the old "Apply to product" button —
+            the cart preview is now kept in sync automatically, debounced
+            ~1.5 s after the customer's last change). */}
+        {onApply && artworkImg && (
+          <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+            {autoApplyStatus === "saving" || autoApplyStatus === "pending" ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>Saving design…</span>
+              </>
+            ) : autoApplyStatus === "saved" ? (
+              <>
+                <Check className="h-3 w-3 text-green-600" />
+                <span>Design saved</span>
+              </>
+            ) : autoApplyStatus === "error" ? (
+              <span className="text-destructive">Couldn't save — try again</span>
+            ) : (
+              <span className="opacity-60">Design syncs automatically</span>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -1022,7 +1187,7 @@ export default function HoodieAopPlacer({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </div>
       {children}
@@ -1042,7 +1207,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (on: boolea
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
-        checked ? "bg-fuchsia-600" : "bg-slate-700"
+        checked ? "bg-primary" : "bg-muted-foreground/30"
       }`}
     >
       <span

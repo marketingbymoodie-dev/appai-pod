@@ -218,6 +218,38 @@ function adjustHSLLightness(hsl: string, delta: number): string {
 }
 
 /**
+ * Lightness 0-100 from an "H S% L%" HSL string, or null if unparseable.
+ */
+function hslLightness(hsl: string | null | undefined): number | null {
+  if (!hsl) return null;
+  const parts = hsl.match(/^(\d+)\s+(\d+)%\s+(\d+)%$/);
+  if (!parts) return null;
+  return parseInt(parts[3]);
+}
+
+/**
+ * Guarantee that `fgHSL` has enough contrast with `bgHSL`. If the lightness
+ * delta between them is below `minDelta`, returns a forced black or white
+ * instead. Used to bulletproof `--primary-foreground` when a merchant's
+ * storefront extractor returns a non-contrasting pair (some themes set
+ * button text via inheritance / CSS that resolves to the same colour as
+ * the bg in computed styles).
+ */
+function ensureContrastingForeground(
+  bgHSL: string | null,
+  fgHSL: string | null,
+  minDelta = 35,
+): string | null {
+  if (!bgHSL) return fgHSL;
+  const bgL = hslLightness(bgHSL);
+  if (bgL === null) return fgHSL;
+  const fgL = hslLightness(fgHSL);
+  if (fgL !== null && Math.abs(bgL - fgL) >= minDelta) return fgHSL;
+  // Insufficient contrast (or no fg given) → pick black/white from bg.
+  return bgL < 50 ? "0 0% 100%" : "0 0% 9%";
+}
+
+/**
  * Resolve an image URL to an absolute URL suitable for sending to the backend.
  * Handles three cases:
  * - Already absolute (http/https) → pass through
@@ -255,6 +287,17 @@ function isTemporaryPrintifyMockupUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Detects mockup URLs that live on the app's ephemeral local disk
+ * (`/objects/uploads/...`, optionally absolute). Railway wipes this storage on
+ * every deploy, so any saved design pointing here has a thumbnail that will
+ * 404 after the next deploy. We use this to force such designs to re-render
+ * (and re-persist to durable Supabase storage) the next time they're opened.
+ */
+function isEphemeralUploadUrl(url: string): boolean {
+  return typeof url === "string" && /\/objects\/uploads\//.test(url);
 }
 
 /**
@@ -3917,7 +3960,11 @@ export default function EmbedDesign() {
     result: HoodieAopPlacerApplyResult,
   ) => {
     setHoodieAopPlacerState(result.state);
-    setShowPatternStep(false);
+    // NOTE: Do NOT call `setShowPatternStep(false)` here. The placer is now
+    // live-editing — auto-apply fires 1.5 s after every change to keep the
+    // cart preview in sync, so closing the step on every apply would boot
+    // the customer out of the placer immediately after they open it. The
+    // customer leaves the placer via the explicit "Back" toolbar button.
 
     // Front is the canonical "preferred" mockup the cart references.
     const frontCanvas = result.renderView("front");
@@ -3957,12 +4004,22 @@ export default function EmbedDesign() {
       // Persist customer state + the rendered cart image on the saved
       // generation job so Edit-from-cart and reload-after-close both
       // resume the customer at exactly this point.
+      //
+      // We fire two requests in parallel:
+      //   1. save-state  — merges the placer's full state into designState
+      //      so the placer can re-open mid-edit on next visit.
+      //   2. save-mockups — writes the rendered front/back URLs into the
+      //      job's `mockupUrls` field. This is what the Saved Designs nav
+      //      gallery reads as the thumbnail, so without it product-20
+      //      designs would fall back to the raw artwork on a flat hoodie
+      //      instead of the customer's actual placement preview.
       if (isStorefront && savedJobIdRef.current && shopDomain) {
+        const jobId = savedJobIdRef.current;
         void safeFetch(`${API_BASE}/api/storefront/save-state`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            jobId: savedJobIdRef.current,
+            jobId,
             shop: shopDomain,
             designState: {
               hoodieAopPlacerState: result.state,
@@ -3973,6 +4030,71 @@ export default function EmbedDesign() {
         }).catch((e) => {
           console.error("[HoodieAopApply] Failed to persist designState:", e);
         });
+
+        // `save-mockups` only persists URLs that start with "http" (it was
+        // built for Printify CDN URLs). Our local renders come back from
+        // ensureHostedUrl as a *relative* App Proxy path
+        // (`/apps/appai/objects/...`), which the endpoint would silently
+        // drop — leaving `mockupUrls` empty so the Saved Designs gallery
+        // falls back to the raw artwork. Convert to an absolute app-origin
+        // URL so it survives the filter AND renders as an <img> in the
+        // gallery (which passes http URLs through unchanged).
+        const toAbsoluteMockupUrl = (u: string | null): string | null => {
+          if (!u) return null;
+          if (u.startsWith("http://") || u.startsWith("https://")) return u;
+          const resolved = toAbsoluteImageUrl(u);
+          if (resolved.startsWith("http")) return resolved;
+          // Still relative → force onto the app origin, stripping the
+          // proxy prefix so it hits the app's /objects/ route directly.
+          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
+          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+        };
+        const frontAbs = toAbsoluteMockupUrl(frontHosted);
+        const backAbs = toAbsoluteMockupUrl(backHosted);
+        const mockupUrls = [frontAbs, backAbs].filter(
+          (u): u is string => !!u,
+        );
+        if (mockupUrls.length > 0) {
+          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop: shopDomain,
+              // Front first (gallery thumbnail), back second.
+              mockupUrls,
+            }),
+          })
+            .then(() => {
+              // Tell the parent storefront page to re-pull the gallery so a
+              // changed thumbnail shows up the next time the Saved Designs
+              // drawer is opened — no full page reload needed. Posted after
+              // the DB write resolves so the refetch sees the new URL.
+              try {
+                window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+              } catch {
+                /* cross-origin parent — ignore */
+              }
+              // Also refresh the in-iframe (product-page) Saved Designs
+              // gallery so its thumbnail updates on the fly without the
+              // customer reopening the panel.
+              if (storefrontCustomerId && shopDomain) {
+                void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+                })
+                  .then((r) => r.json())
+                  .then((d) => {
+                    if (d?.designs) setSavedDesigns(d.designs);
+                  })
+                  .catch(() => {});
+              }
+            })
+            .catch((e) => {
+              console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
+            });
+        }
       }
     } catch (err: any) {
       console.error("[HoodieAopApply] Upload failed:", err);
@@ -3982,7 +4104,7 @@ export default function EmbedDesign() {
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, shopDomain]);
+  }, [isStorefront, shopDomain, storefrontCustomerId]);
 
   const handleShare = async () => {
     if (!generatedDesign) return;
@@ -4171,6 +4293,9 @@ export default function EmbedDesign() {
         if (bgHSL) root.setProperty('--background', bgHSL);
         if (fgHSL) {
           root.setProperty('--foreground', fgHSL);
+          // Tentative card-foreground = body text. Re-validated against
+          // --card below once it's set, since input bg can differ from
+          // body bg and would otherwise leave invisible card text.
           root.setProperty('--card-foreground', fgHSL);
         }
 
@@ -4183,8 +4308,14 @@ export default function EmbedDesign() {
           root.setProperty('--sidebar-primary', btnBgHSL);
           // Derive primary-border as slightly darker
           root.setProperty('--primary-border', adjustHSLLightness(btnBgHSL, -8));
-        }
-        if (btnFgHSL) {
+          // Bulletproof: if the merchant's button text colour didn't
+          // extract (or extracted to something low-contrast like inherited
+          // body text), force a black/white pair against the button bg.
+          // Without this, active segmented buttons render as solid black
+          // rectangles with invisible text on themes that use color: inherit.
+          const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
+          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
+        } else if (btnFgHSL) {
           root.setProperty('--primary-foreground', btnFgHSL);
         }
         if (t.buttonRadius) {
@@ -4220,6 +4351,11 @@ export default function EmbedDesign() {
         const inputBgHSL = cssColorToHSL(t.inputBg);
         if (inputBgHSL) {
           root.setProperty('--card', inputBgHSL);
+          // Bulletproof card-foreground against the (possibly different)
+          // card bg. If body text doesn't contrast with input bg, fall
+          // back to black/white based on luminance.
+          const safeCardFg = ensureContrastingForeground(inputBgHSL, fgHSL);
+          if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
         }
 
         // -- Accent (links) --
@@ -6277,7 +6413,10 @@ export default function EmbedDesign() {
               productTypeConfig?.panelMappingTemplate ? (
                 <div className="flex flex-col gap-2 min-h-0">
                   {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
-                      Apply lives inside the placer itself ("Apply to product"). */}
+                      The placer auto-saves on every change (no Apply button) —
+                      handleHoodieAopApply is fired ~1.5 s after the customer's
+                      last edit and uploads the local front+back render to
+                      Supabase so the cart preview is always in sync. */}
                   {(isStorefront || isShopify) && (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
@@ -6327,6 +6466,20 @@ export default function EmbedDesign() {
                     }}
                     onChange={(s) => setHoodieAopPlacerState(s)}
                     onApply={handleHoodieAopApply}
+                    // Resuming a saved design (we have a restored placer
+                    // state) → normally don't re-render + re-upload on open;
+                    // the saved mockup is already current. BUT if the saved
+                    // mockup points at the app's ephemeral /objects/uploads
+                    // disk (wiped on every deploy → broken thumbnail), or no
+                    // durable mockup survived, fall through and auto-apply once
+                    // so the design self-heals by re-rendering and persisting
+                    // to Supabase. Fresh designs (no restored state) also
+                    // auto-apply once to generate the initial cart image.
+                    skipInitialAutoApply={
+                      !!hoodieAopPlacerState &&
+                      printifyMockups.length > 0 &&
+                      !printifyMockups.some(isEphemeralUploadUrl)
+                    }
                   />
                 </div>
               ) : (
