@@ -324,7 +324,6 @@ export function ProductMockup({
   if (typeof window !== "undefined") {
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
   }
-  console.log("[ProductMockup] RENDER designerType:", designerType, "imageUrl:", imageUrl, "isLoading:", isLoading);
 
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
@@ -341,6 +340,23 @@ export function ProductMockup({
     }
     prevMockupUrlRef.current = mockupUrl;
   }, [mockupUrl]);
+
+  // Safety net: a cached <img> can finish loading before React attaches its
+  // onLoad handler, so onLoad never fires and the "Loading…" pill would hang
+  // forever. Auto-clear after a short timeout so the spinner can't get stuck.
+  useEffect(() => {
+    if (!mockupImageLoading) return;
+    const t = window.setTimeout(() => setMockupImageLoading(false), 6000);
+    return () => window.clearTimeout(t);
+  }, [mockupImageLoading]);
+
+  // If the mockup image is already complete when its ref mounts (browser
+  // cache — e.g. the gallery thumbnail we just clicked), clear immediately.
+  const mockupImgRef = useCallback((node: HTMLImageElement | null) => {
+    if (node && node.complete && node.naturalWidth > 0) {
+      setMockupImageLoading(false);
+    }
+  }, []);
 
   const isLandscape = (() => {
     if (aspectRatio) {
@@ -504,17 +520,17 @@ export function ProductMockup({
 
     // Composite mockup (Printify) — full-bleed product photo
     if (mockupUrl) {
-      console.log("[ProductMockup] Rendering composite mockup URL:", mockupUrl.substring(0, 80));
       return (
         <img
+          ref={mockupImgRef}
           src={mockupUrl}
           alt="Product mockup"
           className="absolute inset-0 w-full h-full object-cover"
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"
-          onLoad={() => { console.log("[ProductMockup] Mockup loaded successfully"); setMockupImageLoading(false); }}
-          onError={(e) => { console.error("[ProductMockup] Mockup failed to load:", e); setMockupImageLoading(false); }}
+          onLoad={() => { setMockupImageLoading(false); }}
+          onError={() => { setMockupImageLoading(false); }}
         />
       );
     }
