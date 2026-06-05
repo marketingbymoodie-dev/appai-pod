@@ -32,6 +32,10 @@ interface ProductMockupProps {
   /** The product's aspect ratio string, e.g. "3:4" or "2:1". Used to detect
    *  landscape products that need a scale-up to fill the container. */
   aspectRatio?: string;
+  /** Optional mockup URL to paint immediately while a saved design loads,
+   *  instead of the grey skeleton shimmer. Supplied by the gallery (which
+   *  already knows the thumbnail) so re-opening a design shows it instantly. */
+  initialPreviewUrl?: string | null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -313,6 +317,7 @@ export function ProductMockup({
   blankImageUrl,
   aspectRatio,
   isAop = false,
+  initialPreviewUrl,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -477,6 +482,21 @@ export function ProductMockup({
       // Stage 3: mockup generation — artwork visible with overlay
       if (loadingStage === "mockups" && imageUrl) {
         return <MockupsLoader imageUrl={imageUrl} transform={transform} printShape={printShape} />;
+      }
+      // Saved design loading: if the gallery handed us the design's mockup
+      // URL, paint it immediately so re-opening a design shows the artwork
+      // instantly instead of the jarring grey scanning shimmer.
+      if (initialPreviewUrl) {
+        return (
+          <img
+            src={initialPreviewUrl}
+            alt="Product mockup"
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ pointerEvents: "none" }}
+            draggable={false}
+            data-testid="img-mockup-preview"
+          />
+        );
       }
       // Fallback: saved design or unknown loading state — skeleton shimmer
       return <SkeletonLoader />;

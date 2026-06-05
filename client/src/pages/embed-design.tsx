@@ -290,17 +290,6 @@ function isTemporaryPrintifyMockupUrl(url: string): boolean {
 }
 
 /**
- * Detects mockup URLs that live on the app's ephemeral local disk
- * (`/objects/uploads/...`, optionally absolute). Railway wipes this storage on
- * every deploy, so any saved design pointing here has a thumbnail that will
- * 404 after the next deploy. We use this to force such designs to re-render
- * (and re-persist to durable Supabase storage) the next time they're opened.
- */
-function isEphemeralUploadUrl(url: string): boolean {
-  return typeof url === "string" && /\/objects\/uploads\//.test(url);
-}
-
-/**
  * Convert a data URL to a Blob for upload.
  */
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -337,7 +326,16 @@ async function ensureHostedUrl(url: string): Promise<string> {
     });
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
     const { objectPath } = await uploadRes.json();
-    const hostedUrl = buildAppUrl(objectPath);
+    // The upload endpoint now returns an ABSOLUTE Supabase public URL when
+    // Supabase is configured (durable across deploys), or a relative
+    // `/objects/uploads/...` path on the local-disk fallback. Pass absolute
+    // URLs through untouched — wrapping them in buildAppUrl() would mangle them
+    // into `/apps/appai/https://...` and break every image that uses them.
+    const hostedUrl =
+      typeof objectPath === "string" &&
+      (objectPath.startsWith("http://") || objectPath.startsWith("https://"))
+        ? objectPath
+        : buildAppUrl(objectPath);
     console.log("[EmbedDesign] Data URL uploaded, hosted URL:", hostedUrl);
     return hostedUrl;
   }
@@ -780,6 +778,26 @@ export default function EmbedDesign() {
   const [bridgeLoadDesignId, setBridgeLoadDesignId] = useState("");
   // The effective loadDesignId — prefer parent URL (most reliable), then bridge, then iframe URL param
   const effectiveLoadDesignId = parentLoadDesignId || bridgeLoadDesignId || loadDesignId;
+
+  // loadMockup: the gallery passes the clicked design's mockup URL so we can
+  // paint it instantly while the full design data loads over the App Proxy
+  // (~3-4s), instead of showing the grey skeleton scan. Read from the parent
+  // URL first (most reliable; iframe liquid can be CDN-cached), then iframe URL.
+  const initialPreviewMockupUrl = (() => {
+    let raw = "";
+    try {
+      raw = new URLSearchParams(window.parent.location.search).get("loadMockup") || "";
+    } catch {
+      /* cross-origin guard */
+    }
+    if (!raw) raw = searchParams.get("loadMockup") || "";
+    if (!raw) return "";
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  })();
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
@@ -6467,19 +6485,17 @@ export default function EmbedDesign() {
                     onChange={(s) => setHoodieAopPlacerState(s)}
                     onApply={handleHoodieAopApply}
                     // Resuming a saved design (we have a restored placer
-                    // state) → normally don't re-render + re-upload on open;
-                    // the saved mockup is already current. BUT if the saved
-                    // mockup points at the app's ephemeral /objects/uploads
-                    // disk (wiped on every deploy → broken thumbnail), or no
-                    // durable mockup survived, fall through and auto-apply once
-                    // so the design self-heals by re-rendering and persisting
-                    // to Supabase. Fresh designs (no restored state) also
-                    // auto-apply once to generate the initial cart image.
-                    skipInitialAutoApply={
-                      !!hoodieAopPlacerState &&
-                      printifyMockups.length > 0 &&
-                      !printifyMockups.some(isEphemeralUploadUrl)
-                    }
+                    // state) → don't re-render + re-upload on open. The saved
+                    // mockup is already restored into the preview, so firing
+                    // the auto-apply here would just replay the grey scanning
+                    // animation for no reason. This flag is true immediately
+                    // from the restored state (no async/timing gap), so the
+                    // initial apply is reliably skipped. Fresh designs (no
+                    // restored state) still auto-apply once to generate the
+                    // initial cart image. Broken/missing thumbnails are already
+                    // repaired server-side at read time, so we no longer need
+                    // to heal-on-open.
+                    skipInitialAutoApply={!!hoodieAopPlacerState}
                   />
                 </div>
               ) : (
@@ -6707,6 +6723,10 @@ export default function EmbedDesign() {
                       mockupUrl={selectedMockupUrl}
                       isLoading={isGeneratingArtwork || isGeneratingMockups || isAopReapplying || isLoadingSaved}
                       loadingStage={loadingStage}
+                      // Paint the gallery's mockup instantly while a saved
+                      // design loads, instead of the grey skeleton scan. Only
+                      // relevant before the real design data arrives.
+                      initialPreviewUrl={!generatedDesign?.imageUrl ? (initialPreviewMockupUrl || null) : null}
                       isAop={isAopProduct}
                       selectedSize={selectedSizeConfig}
                       selectedFrameColor={selectedFrameColorConfig}

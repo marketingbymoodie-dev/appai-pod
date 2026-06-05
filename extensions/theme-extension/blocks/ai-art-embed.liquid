@@ -326,12 +326,21 @@
       container = document.createElement('div');
       container.className = 'ai-art-studio-embed';
       container.id = 'ai-art-studio-auto-embed';
+      // When we arrived from a saved-design click the URL carries the design's
+      // mockup. Paint it inside the loading cover so the design stays on screen
+      // continuously (overlay on the previous page → this cover → live studio)
+      // instead of dropping to a generic spinner mid-transition.
+      var bootMockup = '';
+      try { bootMockup = new URLSearchParams(window.location.search).get('loadMockup') || ''; } catch (e) {}
+      var loadingInner = bootMockup
+        ? '<img src="' + bootMockup.replace(/"/g, '&quot;') + '" alt="" style="max-width:90%;max-height:90%;object-fit:contain" />'
+        : '<div class="ai-art-studio-embed__spinner"></div>'
+          + '<p class="ai-art-studio-embed__loading-title">AI Art Studio</p>';
       container.innerHTML = `
         <div class="ai-art-studio-embed__wrapper">
           <div class="ai-art-studio-embed__studio" style="height:600px;">
-            <div class="ai-art-studio-embed__loading">
-              <div class="ai-art-studio-embed__spinner"></div>
-              <p class="ai-art-studio-embed__loading-title">AI Art Studio</p>
+            <div class="ai-art-studio-embed__loading" style="display:flex;align-items:center;justify-content:center;background:#f4f4f5;">
+              ${loadingInner}
             </div>
           </div>
         </div>
@@ -378,6 +387,10 @@
     const loadDesignId = urlParams.get('loadDesignId');
     if (loadDesignId) {
       params.set('loadDesignId', loadDesignId);
+    }
+    const loadMockup = urlParams.get('loadMockup');
+    if (loadMockup) {
+      params.set('loadMockup', loadMockup);
     }
     
     const iframe = document.createElement('iframe');

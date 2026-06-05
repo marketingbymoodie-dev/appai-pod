@@ -462,13 +462,49 @@
     }
   });
 
+  // Paint an opaque full-viewport overlay showing the chosen design's mockup,
+  // then navigate. During a full page reload the browser keeps the *current*
+  // (old) page painted until the new one is ready — so covering it now means
+  // the customer only ever sees the correct design, never a flash of the
+  // previously-open product page. The destination page repaints the same
+  // mockup (via ?loadMockup=) so the hand-off is seamless.
+  function showNavOverlay(mockupUrl) {
+    if (document.getElementById('appai-nav-transition')) return;
+    var overlay = document.createElement('div');
+    overlay.id = 'appai-nav-transition';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:2147483647',
+      'background:#f4f4f5', 'display:flex',
+      'align-items:center', 'justify-content:center',
+      'opacity:0', 'transition:opacity 120ms ease-out',
+    ].join(';');
+    if (mockupUrl) {
+      var img = document.createElement('img');
+      img.src = mockupUrl;
+      img.alt = '';
+      img.style.cssText = 'max-width:90%;max-height:90%;object-fit:contain';
+      overlay.appendChild(img);
+    }
+    document.body.appendChild(overlay);
+    // Force a reflow so the fade-in transition actually runs.
+    void overlay.offsetWidth;
+    overlay.style.opacity = '1';
+  }
+
   function navigateToDesign(design) {
     closeDrawer();
     if (!design.pageHandle) {
       console.warn('[AppAI Nav] No pageHandle for design', design.id);
       return;
     }
-    window.location.href = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    var url = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    // Pass the design's mockup so the customizer can paint it instantly while
+    // the full design data loads (avoids the grey loading scan on open).
+    var mockup = (design.mockupUrls && design.mockupUrls[0]) || '';
+    if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
+    showNavOverlay(mockup);
+    window.location.href = url;
   }
 
   // ─── Main init ───────────────────────────────────────────────────────────
