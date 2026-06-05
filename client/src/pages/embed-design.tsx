@@ -1777,6 +1777,24 @@ export default function EmbedDesign() {
     }
     scrollArtworkIntoViewOnMobile(150);
 
+    // Let the Shopify parent page know it is now safe to remove any full-page
+    // transition cover. Use two animation frames so React has a chance to paint
+    // the restored design/mockup before the cover fades away.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          try {
+            window.parent?.postMessage({
+              type: "AI_ART_STUDIO_DESIGN_APPLIED",
+              designId,
+            }, "*");
+          } catch {
+            /* parent may be unavailable in local/dev embeds */
+          }
+        });
+      });
+    }
+
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =

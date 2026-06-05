@@ -314,6 +314,65 @@
       studioContainer.style.webkitOverflowScrolling = 'touch';
     }
 
+    const urlParams = new URLSearchParams(window.location.search);
+    const transitionDesignId = urlParams.get('loadDesignId') || '';
+    const bootMockup = urlParams.get('loadMockup') || '';
+
+    function appaiEscapeAttr(value) {
+      return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function appaiLoadingInner() {
+      return bootMockup
+        ? '<img src="' + appaiEscapeAttr(bootMockup) + '" alt="" style="max-width:90%;max-height:90%;object-fit:contain" />'
+        : '<div class="ai-art-studio-embed__spinner"></div>'
+          + '<p class="ai-art-studio-embed__loading-title">AI Art Studio</p>';
+    }
+
+    function ensureAppaiLoadingCover() {
+      if (transitionDesignId && !document.getElementById('appai-nav-transition')) {
+        var fullCover = document.createElement('div');
+        fullCover.id = 'appai-nav-transition';
+        fullCover.setAttribute('aria-hidden', 'true');
+        fullCover.style.cssText = [
+          'position:fixed', 'inset:0', 'z-index:2147483647',
+          'background:#f4f4f5', 'display:flex',
+          'align-items:center', 'justify-content:center',
+        ].join(';');
+        fullCover.innerHTML = appaiLoadingInner();
+        document.body.appendChild(fullCover);
+      }
+      if (!studioContainer || studioContainer.querySelector('.ai-art-studio-embed__loading')) return;
+      try {
+        var position = window.getComputedStyle(studioContainer).position;
+        if (!position || position === 'static') studioContainer.style.position = 'relative';
+      } catch (e) {
+        studioContainer.style.position = 'relative';
+      }
+      var loading = document.createElement('div');
+      loading.className = 'ai-art-studio-embed__loading';
+      loading.style.cssText = 'display:flex;align-items:center;justify-content:center;background:#f4f4f5;';
+      loading.innerHTML = appaiLoadingInner();
+      studioContainer.appendChild(loading);
+    }
+
+    function removeAppaiLoadingCover() {
+      var loadingEl = studioContainer && studioContainer.querySelector('.ai-art-studio-embed__loading');
+      if (loadingEl) {
+        loadingEl.style.transition = 'opacity 0.2s ease';
+        loadingEl.style.opacity = '0';
+        setTimeout(function() { if (loadingEl.parentNode) loadingEl.remove(); }, 220);
+      }
+      try {
+        var fullCover = document.getElementById('appai-nav-transition');
+        if (fullCover) {
+          fullCover.style.transition = 'opacity 0.2s ease';
+          fullCover.style.opacity = '0';
+          setTimeout(function() { if (fullCover.parentNode) fullCover.remove(); }, 220);
+        }
+      } catch (e) {}
+    }
+
     if (existingBlock) {
       console.log('[AI Art Embed] Found existing app block container, mounting into it.');
       // Clear the block's "Loading design studio…" placeholder
@@ -326,27 +385,18 @@
       container = document.createElement('div');
       container.className = 'ai-art-studio-embed';
       container.id = 'ai-art-studio-auto-embed';
-      // When we arrived from a saved-design click the URL carries the design's
-      // mockup. Paint it inside the loading cover so the design stays on screen
-      // continuously (overlay on the previous page → this cover → live studio)
-      // instead of dropping to a generic spinner mid-transition.
-      var bootMockup = '';
-      try { bootMockup = new URLSearchParams(window.location.search).get('loadMockup') || ''; } catch (e) {}
-      var loadingInner = bootMockup
-        ? '<img src="' + bootMockup.replace(/"/g, '&quot;') + '" alt="" style="max-width:90%;max-height:90%;object-fit:contain" />'
-        : '<div class="ai-art-studio-embed__spinner"></div>'
-          + '<p class="ai-art-studio-embed__loading-title">AI Art Studio</p>';
       container.innerHTML = `
         <div class="ai-art-studio-embed__wrapper">
           <div class="ai-art-studio-embed__studio" style="height:600px;">
             <div class="ai-art-studio-embed__loading" style="display:flex;align-items:center;justify-content:center;background:#f4f4f5;">
-              ${loadingInner}
+              ${appaiLoadingInner()}
             </div>
           </div>
         </div>
       `;
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
+    ensureAppaiLoadingCover();
     applyMobileNativeScrollFrame();
     if (mobileNativeScroll) {
       var resizeFrame = function() { applyMobileNativeScrollFrame(); };
@@ -379,7 +429,6 @@
       params.set('customerId', String(customerId));
     }
     
-    const urlParams = new URLSearchParams(window.location.search);
     const sharedDesignId = urlParams.get('sharedDesignId');
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
@@ -864,12 +913,12 @@
         bridgeAcked = true;
         if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         console.log(B, 'Handshake COMPLETE. parent:', BRIDGE_VERSION, 'iframe:', data._bridgeVersion, 'after', heartbeatN, 'heartbeats');
-        // Remove the loading screen now that the React app is fully mounted and rendered.
-        const loadingEl = studioContainer.querySelector('.ai-art-studio-embed__loading');
-        if (loadingEl) {
-          loadingEl.style.transition = 'opacity 0.2s ease';
-          loadingEl.style.opacity = '0';
-          setTimeout(function() { if (loadingEl.parentNode) loadingEl.remove(); }, 220);
+        // If this page is restoring a saved design, keep the cover up until the
+        // iframe confirms that exact design has been applied and painted. ACK
+        // only means "React mounted", which is too early and exposes the
+        // intermediate product/page states during cross-product navigation.
+        if (!transitionDesignId) {
+          removeAppaiLoadingCover();
         }
 
         // Push Shopify variants (with prices) into the iframe so the generator
@@ -930,6 +979,15 @@
           console.warn(B, 'Failed to send LOAD_DESIGN:', e.message);
         }
 
+        return;
+      }
+
+      // ===== DESIGN_APPLIED =====
+      if (data.type === 'AI_ART_STUDIO_DESIGN_APPLIED') {
+        var appliedDesignId = data.designId ? String(data.designId) : '';
+        if (!transitionDesignId || appliedDesignId === transitionDesignId) {
+          removeAppaiLoadingCover();
+        }
         return;
       }
 
