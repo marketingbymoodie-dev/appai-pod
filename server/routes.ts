@@ -8090,12 +8090,23 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Access denied" });
       }
 
+      // Repair URLs mangled by the earlier double-resolution bug
+      // (".../apps/appai/https://<real-url>") — the embedded trailing absolute
+      // URL is the real durable file.
+      const unmangle = (u?: string | null): string | null => {
+        if (!u || typeof u !== 'string') return u ?? null;
+        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
+        return idx > 0 ? u.slice(idx) : u;
+      };
+
       return res.json({
         designId: design.id,
         status: design.status,
-        artworkUrl: design.artworkUrl,
-        mockupUrl: design.mockupUrl,
-        mockupUrls: (design.mockupUrls as string[]) || [],
+        artworkUrl: unmangle(design.artworkUrl),
+        mockupUrl: unmangle(design.mockupUrl),
+        mockupUrls: Array.isArray(design.mockupUrls)
+          ? (design.mockupUrls as string[]).map(unmangle).filter((u): u is string => !!u)
+          : [],
         prompt: design.prompt,
         baseVariantId: design.baseVariantId,
         baseTitle: design.baseTitle,
@@ -8167,15 +8178,28 @@ ${textEdgeRestrictions}
         }
       }
 
+      // Repair URLs that an earlier double-resolution bug mangled into
+      // ".../apps/appai/https://<real-supabase-url>" (or a relative
+      // "/apps/appai/https://..."). The embedded trailing absolute URL is the
+      // real, durable Supabase/CDN file — the uploads themselves are fine, only
+      // the stored reference string got wrapped. Recovering it here fixes every
+      // affected design instantly, with no need to re-open/re-save them.
+      const unmangleUrl = (u?: string | null): string | null => {
+        if (!u || typeof u !== 'string') return u ?? null;
+        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
+        return idx > 0 ? u.slice(idx) : u;
+      };
+
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
       // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
       // For Supabase/external URLs, pass them through directly so gallery previews work.
       const proxyUrl = (u?: string | null) => {
-        if (!u) return null;
+        const fixed = unmangleUrl(u);
+        if (!fixed) return null;
         // Supabase or other absolute URL — pass through directly (needed for gallery previews)
-        if (u.startsWith('http')) return u;
+        if (fixed.startsWith('http')) return fixed;
         // Relative path like /objects/designs/xxx.png → serve via App Proxy
-        const clean = u.startsWith('/') ? u : `/${u}`;
+        const clean = fixed.startsWith('/') ? fixed : `/${fixed}`;
         return `/apps/appai${clean}`;
       };
 
@@ -8188,7 +8212,9 @@ ${textEdgeRestrictions}
             proxyUrl(d.designImageUrl) ||
             proxyUrl(d.thumbnailUrl) ||
             proxyUrl(d.referenceImageUrl),
-          mockupUrls: Array.isArray(d.mockupUrls) ? (d.mockupUrls as string[]) : [],
+          mockupUrls: Array.isArray(d.mockupUrls)
+            ? (d.mockupUrls as string[]).map(unmangleUrl).filter((u): u is string => !!u)
+            : [],
           designState: d.designState || null,
           prompt: (d as any).userPrompt || d.prompt,
           stylePreset: d.stylePreset,
