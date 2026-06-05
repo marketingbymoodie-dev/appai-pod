@@ -8151,8 +8151,25 @@ ${textEdgeRestrictions}
         .limit(GALLERY_LIMIT);
       console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
 
-      // Resolve product type names AND page handles for all unique productTypeIds
-      const ptIds = [...new Set(rows.map(r => r.productTypeId).filter(Boolean))] as string[];
+      // Resolve product type names AND page handles for all unique productTypeIds.
+      // Some saved test designs were created before product types were recreated
+      // (for example legacy Slim Phone Cases used id=11, current id=19). Normalize
+      // those legacy ids at read time so old designs still open on their canonical
+      // current product page instead of falling through to the currently viewed page.
+      const legacyProductTypeAliases: Record<string, string> = {
+        "11": "19",
+      };
+      const normalizeProductTypeId = (id?: string | null): string | null => {
+        if (!id) return null;
+        return legacyProductTypeAliases[String(id)] || String(id);
+      };
+      const ptIds = [
+        ...new Set(
+          rows
+            .map(r => normalizeProductTypeId(r.productTypeId))
+            .filter(Boolean),
+        ),
+      ] as string[];
       const ptMap: Record<string, string> = {};   // productTypeId → name
       const handleMap: Record<string, string> = {}; // productTypeId → page handle
       if (ptIds.length > 0) {
@@ -8220,9 +8237,9 @@ ${textEdgeRestrictions}
           stylePreset: d.stylePreset,
           size: d.size,
           frameColor: d.frameColor,
-          productTypeId: d.productTypeId,
-          baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
-          pageHandle: d.productTypeId ? (handleMap[d.productTypeId] || null) : null,
+          productTypeId: normalizeProductTypeId(d.productTypeId),
+          baseTitle: normalizeProductTypeId(d.productTypeId) ? (ptMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
+          pageHandle: normalizeProductTypeId(d.productTypeId) ? (handleMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
           customerId: d.customerId,
           createdAt: d.createdAt,
         }))
