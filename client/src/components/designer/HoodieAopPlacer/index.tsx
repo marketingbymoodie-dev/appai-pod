@@ -68,6 +68,15 @@ export type HoodieAopPlacerProps = {
   initialState?: Partial<HoodieAopPlacerState> | null;
   onApply?: (result: HoodieAopPlacerApplyResult) => void;
   onChange?: (state: HoodieAopPlacerState) => void;
+  /**
+   * When `true`, the placer does NOT fire its first auto-apply on open —
+   * it just records the opened state as the baseline. Used when resuming a
+   * previously-saved design whose cart mockup is already persisted, so
+   * re-opening it doesn't trigger a needless re-render + re-upload (and the
+   * product-preview "loading" scan that comes with it). Any subsequent
+   * customer edit still auto-applies normally.
+   */
+  skipInitialAutoApply?: boolean;
 };
 
 /**
@@ -240,6 +249,7 @@ export default function HoodieAopPlacer({
   initialState,
   onApply,
   onChange,
+  skipInitialAutoApply = false,
 }: HoodieAopPlacerProps) {
   // ---------- Template fetch ----------
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -382,31 +392,20 @@ export default function HoodieAopPlacer({
     "idle" | "pending" | "saving" | "saved" | "error"
   >("idle");
 
-  // Signature of the last state we uploaded (or that was restored from a
-  // saved design). When the current output signature matches this, the
-  // auto-apply effect skips the upload — so re-opening an unchanged saved
-  // design, or just switching views, doesn't trigger a pointless re-render
-  // and re-upload of the mockups.
-  const appliedSignatureRef = useRef<string | null>(null);
+  // Baseline output signature. The first time the placer has both state and
+  // artwork ready, we record the current signature as the baseline (and,
+  // when `skipInitialAutoApply` is set, do NOT fire an apply for it). After
+  // that, the auto-apply effect only fires when the signature diverges from
+  // the baseline — so re-opening an unchanged saved design, or just
+  // switching views, never triggers a pointless re-render + re-upload (and
+  // its product-preview loading scan).
+  const baselineSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!data) return;
     setState((prev) => {
       // First load → seed from template + optional saved state.
-      if (!prev) {
-        const seeded = buildInitialState(data.template, initialState);
-        // If we're restoring a previously-saved placement (initialState
-        // carried real placer fields, not just a fresh artworkUrl), pre-seed
-        // the applied signature so the first auto-apply is a no-op until the
-        // customer actually changes something.
-        const restoredFromSave =
-          !!initialState &&
-          Object.keys(initialState).some((k) => k !== "artworkUrl");
-        if (restoredFromSave) {
-          appliedSignatureRef.current = outputSignature(seeded);
-        }
-        return seeded;
-      }
+      if (!prev) return buildInitialState(data.template, initialState);
       return prev;
     });
     // initialState is intentionally only consumed on first seed.
@@ -730,16 +729,28 @@ export default function HoodieAopPlacer({
 
   // Debounced auto-apply: a *meaningful* change to placer state schedules
   // an apply 1.5 s later, collapsing rapid edits into a single upload.
-  // We skip entirely when the current output signature matches what was
-  // last applied/restored — so re-opening an unchanged saved design (or
-  // just switching Front/Back/Hood) doesn't re-render and re-upload.
   useEffect(() => {
     if (!onApply) return;
     if (!state || !data || !artworkImg) return;
 
     const sig = outputSignature(state);
-    if (sig === appliedSignatureRef.current) {
-      // Nothing that affects the rendered mockup has changed.
+
+    // First ready cycle → establish the baseline.
+    if (baselineSignatureRef.current === null) {
+      baselineSignatureRef.current = sig;
+      if (skipInitialAutoApply) {
+        // Resuming a saved design whose mockup is already persisted — show
+        // it as saved and don't re-upload until the customer changes
+        // something. This is what prevents the "open, then reload with the
+        // scanning box" behaviour.
+        setAutoApplyStatus("saved");
+        return;
+      }
+      // Fresh design (no saved mockup yet) → fall through and apply once so
+      // the cart/checkout image gets generated.
+    } else if (sig === baselineSignatureRef.current) {
+      // Nothing that affects the rendered mockup has changed (e.g. the
+      // customer just switched Front/Back/Hood).
       setAutoApplyStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
       return;
     }
@@ -749,7 +760,7 @@ export default function HoodieAopPlacer({
       setAutoApplyStatus("saving");
       try {
         onApply({ state, renderView: renderViewToCanvas });
-        appliedSignatureRef.current = sig;
+        baselineSignatureRef.current = sig;
         // Optimistic — the parent's upload runs async; we flip to
         // "saved" after a short visual delay so the customer sees
         // confirmation. If the parent reports a real failure it'd
@@ -762,7 +773,7 @@ export default function HoodieAopPlacer({
       }
     }, 1500);
     return () => window.clearTimeout(t);
-  }, [state, data, artworkImg, onApply, renderViewToCanvas]);
+  }, [state, data, artworkImg, onApply, renderViewToCanvas, skipInitialAutoApply]);
 
   // ---------- Render guards ----------
   if (loading || !state) {

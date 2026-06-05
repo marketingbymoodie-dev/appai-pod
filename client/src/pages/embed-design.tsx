@@ -6455,6 +6455,12 @@ export default function EmbedDesign() {
                     }}
                     onChange={(s) => setHoodieAopPlacerState(s)}
                     onApply={handleHoodieAopApply}
+                    // Resuming a saved design (we have a restored placer
+                    // state) → don't re-render + re-upload on open; the
+                    // saved mockup is already current. Fresh designs (no
+                    // restored state) still auto-apply once to generate the
+                    // initial cart image.
+                    skipInitialAutoApply={!!hoodieAopPlacerState}
                   />
                 </div>
               ) : (
