@@ -470,38 +470,46 @@
   // mockup (via ?loadMockup=) so the hand-off is seamless.
   function showNavOverlay(mockupUrl, productName) {
     if (document.getElementById('appai-nav-transition')) return;
+    if (!document.getElementById('appai-transition-styles')) {
+      var style = document.createElement('style');
+      style.id = 'appai-transition-styles';
+      style.textContent = [
+        '@keyframes appai-transition-spin{to{transform:rotate(360deg)}}',
+        '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
+        '.appai-transition-inner{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;width:min(92vw,720px);text-align:center;}',
+        '.appai-transition-mockup-frame{width:min(90vw,520px);height:min(64vh,520px);display:flex;align-items:center;justify-content:center;background:#fff;box-shadow:0 18px 48px rgba(0,0,0,0.12);overflow:hidden;}',
+        '.appai-transition-mockup{width:100%;height:100%;object-fit:contain;display:block;}',
+        '.appai-transition-pill{display:inline-flex;align-items:center;gap:10px;border-radius:999px;background:rgba(0,0,0,0.72);color:#fff;padding:9px 14px;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.18);}',
+        '.appai-transition-spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,0.36);border-top-color:#fff;border-radius:999px;display:inline-block;animation:appai-transition-spin 0.8s linear infinite;flex:0 0 auto;}',
+        '.appai-transition-label{white-space:normal;}',
+      ].join('');
+      document.head.appendChild(style);
+    }
     var overlay = document.createElement('div');
     overlay.id = 'appai-nav-transition';
     overlay.setAttribute('aria-hidden', 'true');
     var label = productName ? 'Loading "' + productName + '"...' : 'Loading saved design...';
-    overlay.style.cssText = [
-      'position:fixed', 'inset:0', 'z-index:2147483647',
-      'background:#f4f4f5', 'display:flex',
-      'align-items:center', 'justify-content:center',
-      'opacity:0', 'transition:opacity 120ms ease-out',
-      'padding:24px',
-    ].join(';');
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity 120ms ease-out';
     var inner = document.createElement('div');
-    inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;max-width:min(92vw,720px);text-align:center';
+    inner.className = 'appai-transition-inner';
+    var frame = document.createElement('div');
+    frame.className = 'appai-transition-mockup-frame';
     if (mockupUrl) {
       var img = document.createElement('img');
       img.src = mockupUrl;
       img.alt = '';
-      img.style.cssText = 'max-width:min(90vw,520px);max-height:64vh;object-fit:contain;box-shadow:0 18px 48px rgba(0,0,0,0.12);background:#fff';
-      inner.appendChild(img);
+      img.decoding = 'async';
+      img.className = 'appai-transition-mockup';
+      frame.appendChild(img);
     }
+    inner.appendChild(frame);
     var pill = document.createElement('div');
-    pill.style.cssText = 'display:inline-flex;align-items:center;gap:10px;border-radius:999px;background:rgba(0,0,0,0.72);color:#fff;padding:9px 14px;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.18)';
-    pill.innerHTML = '<span style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.36);border-top-color:#fff;border-radius:999px;display:inline-block;animation:appai-transition-spin 0.8s linear infinite;"></span><span></span>';
+    pill.className = 'appai-transition-pill';
+    pill.innerHTML = '<span class="appai-transition-spinner"></span><span class="appai-transition-label"></span>';
     pill.lastChild.textContent = label;
     inner.appendChild(pill);
     overlay.appendChild(inner);
-    if (!document.getElementById('appai-transition-styles')) {
-      var style = document.createElement('style');
-      style.id = 'appai-transition-styles';
-      style.textContent = '@keyframes appai-transition-spin{to{transform:rotate(360deg)}}';
-      document.head.appendChild(style);
-    }
     document.body.appendChild(overlay);
     // Force a reflow so the fade-in transition actually runs.
     void overlay.offsetWidth;
