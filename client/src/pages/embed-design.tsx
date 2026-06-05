@@ -290,6 +290,17 @@ function isTemporaryPrintifyMockupUrl(url: string): boolean {
 }
 
 /**
+ * Detects mockup URLs that live on the app's ephemeral local disk
+ * (`/objects/uploads/...`, optionally absolute). Railway wipes this storage on
+ * every deploy, so any saved design pointing here has a thumbnail that will
+ * 404 after the next deploy. We use this to force such designs to re-render
+ * (and re-persist to durable Supabase storage) the next time they're opened.
+ */
+function isEphemeralUploadUrl(url: string): boolean {
+  return typeof url === "string" && /\/objects\/uploads\//.test(url);
+}
+
+/**
  * Convert a data URL to a Blob for upload.
  */
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -6456,11 +6467,19 @@ export default function EmbedDesign() {
                     onChange={(s) => setHoodieAopPlacerState(s)}
                     onApply={handleHoodieAopApply}
                     // Resuming a saved design (we have a restored placer
-                    // state) → don't re-render + re-upload on open; the
-                    // saved mockup is already current. Fresh designs (no
-                    // restored state) still auto-apply once to generate the
-                    // initial cart image.
-                    skipInitialAutoApply={!!hoodieAopPlacerState}
+                    // state) → normally don't re-render + re-upload on open;
+                    // the saved mockup is already current. BUT if the saved
+                    // mockup points at the app's ephemeral /objects/uploads
+                    // disk (wiped on every deploy → broken thumbnail), or no
+                    // durable mockup survived, fall through and auto-apply once
+                    // so the design self-heals by re-rendering and persisting
+                    // to Supabase. Fresh designs (no restored state) also
+                    // auto-apply once to generate the initial cart image.
+                    skipInitialAutoApply={
+                      !!hoodieAopPlacerState &&
+                      printifyMockups.length > 0 &&
+                      !printifyMockups.some(isEphemeralUploadUrl)
+                    }
                   />
                 </div>
               ) : (
