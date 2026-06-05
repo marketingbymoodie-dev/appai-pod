@@ -757,6 +757,12 @@ export default function HoodieAopPlacer({
 
     // First ready cycle → establish the baseline.
     if (baselineSignatureRef.current === null) {
+      // eslint-disable-next-line no-console
+      console.log("[PlacerAutoApply] first-ready", {
+        skipProp: skipInitialAutoApply,
+        seededResume: seededAsResumeRef.current,
+        willSkip: skipInitialAutoApply || seededAsResumeRef.current,
+      });
       baselineSignatureRef.current = sig;
       // Skip the initial apply when resuming a saved design. We trust EITHER
       // the parent prop OR our own mount-time detection (seededAsResumeRef),
