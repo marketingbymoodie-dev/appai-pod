@@ -5742,7 +5742,19 @@ export default function EmbedDesign() {
                                     // the parent page to the correct customizer page first.
                                     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
                                     const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
-                                    const needsNavigation = d.pageHandle && designProductTypeId && currentProductTypeId && designProductTypeId !== currentProductTypeId;
+                                    const isDifferentProduct =
+                                      !!designProductTypeId &&
+                                      !!currentProductTypeId &&
+                                      designProductTypeId !== currentProductTypeId;
+                                    const needsNavigation = isDifferentProduct && !!d.pageHandle;
+                                    if (isDifferentProduct && !d.pageHandle) {
+                                      toast({
+                                        title: "Design product unavailable",
+                                        description: "This saved design belongs to a product that is no longer published.",
+                                        variant: "destructive",
+                                      });
+                                      return;
+                                    }
                                     if (needsNavigation) {
                                       // Cross-product nav: we have to do a real page navigation
                                       // because the parent page is the OLD product. To prevent
