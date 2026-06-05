@@ -61,6 +61,12 @@
   var NAV_ITEM_ID = 'appai-saved-designs-nav-item';
   var CUSTOMIZER_LABEL = 'Customizer';
 
+  // Module-scoped session context so openDrawer() can re-fetch the latest
+  // designs (e.g. after a customer edits an already-saved design in the
+  // customizer iframe) without relying on a stale closure from init().
+  var _customerId = null;
+  var _shop = null;
+
   // ─── Helpers ────────────────────────────────────────────────────────────
 
   function getStoredCustomerId() {
@@ -226,7 +232,9 @@
     a.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      openDrawer(designs);
+      // Open with the latest list (openDrawer reads the live cache and
+      // kicks a background refresh) rather than this stale closure.
+      openDrawer();
     });
 
     wrapper.appendChild(a);
@@ -332,7 +340,57 @@
     return drawer;
   }
 
-  function openDrawer(designs) {
+  // Compact signature of the design list so we can tell whether a refresh
+  // actually changed anything (avoids needless re-render + refetch loops).
+  function designsSignature(designs) {
+    if (!designs || !designs.length) return '0';
+    return designs
+      .map(function (d) {
+        var m = (d.mockupUrls && d.mockupUrls.length) ? d.mockupUrls[0] : (d.artworkUrl || '');
+        return d.id + ':' + m;
+      })
+      .join('|');
+  }
+
+  // Re-fetch designs and, if the list changed while the drawer is open,
+  // re-render it in place. Called when the drawer is opened so an edit
+  // made in the customizer iframe shows up without a full page reload.
+  function refreshDrawerIfChanged() {
+    if (!_customerId) return;
+    var before = designsSignature(window.__APPAI_SAVED_DESIGNS__ || []);
+    fetchDesigns(_customerId, _shop).then(function (data) {
+      if (!data || !data.designs) return;
+      window.__APPAI_SAVED_DESIGNS__ = data.designs;
+      var badge = document.getElementById('appai-saved-count');
+      if (badge) badge.textContent = data.designs.length;
+      var drawer = document.getElementById(DRAWER_ID);
+      var isOpen = drawer && drawer.classList.contains('appai-open');
+      if (isOpen && designsSignature(data.designs) !== before) {
+        renderDrawer(data.designs);
+      }
+    }).catch(function () { /* ignore */ });
+  }
+
+  // Open the drawer using the freshest list we have, then kick a background
+  // refresh so any just-saved edit appears immediately.
+  function openDrawer(designsArg) {
+    var designs = designsArg || window.__APPAI_SAVED_DESIGNS__ || [];
+    renderDrawer(designs);
+    var overlay = document.getElementById('appai-saved-designs-overlay');
+    var drawer = document.getElementById(DRAWER_ID);
+    overlay.classList.add('appai-open');
+    drawer.classList.add('appai-open');
+    document.body.style.overflow = 'hidden';
+    setTimeout(function () {
+      var closeBtn = document.getElementById('appai-drawer-close');
+      if (closeBtn) closeBtn.focus();
+    }, 330);
+    refreshDrawerIfChanged();
+  }
+
+  // Render (or re-render) the drawer grid from a designs array. Does NOT
+  // touch open/close state, so it's safe to call to refresh in place.
+  function renderDrawer(designs) {
     buildDrawer();
     var grid = document.getElementById('appai-drawer-grid');
     grid.innerHTML = '';
@@ -387,16 +445,6 @@
         grid.appendChild(card);
       });
     }
-
-    var overlay = document.getElementById('appai-saved-designs-overlay');
-    var drawer = document.getElementById(DRAWER_ID);
-    overlay.classList.add('appai-open');
-    drawer.classList.add('appai-open');
-    document.body.style.overflow = 'hidden';
-    setTimeout(function () {
-      var closeBtn = document.getElementById('appai-drawer-close');
-      if (closeBtn) closeBtn.focus();
-    }, 330);
   }
 
   function closeDrawer() {
@@ -430,6 +478,10 @@
     if (!customerId) return;
 
     var shop = getShop();
+    // Expose to module scope so openDrawer()/refreshDrawerIfChanged() can
+    // re-fetch without a stale closure.
+    _customerId = customerId;
+    _shop = shop;
 
     fetchDesigns(customerId, shop).then(function (data) {
       if (!data || !data.designs || data.designs.length === 0) {
@@ -466,7 +518,10 @@
       retryInject();
 
       window.__APPAI_SAVED_DESIGNS__ = designs;
-      window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(designs); };
+      // Always open with the latest cached list (openDrawer reads
+      // window.__APPAI_SAVED_DESIGNS__) and let it kick a background
+      // refresh — never close over this initial `designs` snapshot.
+      window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(); };
 
       // ── MutationObserver: re-inject if the nav item is removed from the DOM ──
       // Some Shopify themes re-render the nav when the URL changes via
@@ -499,10 +554,11 @@
               // Update the count badge if it exists
               var badge = document.getElementById('appai-saved-count');
               if (badge) badge.textContent = newData.designs.length;
-              // If the drawer is currently open, re-render its content
+              // If the drawer is currently open, re-render its content in
+              // place (renderDrawer doesn't touch open/close state).
               var drawer = document.getElementById(DRAWER_ID);
               if (drawer && drawer.classList.contains('appai-open')) {
-                openDrawer(newData.designs);
+                renderDrawer(newData.designs);
               }
             }
           });

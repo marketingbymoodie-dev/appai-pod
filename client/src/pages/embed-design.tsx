@@ -4053,9 +4053,21 @@ export default function EmbedDesign() {
               // Front first (gallery thumbnail), back second.
               mockupUrls,
             }),
-          }).catch((e) => {
-            console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
-          });
+          })
+            .then(() => {
+              // Tell the parent storefront page to re-pull the gallery so a
+              // changed thumbnail shows up the next time the Saved Designs
+              // drawer is opened — no full page reload needed. Posted after
+              // the DB write resolves so the refetch sees the new URL.
+              try {
+                window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+              } catch {
+                /* cross-origin parent — ignore */
+              }
+            })
+            .catch((e) => {
+              console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
+            });
         }
       }
     } catch (err: any) {
