@@ -2424,34 +2424,6 @@ export default function EmbedDesign() {
     }
   }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
-  // TEMP DIAG: trace which flag drives the product-preview loading scan when
-  // opening a saved design. Remove once the open-then-scan issue is resolved.
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log("[ScanDiag]", {
-      mockupLoading,
-      mockupTriggered,
-      showPatternStep,
-      genId: generatedDesign?.id,
-      hasImg: !!generatedDesign?.imageUrl,
-      loadApplied: loadDesignAppliedRef.current,
-      effLoadId: effectiveLoadDesignId,
-      aopPatternUrl: !!aopPatternUrl,
-      printifyMockups: printifyMockups.length,
-      hasPlacerState: !!hoodieAopPlacerState,
-    });
-  }, [
-    mockupLoading,
-    mockupTriggered,
-    showPatternStep,
-    generatedDesign?.id,
-    generatedDesign?.imageUrl,
-    effectiveLoadDesignId,
-    aopPatternUrl,
-    printifyMockups.length,
-    hoodieAopPlacerState,
-  ]);
-
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
   const prevMockupImageUrlRef = useRef<string | undefined>(undefined);
