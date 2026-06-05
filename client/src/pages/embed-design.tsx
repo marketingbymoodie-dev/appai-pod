@@ -4064,6 +4064,21 @@ export default function EmbedDesign() {
               } catch {
                 /* cross-origin parent — ignore */
               }
+              // Also refresh the in-iframe (product-page) Saved Designs
+              // gallery so its thumbnail updates on the fly without the
+              // customer reopening the panel.
+              if (storefrontCustomerId && shopDomain) {
+                void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+                })
+                  .then((r) => r.json())
+                  .then((d) => {
+                    if (d?.designs) setSavedDesigns(d.designs);
+                  })
+                  .catch(() => {});
+              }
             })
             .catch((e) => {
               console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
@@ -4078,7 +4093,7 @@ export default function EmbedDesign() {
       setMockupLoading(false);
       setMockupTriggered(false);
     }
-  }, [isStorefront, shopDomain]);
+  }, [isStorefront, shopDomain, storefrontCustomerId]);
 
   const handleShare = async () => {
     if (!generatedDesign) return;
