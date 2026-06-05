@@ -290,14 +290,22 @@ function isTemporaryPrintifyMockupUrl(url: string): boolean {
 }
 
 /**
- * Detects mockup URLs that live on the app's ephemeral local disk
- * (`/objects/uploads/...`, optionally absolute). Railway wipes this storage on
- * every deploy, so any saved design pointing here has a thumbnail that will
- * 404 after the next deploy. We use this to force such designs to re-render
- * (and re-persist to durable Supabase storage) the next time they're opened.
+ * Returns true only for a clean, durable mockup URL — a single absolute
+ * http(s) URL that does NOT point at the app's ephemeral local disk.
+ *
+ * Rejects (→ force a heal re-render + re-persist on open):
+ *  - empty / relative paths
+ *  - ephemeral `/objects/uploads/...` (Railway wipes local disk on deploy)
+ *  - mangled proxy-wrapped URLs like `.../apps/appai/https://...` produced by
+ *    an earlier double-resolution bug (they contain two `://` schemes)
  */
-function isEphemeralUploadUrl(url: string): boolean {
-  return typeof url === "string" && /\/objects\/uploads\//.test(url);
+function isDurableMockupUrl(url: string): boolean {
+  if (typeof url !== "string" || !url) return false;
+  if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
+  const schemes = url.match(/https?:\/\//g);
+  if (!schemes || schemes.length !== 1) return false; // mangled double-scheme
+  if (/\/objects\/uploads\//.test(url)) return false; // ephemeral local disk
+  return true;
 }
 
 /**
@@ -337,7 +345,16 @@ async function ensureHostedUrl(url: string): Promise<string> {
     });
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
     const { objectPath } = await uploadRes.json();
-    const hostedUrl = buildAppUrl(objectPath);
+    // The upload endpoint now returns an ABSOLUTE Supabase public URL when
+    // Supabase is configured (durable across deploys), or a relative
+    // `/objects/uploads/...` path on the local-disk fallback. Pass absolute
+    // URLs through untouched — wrapping them in buildAppUrl() would mangle them
+    // into `/apps/appai/https://...` and break every image that uses them.
+    const hostedUrl =
+      typeof objectPath === "string" &&
+      (objectPath.startsWith("http://") || objectPath.startsWith("https://"))
+        ? objectPath
+        : buildAppUrl(objectPath);
     console.log("[EmbedDesign] Data URL uploaded, hosted URL:", hostedUrl);
     return hostedUrl;
   }
@@ -6478,7 +6495,7 @@ export default function EmbedDesign() {
                     skipInitialAutoApply={
                       !!hoodieAopPlacerState &&
                       printifyMockups.length > 0 &&
-                      !printifyMockups.some(isEphemeralUploadUrl)
+                      printifyMockups.every(isDurableMockupUrl)
                     }
                   />
                 </div>
