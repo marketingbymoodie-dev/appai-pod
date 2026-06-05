@@ -1777,6 +1777,24 @@ export default function EmbedDesign() {
     }
     scrollArtworkIntoViewOnMobile(150);
 
+    // Let the Shopify parent page know it is now safe to remove any full-page
+    // transition cover. Use two animation frames so React has a chance to paint
+    // the restored design/mockup before the cover fades away.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          try {
+            window.parent?.postMessage({
+              type: "AI_ART_STUDIO_DESIGN_APPLIED",
+              designId,
+            }, "*");
+          } catch {
+            /* parent may be unavailable in local/dev embeds */
+          }
+        });
+      });
+    }
+
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =
@@ -5724,13 +5742,76 @@ export default function EmbedDesign() {
                                     // the parent page to the correct customizer page first.
                                     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
                                     const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
-                                    const needsNavigation = d.pageHandle && designProductTypeId && currentProductTypeId && designProductTypeId !== currentProductTypeId;
+                                    const isDifferentProduct =
+                                      !!designProductTypeId &&
+                                      !!currentProductTypeId &&
+                                      designProductTypeId !== currentProductTypeId;
+                                    const needsNavigation = isDifferentProduct && !!d.pageHandle;
+                                    if (isDifferentProduct && !d.pageHandle) {
+                                      toast({
+                                        title: "Design product unavailable",
+                                        description: "This saved design belongs to a product that is no longer published.",
+                                        variant: "destructive",
+                                      });
+                                      return;
+                                    }
                                     if (needsNavigation) {
-                                      // Navigate parent to the correct customizer page with loadDesignId
+                                      // Cross-product nav: we have to do a real page navigation
+                                      // because the parent page is the OLD product. To prevent
+                                      // the user seeing the OLD product flash during the reload,
+                                      // paint a full-screen overlay on the parent (same Shopify
+                                      // origin, so DOM access is allowed) showing the destination
+                                      // mockup BEFORE navigating. Browsers keep the old page
+                                      // painted during the reload — the overlay rides along on
+                                      // top, so only the correct design is visible.
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
                                         parentUrl.pathname = `/pages/${d.pageHandle}`;
                                         parentUrl.searchParams.set('loadDesignId', d.id);
+                                        const mockupSrc = (d.mockupUrls && d.mockupUrls[0]) || '';
+                                        const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : '';
+                                        if (mockupAbsForUrl) {
+                                          parentUrl.searchParams.set('loadMockup', mockupAbsForUrl);
+                                        }
+                                        const loadingProductName = d.baseTitle || 'saved design';
+                                        parentUrl.searchParams.set('loadProductName', loadingProductName);
+                                        try {
+                                          const pdoc = window.parent.document;
+                                          if (!pdoc.getElementById('appai-nav-transition')) {
+                                            if (!pdoc.getElementById('appai-transition-styles')) {
+                                              const style = pdoc.createElement('style');
+                                              style.id = 'appai-transition-styles';
+                                              style.textContent = '@keyframes appai-transition-spin{to{transform:rotate(360deg)}}';
+                                              pdoc.head.appendChild(style);
+                                            }
+                                            const ov = pdoc.createElement('div');
+                                            ov.id = 'appai-nav-transition';
+                                            ov.setAttribute('aria-hidden', 'true');
+                                            ov.style.cssText = [
+                                              'position:fixed', 'inset:0', 'z-index:2147483647',
+                                              'background:#f4f4f5', 'display:flex',
+                                              'align-items:center', 'justify-content:center',
+                                              'padding:24px',
+                                            ].join(';');
+                                            const inner = pdoc.createElement('div');
+                                            inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;max-width:min(92vw,720px);text-align:center';
+                                            if (mockupAbsForUrl) {
+                                              const im = pdoc.createElement('img');
+                                              im.src = mockupAbsForUrl;
+                                              im.alt = '';
+                                              im.style.cssText = 'max-width:min(90vw,520px);max-height:64vh;object-fit:contain;box-shadow:0 18px 48px rgba(0,0,0,0.12);background:#fff';
+                                              inner.appendChild(im);
+                                            }
+                                            const pill = pdoc.createElement('div');
+                                            pill.style.cssText = 'display:inline-flex;align-items:center;gap:10px;border-radius:999px;background:rgba(0,0,0,0.72);color:#fff;padding:9px 14px;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.18)';
+                                            pill.innerHTML = '<span style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.36);border-top-color:#fff;border-radius:999px;display:inline-block;animation:appai-transition-spin 0.8s linear infinite;"></span><span></span>';
+                                            const label = pill.lastChild as HTMLElement | null;
+                                            if (label) label.textContent = `Loading "${loadingProductName}"...`;
+                                            inner.appendChild(pill);
+                                            ov.appendChild(inner);
+                                            pdoc.body.appendChild(ov);
+                                          }
+                                        } catch { /* parent DOM access failed — continue without overlay */ }
                                         window.parent.location.href = parentUrl.toString();
                                       } catch {
                                         // Fallback: reload current page (cross-origin guard)
@@ -5740,9 +5821,12 @@ export default function EmbedDesign() {
                                         window.location.reload();
                                       }
                                     } else {
-                                      // Update both the parent page URL and the iframe URL so
-                                      // parentLoadDesignId (which takes priority) picks up the
-                                      // correct design after the iframe reloads.
+                                      // Same product → load IN-PLACE. No iframe reload means no
+                                      // blank/stale frame and no flash: we just update the URLs
+                                      // (so a manual refresh still restores this design) and bump
+                                      // bridgeLoadDesignId, which drives the restore effect to swap
+                                      // the design via React state. The placer remounts cleanly
+                                      // because its key includes generatedDesign.id.
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
                                         parentUrl.searchParams.set('loadDesignId', d.id);
@@ -5753,7 +5837,7 @@ export default function EmbedDesign() {
                                       const params = new URLSearchParams(window.location.search);
                                       params.set('loadDesignId', d.id);
                                       window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                      window.location.reload();
+                                      setBridgeLoadDesignId(d.id);
                                     }
                                   }}
                                 >
