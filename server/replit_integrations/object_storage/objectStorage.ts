@@ -9,6 +9,10 @@ import {
   setObjectAclPolicy,
   canAccessObject,
 } from "./objectAcl";
+import {
+  isSupabaseDesignsConfigured,
+  uploadDesignFileToSupabase,
+} from "../../supabaseDesigns";
 
 /**
  * Get the base storage directory.
@@ -229,9 +233,33 @@ export class ObjectStorageService {
     contentType: string,
     ext: string = "bin",
   ): Promise<string> {
+    const filename = `${randomUUID()}.${ext}`;
+
+    // Persist to Supabase Storage when configured. The local disk
+    // (getStorageDir) is EPHEMERAL on hosts like Railway — it is wiped on every
+    // deploy — so client-uploaded composites (e.g. the AOP hoodie placer's
+    // rendered mockups) silently disappear after the next deploy, breaking
+    // Saved Designs thumbnails. Supabase gives us a durable, absolute public
+    // URL that survives deploys and works cross-origin in the storefront.
+    if (isSupabaseDesignsConfigured()) {
+      try {
+        const publicUrl = await uploadDesignFileToSupabase({
+          buffer,
+          filename: `uploads/${filename}`,
+          contentType,
+        });
+        if (publicUrl) return publicUrl;
+      } catch (err) {
+        console.error(
+          "[ObjectStorage] Supabase upload failed, falling back to local disk:",
+          err,
+        );
+      }
+    }
+
+    // Fallback: local disk (dev, or Supabase unconfigured/unavailable).
     const uploadsDir = path.join(getStorageDir(), "uploads");
     await fs.promises.mkdir(uploadsDir, { recursive: true });
-    const filename = `${randomUUID()}.${ext}`;
     const file = new LocalFile(path.join(uploadsDir, filename), `uploads/${filename}`);
     await file.save(buffer, { contentType });
     return `/objects/uploads/${filename}`;
