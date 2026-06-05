@@ -468,7 +468,12 @@
       console.warn('[AppAI Nav] No pageHandle for design', design.id);
       return;
     }
-    window.location.href = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    var url = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    // Pass the design's mockup so the customizer can paint it instantly while
+    // the full design data loads (avoids the grey loading scan on open).
+    var mockup = (design.mockupUrls && design.mockupUrls[0]) || '';
+    if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
+    window.location.href = url;
   }
 
   // ─── Main init ───────────────────────────────────────────────────────────
