@@ -50,6 +50,55 @@
   }
   window.__APPAI_CUSTOMIZER_INIT__ = true;
 
+  function appaiTransitionEscape(value) {
+    return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function appaiTransitionInner(mockupUrl, productName) {
+    var label = productName ? 'Loading "' + productName + '"...' : 'Loading saved design...';
+    return ''
+      + '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;max-width:min(92vw,720px);text-align:center;">'
+      + (mockupUrl ? '<img src="' + appaiTransitionEscape(mockupUrl) + '" alt="" style="max-width:min(90vw,520px);max-height:64vh;object-fit:contain;box-shadow:0 18px 48px rgba(0,0,0,0.12);background:#fff;" />' : '')
+      + '<div style="display:inline-flex;align-items:center;gap:10px;border-radius:999px;background:rgba(0,0,0,0.72);color:#fff;padding:9px 14px;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.18);">'
+      + '<span style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.36);border-top-color:#fff;border-radius:999px;display:inline-block;animation:appai-transition-spin 0.8s linear infinite;"></span>'
+      + '<span>' + appaiTransitionEscape(label) + '</span>'
+      + '</div>'
+      + '</div>';
+  }
+
+  function appaiEnsureTransitionStyles() {
+    if (document.getElementById('appai-transition-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'appai-transition-styles';
+    style.textContent = '@keyframes appai-transition-spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(style);
+  }
+
+  function appaiShowSavedDesignTransitionFromUrl() {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var loadDesignId = params.get('loadDesignId') || '';
+      if (!loadDesignId || document.getElementById('appai-nav-transition')) return;
+      appaiEnsureTransitionStyles();
+      var mockup = params.get('loadMockup') || '';
+      var productName = params.get('loadProductName') || '';
+      var overlay = document.createElement('div');
+      overlay.id = 'appai-nav-transition';
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.style.cssText = [
+        'position:fixed', 'inset:0', 'z-index:2147483647',
+        'background:#f4f4f5', 'display:flex',
+        'align-items:center', 'justify-content:center',
+        'padding:24px',
+      ].join(';');
+      overlay.innerHTML = appaiTransitionInner(mockup, productName);
+      document.documentElement.style.background = '#f4f4f5';
+      document.body.appendChild(overlay);
+    } catch (e) {}
+  }
+
+  appaiShowSavedDesignTransitionFromUrl();
+
   console.log('[AI Art Embed] Script starting...');
 
   // Customer ID is available if the customer is logged in on the storefront.
@@ -317,20 +366,22 @@
     const urlParams = new URLSearchParams(window.location.search);
     const transitionDesignId = urlParams.get('loadDesignId') || '';
     const bootMockup = urlParams.get('loadMockup') || '';
+    const bootProductName = urlParams.get('loadProductName') || '';
 
     function appaiEscapeAttr(value) {
       return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     function appaiLoadingInner() {
-      return bootMockup
-        ? '<img src="' + appaiEscapeAttr(bootMockup) + '" alt="" style="max-width:90%;max-height:90%;object-fit:contain" />'
+      return transitionDesignId
+        ? appaiTransitionInner(bootMockup, bootProductName)
         : '<div class="ai-art-studio-embed__spinner"></div>'
           + '<p class="ai-art-studio-embed__loading-title">AI Art Studio</p>';
     }
 
     function ensureAppaiLoadingCover() {
       if (transitionDesignId && !document.getElementById('appai-nav-transition')) {
+        appaiEnsureTransitionStyles();
         var fullCover = document.createElement('div');
         fullCover.id = 'appai-nav-transition';
         fullCover.setAttribute('aria-hidden', 'true');
