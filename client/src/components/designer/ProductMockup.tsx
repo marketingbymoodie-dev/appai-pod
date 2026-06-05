@@ -332,31 +332,37 @@ export function ProductMockup({
   const touchPendingRef = useRef(false);
 
   // Track loading state when switching between composite mockup images (carousel).
+  // When `mockupUrl` changes we set loading=true, then drive a programmatic
+  // preload via `new Image()` so we handle BOTH cases reliably:
+  //   • fresh URL → onload fires when bytes arrive
+  //   • cached URL → img.complete is already true, we clear synchronously
+  // This avoids the "Loading…" pill hanging forever when the gallery thumbnail
+  // we just clicked has already cached the same mockup URL.
   const [mockupImageLoading, setMockupImageLoading] = useState(false);
   const prevMockupUrlRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (mockupUrl && mockupUrl !== prevMockupUrlRef.current) {
-      setMockupImageLoading(true);
+    if (!mockupUrl) {
+      prevMockupUrlRef.current = mockupUrl;
+      return;
     }
+    if (mockupUrl === prevMockupUrlRef.current) return;
     prevMockupUrlRef.current = mockupUrl;
+    setMockupImageLoading(true);
+    let cancelled = false;
+    const clear = () => { if (!cancelled) setMockupImageLoading(false); };
+    const img = new Image();
+    img.onload = clear;
+    img.onerror = clear;
+    img.src = mockupUrl;
+    if (img.complete && img.naturalWidth > 0) clear();
+    const safety = window.setTimeout(clear, 6000);
+    return () => {
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+      window.clearTimeout(safety);
+    };
   }, [mockupUrl]);
-
-  // Safety net: a cached <img> can finish loading before React attaches its
-  // onLoad handler, so onLoad never fires and the "Loading…" pill would hang
-  // forever. Auto-clear after a short timeout so the spinner can't get stuck.
-  useEffect(() => {
-    if (!mockupImageLoading) return;
-    const t = window.setTimeout(() => setMockupImageLoading(false), 6000);
-    return () => window.clearTimeout(t);
-  }, [mockupImageLoading]);
-
-  // If the mockup image is already complete when its ref mounts (browser
-  // cache — e.g. the gallery thumbnail we just clicked), clear immediately.
-  const mockupImgRef = useCallback((node: HTMLImageElement | null) => {
-    if (node && node.complete && node.naturalWidth > 0) {
-      setMockupImageLoading(false);
-    }
-  }, []);
 
   const isLandscape = (() => {
     if (aspectRatio) {
@@ -522,7 +528,6 @@ export function ProductMockup({
     if (mockupUrl) {
       return (
         <img
-          ref={mockupImgRef}
           src={mockupUrl}
           alt="Product mockup"
           className="absolute inset-0 w-full h-full object-cover"

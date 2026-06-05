@@ -5726,11 +5726,44 @@ export default function EmbedDesign() {
                                     const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
                                     const needsNavigation = d.pageHandle && designProductTypeId && currentProductTypeId && designProductTypeId !== currentProductTypeId;
                                     if (needsNavigation) {
-                                      // Navigate parent to the correct customizer page with loadDesignId
+                                      // Cross-product nav: we have to do a real page navigation
+                                      // because the parent page is the OLD product. To prevent
+                                      // the user seeing the OLD product flash during the reload,
+                                      // paint a full-screen overlay on the parent (same Shopify
+                                      // origin, so DOM access is allowed) showing the destination
+                                      // mockup BEFORE navigating. Browsers keep the old page
+                                      // painted during the reload — the overlay rides along on
+                                      // top, so only the correct design is visible.
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
                                         parentUrl.pathname = `/pages/${d.pageHandle}`;
                                         parentUrl.searchParams.set('loadDesignId', d.id);
+                                        const mockupSrc = (d.mockupUrls && d.mockupUrls[0]) || '';
+                                        const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : '';
+                                        if (mockupAbsForUrl) {
+                                          parentUrl.searchParams.set('loadMockup', mockupAbsForUrl);
+                                        }
+                                        try {
+                                          const pdoc = window.parent.document;
+                                          if (!pdoc.getElementById('appai-nav-transition')) {
+                                            const ov = pdoc.createElement('div');
+                                            ov.id = 'appai-nav-transition';
+                                            ov.setAttribute('aria-hidden', 'true');
+                                            ov.style.cssText = [
+                                              'position:fixed', 'inset:0', 'z-index:2147483647',
+                                              'background:#f4f4f5', 'display:flex',
+                                              'align-items:center', 'justify-content:center',
+                                            ].join(';');
+                                            if (mockupAbsForUrl) {
+                                              const im = pdoc.createElement('img');
+                                              im.src = mockupAbsForUrl;
+                                              im.alt = '';
+                                              im.style.cssText = 'max-width:90%;max-height:90%;object-fit:contain';
+                                              ov.appendChild(im);
+                                            }
+                                            pdoc.body.appendChild(ov);
+                                          }
+                                        } catch { /* parent DOM access failed — continue without overlay */ }
                                         window.parent.location.href = parentUrl.toString();
                                       } catch {
                                         // Fallback: reload current page (cross-origin guard)
