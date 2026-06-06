@@ -77,6 +77,7 @@ interface ProductTypeConfig {
   frameColors: Array<{ id: string; name: string; hex: string }>;
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, any>;
+  doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;
   aopTemplateId?: string | null;
   /**
@@ -1080,6 +1081,11 @@ export default function EmbedDesign() {
   const isApparel = productTypeConfig?.designerType === "apparel";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
+  const supportsPrintPlacementSelection = !!(
+    productTypeConfig?.hasPrintifyMockups &&
+    !productTypeConfig?.isAllOverPrint &&
+    productTypeConfig?.doubleSidedPrint
+  );
 
   // Stable references for PatternCustomizer props — prevents the SVG-loading useEffect from
   // re-firing on every parent render (e.g. polling intervals) due to new object/function refs.
@@ -1103,6 +1109,12 @@ export default function EmbedDesign() {
     if (merged.right_side && !merged.right_leg) merged.right_leg = merged.right_side;
     return proxifyPrintifyPanelUrls(merged);
   }, [productTypeConfig]);
+
+  useEffect(() => {
+    if (productTypeConfig && !supportsPrintPlacementSelection && printPlacement !== "front") {
+      setPrintPlacement("front");
+    }
+  }, [productTypeConfig, supportsPrintPlacementSelection, printPlacement]);
 
   // Filter styles based on designerType
   // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
@@ -1214,6 +1226,7 @@ export default function EmbedDesign() {
       frameColors: dc.frameColors || [],
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
+      doubleSidedPrint: dc.doubleSidedPrint || false,
       isAllOverPrint: dc.isAllOverPrint || false,
       aopTemplateId: dc.aopTemplateId ?? null,
       panelMappingTemplate: dc.panelMappingTemplate ?? null,
@@ -1541,6 +1554,7 @@ export default function EmbedDesign() {
             frameColors: designerConfig.frameColors || [],
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
+            doubleSidedPrint: designerConfig.doubleSidedPrint || false,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             aopTemplateId: designerConfig.aopTemplateId ?? null,
             panelMappingTemplate: designerConfig.panelMappingTemplate ?? null,
@@ -2361,6 +2375,11 @@ export default function EmbedDesign() {
               : undefined;
           })()
         : undefined;
+      const mockupPrintPlacement = productTypeConfig?.isAllOverPrint
+        ? undefined
+        : supportsPrintPlacementSelection
+          ? (printPlacementOverride ?? printPlacement)
+          : "front";
 
       const payload: Record<string, unknown> = isStorefront ? {
         productTypeId: ptId,
@@ -2368,7 +2387,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
+        printPlacement: mockupPrintPlacement,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2382,7 +2401,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
+        printPlacement: mockupPrintPlacement,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2397,7 +2416,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
+        printPlacement: mockupPrintPlacement,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2568,7 +2587,7 @@ export default function EmbedDesign() {
         }
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -6462,7 +6481,7 @@ export default function EmbedDesign() {
                   </div>
                 )}
 
-                {(frameColorObjects.length > 0 || (!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups)) && (
+                {(frameColorObjects.length > 0 || supportsPrintPlacementSelection) && (
                   <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {frameColorObjects.length > 0 && (
@@ -6473,7 +6492,7 @@ export default function EmbedDesign() {
                           colorLabel={productTypeConfig?.colorLabel || "Color"}
                         />
                       )}
-                      {!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups && (
+                      {supportsPrintPlacementSelection && (
                         <div className="space-y-2">
                           <Label htmlFor="print-placement-select" className="uppercase">
                             Print Side
