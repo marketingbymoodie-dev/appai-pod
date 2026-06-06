@@ -538,12 +538,20 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
  * Modes:
  * - storefront: Embedded on Shopify storefront (storefront=true). NO session token, uses public /api/storefront/* endpoints.
  * - admin-embedded: Embedded in Shopify admin (embedded=true, shopify=true). Uses App Bridge and session tokens.
+ * - admin-tester: Hosted inside the merchant admin "Generator Tester" page (adminTester=true), usually in an iframe.
+ *   Renders the IDENTICAL customizer UI but sources data from the admin-authenticated /api/* endpoints
+ *   (no shop param, no storefront identity/cart/checkout/shadow-SKU). Lets the Generator Tester always
+ *   stay in sync with the live customizer without maintaining a separate copy.
  * - standalone: Direct access without Shopify context. Uses standard auth.
  */
-type RuntimeMode = 'storefront' | 'admin-embedded' | 'standalone';
+type RuntimeMode = 'storefront' | 'admin-embedded' | 'admin-tester' | 'standalone';
 
 function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   const path = window.location.pathname;
+
+  // Admin "Generator Tester" host: explicit flag wins over path-based detection so the
+  // same /s/designer route can be reused inside the merchant admin without storefront wiring.
+  if (params.get("adminTester") === "true") return 'admin-tester';
 
   // App Proxy path: /apps/appai/s/designer (iframe on Shopify domain via proxy)
   if (path.startsWith(`${PROXY_PREFIX}/s/`)) return 'storefront';
@@ -639,7 +647,10 @@ export default function EmbedDesign() {
   // storefront=true and shopify=true appear in the URL, storefront wins.
   const isEmbedded = searchParams.get("embedded") === "true";
   const isStorefront = runtimeMode === 'storefront';
-  const isShopify = !isStorefront && searchParams.get("shopify") === "true";
+  // admin-tester: merchant admin "Generator Tester" host. Behaves like standalone for endpoints
+  // (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU left inert.
+  const isAdminTester = runtimeMode === 'admin-tester';
+  const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
   const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
 
   // Key behavioral flags based on runtime mode
@@ -1488,21 +1499,30 @@ export default function EmbedDesign() {
       try {
         if (isCancelled) return;
 
-        // GUARD: Ensure we have a valid shop domain before calling designer endpoint
-        if (!myshopifyDomain) {
-          console.error('[EmbedDesign] CRITICAL: No shop domain available for designer API call');
-          setProductTypeError('Unable to determine shop domain. Please ensure the shop parameter is provided in the URL.');
-          setConfigLoading(false);
-          return;
-        }
+        let designerUrl: string;
+        if (isAdminTester) {
+          // Admin "Generator Tester" host: use the admin-authenticated designer endpoint
+          // (resolves merchant from the session cookie — no shop param required). This keeps
+          // the tester rendering the IDENTICAL customizer while sourcing data from the same
+          // place the admin product-config screens use.
+          designerUrl = `${API_BASE}/api/product-types/${resolvedProductTypeId}/designer?_t=${Date.now()}`;
+        } else {
+          // GUARD: Ensure we have a valid shop domain before calling designer endpoint
+          if (!myshopifyDomain) {
+            console.error('[EmbedDesign] CRITICAL: No shop domain available for designer API call');
+            setProductTypeError('Unable to determine shop domain. Please ensure the shop parameter is provided in the URL.');
+            setConfigLoading(false);
+            return;
+          }
 
-        const designerParams = new URLSearchParams({
-          shop: myshopifyDomain,
-          _t: String(Date.now()),
-        });
-        if (productHandle) designerParams.set('productHandle', productHandle);
-        if (displayName) designerParams.set('displayName', displayName);
-        const designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?${designerParams.toString()}`;
+          const designerParams = new URLSearchParams({
+            shop: myshopifyDomain,
+            _t: String(Date.now()),
+          });
+          if (productHandle) designerParams.set('productHandle', productHandle);
+          if (displayName) designerParams.set('displayName', displayName);
+          designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?${designerParams.toString()}`;
+        }
         console.log('[EmbedDesign] Designer fetch URL:', designerUrl);
 
         const [configRes, designerRes] = await Promise.all([
