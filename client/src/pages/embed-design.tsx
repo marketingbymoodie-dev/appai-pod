@@ -636,20 +636,42 @@ function ProductInfoSections({
   );
 }
 
-export default function EmbedDesign() {
+/**
+ * Optional props for hosting the customizer IN-PROCESS inside the merchant admin
+ * "Art Generator Tester" page. Rendering in-process (instead of an iframe) is required
+ * because:
+ *   1. The admin app is an embedded Shopify app — a nested iframe would be blocked by the
+ *      app's `frame-ancestors` CSP (which only allows myshopify.com / admin.shopify.com).
+ *   2. Auth uses App Bridge session tokens injected into `window.fetch` in the TOP admin
+ *      frame only. In-process render reuses that patched fetch, so /api/generate and
+ *      /api/mockup/generate authenticate. A nested iframe has no App Bridge → 401.
+ * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
+ */
+export interface EmbedDesignProps {
+  embeddedContext?: {
+    mode: 'admin-tester';
+    productTypeId: string | number;
+  };
+}
+
+export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
-  // Detect runtime mode
-  const runtimeMode = detectRuntimeMode(searchParams);
+  // Detect runtime mode. When hosted in-process by the admin tester, the prop forces
+  // 'admin-tester' regardless of the surrounding admin URL/path.
+  const runtimeMode: RuntimeMode = embeddedContext?.mode === 'admin-tester'
+    ? 'admin-tester'
+    : detectRuntimeMode(searchParams);
 
+  const isStorefront = runtimeMode === 'storefront';
+  // admin-tester: merchant admin "Art Generator Tester" host. Behaves like standalone for
+  // endpoints (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU
+  // left inert. Force isEmbedded off so it renders as a clean standalone designer surface.
+  const isAdminTester = runtimeMode === 'admin-tester';
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
-  const isEmbedded = searchParams.get("embedded") === "true";
-  const isStorefront = runtimeMode === 'storefront';
-  // admin-tester: merchant admin "Generator Tester" host. Behaves like standalone for endpoints
-  // (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU left inert.
-  const isAdminTester = runtimeMode === 'admin-tester';
+  const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
   const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
 
@@ -738,7 +760,9 @@ export default function EmbedDesign() {
     return "";
   };
   const [activeProductContext, setActiveProductContext] = useState(() => ({
-    productTypeId: searchParams.get("productTypeId") || "1",
+    productTypeId: embeddedContext?.productTypeId != null
+      ? String(embeddedContext.productTypeId)
+      : (searchParams.get("productTypeId") || "1"),
     productId: searchParams.get("productId") || "",
     productHandle: getInitialProductHandle(),
     productTitle: initialProductTitle,

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Send, Package, ExternalLink, AlertTriangle, Check, DollarSign, Info, ChevronRight, ChevronLeft } from "lucide-react";
+import { Loader2, Send, Package, AlertTriangle, Check, DollarSign, Info, ChevronRight, ChevronLeft } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
+import EmbedDesign from "@/pages/embed-design";
 import type { ProductType } from "@shared/schema";
 
 interface DesignerConfig {
@@ -115,17 +116,6 @@ export default function AdminCreateProduct() {
     const filtered = designerConfig.frameColors.filter(color => savedColorSet.has(color.id));
     return filtered.length > 0 ? filtered : designerConfig.frameColors;
   }, [designerConfig?.frameColors, selectedProductType]);
-
-  // Live customizer URL — reuses the IDENTICAL storefront designer component via the
-  // adminTester runtime mode so this page never drifts out of sync with the real customizer.
-  const customizerUrl = useMemo(() => {
-    if (!selectedProductTypeId) return null;
-    const params = new URLSearchParams({
-      adminTester: "true",
-      productTypeId: String(selectedProductTypeId),
-    });
-    return `/s/designer?${params.toString()}`;
-  }, [selectedProductTypeId]);
 
   // Load saved variant count from product type
   const [savedVariantCount, setSavedVariantCount] = useState(0);
@@ -366,16 +356,6 @@ export default function AdminCreateProduct() {
           </div>
           {selectedProductTypeId && designerConfig && (
             <div className="flex items-center gap-2">
-              {customizerUrl && (
-                <Button
-                  variant="outline"
-                  onClick={() => window.open(customizerUrl, "_blank", "noopener,noreferrer")}
-                  data-testid="button-open-customizer-tab"
-                >
-                  <ExternalLink className="h-4 w-4 mr-2" />
-                  Open in new tab
-                </Button>
-              )}
               <Button onClick={() => setShowPublishDialog(true)} data-testid="button-send-to-store">
                 <Send className="h-4 w-4 mr-2" />
                 Send to Store
@@ -411,17 +391,15 @@ export default function AdminCreateProduct() {
           </p>
         </div>
 
-        {/* Live customizer — identical to the storefront design studio, hosted via the adminTester runtime mode */}
-        {customizerUrl ? (
+        {/* Live customizer — the IDENTICAL storefront design studio, rendered IN-PROCESS via the
+            admin-tester runtime mode. In-process (not an iframe) so it isn't blocked by the app's
+            frame-ancestors CSP and so it reuses the App Bridge session token for /api/generate. */}
+        {selectedProductTypeId ? (
           <Card className="overflow-hidden">
             <CardContent className="p-0">
-              <iframe
-                key={customizerUrl}
-                src={customizerUrl}
-                title="Live customizer preview"
-                className="w-full border-0 bg-background"
-                style={{ height: "calc(100vh - 220px)", minHeight: 720 }}
-                data-testid="iframe-customizer"
+              <EmbedDesign
+                key={selectedProductTypeId}
+                embeddedContext={{ mode: "admin-tester", productTypeId: selectedProductTypeId }}
               />
             </CardContent>
           </Card>
