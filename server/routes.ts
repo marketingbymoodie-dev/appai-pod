@@ -1000,6 +1000,23 @@ function buildCustomizerBootHtml(): string {
     0% { background-position: 200% center; }
     100% { background-position: -200% center; }
   }
+  html:has(#appai-boot),
+  body:has(#appai-boot) {
+    scrollbar-gutter: stable both-edges;
+  }
+  html:has(#appai-boot) {
+    overflow-y: scroll;
+  }
+  body:has(#appai-boot) header,
+  body:has(#appai-boot) .shopify-section-group-header-group,
+  body:has(#appai-boot) .shopify-section-header,
+  body:has(#appai-boot) .section-header,
+  body:has(#appai-boot) .header-wrapper,
+  body:has(#appai-boot) .header,
+  body:has(#appai-boot) .site-header,
+  body:has(#appai-boot) .announcement-bar,
+  body:has(#appai-boot) .utility-bar,
+  body:has(#appai-boot) nav,
   body:has(#appai-boot) main h1,
   body:has(#appai-boot) main h2,
   body:has(#appai-boot) .page-title,
@@ -1014,9 +1031,10 @@ function buildCustomizerBootHtml(): string {
   }
   body:has(#appai-boot) {
     background: #f4f4f5;
+    overflow-y: scroll;
   }
   #appai-boot {
-    min-height: 80vh;
+    min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1026,7 +1044,9 @@ function buildCustomizerBootHtml(): string {
   }
   #appai-boot .appai-boot-title {
     margin: 0;
-    font: 800 44px/1.08 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: inline-block;
+    padding: 0.08em 0.04em 0.14em;
+    font: 800 34px/1.18 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     letter-spacing: -0.04em;
     text-align: center;
     background: linear-gradient(90deg, #111827 0%, #111827 35%, #d1d5db 50%, #111827 65%, #111827 100%);
@@ -1039,7 +1059,7 @@ function buildCustomizerBootHtml(): string {
   }
   @media (max-width: 640px) {
     #appai-boot .appai-boot-title {
-      font-size: 34px;
+      font-size: 28px;
     }
   }
 </style>
