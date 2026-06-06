@@ -4609,12 +4609,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           root.setProperty('--input', inputBorderHSL);
         }
         const inputBgHSL = cssColorToHSL(t.inputBg);
-        if (inputBgHSL) {
-          root.setProperty('--card', inputBgHSL);
-          // Bulletproof card-foreground against the (possibly different)
-          // card bg. If body text doesn't contrast with input bg, fall
-          // back to black/white based on luminance.
-          const safeCardFg = ensureContrastingForeground(inputBgHSL, fgHSL);
+        // The studio is a light-surface UI: its cards/panels render on
+        // `--background` AND `--card`, so these must stay on the same
+        // light/dark side. A mis-extracted input bg (e.g. from a dark
+        // footer/search field) would otherwise invert `--card`, flip
+        // `--card-foreground` to white, and render white-on-pale text in
+        // panels that use `bg-background` (Saved Designs, Redeem, etc.).
+        // App default `--background` is white, so when the theme didn't supply
+        // a background colour treat the surface as light (lightness 100).
+        const effectiveBgHSL = bgHSL ?? '0 0% 100%';
+        const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
+        const cardLightness = hslLightness(inputBgHSL);
+        let cardHSL = inputBgHSL;
+        if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
+          // No usable input bg, or it disagrees with the page background —
+          // derive a card surface from the background instead of trusting it.
+          cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
+        }
+        if (cardHSL) {
+          root.setProperty('--card', cardHSL);
+          // Guarantee card text contrasts the (reconciled) card surface.
+          const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
           if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
         }
 
