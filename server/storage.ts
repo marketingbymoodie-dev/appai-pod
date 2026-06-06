@@ -24,6 +24,7 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
+import { computeGenerationConsume } from "./customizer-plans";
 
 export interface IStorage {
   // Customers
@@ -111,6 +112,10 @@ export interface IStorage {
   getAllShopifyInstallations(): Promise<ShopifyInstallation[]>;
   createShopifyInstallation(installation: InsertShopifyInstallation): Promise<ShopifyInstallation>;
   updateShopifyInstallation(id: number, updates: Partial<ShopifyInstallation>): Promise<ShopifyInstallation | undefined>;
+  // Per-merchant generation metering (plan quota enforcement). bucketKey is
+  // either a "YYYY-MM" calendar-month key (paid plans) or "trial" (cumulative).
+  getMerchantGenerationUsage(installationId: number, bucketKey: string): Promise<{ used: number; overageUsed: number }>;
+  consumeMerchantGeneration(params: { installationId: number; bucketKey: string; freeQuota: number; overageCap: number }): Promise<{ allowed: boolean; used: number; overageUsed: number; isOverage: boolean }>;
   
   // Product Types
   getProductType(id: number): Promise<ProductType | undefined>;
@@ -805,6 +810,71 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .where(eq(shopifyInstallations.id, id))
       .returning();
     return updated;
+  }
+
+  async getMerchantGenerationUsage(installationId: number, bucketKey: string): Promise<{ used: number; overageUsed: number }> {
+    const [inst] = await db
+      .select({
+        generationMonth: shopifyInstallations.generationMonth,
+        monthlyGenerationsUsed: shopifyInstallations.monthlyGenerationsUsed,
+        monthlyOverageUsed: shopifyInstallations.monthlyOverageUsed,
+      })
+      .from(shopifyInstallations)
+      .where(eq(shopifyInstallations.id, installationId));
+    // A different bucket key means the counters belong to a past month/state,
+    // so effective usage in the requested bucket is zero.
+    if (!inst || inst.generationMonth !== bucketKey) return { used: 0, overageUsed: 0 };
+    return { used: inst.monthlyGenerationsUsed ?? 0, overageUsed: inst.monthlyOverageUsed ?? 0 };
+  }
+
+  /**
+   * Atomically consume one generation against the merchant's plan quota.
+   *
+   * Runs in a transaction with a row-level lock (SELECT … FOR UPDATE) so
+   * concurrent generations for the same shop can't exceed the cap. Handles
+   * bucket rollover: when the stored generation_month differs from bucketKey the
+   * counters effectively reset to 0 (past month / trial→paid transition). The
+   * cap/overage decision uses the shared computeGenerationConsume() helper.
+   * Returns allowed=false (no mutation) when the bucket is at the hard cap.
+   */
+  async consumeMerchantGeneration(params: { installationId: number; bucketKey: string; freeQuota: number; overageCap: number }): Promise<{ allowed: boolean; used: number; overageUsed: number; isOverage: boolean }> {
+    const { installationId, bucketKey, freeQuota, overageCap } = params;
+
+    return db.transaction(async (tx) => {
+      const [inst] = await tx
+        .select({
+          generationMonth: shopifyInstallations.generationMonth,
+          monthlyGenerationsUsed: shopifyInstallations.monthlyGenerationsUsed,
+          monthlyOverageUsed: shopifyInstallations.monthlyOverageUsed,
+        })
+        .from(shopifyInstallations)
+        .where(eq(shopifyInstallations.id, installationId))
+        .for("update");
+
+      if (!inst) return { allowed: false, used: 0, overageUsed: 0, isOverage: false };
+
+      const sameBucket = inst.generationMonth === bucketKey;
+      const currentUsed = sameBucket ? inst.monthlyGenerationsUsed ?? 0 : 0;
+      const currentOverage = sameBucket ? inst.monthlyOverageUsed ?? 0 : 0;
+
+      const outcome = computeGenerationConsume(currentUsed, freeQuota, overageCap);
+      if (!outcome.allowed) {
+        return { allowed: false, used: currentUsed, overageUsed: currentOverage, isOverage: false };
+      }
+
+      const newUsed = currentUsed + 1;
+      const newOverage = currentOverage + (outcome.isOverage ? 1 : 0);
+      await tx
+        .update(shopifyInstallations)
+        .set({
+          generationMonth: bucketKey,
+          monthlyGenerationsUsed: newUsed,
+          monthlyOverageUsed: newOverage,
+        })
+        .where(eq(shopifyInstallations.id, installationId));
+
+      return { allowed: true, used: newUsed, overageUsed: newOverage, isOverage: outcome.isOverage };
+    });
   }
 
   // Product Types

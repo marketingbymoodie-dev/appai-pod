@@ -24,6 +24,7 @@ import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
 import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
+import { peekMerchantGenerationQuota, consumeMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 import {
@@ -2119,6 +2120,22 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
+      // Per-merchant monthly plan quota. The admin "Art Generator Tester" counts
+      // against the merchant's own plan allotment. Fail-open if we can't resolve
+      // the shop (e.g. non-Shopify dev auth) so local testing isn't blocked.
+      const genShopDomain = (req as any).shopDomain as string | undefined;
+      if (genShopDomain) {
+        const genInstall = await getAuthorizedInstallation(
+          genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
+        );
+        if (genInstall) {
+          const genQuota = await consumeMerchantGenerationQuota(genInstall);
+          if (!genQuota.allowed) {
+            return res.status(genQuota.status ?? 402).json(quotaBlockBody(genQuota));
+          }
+        }
+      }
+
       // Load product type if provided (needed for style lookup)
       let productType = null;
       if (productTypeId) {
@@ -2929,6 +2946,12 @@ console.log("[shopify/session] installation ok", {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
+      // Per-merchant monthly plan quota — fail fast before touching customer credits.
+      const embedQuotaPeek = await peekMerchantGenerationQuota(installation);
+      if (!embedQuotaPeek.allowed) {
+        return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
+      }
+
       // For Shopify embedded mode, customer login is OPTIONAL
       // Business model: Shop pays for generation capacity via rate limits.
       // If a customer is logged in with personal credits, we deduct from their credits first.
@@ -2973,6 +2996,12 @@ console.log("[shopify/session] installation ok", {
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Atomically consume one unit of the merchant's plan quota right before generation.
+      const embedQuota = await consumeMerchantGenerationQuota(installation);
+      if (!embedQuota.allowed) {
+        return res.status(embedQuota.status ?? 402).json(quotaBlockBody(embedQuota));
       }
 
       // Look up style preset and get its promptSuffix
@@ -6499,6 +6528,13 @@ ${textEdgeRestrictions}
         });
       }
 
+      // Per-merchant monthly plan quota — fail fast before consuming any
+      // per-customer free generation / credit below.
+      const sfQuotaPeek = await peekMerchantGenerationQuota(installation);
+      if (!sfQuotaPeek.allowed) {
+        return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
+      }
+
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
 
@@ -6609,6 +6645,12 @@ ${textEdgeRestrictions}
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Atomically consume one unit of the merchant's plan quota right before generation.
+      const sfQuota = await consumeMerchantGenerationQuota(installation);
+      if (!sfQuota.allowed) {
+        return res.status(sfQuota.status ?? 402).json(quotaBlockBody(sfQuota));
       }
 
       // Look up style preset
@@ -10125,6 +10167,27 @@ ${textEdgeRestrictions}
           } else {
             throw createError;
           }
+        }
+      }
+
+      // Derive the generation limit/usage shown in the admin from the merchant's
+      // actual plan + metered usage (the stored monthlyGenerationLimit/
+      // generationsThisMonth columns are legacy defaults and not authoritative).
+      const merchantShop = (req as any).shopDomain as string | undefined;
+      if (merchantShop) {
+        try {
+          const inst = await getAuthorizedInstallation(
+            merchantShop.toLowerCase().replace(/^https?:\/\//, "")
+          );
+          if (inst) {
+            const q = await peekMerchantGenerationQuota(inst);
+            if (!q.unlimited && Number.isFinite(q.hardCap)) {
+              (merchant as any).monthlyGenerationLimit = q.hardCap;
+              (merchant as any).generationsThisMonth = q.used;
+            }
+          }
+        } catch (e: any) {
+          console.warn("[/api/merchant] quota derive failed:", e?.message ?? e);
         }
       }
 
@@ -16064,6 +16127,22 @@ ${textEdgeRestrictions}
     const plan = getEffectivePlan(installation as any, installation.shopDomain);
     const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
 
+    // Generation quota status (free allotment + overage usage this bucket).
+    const q = await peekMerchantGenerationQuota(installation);
+    const finite = (n: number) => (Number.isFinite(n) ? n : null);
+    const generationQuota = {
+      plan: q.planName,
+      unlimited: q.unlimited,
+      freeQuota: finite(q.freeQuota),
+      overageCap: q.overageCap,
+      limit: finite(q.hardCap),
+      used: q.used,
+      remaining: finite(q.remaining),
+      overageUsed: q.overageUsed,
+      overagePriceUsd: q.overagePriceUsd,
+      isOverage: q.isOverage,
+    };
+
     return res.json({
       planName: plan.planName,
       planStatus: plan.planStatus,
@@ -16075,6 +16154,7 @@ ${textEdgeRestrictions}
       overLimit: plan.isActive && pagesCount > plan.pageLimit,
       trialStartedAt: (installation as any).trialStartedAt ?? null,
       billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
+      generationQuota,
     });
   }));
 

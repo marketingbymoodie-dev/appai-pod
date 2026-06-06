@@ -156,6 +156,15 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   trialStartedAt: timestamp("trial_started_at"),
   billingSubscriptionId: text("billing_subscription_id"), // Shopify AppSubscription GID
   billingCurrentPeriodEnd: timestamp("billing_current_period_end"),
+  // Per-merchant generation metering (plan quota enforcement).
+  // generationMonth is the bucket key the counters belong to:
+  //   - "YYYY-MM" (UTC) for paid plans (resets each calendar month)
+  //   - "trial"          for trial / no-plan (cumulative — 20 free total, never resets)
+  // monthlyGenerationsUsed counts ALL generations (free + overage) in the bucket.
+  // monthlyOverageUsed counts only the overage units (for billing tally).
+  generationMonth: text("generation_month"),
+  monthlyGenerationsUsed: integer("monthly_generations_used").notNull().default(0),
+  monthlyOverageUsed: integer("monthly_overage_used").notNull().default(0),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
