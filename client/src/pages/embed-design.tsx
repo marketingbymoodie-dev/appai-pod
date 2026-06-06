@@ -5807,6 +5807,14 @@ export default function EmbedDesign() {
                                         parentUrl.searchParams.set('loadProductName', loadingProductName);
                                         try {
                                           const pdoc = window.parent.document;
+                                          pdoc.documentElement.style.background = '#f4f4f5';
+                                          pdoc.documentElement.style.overflowY = 'scroll';
+                                          pdoc.documentElement.style.scrollbarGutter = 'stable both-edges';
+                                          if (pdoc.body) {
+                                            pdoc.body.style.background = '#f4f4f5';
+                                            pdoc.body.style.overflowY = 'scroll';
+                                            pdoc.body.style.scrollbarGutter = 'stable both-edges';
+                                          }
                                           if (!pdoc.getElementById('appai-nav-transition')) {
                                             if (!pdoc.getElementById('appai-transition-styles')) {
                                               const style = pdoc.createElement('style');
@@ -5834,8 +5842,25 @@ export default function EmbedDesign() {
                                             ov.appendChild(inner);
                                             pdoc.body.appendChild(ov);
                                           }
+                                          const existingOverlay = pdoc.getElementById('appai-nav-transition');
+                                          if (existingOverlay) {
+                                            existingOverlay.style.opacity = '1';
+                                            existingOverlay.style.transition = 'none';
+                                            // Flush layout so the loader is painted before the browser starts unloading.
+                                            void existingOverlay.offsetHeight;
+                                          }
                                         } catch { /* parent DOM access failed — continue without overlay */ }
-                                        window.parent.location.href = parentUrl.toString();
+                                        const navigate = () => { window.parent.location.href = parentUrl.toString(); };
+                                        try {
+                                          const parentWindow = window.parent;
+                                          if (parentWindow.requestAnimationFrame) {
+                                            parentWindow.requestAnimationFrame(() => navigate());
+                                          } else {
+                                            parentWindow.setTimeout(navigate, 0);
+                                          }
+                                        } catch {
+                                          window.setTimeout(navigate, 0);
+                                        }
                                       } catch {
                                         // Fallback: reload current page (cross-origin guard)
                                         const params = new URLSearchParams(window.location.search);

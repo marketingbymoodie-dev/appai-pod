@@ -484,11 +484,19 @@
       ].join('');
       document.head.appendChild(style);
     }
+    document.documentElement.style.background = '#f4f4f5';
+    document.documentElement.style.overflowY = 'scroll';
+    document.documentElement.style.scrollbarGutter = 'stable both-edges';
+    if (document.body) {
+      document.body.style.background = '#f4f4f5';
+      document.body.style.overflowY = 'scroll';
+      document.body.style.scrollbarGutter = 'stable both-edges';
+    }
     var overlay = document.createElement('div');
     overlay.id = 'appai-nav-transition';
     overlay.setAttribute('aria-hidden', 'true');
-    overlay.style.opacity = '0';
-    overlay.style.transition = 'opacity 120ms ease-out';
+    overlay.style.opacity = '1';
+    overlay.style.transition = 'none';
     var inner = document.createElement('div');
     inner.className = 'appai-transition-inner';
     var title = document.createElement('div');
@@ -497,9 +505,17 @@
     inner.appendChild(title);
     overlay.appendChild(inner);
     document.body.appendChild(overlay);
-    // Force a reflow so the fade-in transition actually runs.
-    void overlay.offsetWidth;
-    overlay.style.opacity = '1';
+    // Flush layout so the loader is painted before navigation starts.
+    void overlay.offsetHeight;
+  }
+
+  function navigateAfterOverlay(url) {
+    var go = function () { window.location.href = url; };
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(go);
+    } else {
+      window.setTimeout(go, 0);
+    }
   }
 
   function navigateToDesign(design) {
@@ -516,7 +532,7 @@
     var productName = design.baseTitle || 'saved design';
     if (productName) url += '&loadProductName=' + encodeURIComponent(productName);
     showNavOverlay(mockup, productName);
-    window.location.href = url;
+    navigateAfterOverlay(url);
   }
 
   // ─── Main init ───────────────────────────────────────────────────────────
