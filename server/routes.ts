@@ -14636,10 +14636,18 @@ ${textEdgeRestrictions}
         `products/${productNum}.json?fields=id,title,handle,variants`,
       );
       if (!prodResult.ok || !prodResult.data?.product) {
-        // Product not found — stale ID in DB. Clear it and re-create the product on Shopify.
-        console.log(`[customizer-pages] Product ${resolvedBaseProductId} not found (stale ID). Clearing and re-creating...`);
-        if (incomingProductTypeId) {
-          await storage.updateProductType(incomingProductTypeId, {
+        // Product not found for THIS shop. This happens when the stored shopifyProductId is
+        // stale (deleted in Shopify) or was published to a *different* shop (product_types is a
+        // shared/global table). Recover by locating the owning product type and re-creating the
+        // product on the current shop, rather than failing the merchant outright.
+        console.log(`[customizer-pages] Product ${resolvedBaseProductId} not found for shop ${shop} (stale/cross-shop ID). Attempting re-create...`);
+        let recoveryPt: any = ptForSync;
+        if (!recoveryPt) {
+          const allTypes = await storage.getActiveProductTypes();
+          recoveryPt = allTypes.find((pt: any) => String(pt.shopifyProductId) === String(resolvedBaseProductId));
+        }
+        if (recoveryPt) {
+          await storage.updateProductType(recoveryPt.id, {
             shopifyProductId: null as any,
             shopifyProductHandle: null as any,
             shopifyProductUrl: null as any,
@@ -14647,10 +14655,10 @@ ${textEdgeRestrictions}
             shopifyVariantIds: null as any,
           });
           try {
-            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, ptForSync, merchant, []);
+            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, recoveryPt, merchant, []);
             resolvedBaseProductId = shopifyProductId;
           } catch (e: any) {
-            return res.status(400).json({ error: e.message || `Product ${resolvedBaseProductId} not found in Shopify. Please send it to Shopify first.` });
+            return res.status(400).json({ error: e.message || `Product could not be created in your store. Open Products, send "${recoveryPt.name}" to Shopify, then try again.` });
           }
           if (!resolvedBaseProductId) {
             return res.status(400).json({ error: "Product was re-created on Shopify but no product ID was returned. Try again." });
@@ -14667,7 +14675,7 @@ ${textEdgeRestrictions}
           productTitle = product.title ?? "";
           productHandle = product.handle ?? "";
         } else {
-          return res.status(400).json({ error: `Product ${resolvedBaseProductId} not found in this store` });
+          return res.status(400).json({ error: `This product no longer exists in your store. Re-import it from Products, then create the page again.` });
         }
       } else {
         const product = prodResult.data.product;
@@ -15337,23 +15345,39 @@ ${textEdgeRestrictions}
         }
 
         // Fetch image and current prices from Shopify if the product is already there.
+        // IMPORTANT: product_types is a shared/global table, so a stored shopifyProductId can
+        // belong to a *different* shop (or have been deleted). Only treat it as "already on
+        // Shopify" for THIS shop if (a) it was published to this shop and (b) the Admin API
+        // can still resolve it. Otherwise mark needsShopifySync so the create flow re-creates
+        // it for the current shop instead of failing with "not found in this store".
         let imageUrl: string | null = (pt as any).mockupImageUrl ?? null;
-        let needsShopifySync = !pt.shopifyProductId;
+        let resolvedProductId: string | null = null;
+        let needsShopifySync = true;
         if (pt.shopifyProductId) {
-          const pResult = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${pt.shopifyProductId}.json?fields=id,title,images`,
-          );
-          if (pResult.ok && pResult.data?.product) {
-            imageUrl = pResult.data.product.images?.[0]?.src ?? imageUrl;
-            needsShopifySync = false;
+          const storedDomain = normalizeMyshopifyShopDomain(pt.shopifyShopDomain ?? "");
+          // If we know it was published to a different shop, don't even call Admin API.
+          if (storedDomain && storedDomain !== shop) {
+            needsShopifySync = true;
+          } else {
+            const pResult = await shopifyApiCall(
+              shop,
+              installation.accessToken,
+              `products/${pt.shopifyProductId}.json?fields=id,title,images`,
+            );
+            if (pResult.ok && pResult.data?.product) {
+              imageUrl = pResult.data.product.images?.[0]?.src ?? imageUrl;
+              resolvedProductId = pt.shopifyProductId;
+              needsShopifySync = false;
+            } else {
+              // Stored ID is stale (deleted in Shopify or owned by another shop) — force re-sync.
+              needsShopifySync = true;
+            }
           }
         }
 
         enriched.push({
           productTypeId: pt.id,
-          productId: pt.shopifyProductId ?? null,
+          productId: resolvedProductId,
           title: pt.name,
           imageUrl,
           needsShopifySync,
