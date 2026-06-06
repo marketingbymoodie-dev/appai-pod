@@ -7629,7 +7629,7 @@ ${textEdgeRestrictions}
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -7660,6 +7660,11 @@ ${textEdgeRestrictions}
     const jobId = String(req.query.jobId || "");
     if (!jobId) return res.status(400).json({ error: "jobId is required" });
 
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+
     const job = getMockupJob(jobId);
     if (!job) return res.status(404).json({ error: "Job not found or expired" });
 
@@ -7669,6 +7674,7 @@ ${textEdgeRestrictions}
       mockupUrls: job.mockupUrls,
       mockupImages: job.mockupImages,
       error: job.error,
+      step: job.step,
       correlationId: job.correlationId,
       source: job.source,
     });
@@ -14163,7 +14169,7 @@ ${textEdgeRestrictions}
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
-        cacheParts: { userId, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: { userId, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log("[Mockup Generate] Result:", { jobId, queued: !cached, success: cached?.success, mockups: cached?.mockupImages?.length });
@@ -14308,7 +14314,7 @@ ${textEdgeRestrictions}
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log("[Shopify Mockup] Generated result:", { jobId, queued: !cached, success: cached?.success, mockupCount: cached?.mockupUrls?.length });

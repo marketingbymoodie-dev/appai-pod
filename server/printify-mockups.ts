@@ -959,6 +959,38 @@ export async function generatePrintifyMockup(
       }
     }
 
+    let effectivePrintPlacement = printPlacement;
+    if (!isAop) {
+      const discovered = await getBlueprintVariantPlaceholders(
+        blueprintId,
+        providerId,
+        variantId,
+        printifyApiToken,
+      );
+      if (discovered && discovered.length > 0) {
+        const requestedPlacement = printPlacement ?? (doubleSided ? "both" : "front");
+        const hasStandardFrontBack = discovered.some((p) => p.position === "front" || p.position === "back");
+        const selectedPositions = hasStandardFrontBack
+          ? discovered.filter((p) => {
+              if (requestedPlacement === "both") return p.position === "front" || p.position === "back";
+              return p.position === requestedPlacement;
+            })
+          : discovered;
+
+        effectiveAopPositions = selectedPositions.length > 0 ? selectedPositions : discovered;
+        effectivePrintPlacement = undefined;
+        console.log(
+          `[Printify Blueprint] Using discovered placeholder(s) for ${blueprintId}/${providerId}/${variantId}: ` +
+          effectiveAopPositions.map((p) => p.position).join(", "),
+        );
+      } else {
+        console.warn(
+          `[Printify Blueprint] Falling back to legacy placement "${printPlacement ?? (doubleSided ? "both" : "front")}" ` +
+          `for ${blueprintId}/${providerId}/${variantId}; live placeholders unavailable.`,
+        );
+      }
+    }
+
     const createResult = await createTemporaryProduct(
       printifyShopId,
       blueprintId,
@@ -970,7 +1002,7 @@ export async function generatePrintifyMockup(
       x,
       y,
       doubleSided,
-      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : printPlacement,
+      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : effectivePrintPlacement,
       effectiveAopPositions,
       undefined,
       panelImageIds,
@@ -1015,14 +1047,18 @@ export async function generatePrintifyMockup(
           minTimeout: 500,
           maxTimeout: 2000,
           onFailedAttempt: (err) => {
-            console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
+            const message = err.error instanceof Error ? err.error.message : String(err.error);
+            console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${message}`);
           },
         }
       );
     } catch (pollErr: any) {
       const elapsedSec = Math.round((Date.now() - pollStarted) / 1000);
+      const placementSummary = effectiveAopPositions?.length
+        ? `placeholder(s): ${effectiveAopPositions.map((p) => p.position).join(", ")}`
+        : `placement: ${effectivePrintPlacement ?? (doubleSided ? "both" : "front")}`;
       throw new Error(
-        `Printify did not return mockup images after ${elapsedSec}s. Printify is slow right now — please retry.`,
+        `Printify did not return mockup images after ${elapsedSec}s for blueprint ${blueprintId}, provider ${providerId}, variant ${variantId} (${placementSummary}). This product may need its Printify placeholder mapping updated.`,
       );
     }
 
