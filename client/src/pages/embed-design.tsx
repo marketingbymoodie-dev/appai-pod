@@ -1703,8 +1703,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               root.setProperty('--ring', primaryHSL);
             }
             if (textHSL) {
-              root.setProperty('--foreground', textHSL);
-              root.setProperty('--card-foreground', textHSL);
+              // Guard against the merchant background so a light brand text
+              // colour can't render white-on-pale; no-op when contrast is fine.
+              const safeFg = ensureContrastingForeground(bgHSL, textHSL) ?? textHSL;
+              root.setProperty('--foreground', safeFg);
+              root.setProperty('--card-foreground', safeFg);
             }
             if (bgHSL) {
               root.setProperty('--background', bgHSL);
@@ -4544,11 +4547,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const fgHSL = cssColorToHSL(t.textColor);
         if (bgHSL) root.setProperty('--background', bgHSL);
         if (fgHSL) {
-          root.setProperty('--foreground', fgHSL);
-          // Tentative card-foreground = body text. Re-validated against
+          // Guard body text against the body background. Some themes set a
+          // light heading/body colour intended for dark hero sections; applied
+          // verbatim it renders white-on-pale inside the studio's light cards.
+          // The guard is a no-op whenever the merchant's pair already contrasts.
+          const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
+          root.setProperty('--foreground', safeFg);
+          // Tentative card-foreground = guarded body text. Re-validated against
           // --card below once it's set, since input bg can differ from
           // body bg and would otherwise leave invisible card text.
-          root.setProperty('--card-foreground', fgHSL);
+          root.setProperty('--card-foreground', safeFg);
         }
 
         // -- Primary button --
@@ -4627,9 +4635,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           root.setProperty('--popover', adjustHSLLightness(bgHSL, -3));
         }
         if (fgHSL) {
-          // Muted foreground is a lighter version of the text color
-          root.setProperty('--muted-foreground', adjustHSLLightness(fgHSL, 30));
-          root.setProperty('--secondary-foreground', fgHSL);
+          // Muted foreground is a lighter version of the text color, but still
+          // guarded so it can't drop below readable contrast on its surface.
+          const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
+          const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
+          const mutedFg = adjustHSLLightness(fgHSL, 30);
+          root.setProperty('--muted-foreground', ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
+          root.setProperty('--secondary-foreground', ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
         }
 
         console.log('[Design Studio] Applied store theme CSS variables');
