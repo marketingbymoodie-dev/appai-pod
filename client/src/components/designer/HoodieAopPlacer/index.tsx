@@ -34,11 +34,12 @@ import { safeFetch } from "@/lib/safeFetch";
  * so customers see a familiar layout when we swap this in for product 20:
  *
  *   1. Place / Pattern segmented control
- *   2. Scale slider (drives the active group)
- *   3. View row: Front / Back / Hood
- *   4. Artwork Enabled (per-active-group)
- *   5. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
- *   6. Reset
+ *   2. View row: Front / Back / Hood
+ *   3. Artwork Enabled (per-active-group)
+ *   4. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
+ *   5. Artwork upload (Replace / Upload artwork)
+ *   6. Scale slider (drives the active group)
+ *   7. Reset
  *
  * View row notes:
  *   - `Front` and `Back` switch the canvas view.
@@ -852,7 +853,7 @@ export default function HoodieAopPlacer({
       {/* Left: live mockup with overlay */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
-          className="relative flex aspect-square items-center justify-center bg-zinc-100 p-4"
+          className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
           onClick={() => {
             // Tap on the canvas backdrop / mockup toggles the bounding box.
             // The rect itself stops propagation so dragging/resizing works.
@@ -864,7 +865,7 @@ export default function HoodieAopPlacer({
           <div className="relative max-h-full max-w-full">
             <canvas
               ref={canvasRef}
-              className="max-h-[78vh] max-w-full rounded object-contain"
+              className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
               data-testid="hoodie-aop-placer-canvas"
             />
             {showOverlay && overlayVisible && mockup && artworkImg && (
@@ -915,6 +916,112 @@ export default function HoodieAopPlacer({
               {m === "pattern" ? "Pattern" : "Place on item"}
             </button>
           ))}
+        </div>
+
+        {/* View row: Front / Back / Hood (Hood is link toggle) */}
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            View
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            {(["front", "back"] as HoodieView[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                aria-pressed={state.view === v && state.activeGroupId !== "hood"}
+                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
+                  state.view === v && state.activeGroupId !== "hood"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-card-foreground hover:bg-muted border border-border"
+                }`}
+              >
+                {v === "front" ? "Front" : "Back"}
+              </button>
+            ))}
+            <button
+              onClick={onHoodButton}
+              title={hoodTooltip}
+              aria-label={hoodTooltip}
+              aria-pressed={hoodSelected}
+              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
+                hoodSelected
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-card text-card-foreground hover:bg-muted border border-border"
+              }`}
+            >
+              {state.hoodLinked ? (
+                <Link2 className="h-3 w-3" />
+              ) : (
+                <Link2Off className="h-3 w-3" />
+              )}
+              Hood
+            </button>
+          </div>
+          {hoodSelected && (
+            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
+          )}
+        </div>
+
+        {/* Artwork enabled — toggles the active group (place mode only) */}
+        {state.mode === "place" && (
+          <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Artwork enabled
+            </span>
+            <Toggle
+              checked={!!state.enabled[state.activeGroupId]}
+              onChange={(on) => setEnabled(state.activeGroupId, on)}
+            />
+          </div>
+        )}
+
+        {/* Background colour */}
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Background
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={state.backgroundColor}
+              onChange={(e) => setBgColor(e.target.value)}
+              className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
+              aria-label="Background colour"
+            />
+            <input
+              type="text"
+              value={state.backgroundColor}
+              onChange={(e) => setBgColor(e.target.value)}
+              className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
+              spellCheck={false}
+            />
+            {typeof window !== "undefined" && "EyeDropper" in window && (
+              <button
+                onClick={triggerEyedropper}
+                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
+                title="Pick a colour from anywhere on screen"
+                aria-label="Eyedropper"
+              >
+                <Pipette className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {swatches.map((s) => (
+              <button
+                key={s.hex}
+                onClick={() => setBgColor(s.hex)}
+                title={s.hex}
+                aria-label={`Use ${s.hex} as background`}
+                className={`h-6 w-6 rounded border-2 transition ${
+                  state.backgroundColor.toUpperCase() === s.hex.toUpperCase()
+                    ? "border-primary ring-2 ring-primary/40"
+                    : "border-border hover:border-foreground/40"
+                }`}
+                style={{ backgroundColor: s.hex }}
+              />
+            ))}
+          </div>
         </div>
 
         {/* Artwork upload (separate row since legacy assumes art is already chosen) */}
@@ -1030,63 +1137,6 @@ export default function HoodieAopPlacer({
           </>
         )}
 
-        {/* View row: Front / Back / Hood (Hood is link toggle) */}
-        <div>
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            View
-          </div>
-          <div className="grid grid-cols-3 gap-1">
-            {(["front", "back"] as HoodieView[]).map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                aria-pressed={state.view === v && state.activeGroupId !== "hood"}
-                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                  state.view === v && state.activeGroupId !== "hood"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-card-foreground hover:bg-muted border border-border"
-                }`}
-              >
-                {v === "front" ? "Front" : "Back"}
-              </button>
-            ))}
-            <button
-              onClick={onHoodButton}
-              title={hoodTooltip}
-              aria-label={hoodTooltip}
-              aria-pressed={hoodSelected}
-              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
-                hoodSelected
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-card text-card-foreground hover:bg-muted border border-border"
-              }`}
-            >
-              {state.hoodLinked ? (
-                <Link2 className="h-3 w-3" />
-              ) : (
-                <Link2Off className="h-3 w-3" />
-              )}
-              Hood
-            </button>
-          </div>
-          {hoodSelected && (
-            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
-          )}
-        </div>
-
-        {/* Artwork enabled — toggles the active group (place mode only) */}
-        {state.mode === "place" && (
-          <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Artwork enabled
-            </span>
-            <Toggle
-              checked={!!state.enabled[state.activeGroupId]}
-              onChange={(on) => setEnabled(state.activeGroupId, on)}
-            />
-          </div>
-        )}
-
         {/* Trim & Pockets — Pattern mode only. In Place mode the
             customer can already disable groups via "Artwork enabled",
             and these panels are usually full-art anyway. */}
@@ -1122,55 +1172,6 @@ export default function HoodieAopPlacer({
             </div>
           </div>
         )}
-
-        {/* Background colour */}
-        <div>
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Background
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="color"
-              value={state.backgroundColor}
-              onChange={(e) => setBgColor(e.target.value)}
-              className="h-8 w-10 cursor-pointer rounded border border-border bg-card"
-              aria-label="Background colour"
-            />
-            <input
-              type="text"
-              value={state.backgroundColor}
-              onChange={(e) => setBgColor(e.target.value)}
-              className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
-              spellCheck={false}
-            />
-            {typeof window !== "undefined" && "EyeDropper" in window && (
-              <button
-                onClick={triggerEyedropper}
-                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
-                title="Pick a colour from anywhere on screen"
-                aria-label="Eyedropper"
-              >
-                <Pipette className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {swatches.map((s) => (
-              <button
-                key={s.hex}
-                onClick={() => setBgColor(s.hex)}
-                title={s.hex}
-                aria-label={`Use ${s.hex} as background`}
-                className={`h-6 w-6 rounded border-2 transition ${
-                  state.backgroundColor.toUpperCase() === s.hex.toUpperCase()
-                    ? "border-primary ring-2 ring-primary/40"
-                    : "border-border hover:border-foreground/40"
-                }`}
-                style={{ backgroundColor: s.hex }}
-              />
-            ))}
-          </div>
-        </div>
 
         {/* Reset */}
         <button
