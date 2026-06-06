@@ -20,6 +20,7 @@ import {
   resolveGenerationQuota,
   PLAN_DISPLAY_NAMES,
 } from "./customizer-plans";
+import { emitOverageUsageCharge } from "./usage-billing";
 import type { ShopifyInstallation } from "@shared/schema";
 
 export interface MerchantQuotaDecision {
@@ -156,6 +157,24 @@ export async function consumeMerchantGenerationQuota(
 
   if (!r.allowed) {
     return blockedDecision(quota, r.used, r.overageUsed);
+  }
+
+  // The consumed unit fell into the paid overage band → bill it as a Shopify
+  // usage charge. Fire-and-forget + fully self-contained error handling so a
+  // billing hiccup never blocks the generation the merchant already passed
+  // quota checks for. Idempotent per (installation, bucket, overage count).
+  if (r.isOverage && quota.overagePriceUsd > 0) {
+    void emitOverageUsageCharge({
+      installation,
+      bucketKey: quota.bucketKey,
+      overageSeq: r.overageUsed,
+      priceUsd: quota.overagePriceUsd,
+    }).catch((err) => {
+      console.error(
+        `[generation-quota] overage charge emit failed for ${installation.shopDomain}:`,
+        err?.message ?? err
+      );
+    });
   }
 
   return {

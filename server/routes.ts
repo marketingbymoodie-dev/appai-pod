@@ -23,7 +23,8 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS } from "./customizer-plans";
+import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
 import { peekMerchantGenerationQuota, consumeMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
@@ -16143,6 +16144,20 @@ ${textEdgeRestrictions}
       isOverage: q.isOverage,
     };
 
+    // Overage billing readiness. A paid, active plan that can incur overages but
+    // has no usage line on its subscription (legacy subscriber who subscribed
+    // before metered billing existed, or owner bypass) cannot be charged for
+    // overages until they re-subscribe via create-subscription.
+    const hasUsageLine = !!(installation as any).billingUsageLineItemId;
+    const planHasOverage = plan.isActive && q.overageCap > 0 && !q.unlimited;
+    const needsOverageBillingUpgrade = planHasOverage && !hasUsageLine;
+
+    // Opportunistically flush any unbilled overage charges for this shop while
+    // they're looking at the billing page (best-effort, non-blocking).
+    if (hasUsageLine) {
+      retryPendingOverageCharges(installation as any).catch(() => {});
+    }
+
     return res.json({
       planName: plan.planName,
       planStatus: plan.planStatus,
@@ -16154,6 +16169,8 @@ ${textEdgeRestrictions}
       overLimit: plan.isActive && pagesCount > plan.pageLimit,
       trialStartedAt: (installation as any).trialStartedAt ?? null,
       billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
+      overageBillingActive: hasUsageLine,
+      needsOverageBillingUpgrade,
       generationQuota,
     });
   }));
@@ -16219,13 +16236,44 @@ ${textEdgeRestrictions}
     const appUrl = process.env.APP_URL?.replace(/\/$/, "") ?? `https://${req.headers.host}`;
     const returnUrl = `${appUrl}/api/appai/billing/callback?shop=${encodeURIComponent(installation.shopDomain)}&plan=${encodeURIComponent(plan)}`;
 
-    // Call Shopify Admin GraphQL to create app subscription
+    // Metered (usage) pricing line for AI-generation overages. The cappedAmount
+    // is the plan's max monthly overage cost (overage cap × $0.08); Shopify
+    // rejects usage records once that amount is reached, matching our hard cap.
+    const overageCappedUsd = getPlanOverageCappedAmountUsd(plan);
+    const lineItems: any[] = [{
+      plan: {
+        appRecurringPricingDetails: {
+          price: { amount: priceUsd, currencyCode: "USD" },
+          interval: "EVERY_30_DAYS",
+        },
+      },
+    }];
+    if (overageCappedUsd > 0) {
+      lineItems.push({
+        plan: {
+          appUsagePricingDetails: {
+            terms: OVERAGE_USAGE_TERMS,
+            cappedAmount: { amount: overageCappedUsd, currencyCode: "USD" },
+          },
+        },
+      });
+    }
+
+    // Call Shopify Admin GraphQL to create app subscription. We request the
+    // line items + their pricing-detail typenames so we can store the usage
+    // line's GID (needed later to target appUsageRecordCreate).
     const gqlBody = JSON.stringify({
       query: `
         mutation appSubscriptionCreate($name: String!, $returnUrl: URL!, $lineItems: [AppSubscriptionLineItemInput!]!, $test: Boolean) {
           appSubscriptionCreate(name: $name, returnUrl: $returnUrl, lineItems: $lineItems, test: $test) {
             userErrors { field message }
-            appSubscription { id }
+            appSubscription {
+              id
+              lineItems {
+                id
+                plan { pricingDetails { __typename } }
+              }
+            }
             confirmationUrl
           }
         }
@@ -16234,14 +16282,7 @@ ${textEdgeRestrictions}
         name: `${displayName} Plan`,
         returnUrl,
         test: process.env.NODE_ENV !== "production",
-        lineItems: [{
-          plan: {
-            appRecurringPricingDetails: {
-              price: { amount: priceUsd, currencyCode: "USD" },
-              interval: "EVERY_30_DAYS",
-            },
-          },
-        }],
+        lineItems,
       },
     });
 
@@ -16275,10 +16316,14 @@ ${textEdgeRestrictions}
       return res.status(502).json({ error: "No confirmation URL returned from Shopify" });
     }
 
-    // Store pending subscription ID so we can match it on callback
+    // Store pending subscription ID (and the usage line GID if present) so we can
+    // match it on callback and target usage charges. The line items already have
+    // GIDs at create time, even though the subscription is PENDING until approved.
     if (result?.appSubscription?.id) {
+      const usageLineItemId = extractUsageLineItemId(result.appSubscription);
       await storage.updateShopifyInstallation(installation.id, {
         billingSubscriptionId: result.appSubscription.id,
+        billingUsageLineItemId: usageLineItemId,
       } as any);
     }
 
@@ -16324,6 +16369,10 @@ ${textEdgeRestrictions}
                 node(id: $id) {
                   ... on AppSubscription {
                     id status currentPeriodEnd
+                    lineItems {
+                      id
+                      plan { pricingDetails { __typename } }
+                    }
                   }
                 }
               }
@@ -16335,6 +16384,7 @@ ${textEdgeRestrictions}
 
       let subscriptionStatus = "ACTIVE";
       let currentPeriodEnd: Date | null = null;
+      let usageLineItemId: string | null = null;
 
       if (gqlResponse.ok) {
         const gqlData = await gqlResponse.json() as any;
@@ -16342,6 +16392,7 @@ ${textEdgeRestrictions}
         if (sub) {
           subscriptionStatus = sub.status ?? "ACTIVE";
           if (sub.currentPeriodEnd) currentPeriodEnd = new Date(sub.currentPeriodEnd);
+          usageLineItemId = extractUsageLineItemId(sub);
         }
       }
 
@@ -16350,9 +16401,18 @@ ${textEdgeRestrictions}
           planName: plan,
           planStatus: "active",
           billingSubscriptionId: charge_id,
+          billingUsageLineItemId: usageLineItemId,
           billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
         } as any);
-        console.log(`[Billing] Activated ${plan} plan for ${shop}`);
+        console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
+        // A re-subscribe may have just attached a usage line — flush any overage
+        // charges that were recorded as skipped/failed while it was missing.
+        if (usageLineItemId) {
+          const refreshed = await storage.getShopifyInstallation(installation.id);
+          if (refreshed) {
+            retryPendingOverageCharges(refreshed as any).catch(() => {});
+          }
+        }
       }
     } catch (err: any) {
       console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);

@@ -155,6 +155,12 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   planStatus: text("plan_status"),
   trialStartedAt: timestamp("trial_started_at"),
   billingSubscriptionId: text("billing_subscription_id"), // Shopify AppSubscription GID
+  // Shopify AppSubscriptionLineItem GID for the metered (usage) pricing line.
+  // Set when a paid subscription is created/approved with an overage usage line.
+  // Null for trial subscriptions (no overage) and for legacy subscribers who
+  // subscribed before usage-charge billing existed — those merchants must
+  // re-subscribe to enable overage billing (see /api/appai/billing/plan).
+  billingUsageLineItemId: text("billing_usage_line_item_id"),
   billingCurrentPeriodEnd: timestamp("billing_current_period_end"),
   // Per-merchant generation metering (plan quota enforcement).
   // generationMonth is the bucket key the counters belong to:
@@ -172,6 +178,41 @@ export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstall
 });
 export type ShopifyInstallation = typeof shopifyInstallations.$inferSelect;
 export type InsertShopifyInstallation = z.infer<typeof insertShopifyInstallationSchema>;
+
+// One row per overage AI-generation that should be billed to the merchant via a
+// Shopify usage charge. Each row is the audit + idempotency + retry record for a
+// single appUsageRecordCreate call.
+//   - (installation_id, bucket_key, overage_seq) is UNIQUE: overage_seq is the
+//     merchant's running overage count within the month bucket (1..overageCap),
+//     so each overage unit is billed at most once even under retries/races.
+//   - status: pending → charged | failed | skipped
+//       pending  = recorded, charge not yet confirmed
+//       charged  = Shopify accepted the usage record (shopify_usage_record_id set)
+//       failed   = Shopify/API error; eligible for retry
+//       skipped  = no usage line on the subscription (legacy subscriber) — the
+//                  generation was still allowed; merchant must re-subscribe.
+export const merchantUsageCharges = pgTable("merchant_usage_charges", {
+  id: serial("id").primaryKey(),
+  installationId: integer("installation_id").notNull(),
+  shopDomain: text("shop_domain").notNull(),
+  bucketKey: text("bucket_key").notNull(),
+  overageSeq: integer("overage_seq").notNull(),
+  subscriptionLineItemId: text("subscription_line_item_id"),
+  priceUsd: decimal("price_usd", { precision: 10, scale: 4 }).notNull(),
+  status: text("status").notNull().default("pending"),
+  shopifyUsageRecordId: text("shopify_usage_record_id"),
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  unitUnique: uniqueIndex("merchant_usage_charges_unit_unique").on(
+    t.installationId, t.bucketKey, t.overageSeq,
+  ),
+  statusIdx: index("merchant_usage_charges_status_idx").on(t.installationId, t.status),
+}));
+
+export type MerchantUsageCharge = typeof merchantUsageCharges.$inferSelect;
 
 export const insertMerchantSchema = createInsertSchema(merchants).omit({
   id: true,

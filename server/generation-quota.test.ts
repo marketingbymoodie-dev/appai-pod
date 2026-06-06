@@ -3,6 +3,8 @@ import {
   resolveGenerationQuota,
   generationMonthKey,
   computeGenerationConsume,
+  getPlanOverageCappedAmountUsd,
+  OVERAGE_PRICE_USD,
   PLAN_GENERATION_QUOTAS,
   PLAN_OVERAGE_CAPS,
 } from "./customizer-plans";
@@ -43,6 +45,30 @@ describe("resolveGenerationQuota", () => {
     const inactivePaid = resolveGenerationQuota("pro", false, fixedNow);
     expect(inactivePaid.effectivePlan).toBe("trial");
     expect(inactivePaid.hardCap).toBe(20);
+  });
+});
+
+describe("getPlanOverageCappedAmountUsd", () => {
+  it("computes the max monthly overage cost = cap × $0.08 per paid plan", () => {
+    expect(getPlanOverageCappedAmountUsd("starter")).toBe(16);   // 200 × 0.08
+    expect(getPlanOverageCappedAmountUsd("dabbler")).toBe(24);   // 300 × 0.08
+    expect(getPlanOverageCappedAmountUsd("pro")).toBe(40);       // 500 × 0.08
+    expect(getPlanOverageCappedAmountUsd("pro_plus")).toBe(80);  // 1000 × 0.08
+  });
+
+  it("matches cap × OVERAGE_PRICE_USD exactly (no float drift)", () => {
+    for (const plan of ["starter", "dabbler", "pro", "pro_plus"] as const) {
+      const expected = Math.round(PLAN_OVERAGE_CAPS[plan] * OVERAGE_PRICE_USD * 100) / 100;
+      expect(getPlanOverageCappedAmountUsd(plan)).toBe(expected);
+      expect(Number.isInteger(getPlanOverageCappedAmountUsd(plan) * 100)).toBe(true);
+    }
+  });
+
+  it("is 0 for trial / unknown / null plans (no overage line)", () => {
+    expect(getPlanOverageCappedAmountUsd("trial")).toBe(0);
+    expect(getPlanOverageCappedAmountUsd(null)).toBe(0);
+    expect(getPlanOverageCappedAmountUsd(undefined)).toBe(0);
+    expect(getPlanOverageCappedAmountUsd("bogus")).toBe(0);
   });
 });
 
@@ -132,7 +158,14 @@ vi.mock("./storage", () => ({
   },
 }));
 
+// Mock the usage-billing module so the orchestration test never reaches the
+// real Shopify/DB layer (importing ./db would require DATABASE_URL).
+vi.mock("./usage-billing", () => ({
+  emitOverageUsageCharge: vi.fn().mockResolvedValue({ status: "charged" }),
+}));
+
 import { storage } from "./storage";
+import { emitOverageUsageCharge } from "./usage-billing";
 import {
   consumeMerchantGenerationQuota,
   peekMerchantGenerationQuota,
@@ -202,6 +235,49 @@ describe("merchant quota orchestration", () => {
     expect(decision.isOverage).toBe(true);
     expect(decision.overagePriceUsd).toBe(0.08);
     expect(decision.remaining).toBe(450 - 251);
+  });
+
+  it("emits a usage charge for an overage generation at $0.08 with the running overage count", async () => {
+    (storage.consumeMerchantGeneration as any).mockResolvedValue({
+      allowed: true,
+      used: 255,
+      overageUsed: 5,
+      isOverage: true,
+    });
+    const inst = { ...baseInstall, planName: "starter", planStatus: "active" };
+    await consumeMerchantGenerationQuota(inst);
+    expect(emitOverageUsageCharge).toHaveBeenCalledTimes(1);
+    expect(emitOverageUsageCharge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        installation: inst,
+        overageSeq: 5,
+        priceUsd: 0.08,
+      })
+    );
+  });
+
+  it("does NOT emit a usage charge for a within-allotment (non-overage) generation", async () => {
+    (storage.consumeMerchantGeneration as any).mockResolvedValue({
+      allowed: true,
+      used: 10,
+      overageUsed: 0,
+      isOverage: false,
+    });
+    const inst = { ...baseInstall, planName: "starter", planStatus: "active" };
+    await consumeMerchantGenerationQuota(inst);
+    expect(emitOverageUsageCharge).not.toHaveBeenCalled();
+  });
+
+  it("never emits a usage charge for a trial shop (no overage band)", async () => {
+    (storage.consumeMerchantGeneration as any).mockResolvedValue({
+      allowed: true,
+      used: 5,
+      overageUsed: 0,
+      isOverage: false,
+    });
+    const inst = { ...baseInstall, planName: "trial", planStatus: "trialing" };
+    await consumeMerchantGenerationQuota(inst);
+    expect(emitOverageUsageCharge).not.toHaveBeenCalled();
   });
 
   it("bypasses metering for the owner shop (unlimited, no storage call)", async () => {

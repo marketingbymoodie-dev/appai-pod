@@ -64,6 +64,28 @@ export const PLAN_DISPLAY_NAMES: Record<string, string> = {
 export const PAID_PLANS = ["starter", "dabbler", "pro", "pro_plus"] as const;
 export type PaidPlan = typeof PAID_PLANS[number];
 
+/**
+ * Maximum monthly overage cost (USD) a plan can incur = overage cap × per-unit
+ * price. This is the `cappedAmount` Shopify requires on a usage-pricing line:
+ * Shopify will reject usage records once the merchant's accrued usage for the
+ * billing period reaches this amount, which lines up with our own hard cap
+ * (overageCap units × OVERAGE_PRICE_USD). Returns 0 for plans without overage.
+ *
+ *   Starter : 200 × $0.08 = $16.00
+ *   Dabbler : 300 × $0.08 = $24.00
+ *   Pro     : 500 × $0.08 = $40.00
+ *   Pro Plus: 1000 × $0.08 = $80.00
+ */
+export function getPlanOverageCappedAmountUsd(planName: string | null | undefined): number {
+  if (!planName) return 0;
+  const cap = PLAN_OVERAGE_CAPS[planName] ?? 0;
+  // Round to cents to avoid float drift (e.g. 16.000000000000004).
+  return Math.round(cap * OVERAGE_PRICE_USD * 100) / 100;
+}
+
+/** Human-readable terms shown on the metered (usage) pricing line at approval. */
+export const OVERAGE_USAGE_TERMS = `$${OVERAGE_PRICE_USD.toFixed(2)} per additional AI generation beyond your monthly allotment`;
+
 export function getPageLimit(planName: string | null | undefined): number {
   if (!planName) return 0;
   return PLAN_PAGE_LIMITS[planName] ?? 0;
