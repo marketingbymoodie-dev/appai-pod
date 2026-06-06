@@ -361,7 +361,7 @@ export default function AdminCreateProduct() {
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Generator Tester</h1>
+            <h1 className="text-2xl font-bold" data-testid="text-create-product-title">Art Generator Tester</h1>
             <p className="text-muted-foreground">Test the live customizer for a product type before sending it to your store</p>
           </div>
           {selectedProductTypeId && designerConfig && (

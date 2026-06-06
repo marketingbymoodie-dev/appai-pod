@@ -112,8 +112,8 @@ export default function AdminDashboard() {
               },
               {
                 n: 3,
-                title: "Test your Generator and send to your store",
-                body: "Use Generator Tester to verify the AI output looks correct, then send the product to your store.",
+                title: "Test your Art Generator",
+                body: "Test your art generator for your chosen product before creating a Customiser Page for it.",
               },
               {
                 n: 4,
@@ -122,8 +122,8 @@ export default function AdminDashboard() {
               },
               {
                 n: 5,
-                title: "Add your product generator page to your store menu",
-                body: "In Shopify, go to Online Store → Navigation and add a link to /pages/your-handle.",
+                title: "Check your store menu",
+                body: "Check your store menu has added the newly created Customiser page and test it on your live store to make sure it's working as expected. Refresh your web page if it hasn't shown up immediately.",
               },
             ].map(({ n, title, body }) => (
               <div key={n} className="flex items-start gap-3">
