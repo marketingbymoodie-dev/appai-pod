@@ -205,7 +205,6 @@
   });
 
   appaiShowSavedDesignTransitionFromUrl();
-  window.__APPAI_NAVIGATE_SAVED_DESIGN__ = appaiNavigateSavedDesignInPlace;
 
   console.log('[AI Art Embed] Script starting...');
 
@@ -1051,22 +1050,6 @@
       // Trust gate
       if (!isTrustedMessage(event)) {
         if (isOurs) console.warn(B, 'BLOCKED untrusted:', data.type, 'origin:', event.origin);
-        return;
-      }
-      if (isOurs && !isFromOurIframe(event)) {
-        console.log(B, 'Ignoring stale bridge listener for', data.type);
-        return;
-      }
-
-      // ===== SAVED DESIGN IN-PLACE NAVIGATION =====
-      if (data.type === 'AI_ART_STUDIO_NAVIGATE_SAVED_DESIGN') {
-        var navAccepted = appaiNavigateSavedDesignInPlace(data);
-        replyToIframe(event, {
-          type: 'AI_ART_STUDIO_NAVIGATE_SAVED_DESIGN_RESULT',
-          requestId: data.requestId || '',
-          ok: navAccepted,
-          _bridgeVersion: BRIDGE_VERSION
-        });
         return;
       }
 
@@ -1977,46 +1960,6 @@
     setTimeout(cleanupDuplicateGenerators, 1500);
   }
 
-  function appaiNavigateSavedDesignInPlace(payload) {
-    try {
-      var handle = payload && payload.pageHandle ? String(payload.pageHandle) : '';
-      var designId = payload && payload.designId ? String(payload.designId) : '';
-      if (!handle || !designId) return false;
-
-      var activeIframe = document.querySelector('.ai-art-studio-embed iframe[title="AI Art Design Studio"], iframe[title="AI Art Design Studio"]');
-      if (activeIframe && activeIframe.contentWindow) {
-        activeIframe.contentWindow.postMessage({
-          type: 'AI_ART_STUDIO_SWITCH_SAVED_DESIGN',
-          design: {
-            id: designId,
-            pageHandle: handle,
-            mockupUrls: payload.mockupUrl ? [String(payload.mockupUrl)] : [],
-            baseTitle: payload.productName ? String(payload.productName) : '',
-            productTypeId: payload.productTypeId ? String(payload.productTypeId) : null
-          }
-        }, '*');
-        return true;
-      }
-
-      var navUrl = new URL(window.location.href);
-      navUrl.pathname = '/pages/' + handle;
-      navUrl.searchParams.set('loadDesignId', designId);
-      if (payload.mockupUrl) navUrl.searchParams.set('loadMockup', String(payload.mockupUrl));
-      if (payload.productName) navUrl.searchParams.set('loadProductName', String(payload.productName));
-
-      appaiShowTransitionOverlay();
-      appaiAfterTransitionPaint(function () {
-        try {
-          window.history.pushState({}, '', navUrl.toString());
-        } catch (historyError) {}
-        initCustomizerPage(handle, { replaceExisting: true, fallbackUrl: navUrl.toString() });
-      });
-      return true;
-    } catch (e) {
-      console.warn('[AI Art Embed] Saved design in-place navigation failed:', e);
-      return false;
-    }
-  }
   function initCustomizerPage(handle, opts) {
     opts = opts || {};
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
