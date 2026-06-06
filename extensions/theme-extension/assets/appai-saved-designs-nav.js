@@ -469,18 +469,12 @@
   // previously-open product page. The destination page repaints the same
   // mockup (via ?loadMockup=) so the hand-off is seamless.
   function showNavOverlay(mockupUrl, productName) {
-    if (document.getElementById('appai-nav-transition')) return;
     if (!document.getElementById('appai-transition-styles')) {
       var style = document.createElement('style');
       style.id = 'appai-transition-styles';
       style.textContent = [
         '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
-        'html:has(#appai-nav-transition),body:has(#appai-nav-transition){scrollbar-gutter:stable both-edges;}',
-        'html:has(#appai-nav-transition),body:has(#appai-nav-transition){overflow-y:scroll;}',
-        '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
-        '.appai-transition-inner{display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;}',
-        '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
-        '@media(max-width:640px){.appai-transition-title{font-size:28px;}}',
+        '@media(max-width:640px){.appai-transition-title{font-size:28px!important;}}',
       ].join('');
       document.head.appendChild(style);
     }
@@ -492,19 +486,57 @@
       document.body.style.overflowY = 'scroll';
       document.body.style.scrollbarGutter = 'stable both-edges';
     }
-    var overlay = document.createElement('div');
-    overlay.id = 'appai-nav-transition';
-    overlay.setAttribute('aria-hidden', 'true');
-    overlay.style.opacity = '1';
-    overlay.style.transition = 'none';
-    var inner = document.createElement('div');
-    inner.className = 'appai-transition-inner';
-    var title = document.createElement('div');
-    title.className = 'appai-transition-title';
-    title.textContent = 'Loading AI Art Studio';
-    inner.appendChild(title);
-    overlay.appendChild(inner);
-    document.body.appendChild(overlay);
+    var overlay = document.getElementById('appai-nav-transition');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'appai-nav-transition';
+      overlay.setAttribute('aria-hidden', 'true');
+      var inner = document.createElement('div');
+      inner.className = 'appai-transition-inner';
+      inner.style.cssText = 'display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;';
+      var title = document.createElement('div');
+      title.className = 'appai-transition-title';
+      title.textContent = 'Loading AI Art Studio';
+      title.style.cssText = [
+        'margin:0',
+        'display:inline-block',
+        'padding:0.08em 0.04em 0.14em',
+        'font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+        'letter-spacing:-0.04em',
+        'text-align:center',
+        'background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
+        'background-size:200% auto',
+        '-webkit-background-clip:text',
+        'background-clip:text',
+        '-webkit-text-fill-color:transparent',
+        'color:transparent',
+        'animation:appai-transition-title-shimmer 2.4s linear infinite'
+      ].join(';') + ';';
+      inner.appendChild(title);
+      overlay.appendChild(inner);
+      var root = document.documentElement || document.body;
+      if (document.body && root === document.documentElement && document.body.parentNode === root) {
+        root.insertBefore(overlay, document.body);
+      } else {
+        root.appendChild(overlay);
+      }
+    }
+    overlay.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:2147483647',
+      'background:#f4f4f5',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'padding:24px',
+      'box-sizing:border-box',
+      'opacity:1',
+      'visibility:visible',
+      'transition:none',
+      'pointer-events:auto',
+      'transform:none'
+    ].join(';') + ';';
     // Flush layout so the loader is painted before navigation starts.
     void overlay.offsetHeight;
   }
@@ -512,9 +544,11 @@
   function navigateAfterOverlay(url) {
     var go = function () { window.location.href = url; };
     if (window.requestAnimationFrame) {
-      window.requestAnimationFrame(go);
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(go);
+      });
     } else {
-      window.setTimeout(go, 0);
+      window.setTimeout(go, 32);
     }
   }
 

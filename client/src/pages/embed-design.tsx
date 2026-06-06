@@ -280,6 +280,137 @@ function toAbsoluteImageUrl(url: string): string {
   return buildAppUrl(url);
 }
 
+function paintParentSavedDesignTransitionDirect(): void {
+  try {
+    const pdoc = window.parent.document;
+    pdoc.documentElement.style.background = '#f4f4f5';
+    pdoc.documentElement.style.overflowY = 'scroll';
+    pdoc.documentElement.style.scrollbarGutter = 'stable both-edges';
+    if (pdoc.body) {
+      pdoc.body.style.background = '#f4f4f5';
+      pdoc.body.style.overflowY = 'scroll';
+      pdoc.body.style.scrollbarGutter = 'stable both-edges';
+    }
+    if (!pdoc.getElementById('appai-transition-styles')) {
+      const style = pdoc.createElement('style');
+      style.id = 'appai-transition-styles';
+      style.textContent = [
+        '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
+        '@media(max-width:640px){.appai-transition-title{font-size:28px!important;}}',
+      ].join('');
+      pdoc.head.appendChild(style);
+    }
+    let overlay = pdoc.getElementById('appai-nav-transition');
+    if (!overlay) {
+      overlay = pdoc.createElement('div');
+      overlay.id = 'appai-nav-transition';
+      overlay.setAttribute('aria-hidden', 'true');
+      const inner = pdoc.createElement('div');
+      inner.className = 'appai-transition-inner';
+      inner.style.cssText = 'display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;';
+      const title = pdoc.createElement('div');
+      title.className = 'appai-transition-title';
+      title.textContent = 'Loading AI Art Studio';
+      title.style.cssText = [
+        'margin:0',
+        'display:inline-block',
+        'padding:0.08em 0.04em 0.14em',
+        'font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+        'letter-spacing:-0.04em',
+        'text-align:center',
+        'background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
+        'background-size:200% auto',
+        '-webkit-background-clip:text',
+        'background-clip:text',
+        '-webkit-text-fill-color:transparent',
+        'color:transparent',
+        'animation:appai-transition-title-shimmer 2.4s linear infinite',
+      ].join(';') + ';';
+      inner.appendChild(title);
+      overlay.appendChild(inner);
+      const root = pdoc.documentElement || pdoc.body;
+      if (pdoc.body && root === pdoc.documentElement && pdoc.body.parentNode === root) {
+        root.insertBefore(overlay, pdoc.body);
+      } else {
+        root.appendChild(overlay);
+      }
+    }
+    overlay.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:2147483647',
+      'background:#f4f4f5',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'padding:24px',
+      'box-sizing:border-box',
+      'opacity:1',
+      'visibility:visible',
+      'transition:none',
+      'pointer-events:auto',
+      'transform:none',
+    ].join(';') + ';';
+    void overlay.offsetHeight;
+  } catch {
+    /* parent DOM access may be unavailable in older embed contexts */
+  }
+}
+
+async function waitForParentPaint(): Promise<void> {
+  try {
+    const parentWindow = window.parent;
+    await new Promise<void>((resolve) => {
+      if (parentWindow.requestAnimationFrame) {
+        parentWindow.requestAnimationFrame(() => parentWindow.requestAnimationFrame(() => resolve()));
+      } else {
+        parentWindow.setTimeout(resolve, 32);
+      }
+    });
+  } catch {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 32));
+  }
+}
+
+function requestParentSavedDesignTransition(): Promise<boolean> {
+  try {
+    const parentWindow = window.parent;
+    if (!parentWindow || parentWindow === window) return Promise.resolve(false);
+    const requestId = `saved-design-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let timeout = 0;
+      const finish = (shown: boolean) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        window.removeEventListener('message', onMessage);
+        resolve(shown);
+      };
+      const onMessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (
+          event.source === parentWindow &&
+          data &&
+          data.type === 'AI_ART_STUDIO_TRANSITION_SHOWN' &&
+          data.requestId === requestId
+        ) {
+          finish(!data.error);
+        }
+      };
+      timeout = window.setTimeout(() => finish(false), 350);
+      window.addEventListener('message', onMessage);
+      try {
+        parentWindow.postMessage({ type: 'AI_ART_STUDIO_SHOW_TRANSITION', requestId }, '*');
+      } catch {
+        finish(false);
+      }
+    });
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
 function isTemporaryPrintifyMockupUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -5786,88 +5917,37 @@ export default function EmbedDesign() {
                                       return;
                                     }
                                     if (needsNavigation) {
-                                      // Cross-product nav: we have to do a real page navigation
-                                      // because the parent page is the OLD product. To prevent
-                                      // the user seeing the OLD product flash during the reload,
-                                      // paint a full-screen overlay on the parent (same Shopify
-                                      // origin, so DOM access is allowed) showing the destination
-                                      // mockup BEFORE navigating. Browsers keep the old page
-                                      // painted during the reload — the overlay rides along on
-                                      // top, so only the correct design is visible.
-                                      try {
-                                        const parentUrl = new URL(window.parent.location.href);
-                                        parentUrl.pathname = `/pages/${d.pageHandle}`;
-                                        parentUrl.searchParams.set('loadDesignId', d.id);
-                                        const mockupSrc = (d.mockupUrls && d.mockupUrls[0]) || '';
-                                        const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : '';
-                                        if (mockupAbsForUrl) {
-                                          parentUrl.searchParams.set('loadMockup', mockupAbsForUrl);
-                                        }
-                                        const loadingProductName = d.baseTitle || 'saved design';
-                                        parentUrl.searchParams.set('loadProductName', loadingProductName);
+                                      // Cross-product saved designs navigate the top page. Ask the
+                                      // parent theme script to paint and ACK the full-page loader
+                                      // before changing location, with a direct DOM fallback for
+                                      // older cached parent scripts.
+                                      void (async () => {
                                         try {
-                                          const pdoc = window.parent.document;
-                                          pdoc.documentElement.style.background = '#f4f4f5';
-                                          pdoc.documentElement.style.overflowY = 'scroll';
-                                          pdoc.documentElement.style.scrollbarGutter = 'stable both-edges';
-                                          if (pdoc.body) {
-                                            pdoc.body.style.background = '#f4f4f5';
-                                            pdoc.body.style.overflowY = 'scroll';
-                                            pdoc.body.style.scrollbarGutter = 'stable both-edges';
+                                          const parentUrl = new URL(window.parent.location.href);
+                                          parentUrl.pathname = `/pages/${d.pageHandle}`;
+                                          parentUrl.searchParams.set('loadDesignId', d.id);
+                                          const mockupSrc = (d.mockupUrls && d.mockupUrls[0]) || '';
+                                          const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : '';
+                                          if (mockupAbsForUrl) {
+                                            parentUrl.searchParams.set('loadMockup', mockupAbsForUrl);
                                           }
-                                          if (!pdoc.getElementById('appai-nav-transition')) {
-                                            if (!pdoc.getElementById('appai-transition-styles')) {
-                                              const style = pdoc.createElement('style');
-                                              style.id = 'appai-transition-styles';
-                                              style.textContent = [
-                                                '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
-                                                'html:has(#appai-nav-transition),body:has(#appai-nav-transition){scrollbar-gutter:stable both-edges;}',
-                                                'html:has(#appai-nav-transition),body:has(#appai-nav-transition){overflow-y:scroll;}',
-                                                '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
-                                                '.appai-transition-inner{display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;}',
-                                                '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
-                                                '@media(max-width:640px){.appai-transition-title{font-size:28px;}}',
-                                              ].join('');
-                                              pdoc.head.appendChild(style);
-                                            }
-                                            const ov = pdoc.createElement('div');
-                                            ov.id = 'appai-nav-transition';
-                                            ov.setAttribute('aria-hidden', 'true');
-                                            const inner = pdoc.createElement('div');
-                                            inner.className = 'appai-transition-inner';
-                                            const title = pdoc.createElement('div');
-                                            title.className = 'appai-transition-title';
-                                            title.textContent = 'Loading AI Art Studio';
-                                            inner.appendChild(title);
-                                            ov.appendChild(inner);
-                                            pdoc.body.appendChild(ov);
+                                          const loadingProductName = d.baseTitle || 'saved design';
+                                          parentUrl.searchParams.set('loadProductName', loadingProductName);
+
+                                          const parentPainted = await requestParentSavedDesignTransition();
+                                          if (!parentPainted) {
+                                            paintParentSavedDesignTransitionDirect();
+                                            await waitForParentPaint();
                                           }
-                                          const existingOverlay = pdoc.getElementById('appai-nav-transition');
-                                          if (existingOverlay) {
-                                            existingOverlay.style.opacity = '1';
-                                            existingOverlay.style.transition = 'none';
-                                            // Flush layout so the loader is painted before the browser starts unloading.
-                                            void existingOverlay.offsetHeight;
-                                          }
-                                        } catch { /* parent DOM access failed — continue without overlay */ }
-                                        const navigate = () => { window.parent.location.href = parentUrl.toString(); };
-                                        try {
-                                          const parentWindow = window.parent;
-                                          if (parentWindow.requestAnimationFrame) {
-                                            parentWindow.requestAnimationFrame(() => navigate());
-                                          } else {
-                                            parentWindow.setTimeout(navigate, 0);
-                                          }
+                                          window.parent.location.href = parentUrl.toString();
                                         } catch {
-                                          window.setTimeout(navigate, 0);
+                                          // Fallback: reload current page (cross-origin guard)
+                                          const params = new URLSearchParams(window.location.search);
+                                          params.set('loadDesignId', d.id);
+                                          window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
+                                          window.location.reload();
                                         }
-                                      } catch {
-                                        // Fallback: reload current page (cross-origin guard)
-                                        const params = new URLSearchParams(window.location.search);
-                                        params.set('loadDesignId', d.id);
-                                        window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                        window.location.reload();
-                                      }
+                                      })();
                                     } else {
                                       // Same product → load IN-PLACE. No iframe reload means no
                                       // blank/stale frame and no flash: we just update the URLs

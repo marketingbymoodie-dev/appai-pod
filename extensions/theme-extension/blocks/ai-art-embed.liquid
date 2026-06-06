@@ -57,6 +57,62 @@
       + '</div>';
   }
 
+  function appaiApplyTransitionDocumentState() {
+    document.documentElement.style.background = '#f4f4f5';
+    document.documentElement.style.overflowY = 'scroll';
+    document.documentElement.style.scrollbarGutter = 'stable both-edges';
+    if (document.body) {
+      document.body.style.background = '#f4f4f5';
+      document.body.style.overflowY = 'scroll';
+      document.body.style.scrollbarGutter = 'stable both-edges';
+    }
+  }
+
+  function appaiStyleTransitionOverlay(overlay) {
+    overlay.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:2147483647',
+      'background:#f4f4f5',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'padding:24px',
+      'box-sizing:border-box',
+      'opacity:1',
+      'visibility:visible',
+      'transition:none',
+      'pointer-events:auto',
+      'transform:none'
+    ].join(';') + ';';
+  }
+
+  function appaiBuildTransitionInner() {
+    var inner = document.createElement('div');
+    inner.className = 'appai-transition-inner';
+    inner.style.cssText = 'display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;';
+    var title = document.createElement('div');
+    title.className = 'appai-transition-title';
+    title.textContent = 'Loading AI Art Studio';
+    title.style.cssText = [
+      'margin:0',
+      'display:inline-block',
+      'padding:0.08em 0.04em 0.14em',
+      'font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+      'letter-spacing:-0.04em',
+      'text-align:center',
+      'background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
+      'background-size:200% auto',
+      '-webkit-background-clip:text',
+      'background-clip:text',
+      '-webkit-text-fill-color:transparent',
+      'color:transparent',
+      'animation:appai-transition-title-shimmer 2.4s linear infinite'
+    ].join(';') + ';';
+    inner.appendChild(title);
+    return inner;
+  }
+
   function appaiEnsureTransitionStyles() {
     if (document.getElementById('appai-transition-styles')) return;
     var style = document.createElement('style');
@@ -82,20 +138,71 @@
     }
   }
 
+  function appaiShowTransitionOverlay() {
+    appaiEnsureTransitionStyles();
+    appaiApplyTransitionDocumentState();
+    var overlay = document.getElementById('appai-nav-transition');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'appai-nav-transition';
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.appendChild(appaiBuildTransitionInner());
+      appaiAttachTransitionOverlay(overlay);
+    } else if (!overlay.querySelector('.appai-transition-title')) {
+      overlay.innerHTML = '';
+      overlay.appendChild(appaiBuildTransitionInner());
+    }
+    appaiStyleTransitionOverlay(overlay);
+    void overlay.offsetHeight;
+    return overlay;
+  }
+
+  function appaiAfterTransitionPaint(cb) {
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(cb);
+      });
+    } else {
+      window.setTimeout(cb, 32);
+    }
+  }
+
   function appaiShowSavedDesignTransitionFromUrl() {
     try {
       var params = new URLSearchParams(window.location.search);
       var loadDesignId = params.get('loadDesignId') || '';
       if (!loadDesignId || document.getElementById('appai-nav-transition')) return;
-      appaiEnsureTransitionStyles();
-      var overlay = document.createElement('div');
-      overlay.id = 'appai-nav-transition';
-      overlay.setAttribute('aria-hidden', 'true');
-      overlay.innerHTML = appaiTransitionInner();
-      document.documentElement.style.background = '#f4f4f5';
-      appaiAttachTransitionOverlay(overlay);
+      appaiShowTransitionOverlay();
     } catch (e) {}
   }
+
+  window.addEventListener('message', function(event) {
+    var data = event && event.data;
+    if (!data || data.type !== 'AI_ART_STUDIO_SHOW_TRANSITION') return;
+    try {
+      appaiShowTransitionOverlay();
+      appaiAfterTransitionPaint(function () {
+        try {
+          if (event.source && event.source.postMessage) {
+            event.source.postMessage({
+              type: 'AI_ART_STUDIO_TRANSITION_SHOWN',
+              requestId: data.requestId || ''
+            }, event.origin || '*');
+          }
+        } catch (replyError) {}
+      });
+    } catch (e) {
+      try {
+        if (event.source && event.source.postMessage) {
+          event.source.postMessage({
+            type: 'AI_ART_STUDIO_TRANSITION_SHOWN',
+            requestId: data.requestId || '',
+            error: true
+          }, event.origin || '*');
+        }
+      } catch (replyError) {}
+    }
+  });
 
   appaiShowSavedDesignTransitionFromUrl();
 
@@ -372,12 +479,7 @@
 
     function ensureAppaiLoadingCover() {
       if (transitionDesignId && !document.getElementById('appai-nav-transition')) {
-        appaiEnsureTransitionStyles();
-        var fullCover = document.createElement('div');
-        fullCover.id = 'appai-nav-transition';
-        fullCover.setAttribute('aria-hidden', 'true');
-        fullCover.innerHTML = appaiLoadingInner();
-        appaiAttachTransitionOverlay(fullCover);
+        appaiShowTransitionOverlay();
       }
       if (!studioContainer || studioContainer.querySelector('.ai-art-studio-embed__loading')) return;
       try {
