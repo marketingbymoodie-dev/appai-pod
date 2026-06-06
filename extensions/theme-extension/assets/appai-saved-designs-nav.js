@@ -565,6 +565,24 @@
     if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
     var productName = design.baseTitle || 'saved design';
     if (productName) url += '&loadProductName=' + encodeURIComponent(productName);
+    try {
+      var activeIframe = document.querySelector('.ai-art-studio-embed iframe[title="AI Art Design Studio"], iframe[title="AI Art Design Studio"]');
+      if (activeIframe && activeIframe.contentWindow) {
+        activeIframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_SWITCH_SAVED_DESIGN',
+          design: {
+            id: design.id,
+            pageHandle: design.pageHandle,
+            mockupUrls: mockup ? [mockup] : [],
+            baseTitle: productName,
+            productTypeId: design.productTypeId || null
+          }
+        }, '*');
+        return;
+      }
+    } catch (e) {
+      console.warn('[AppAI Nav] Iframe saved design switch failed, using full page navigation:', e);
+    }
     showNavOverlay(mockup, productName);
     navigateAfterOverlay(url);
   }
