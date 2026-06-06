@@ -50,19 +50,10 @@
   }
   window.__APPAI_CUSTOMIZER_INIT__ = true;
 
-  function appaiTransitionEscape(value) {
-    return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
   function appaiTransitionInner(mockupUrl, productName) {
-    var label = productName ? 'Loading "' + productName + '"...' : 'Loading saved design...';
     return ''
-      + '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;max-width:min(92vw,720px);text-align:center;">'
-      + (mockupUrl ? '<img src="' + appaiTransitionEscape(mockupUrl) + '" alt="" style="max-width:min(90vw,520px);max-height:64vh;object-fit:contain;box-shadow:0 18px 48px rgba(0,0,0,0.12);background:#fff;" />' : '')
-      + '<div style="display:inline-flex;align-items:center;gap:10px;border-radius:999px;background:rgba(0,0,0,0.72);color:#fff;padding:9px 14px;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.18);">'
-      + '<span style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.36);border-top-color:#fff;border-radius:999px;display:inline-block;animation:appai-transition-spin 0.8s linear infinite;"></span>'
-      + '<span>' + appaiTransitionEscape(label) + '</span>'
-      + '</div>'
+      + '<div class="appai-transition-inner">'
+      + '<div class="appai-transition-title">Loading AI Art Studio</div>'
       + '</div>';
   }
 
@@ -70,8 +61,25 @@
     if (document.getElementById('appai-transition-styles')) return;
     var style = document.createElement('style');
     style.id = 'appai-transition-styles';
-    style.textContent = '@keyframes appai-transition-spin{to{transform:rotate(360deg)}}';
+    style.textContent = [
+      '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
+      'html:has(#appai-nav-transition),body:has(#appai-nav-transition){scrollbar-gutter:stable both-edges;}',
+      'html:has(#appai-nav-transition),body:has(#appai-nav-transition){overflow-y:scroll;}',
+      '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
+      '.appai-transition-inner{display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;}',
+      '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
+      '@media(max-width:640px){.appai-transition-title{font-size:28px;}}',
+    ].join('');
     document.head.appendChild(style);
+  }
+
+  function appaiAttachTransitionOverlay(overlay) {
+    var root = document.documentElement || document.body;
+    if (document.body && root === document.documentElement && document.body.parentNode === root) {
+      root.insertBefore(overlay, document.body);
+    } else {
+      root.appendChild(overlay);
+    }
   }
 
   function appaiShowSavedDesignTransitionFromUrl() {
@@ -80,20 +88,12 @@
       var loadDesignId = params.get('loadDesignId') || '';
       if (!loadDesignId || document.getElementById('appai-nav-transition')) return;
       appaiEnsureTransitionStyles();
-      var mockup = params.get('loadMockup') || '';
-      var productName = params.get('loadProductName') || '';
       var overlay = document.createElement('div');
       overlay.id = 'appai-nav-transition';
       overlay.setAttribute('aria-hidden', 'true');
-      overlay.style.cssText = [
-        'position:fixed', 'inset:0', 'z-index:2147483647',
-        'background:#f4f4f5', 'display:flex',
-        'align-items:center', 'justify-content:center',
-        'padding:24px',
-      ].join(';');
-      overlay.innerHTML = appaiTransitionInner(mockup, productName);
+      overlay.innerHTML = appaiTransitionInner();
       document.documentElement.style.background = '#f4f4f5';
-      document.body.appendChild(overlay);
+      appaiAttachTransitionOverlay(overlay);
     } catch (e) {}
   }
 
@@ -365,18 +365,9 @@
 
     const urlParams = new URLSearchParams(window.location.search);
     const transitionDesignId = urlParams.get('loadDesignId') || '';
-    const bootMockup = urlParams.get('loadMockup') || '';
-    const bootProductName = urlParams.get('loadProductName') || '';
-
-    function appaiEscapeAttr(value) {
-      return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
 
     function appaiLoadingInner() {
-      return transitionDesignId
-        ? appaiTransitionInner(bootMockup, bootProductName)
-        : '<div class="ai-art-studio-embed__spinner"></div>'
-          + '<p class="ai-art-studio-embed__loading-title">AI Art Studio</p>';
+      return '<p class="ai-art-studio-embed__loading-title">Loading AI Art Studio</p>';
     }
 
     function ensureAppaiLoadingCover() {
@@ -385,13 +376,8 @@
         var fullCover = document.createElement('div');
         fullCover.id = 'appai-nav-transition';
         fullCover.setAttribute('aria-hidden', 'true');
-        fullCover.style.cssText = [
-          'position:fixed', 'inset:0', 'z-index:2147483647',
-          'background:#f4f4f5', 'display:flex',
-          'align-items:center', 'justify-content:center',
-        ].join(';');
         fullCover.innerHTML = appaiLoadingInner();
-        document.body.appendChild(fullCover);
+        appaiAttachTransitionOverlay(fullCover);
       }
       if (!studioContainer || studioContainer.querySelector('.ai-art-studio-embed__loading')) return;
       try {
@@ -420,6 +406,12 @@
           fullCover.style.transition = 'opacity 0.2s ease';
           fullCover.style.opacity = '0';
           setTimeout(function() { if (fullCover.parentNode) fullCover.remove(); }, 220);
+        }
+        var bootCover = document.getElementById('appai-boot');
+        if (bootCover) {
+          bootCover.style.transition = 'opacity 0.2s ease';
+          bootCover.style.opacity = '0';
+          setTimeout(function() { if (bootCover.parentNode) bootCover.remove(); }, 220);
         }
       } catch (e) {}
     }
@@ -1817,28 +1809,23 @@
                     document.querySelector('main') ||
                     document.body;
 
+        var hideThemeElement = function(el) {
+          if (!el || el.querySelector('#appai-boot') || el.closest('#appai-boot')) return;
+          el.style.display = 'none';
+        };
+
         // Hide theme's generic page text (title, body copy)
         ['#MainContent > .page-width', 'main .page', '.page__content',
          '.shopify-section--rich-text', 'h1.page-title', 'h1.title'].forEach(function(sel) {
-          document.querySelectorAll(sel).forEach(function(el) { el.style.display = 'none'; });
+          document.querySelectorAll(sel).forEach(hideThemeElement);
         });
 
         // Hide the page's body_html rendered by the theme (e.g. stale "Loading customizer..." text
         // that was set as the page body before we switched to empty body_html).
         document.querySelectorAll('.page-content, .rte, article .rte, .page__body').forEach(function(el) {
           if (el.closest('.ai-art-studio-embed') || el.closest('.ai-art-studio-block')) return;
-          el.style.display = 'none';
+          hideThemeElement(el);
         });
-
-        // Add a single shimmer sweep to the page heading (e.g. "Slim Phone Cases")
-        var pageH1 = document.querySelector('h1');
-        if (pageH1 && !pageH1.classList.contains('appai-page-title-shimmer')) {
-          pageH1.classList.add('appai-page-title-shimmer');
-          // Remove class after animation completes so it doesn't replay on re-render
-          pageH1.addEventListener('animationend', function() {
-            pageH1.classList.remove('appai-page-title-shimmer');
-          }, { once: true });
-        }
         var shopDomain = (function () {
           var el = document.getElementById('appai-root');
           var ds = el && el.getAttribute('data-shop');
@@ -1966,17 +1953,20 @@
 }
 .ai-art-studio-embed__loading .ai-art-studio-embed__loading-title,
 .ai-art-studio-embed__loading p.ai-art-studio-embed__loading-title {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  display: inline-block;
+  padding: 0.08em 0.04em 0.14em;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: -0.04em;
   margin: 0;
   background: linear-gradient(
     90deg,
-    #111 0%,
-    #111 30%,
-    #888 50%,
-    #111 70%,
-    #111 100%
+    #111827 0%,
+    #111827 35%,
+    #d1d5db 50%,
+    #111827 65%,
+    #111827 100%
   );
   background-size: 200% auto;
   -webkit-background-clip: text;
@@ -1985,30 +1975,12 @@
   color: transparent;
   animation: ai-art-title-shimmer 2.4s linear infinite;
 }
-/* Page heading shimmer — text colour sweep from dark to light-grey and back, plays once */
-@keyframes appai-page-title-sweep {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
-}
-h1.appai-page-title-shimmer,
-h2.appai-page-title-shimmer {
-  /* Universal shimmer: dark text fades to light-grey mid-point and back.
-     Higher specificity (h1.class) beats theme's h1 rules. */
-  background: linear-gradient(
-    90deg,
-    #111 0%,
-    #111 30%,
-    #aaa 50%,
-    #111 70%,
-    #111 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  animation: appai-page-title-sweep 1.8s ease-in-out 1 forwards;
-  display: inline-block;
+
+@media (max-width: 640px) {
+  .ai-art-studio-embed__loading .ai-art-studio-embed__loading-title,
+  .ai-art-studio-embed__loading p.ai-art-studio-embed__loading-title {
+    font-size: 28px;
+  }
 }
 
 /* Parent-side Add to Cart button */

@@ -470,38 +470,32 @@
   // mockup (via ?loadMockup=) so the hand-off is seamless.
   function showNavOverlay(mockupUrl, productName) {
     if (document.getElementById('appai-nav-transition')) return;
-    var overlay = document.createElement('div');
-    overlay.id = 'appai-nav-transition';
-    overlay.setAttribute('aria-hidden', 'true');
-    var label = productName ? 'Loading "' + productName + '"...' : 'Loading saved design...';
-    overlay.style.cssText = [
-      'position:fixed', 'inset:0', 'z-index:2147483647',
-      'background:#f4f4f5', 'display:flex',
-      'align-items:center', 'justify-content:center',
-      'opacity:0', 'transition:opacity 120ms ease-out',
-      'padding:24px',
-    ].join(';');
-    var inner = document.createElement('div');
-    inner.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;max-width:min(92vw,720px);text-align:center';
-    if (mockupUrl) {
-      var img = document.createElement('img');
-      img.src = mockupUrl;
-      img.alt = '';
-      img.style.cssText = 'max-width:min(90vw,520px);max-height:64vh;object-fit:contain;box-shadow:0 18px 48px rgba(0,0,0,0.12);background:#fff';
-      inner.appendChild(img);
-    }
-    var pill = document.createElement('div');
-    pill.style.cssText = 'display:inline-flex;align-items:center;gap:10px;border-radius:999px;background:rgba(0,0,0,0.72);color:#fff;padding:9px 14px;font:600 14px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,0.18)';
-    pill.innerHTML = '<span style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.36);border-top-color:#fff;border-radius:999px;display:inline-block;animation:appai-transition-spin 0.8s linear infinite;"></span><span></span>';
-    pill.lastChild.textContent = label;
-    inner.appendChild(pill);
-    overlay.appendChild(inner);
     if (!document.getElementById('appai-transition-styles')) {
       var style = document.createElement('style');
       style.id = 'appai-transition-styles';
-      style.textContent = '@keyframes appai-transition-spin{to{transform:rotate(360deg)}}';
+      style.textContent = [
+        '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
+        'html:has(#appai-nav-transition),body:has(#appai-nav-transition){scrollbar-gutter:stable both-edges;}',
+        'html:has(#appai-nav-transition),body:has(#appai-nav-transition){overflow-y:scroll;}',
+        '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
+        '.appai-transition-inner{display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;}',
+        '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
+        '@media(max-width:640px){.appai-transition-title{font-size:28px;}}',
+      ].join('');
       document.head.appendChild(style);
     }
+    var overlay = document.createElement('div');
+    overlay.id = 'appai-nav-transition';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity 120ms ease-out';
+    var inner = document.createElement('div');
+    inner.className = 'appai-transition-inner';
+    var title = document.createElement('div');
+    title.className = 'appai-transition-title';
+    title.textContent = 'Loading AI Art Studio';
+    inner.appendChild(title);
+    overlay.appendChild(inner);
     document.body.appendChild(overlay);
     // Force a reflow so the fade-in transition actually runs.
     void overlay.offsetWidth;

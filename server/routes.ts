@@ -993,6 +993,112 @@ async function findCustomizerParent(
   return menuItems.find((item: any) => item.title === "Customizer") ?? null;
 }
 
+function buildCustomizerBootHtml(): string {
+  return `
+<style id="appai-boot-style">
+  @keyframes appai-boot-title-shimmer {
+    0% { background-position: 200% center; }
+    100% { background-position: -200% center; }
+  }
+  html:has(#appai-boot),
+  body:has(#appai-boot) {
+    scrollbar-gutter: stable both-edges;
+  }
+  html:has(#appai-boot) {
+    overflow-y: scroll;
+  }
+  body:has(#appai-boot) header,
+  body:has(#appai-boot) .shopify-section-group-header-group,
+  body:has(#appai-boot) .shopify-section-header,
+  body:has(#appai-boot) .section-header,
+  body:has(#appai-boot) .header-wrapper,
+  body:has(#appai-boot) .header,
+  body:has(#appai-boot) .site-header,
+  body:has(#appai-boot) .announcement-bar,
+  body:has(#appai-boot) .utility-bar,
+  body:has(#appai-boot) nav,
+  body:has(#appai-boot) main h1,
+  body:has(#appai-boot) main h2,
+  body:has(#appai-boot) .page-title,
+  body:has(#appai-boot) .title,
+  body:has(#appai-boot) .title--primary,
+  body:has(#appai-boot) .main-page-title,
+  body:has(#appai-boot) .rte > :not(#appai-boot):not(#appai-boot-style),
+  body:has(#appai-boot) .page__content > :not(#appai-boot):not(#appai-boot-style),
+  body:has(#appai-boot) footer,
+  body:has(#appai-boot) .shopify-section-group-footer-group {
+    display: none !important;
+  }
+  body:has(#appai-boot) {
+    background: #f4f4f5;
+    overflow-y: scroll;
+  }
+  #appai-boot {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f4f4f5;
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  #appai-boot .appai-boot-title {
+    margin: 0;
+    display: inline-block;
+    padding: 0.08em 0.04em 0.14em;
+    font: 800 34px/1.18 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: -0.04em;
+    text-align: center;
+    background: linear-gradient(90deg, #111827 0%, #111827 35%, #d1d5db 50%, #111827 65%, #111827 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    animation: appai-boot-title-shimmer 2.4s linear infinite;
+  }
+  @media (max-width: 640px) {
+    #appai-boot .appai-boot-title {
+      font-size: 28px;
+    }
+  }
+</style>
+<div id="appai-boot" aria-live="polite" aria-busy="true">
+  <div class="appai-boot-title">Loading AI Art Studio</div>
+</div>`.trim();
+}
+
+const customizerBootBackfillCache = new Set<string>();
+
+async function ensureCustomizerBootHtml(
+  shop: string,
+  accessToken: string,
+  shopifyPageId?: string | null,
+): Promise<void> {
+  if (!shopifyPageId) return;
+  const cacheKey = `${shop}:${shopifyPageId}`;
+  if (customizerBootBackfillCache.has(cacheKey)) return;
+  const result = await shopifyApiCall(
+    shop,
+    accessToken,
+    `pages/${shopifyPageId}.json`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        page: {
+          id: shopifyPageId,
+          body_html: buildCustomizerBootHtml(),
+        },
+      }),
+    },
+  );
+  if (!result.ok) {
+    console.warn(`[customizer-pages] Failed to backfill boot HTML for page ${shopifyPageId}: ${result.error}`);
+    return;
+  }
+  customizerBootBackfillCache.add(cacheKey);
+}
+
 /**
  * Ensures a customizer page exists as a sub-item under the app's Customizer
  * parent in the main-menu. Creates the "Customizer" parent if it doesn't exist.
@@ -14779,7 +14885,7 @@ ${textEdgeRestrictions}
           page: {
             title: title.trim(),
             handle: handle.trim(),
-            body_html: "",
+            body_html: buildCustomizerBootHtml(),
             published: true,
           },
         }),
@@ -14951,8 +15057,12 @@ ${textEdgeRestrictions}
         shop,
         installation.accessToken,
         `pages/${dbPage.shopifyPageId}.json`,
-        { method: "PUT", body: JSON.stringify({ page: { title: updates.title } }) }
+        { method: "PUT", body: JSON.stringify({ page: { title: updates.title, body_html: buildCustomizerBootHtml() } }) }
       );
+      customizerBootBackfillCache.add(`${shop}:${dbPage.shopifyPageId}`);
+    } else if (dbPage.shopifyPageId && (updates.status === "active" || req.body.status === undefined)) {
+      await ensureCustomizerBootHtml(shop, installation.accessToken, dbPage.shopifyPageId)
+        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not backfill boot HTML:", e.message));
     }
 
     // Manage navigation menu link on status change (best-effort)
@@ -15466,6 +15576,12 @@ ${textEdgeRestrictions}
     const page = await storage.getCustomizerPageByHandle(shop, handle);
     if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (installation?.accessToken && page.shopifyPageId) {
+      ensureCustomizerBootHtml(shop, installation.accessToken, page.shopifyPageId)
+        .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
+    }
+
     // Embed the full designer config so the iframe never needs to call
     // /api/storefront/product-types/:id/designer (eliminates the timeout).
     let designerConfig = null;
@@ -15490,7 +15606,6 @@ ${textEdgeRestrictions}
     let productPublished: boolean | null = null;
     if (page.baseProductId) {
       try {
-        const installation = await storage.getShopifyInstallationByShop(shop);
         if (installation?.accessToken) {
           const prodResult = await shopifyApiCall(
             shop,
