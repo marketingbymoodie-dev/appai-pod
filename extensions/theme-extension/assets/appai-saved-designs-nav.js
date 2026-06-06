@@ -565,6 +565,20 @@
     if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
     var productName = design.baseTitle || 'saved design';
     if (productName) url += '&loadProductName=' + encodeURIComponent(productName);
+    try {
+      if (typeof window.__APPAI_NAVIGATE_SAVED_DESIGN__ === 'function') {
+        var handled = window.__APPAI_NAVIGATE_SAVED_DESIGN__({
+          pageHandle: design.pageHandle,
+          designId: design.id,
+          mockupUrl: mockup,
+          productName: productName,
+          productTypeId: design.productTypeId || ''
+        });
+        if (handled) return;
+      }
+    } catch (e) {
+      console.warn('[AppAI Nav] In-place saved design navigation failed, using full page navigation:', e);
+    }
     showNavOverlay(mockup, productName);
     navigateAfterOverlay(url);
   }
