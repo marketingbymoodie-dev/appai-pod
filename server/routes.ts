@@ -1,5 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { generatePattern, removeBackground, type PatternType } from "./picsart-client";
+import { generatePattern, removeBackground, despillMagenta, type PatternType } from "./picsart-client";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -729,6 +729,14 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       buffer = await removeChromaKeyBackground(buffer);
       extension = "png";
       actualMimeType = "image/png";
+    }
+
+    // Decontaminate the #FF00FF chroma-key spill left on anti-aliased edges
+    // (the "hot pink fringe"). Runs for whichever removal path succeeded above.
+    try {
+      buffer = await despillMagenta(buffer);
+    } catch (despillErr) {
+      console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
     }
 
     buffer = await trimTransparentBounds(buffer);
