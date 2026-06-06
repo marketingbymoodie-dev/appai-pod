@@ -1073,6 +1073,7 @@ export default function EmbedDesign() {
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   // Ensures quick successive AOP edits do not let an older mockup response overwrite the latest one.
   const mockupRequestSeqRef = useRef(0);
+  const activeMockupJobKeyRef = useRef<string | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -1633,7 +1634,7 @@ export default function EmbedDesign() {
 
   // Fetch merchant's branding settings and apply to designer
   useEffect(() => {
-    if (!shopDomain) return;
+    if (!shopDomain || isStorefront) return;
 
     const fetchBranding = async () => {
       try {
@@ -1679,7 +1680,7 @@ export default function EmbedDesign() {
     };
 
     fetchBranding();
-  }, [shopDomain]);
+  }, [shopDomain, isStorefront]);
 
   // Load shared design if sharedDesignId is present in URL
   useEffect(() => {
@@ -2174,6 +2175,10 @@ export default function EmbedDesign() {
     let pollAttempts = 0;
     const maxAttempts = 12;
     const pollShadow = async () => {
+      if (activeMockupJobKeyRef.current) {
+        preShadowPollRef.current = setTimeout(pollShadow, 5000);
+        return;
+      }
       try {
         const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?shop=${encodeURIComponent(shop)}`);
         if (r.ok) {
@@ -2338,6 +2343,27 @@ export default function EmbedDesign() {
       console.log(`[EmbedDesign] AOP preflight OK: ${panelUrls.length} panel(s) — sizes: ${panelUrls.map(p => `${p.position}:${(p.dataUrl.length / 1024).toFixed(0)}KB`).join(', ')}`);
     }
 
+    // Clamp values to valid ranges
+    const clampedX = Math.max(0, Math.min(100, x));
+    const clampedY = Math.max(0, Math.min(100, y));
+    const clampedScale = Math.max(10, Math.min(200, scale));
+    const mockupJobKey = JSON.stringify({
+      imageUrl: designImageUrl,
+      productTypeId: ptId,
+      sizeId,
+      colorId,
+      scale: clampedScale,
+      x: clampedX,
+      y: clampedY,
+      printPlacement: printPlacementOverride ?? printPlacement,
+      panelHash: panelUrls?.map((p) => `${p.position}:${p.dataUrl.length}`).join("|") ?? "",
+    });
+
+    if (activeMockupJobKeyRef.current === mockupJobKey) {
+      console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
+      return;
+    }
+    activeMockupJobKeyRef.current = mockupJobKey;
     const requestSeq = ++mockupRequestSeqRef.current;
     setMockupLoading(true);
     setMockupsStale(false);
@@ -2345,10 +2371,6 @@ export default function EmbedDesign() {
     if (runtimeMode !== 'standalone') {
       window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
     }
-    // Clamp values to valid ranges
-    const clampedX = Math.max(0, Math.min(100, x));
-    const clampedY = Math.max(0, Math.min(100, y));
-    const clampedScale = Math.max(10, Math.min(200, scale));
 
     try {
       // The server's uploadImageToPrintify() handles data URLs natively
@@ -2578,6 +2600,9 @@ export default function EmbedDesign() {
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
       setMockupFailed(true);
     } finally {
+      if (activeMockupJobKeyRef.current === mockupJobKey) {
+        activeMockupJobKeyRef.current = null;
+      }
       if (requestSeq === mockupRequestSeqRef.current) {
         setMockupLoading(false);
         setMockupTriggered(false);
@@ -7205,7 +7230,9 @@ export default function EmbedDesign() {
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
-                  <span className="text-sm text-destructive flex-1">Preview unavailable — you can still add to cart</span>
+                  <span className="text-sm text-destructive flex-1">
+                    Preview unavailable — {mockupError || 'mockup generation failed'}. You can still add to cart.
+                  </span>
                   <button
                     type="button"
                     className="text-xs text-destructive underline shrink-0"
