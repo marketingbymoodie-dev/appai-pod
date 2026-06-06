@@ -408,7 +408,7 @@ async function createTemporaryProduct(
     onPayload?: (payload: unknown) => void;
     onCreated?: (productId: string) => void;
   },
-): Promise<{ productId: string } | { error: string }> {
+): Promise<{ productId: string; images: MockupImage[] } | { error: string }> {
   const printifyX = 0.5 + x * 0.5;
   const printifyY = 0.5 + y * 0.5;
   const imageEntry = {
@@ -516,7 +516,12 @@ async function createTemporaryProduct(
       }
       const product = await response.json();
       internalOptions?.onCreated?.(String(product.id));
-      return { productId: product.id };
+      // Printify often returns the rendered mockup images DIRECTLY in the
+      // create-product response (verified for blueprint 353 / tumbler, which
+      // never populates images[] on a subsequent GET /products/{id}.json poll).
+      // Capture them here so the caller can use them immediately and only fall
+      // back to polling when the create response has none.
+      return { productId: product.id, images: extractMockupImagesFromProduct(product) };
     } catch (error: any) {
       if (attempt < MAX_RETRIES) { await sleep(1000 * Math.pow(2, attempt - 1)); continue; }
       return {
@@ -527,6 +532,24 @@ async function createTemporaryProduct(
     }
   }
   return { error: "Unexpected: exhausted retries" };
+}
+
+/**
+ * Map a Printify product payload's `images[]` (present in both the create
+ * response and GET /products/{id}.json) into our MockupImage shape. The
+ * `camera_label` query param on each `src` is what we use to select the
+ * preferred view (e.g. "front") for the customizer.
+ */
+function extractMockupImagesFromProduct(product: any): MockupImage[] {
+  if (!product || !Array.isArray(product.images) || product.images.length === 0) {
+    return [];
+  }
+  return product.images
+    .filter((img: any) => img && typeof img.src === "string" && img.src.length > 0)
+    .map((img: any) => ({
+      url: img.src,
+      label: extractCameraLabel(img.src),
+    }));
 }
 
 async function getProductMockups(
@@ -543,15 +566,11 @@ async function getProductMockups(
     );
     if (!response.ok) return null;
     const product = await response.json();
-    if (!product.images || product.images.length === 0) return null;
-
-    const images = product.images.map((img: any) => ({
-      url: img.src,
-      label: extractCameraLabel(img.src),
-    }));
+    const images = extractMockupImagesFromProduct(product);
+    if (images.length === 0) return null;
 
     return {
-      urls: images.map((img: any) => img.url),
+      urls: images.map((img) => img.url),
       images,
     };
   } catch (error) {
@@ -959,6 +978,38 @@ export async function generatePrintifyMockup(
       }
     }
 
+    let effectivePrintPlacement = printPlacement;
+    if (!isAop) {
+      const discovered = await getBlueprintVariantPlaceholders(
+        blueprintId,
+        providerId,
+        variantId,
+        printifyApiToken,
+      );
+      if (discovered && discovered.length > 0) {
+        const requestedPlacement = printPlacement ?? (doubleSided ? "both" : "front");
+        const hasStandardFrontBack = discovered.some((p) => p.position === "front" || p.position === "back");
+        const selectedPositions = hasStandardFrontBack
+          ? discovered.filter((p) => {
+              if (requestedPlacement === "both") return p.position === "front" || p.position === "back";
+              return p.position === requestedPlacement;
+            })
+          : discovered;
+
+        effectiveAopPositions = selectedPositions.length > 0 ? selectedPositions : discovered;
+        effectivePrintPlacement = undefined;
+        console.log(
+          `[Printify Blueprint] Using discovered placeholder(s) for ${blueprintId}/${providerId}/${variantId}: ` +
+          effectiveAopPositions.map((p) => p.position).join(", "),
+        );
+      } else {
+        console.warn(
+          `[Printify Blueprint] Falling back to legacy placement "${printPlacement ?? (doubleSided ? "both" : "front")}" ` +
+          `for ${blueprintId}/${providerId}/${variantId}; live placeholders unavailable.`,
+        );
+      }
+    }
+
     const createResult = await createTemporaryProduct(
       printifyShopId,
       blueprintId,
@@ -970,7 +1021,7 @@ export async function generatePrintifyMockup(
       x,
       y,
       doubleSided,
-      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : printPlacement,
+      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : effectivePrintPlacement,
       effectiveAopPositions,
       undefined,
       panelImageIds,
@@ -996,34 +1047,60 @@ export async function generatePrintifyMockup(
     }
 
     productId = createResult.productId;
-    const pollStarted = Date.now();
-    let mockupData;
-    try {
-      mockupData = await pRetry(
-        async (attemptNumber) => {
-          const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
-          if (!data || data.urls.length === 0) {
-            console.log(`[Printify Mockup] Poll attempt ${attemptNumber}: images not ready yet`);
-            throw new Error("Mockups not ready yet");
-          }
-          return data;
-        },
-        {
-          // Async job pattern lets us wait well past the old App Proxy 30s limit.
-          // Total budget ~120s: 0.5s + 1s + 2s*60 attempts.
-          retries: 60,
-          minTimeout: 500,
-          maxTimeout: 2000,
-          onFailedAttempt: (err) => {
-            console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${err.message}`);
+
+    // Printify frequently returns the fully rendered mockup images inline in
+    // the create-product response. For some blueprints (e.g. 353 / tumbler 20oz)
+    // these inline images are the ONLY ones we ever get — the subsequent
+    // GET /products/{id}.json poll never populates images[], so polling just
+    // burns the full ~145s budget and then fails with "Preview unavailable".
+    // Use the create-response images immediately when present; only fall back
+    // to polling when the create response gave us nothing usable. This is
+    // general (helps any blueprint that returns images inline), not
+    // tumbler-specific.
+    let mockupData: { urls: string[]; images: MockupImage[] } | undefined;
+    if (createResult.images.length > 0) {
+      console.log(
+        `[Printify Mockup] Using ${createResult.images.length} image(s) returned inline in create-product response (skipping poll).`,
+      );
+      mockupData = {
+        urls: createResult.images.map((img) => img.url),
+        images: createResult.images,
+      };
+    }
+
+    if (!mockupData) {
+      const pollStarted = Date.now();
+      try {
+        mockupData = await pRetry(
+          async (attemptNumber) => {
+            const data = await getProductMockups(printifyShopId, productId!, printifyApiToken);
+            if (!data || data.urls.length === 0) {
+              console.log(`[Printify Mockup] Poll attempt ${attemptNumber}: images not ready yet`);
+              throw new Error("Mockups not ready yet");
+            }
+            return data;
           },
-        }
-      );
-    } catch (pollErr: any) {
-      const elapsedSec = Math.round((Date.now() - pollStarted) / 1000);
-      throw new Error(
-        `Printify did not return mockup images after ${elapsedSec}s. Printify is slow right now — please retry.`,
-      );
+          {
+            // Async job pattern lets us wait well past the old App Proxy 30s limit.
+            // Total budget ~120s: 0.5s + 1s + 2s*60 attempts.
+            retries: 60,
+            minTimeout: 500,
+            maxTimeout: 2000,
+            onFailedAttempt: (err) => {
+              const message = err.error instanceof Error ? err.error.message : String(err.error);
+              console.log(`[Printify Mockup] Poll ${err.attemptNumber}/${err.attemptNumber + err.retriesLeft}: ${message}`);
+            },
+          }
+        );
+      } catch (pollErr: any) {
+        const elapsedSec = Math.round((Date.now() - pollStarted) / 1000);
+        const placementSummary = effectiveAopPositions?.length
+          ? `placeholder(s): ${effectiveAopPositions.map((p) => p.position).join(", ")}`
+          : `placement: ${effectivePrintPlacement ?? (doubleSided ? "both" : "front")}`;
+        throw new Error(
+          `Printify did not return mockup images after ${elapsedSec}s for blueprint ${blueprintId}, provider ${providerId}, variant ${variantId} (${placementSummary}). This product may need its Printify placeholder mapping updated.`,
+        );
+      }
     }
 
     const selected = selectPreferredViews(mockupData.images, isAop);

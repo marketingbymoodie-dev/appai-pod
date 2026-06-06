@@ -32,6 +32,10 @@ interface ProductMockupProps {
   /** The product's aspect ratio string, e.g. "3:4" or "2:1". Used to detect
    *  landscape products that need a scale-up to fill the container. */
   aspectRatio?: string;
+  /** Optional mockup URL to paint immediately while a saved design loads,
+   *  instead of the grey skeleton shimmer. Supplied by the gallery (which
+   *  already knows the thumbnail) so re-opening a design shows it instantly. */
+  initialPreviewUrl?: string | null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -313,13 +317,13 @@ export function ProductMockup({
   blankImageUrl,
   aspectRatio,
   isAop = false,
+  initialPreviewUrl,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
   if (typeof window !== "undefined") {
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
   }
-  console.log("[ProductMockup] RENDER designerType:", designerType, "imageUrl:", imageUrl, "isLoading:", isLoading);
 
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
@@ -328,13 +332,36 @@ export function ProductMockup({
   const touchPendingRef = useRef(false);
 
   // Track loading state when switching between composite mockup images (carousel).
+  // When `mockupUrl` changes we set loading=true, then drive a programmatic
+  // preload via `new Image()` so we handle BOTH cases reliably:
+  //   • fresh URL → onload fires when bytes arrive
+  //   • cached URL → img.complete is already true, we clear synchronously
+  // This avoids the "Loading…" pill hanging forever when the gallery thumbnail
+  // we just clicked has already cached the same mockup URL.
   const [mockupImageLoading, setMockupImageLoading] = useState(false);
   const prevMockupUrlRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (mockupUrl && mockupUrl !== prevMockupUrlRef.current) {
-      setMockupImageLoading(true);
+    if (!mockupUrl) {
+      prevMockupUrlRef.current = mockupUrl;
+      return;
     }
+    if (mockupUrl === prevMockupUrlRef.current) return;
     prevMockupUrlRef.current = mockupUrl;
+    setMockupImageLoading(true);
+    let cancelled = false;
+    const clear = () => { if (!cancelled) setMockupImageLoading(false); };
+    const img = new Image();
+    img.onload = clear;
+    img.onerror = clear;
+    img.src = mockupUrl;
+    if (img.complete && img.naturalWidth > 0) clear();
+    const safety = window.setTimeout(clear, 6000);
+    return () => {
+      cancelled = true;
+      img.onload = null;
+      img.onerror = null;
+      window.clearTimeout(safety);
+    };
   }, [mockupUrl]);
 
   const isLandscape = (() => {
@@ -478,13 +505,27 @@ export function ProductMockup({
       if (loadingStage === "mockups" && imageUrl) {
         return <MockupsLoader imageUrl={imageUrl} transform={transform} printShape={printShape} />;
       }
+      // Saved design loading: if the gallery handed us the design's mockup
+      // URL, paint it immediately so re-opening a design shows the artwork
+      // instantly instead of the jarring grey scanning shimmer.
+      if (initialPreviewUrl) {
+        return (
+          <img
+            src={initialPreviewUrl}
+            alt="Product mockup"
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{ pointerEvents: "none" }}
+            draggable={false}
+            data-testid="img-mockup-preview"
+          />
+        );
+      }
       // Fallback: saved design or unknown loading state — skeleton shimmer
       return <SkeletonLoader />;
     }
 
     // Composite mockup (Printify) — full-bleed product photo
     if (mockupUrl) {
-      console.log("[ProductMockup] Rendering composite mockup URL:", mockupUrl.substring(0, 80));
       return (
         <img
           src={mockupUrl}
@@ -493,8 +534,8 @@ export function ProductMockup({
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"
-          onLoad={() => { console.log("[ProductMockup] Mockup loaded successfully"); setMockupImageLoading(false); }}
-          onError={(e) => { console.error("[ProductMockup] Mockup failed to load:", e); setMockupImageLoading(false); }}
+          onLoad={() => { setMockupImageLoading(false); }}
+          onError={() => { setMockupImageLoading(false); }}
         />
       );
     }

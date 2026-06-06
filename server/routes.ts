@@ -23,7 +23,9 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
 import { privacyPolicyHtml } from "./privacy-policy";
 import Stripe from "stripe";
-import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS } from "./customizer-plans";
+import { extractUsageLineItemId, retryPendingOverageCharges } from "./usage-billing";
+import { peekMerchantGenerationQuota, consumeMerchantGenerationQuota, quotaBlockBody } from "./generation-quota";
 import type { CustomizerPage } from "@shared/schema";
 import { ObjectStorageService, registerObjectStorageRoutes, objectStorageClient, getStorageDir } from "./replit_integrations/object_storage";
 import {
@@ -32,6 +34,11 @@ import {
   uploadDesignFileToSupabase,
   getSupabaseDesignPublicUrl,
 } from "./supabaseDesigns";
+import {
+  getPublishedHoodieTemplate,
+  isPublicTemplateName,
+  listPublicTemplateNames,
+} from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
@@ -986,6 +993,112 @@ async function findCustomizerParent(
   }
   // Strategy 2: fall back to title match
   return menuItems.find((item: any) => item.title === "Customizer") ?? null;
+}
+
+function buildCustomizerBootHtml(): string {
+  return `
+<style id="appai-boot-style">
+  @keyframes appai-boot-title-shimmer {
+    0% { background-position: 200% center; }
+    100% { background-position: -200% center; }
+  }
+  html:has(#appai-boot),
+  body:has(#appai-boot) {
+    scrollbar-gutter: stable both-edges;
+  }
+  html:has(#appai-boot) {
+    overflow-y: scroll;
+  }
+  body:has(#appai-boot) header,
+  body:has(#appai-boot) .shopify-section-group-header-group,
+  body:has(#appai-boot) .shopify-section-header,
+  body:has(#appai-boot) .section-header,
+  body:has(#appai-boot) .header-wrapper,
+  body:has(#appai-boot) .header,
+  body:has(#appai-boot) .site-header,
+  body:has(#appai-boot) .announcement-bar,
+  body:has(#appai-boot) .utility-bar,
+  body:has(#appai-boot) nav,
+  body:has(#appai-boot) main h1,
+  body:has(#appai-boot) main h2,
+  body:has(#appai-boot) .page-title,
+  body:has(#appai-boot) .title,
+  body:has(#appai-boot) .title--primary,
+  body:has(#appai-boot) .main-page-title,
+  body:has(#appai-boot) .rte > :not(#appai-boot):not(#appai-boot-style),
+  body:has(#appai-boot) .page__content > :not(#appai-boot):not(#appai-boot-style),
+  body:has(#appai-boot) footer,
+  body:has(#appai-boot) .shopify-section-group-footer-group {
+    display: none !important;
+  }
+  body:has(#appai-boot) {
+    background: #f4f4f5;
+    overflow-y: scroll;
+  }
+  #appai-boot {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f4f4f5;
+    padding: 24px;
+    box-sizing: border-box;
+  }
+  #appai-boot .appai-boot-title {
+    margin: 0;
+    display: inline-block;
+    padding: 0.08em 0.04em 0.14em;
+    font: 800 34px/1.18 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    letter-spacing: -0.04em;
+    text-align: center;
+    background: linear-gradient(90deg, #111827 0%, #111827 35%, #d1d5db 50%, #111827 65%, #111827 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    animation: appai-boot-title-shimmer 2.4s linear infinite;
+  }
+  @media (max-width: 640px) {
+    #appai-boot .appai-boot-title {
+      font-size: 28px;
+    }
+  }
+</style>
+<div id="appai-boot" aria-live="polite" aria-busy="true">
+  <div class="appai-boot-title">Loading AI Art Studio</div>
+</div>`.trim();
+}
+
+const customizerBootBackfillCache = new Set<string>();
+
+async function ensureCustomizerBootHtml(
+  shop: string,
+  accessToken: string,
+  shopifyPageId?: string | null,
+): Promise<void> {
+  if (!shopifyPageId) return;
+  const cacheKey = `${shop}:${shopifyPageId}`;
+  if (customizerBootBackfillCache.has(cacheKey)) return;
+  const result = await shopifyApiCall(
+    shop,
+    accessToken,
+    `pages/${shopifyPageId}.json`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        page: {
+          id: shopifyPageId,
+          body_html: buildCustomizerBootHtml(),
+        },
+      }),
+    },
+  );
+  if (!result.ok) {
+    console.warn(`[customizer-pages] Failed to backfill boot HTML for page ${shopifyPageId}: ${result.error}`);
+    return;
+  }
+  customizerBootBackfillCache.add(cacheKey);
 }
 
 /**
@@ -2008,6 +2121,22 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Prompt and size are required" });
       }
 
+      // Per-merchant monthly plan quota. The admin "Art Generator Tester" counts
+      // against the merchant's own plan allotment. Fail-open if we can't resolve
+      // the shop (e.g. non-Shopify dev auth) so local testing isn't blocked.
+      const genShopDomain = (req as any).shopDomain as string | undefined;
+      if (genShopDomain) {
+        const genInstall = await getAuthorizedInstallation(
+          genShopDomain.toLowerCase().replace(/^https?:\/\//, "")
+        );
+        if (genInstall) {
+          const genQuota = await consumeMerchantGenerationQuota(genInstall);
+          if (!genQuota.allowed) {
+            return res.status(genQuota.status ?? 402).json(quotaBlockBody(genQuota));
+          }
+        }
+      }
+
       // Load product type if provided (needed for style lookup)
       let productType = null;
       if (productTypeId) {
@@ -2818,6 +2947,12 @@ console.log("[shopify/session] installation ok", {
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
+      // Per-merchant monthly plan quota — fail fast before touching customer credits.
+      const embedQuotaPeek = await peekMerchantGenerationQuota(installation);
+      if (!embedQuotaPeek.allowed) {
+        return res.status(embedQuotaPeek.status ?? 402).json(quotaBlockBody(embedQuotaPeek));
+      }
+
       // For Shopify embedded mode, customer login is OPTIONAL
       // Business model: Shop pays for generation capacity via rate limits.
       // If a customer is logged in with personal credits, we deduct from their credits first.
@@ -2862,6 +2997,12 @@ console.log("[shopify/session] installation ok", {
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Atomically consume one unit of the merchant's plan quota right before generation.
+      const embedQuota = await consumeMerchantGenerationQuota(installation);
+      if (!embedQuota.allowed) {
+        return res.status(embedQuota.status ?? 402).json(quotaBlockBody(embedQuota));
       }
 
       // Look up style preset and get its promptSuffix
@@ -5003,6 +5144,7 @@ ${textEdgeRestrictions}
         variantMap,
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
+        panelMappingTemplate: (productType as any).panelMappingTemplate || null,
         placeholderPositions: typeof productType.placeholderPositions === "string"
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
@@ -5286,6 +5428,7 @@ ${textEdgeRestrictions}
       doubleSidedPrint: productTypeToUse.doubleSidedPrint || false,
       isAllOverPrint: productTypeToUse.isAllOverPrint || false,
       aopTemplateId: productTypeToUse.aopTemplateId || null,
+      panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],
@@ -6124,6 +6267,45 @@ ${textEdgeRestrictions}
     res.send(body);
   }));
 
+  // ==================== STOREFRONT HOODIE PANEL-MAPPING TEMPLATES ====================
+  // Returns the published template JSON + base mockup URLs for the new
+  // mesh-warp HoodieAopPlacer (Stage 1 of replacing PatternCustomizer for
+  // panel-mapped products). Public, no shop required — templates are
+  // non-sensitive calibration data and are explicitly allowlisted server-
+  // side to prevent enumeration. URL: GET /api/storefront/hoodie-template/:name
+  app.get(
+    "/api/storefront/hoodie-template/:name",
+    asyncHandler(async (req: Request, res: Response) => {
+      const name = String(req.params.name || "");
+      if (!/^[a-zA-Z0-9_\-]{1,64}$/.test(name)) {
+        return res.status(400).json({ error: "Invalid template name" });
+      }
+      if (!isPublicTemplateName(name)) {
+        return res.status(404).json({
+          error: "Template not found",
+          available: listPublicTemplateNames(),
+        });
+      }
+      try {
+        const published = await getPublishedHoodieTemplate(name);
+        res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=3600");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.json({
+          name: published.name,
+          template: published.template,
+          mockups: published.mockups,
+          cachedAt: published.cachedAt,
+        });
+      } catch (err: any) {
+        console.error(`[hoodie-template] load failed for ${name}:`, err?.message || err);
+        return res.status(503).json({
+          error: "Template temporarily unavailable",
+          detail: err?.message || String(err),
+        });
+      }
+    }),
+  );
+
   // Storefront ping endpoint - quick health check for embed to verify connectivity
   app.get("/api/storefront/ping", (req: Request, res: Response) => {
     const timestamp = Date.now();
@@ -6347,6 +6529,13 @@ ${textEdgeRestrictions}
         });
       }
 
+      // Per-merchant monthly plan quota — fail fast before consuming any
+      // per-customer free generation / credit below.
+      const sfQuotaPeek = await peekMerchantGenerationQuota(installation);
+      if (!sfQuotaPeek.allowed) {
+        return res.status(sfQuotaPeek.status ?? 402).json(quotaBlockBody(sfQuotaPeek));
+      }
+
       // Generation limit logic (10 free generations total per customer/session)
       const FREE_GENERATION_LIMIT = 10;
 
@@ -6457,6 +6646,12 @@ ${textEdgeRestrictions}
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Atomically consume one unit of the merchant's plan quota right before generation.
+      const sfQuota = await consumeMerchantGenerationQuota(installation);
+      if (!sfQuota.allowed) {
+        return res.status(sfQuota.status ?? 402).json(quotaBlockBody(sfQuota));
       }
 
       // Look up style preset
@@ -7477,7 +7672,7 @@ ${textEdgeRestrictions}
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log(`[Storefront Mockup] [${correlationId}] Result:`, {
@@ -7508,6 +7703,11 @@ ${textEdgeRestrictions}
     const jobId = String(req.query.jobId || "");
     if (!jobId) return res.status(400).json({ error: "jobId is required" });
 
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+
     const job = getMockupJob(jobId);
     if (!job) return res.status(404).json({ error: "Job not found or expired" });
 
@@ -7517,6 +7717,7 @@ ${textEdgeRestrictions}
       mockupUrls: job.mockupUrls,
       mockupImages: job.mockupImages,
       error: job.error,
+      step: job.step,
       correlationId: job.correlationId,
       source: job.source,
     });
@@ -8044,12 +8245,23 @@ ${textEdgeRestrictions}
         return res.status(403).json({ error: "Access denied" });
       }
 
+      // Repair URLs mangled by the earlier double-resolution bug
+      // (".../apps/appai/https://<real-url>") — the embedded trailing absolute
+      // URL is the real durable file.
+      const unmangle = (u?: string | null): string | null => {
+        if (!u || typeof u !== 'string') return u ?? null;
+        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
+        return idx > 0 ? u.slice(idx) : u;
+      };
+
       return res.json({
         designId: design.id,
         status: design.status,
-        artworkUrl: design.artworkUrl,
-        mockupUrl: design.mockupUrl,
-        mockupUrls: (design.mockupUrls as string[]) || [],
+        artworkUrl: unmangle(design.artworkUrl),
+        mockupUrl: unmangle(design.mockupUrl),
+        mockupUrls: Array.isArray(design.mockupUrls)
+          ? (design.mockupUrls as string[]).map(unmangle).filter((u): u is string => !!u)
+          : [],
         prompt: design.prompt,
         baseVariantId: design.baseVariantId,
         baseTitle: design.baseTitle,
@@ -8094,8 +8306,25 @@ ${textEdgeRestrictions}
         .limit(GALLERY_LIMIT);
       console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
 
-      // Resolve product type names AND page handles for all unique productTypeIds
-      const ptIds = [...new Set(rows.map(r => r.productTypeId).filter(Boolean))] as string[];
+      // Resolve product type names AND page handles for all unique productTypeIds.
+      // Some saved test designs were created before product types were recreated
+      // (for example legacy Slim Phone Cases used id=11, current id=19). Normalize
+      // those legacy ids at read time so old designs still open on their canonical
+      // current product page instead of falling through to the currently viewed page.
+      const legacyProductTypeAliases: Record<string, string> = {
+        "11": "19",
+      };
+      const normalizeProductTypeId = (id?: string | null): string | null => {
+        if (!id) return null;
+        return legacyProductTypeAliases[String(id)] || String(id);
+      };
+      const ptIds = [
+        ...new Set(
+          rows
+            .map(r => normalizeProductTypeId(r.productTypeId))
+            .filter(Boolean),
+        ),
+      ] as string[];
       const ptMap: Record<string, string> = {};   // productTypeId → name
       const handleMap: Record<string, string> = {}; // productTypeId → page handle
       if (ptIds.length > 0) {
@@ -8121,15 +8350,28 @@ ${textEdgeRestrictions}
         }
       }
 
+      // Repair URLs that an earlier double-resolution bug mangled into
+      // ".../apps/appai/https://<real-supabase-url>" (or a relative
+      // "/apps/appai/https://..."). The embedded trailing absolute URL is the
+      // real, durable Supabase/CDN file — the uploads themselves are fine, only
+      // the stored reference string got wrapped. Recovering it here fixes every
+      // affected design instantly, with no need to re-open/re-save them.
+      const unmangleUrl = (u?: string | null): string | null => {
+        if (!u || typeof u !== 'string') return u ?? null;
+        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
+        return idx > 0 ? u.slice(idx) : u;
+      };
+
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
       // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
       // For Supabase/external URLs, pass them through directly so gallery previews work.
       const proxyUrl = (u?: string | null) => {
-        if (!u) return null;
+        const fixed = unmangleUrl(u);
+        if (!fixed) return null;
         // Supabase or other absolute URL — pass through directly (needed for gallery previews)
-        if (u.startsWith('http')) return u;
+        if (fixed.startsWith('http')) return fixed;
         // Relative path like /objects/designs/xxx.png → serve via App Proxy
-        const clean = u.startsWith('/') ? u : `/${u}`;
+        const clean = fixed.startsWith('/') ? fixed : `/${fixed}`;
         return `/apps/appai${clean}`;
       };
 
@@ -8142,15 +8384,17 @@ ${textEdgeRestrictions}
             proxyUrl(d.designImageUrl) ||
             proxyUrl(d.thumbnailUrl) ||
             proxyUrl(d.referenceImageUrl),
-          mockupUrls: Array.isArray(d.mockupUrls) ? (d.mockupUrls as string[]) : [],
+          mockupUrls: Array.isArray(d.mockupUrls)
+            ? (d.mockupUrls as string[]).map(unmangleUrl).filter((u): u is string => !!u)
+            : [],
           designState: d.designState || null,
           prompt: (d as any).userPrompt || d.prompt,
           stylePreset: d.stylePreset,
           size: d.size,
           frameColor: d.frameColor,
-          productTypeId: d.productTypeId,
-          baseTitle: d.productTypeId ? (ptMap[d.productTypeId] || null) : null,
-          pageHandle: d.productTypeId ? (handleMap[d.productTypeId] || null) : null,
+          productTypeId: normalizeProductTypeId(d.productTypeId),
+          baseTitle: normalizeProductTypeId(d.productTypeId) ? (ptMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
+          pageHandle: normalizeProductTypeId(d.productTypeId) ? (handleMap[normalizeProductTypeId(d.productTypeId)!] || null) : null,
           customerId: d.customerId,
           createdAt: d.createdAt,
         }))
@@ -9924,6 +10168,27 @@ ${textEdgeRestrictions}
           } else {
             throw createError;
           }
+        }
+      }
+
+      // Derive the generation limit/usage shown in the admin from the merchant's
+      // actual plan + metered usage (the stored monthlyGenerationLimit/
+      // generationsThisMonth columns are legacy defaults and not authoritative).
+      const merchantShop = (req as any).shopDomain as string | undefined;
+      if (merchantShop) {
+        try {
+          const inst = await getAuthorizedInstallation(
+            merchantShop.toLowerCase().replace(/^https?:\/\//, "")
+          );
+          if (inst) {
+            const q = await peekMerchantGenerationQuota(inst);
+            if (!q.unlimited && Number.isFinite(q.hardCap)) {
+              (merchant as any).monthlyGenerationLimit = q.hardCap;
+              (merchant as any).generationsThisMonth = q.used;
+            }
+          }
+        } catch (e: any) {
+          console.warn("[/api/merchant] quota derive failed:", e?.message ?? e);
         }
       }
 
@@ -13968,7 +14233,7 @@ ${textEdgeRestrictions}
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
-        cacheParts: { userId, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: { userId, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log("[Mockup Generate] Result:", { jobId, queued: !cached, success: cached?.success, mockups: cached?.mockupImages?.length });
@@ -14113,7 +14378,7 @@ ${textEdgeRestrictions}
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
       }, {
         correlationId,
-        cacheParts: { shop, productTypeId: productType.id, sizeId, colorId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
+        cacheParts: { shop, productTypeId: productType.id, sizeId, printPlacement: effectivePrintPlacement ?? (effectiveDoubleSided ? "both" : "front") },
       });
 
       console.log("[Shopify Mockup] Generated result:", { jobId, queued: !cached, success: cached?.success, mockupCount: cached?.mockupUrls?.length });
@@ -14435,10 +14700,18 @@ ${textEdgeRestrictions}
         `products/${productNum}.json?fields=id,title,handle,variants`,
       );
       if (!prodResult.ok || !prodResult.data?.product) {
-        // Product not found — stale ID in DB. Clear it and re-create the product on Shopify.
-        console.log(`[customizer-pages] Product ${resolvedBaseProductId} not found (stale ID). Clearing and re-creating...`);
-        if (incomingProductTypeId) {
-          await storage.updateProductType(incomingProductTypeId, {
+        // Product not found for THIS shop. This happens when the stored shopifyProductId is
+        // stale (deleted in Shopify) or was published to a *different* shop (product_types is a
+        // shared/global table). Recover by locating the owning product type and re-creating the
+        // product on the current shop, rather than failing the merchant outright.
+        console.log(`[customizer-pages] Product ${resolvedBaseProductId} not found for shop ${shop} (stale/cross-shop ID). Attempting re-create...`);
+        let recoveryPt: any = ptForSync;
+        if (!recoveryPt) {
+          const allTypes = await storage.getActiveProductTypes();
+          recoveryPt = allTypes.find((pt: any) => String(pt.shopifyProductId) === String(resolvedBaseProductId));
+        }
+        if (recoveryPt) {
+          await storage.updateProductType(recoveryPt.id, {
             shopifyProductId: null as any,
             shopifyProductHandle: null as any,
             shopifyProductUrl: null as any,
@@ -14446,10 +14719,10 @@ ${textEdgeRestrictions}
             shopifyVariantIds: null as any,
           });
           try {
-            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, ptForSync, merchant, []);
+            const { shopifyProductId } = await createShopifyProductForType(shop, installation.accessToken, recoveryPt, merchant, []);
             resolvedBaseProductId = shopifyProductId;
           } catch (e: any) {
-            return res.status(400).json({ error: e.message || `Product ${resolvedBaseProductId} not found in Shopify. Please send it to Shopify first.` });
+            return res.status(400).json({ error: e.message || `Product could not be created in your store. Open Products, send "${recoveryPt.name}" to Shopify, then try again.` });
           }
           if (!resolvedBaseProductId) {
             return res.status(400).json({ error: "Product was re-created on Shopify but no product ID was returned. Try again." });
@@ -14466,7 +14739,7 @@ ${textEdgeRestrictions}
           productTitle = product.title ?? "";
           productHandle = product.handle ?? "";
         } else {
-          return res.status(400).json({ error: `Product ${resolvedBaseProductId} not found in this store` });
+          return res.status(400).json({ error: `This product no longer exists in your store. Re-import it from Products, then create the page again.` });
         }
       } else {
         const product = prodResult.data.product;
@@ -14690,7 +14963,7 @@ ${textEdgeRestrictions}
           page: {
             title: title.trim(),
             handle: handle.trim(),
-            body_html: "",
+            body_html: buildCustomizerBootHtml(),
             published: true,
           },
         }),
@@ -14862,8 +15135,12 @@ ${textEdgeRestrictions}
         shop,
         installation.accessToken,
         `pages/${dbPage.shopifyPageId}.json`,
-        { method: "PUT", body: JSON.stringify({ page: { title: updates.title } }) }
+        { method: "PUT", body: JSON.stringify({ page: { title: updates.title, body_html: buildCustomizerBootHtml() } }) }
       );
+      customizerBootBackfillCache.add(`${shop}:${dbPage.shopifyPageId}`);
+    } else if (dbPage.shopifyPageId && (updates.status === "active" || req.body.status === undefined)) {
+      await ensureCustomizerBootHtml(shop, installation.accessToken, dbPage.shopifyPageId)
+        .catch((e: Error) => console.warn("[PATCH customizer-page] Could not backfill boot HTML:", e.message));
     }
 
     // Manage navigation menu link on status change (best-effort)
@@ -15132,23 +15409,39 @@ ${textEdgeRestrictions}
         }
 
         // Fetch image and current prices from Shopify if the product is already there.
+        // IMPORTANT: product_types is a shared/global table, so a stored shopifyProductId can
+        // belong to a *different* shop (or have been deleted). Only treat it as "already on
+        // Shopify" for THIS shop if (a) it was published to this shop and (b) the Admin API
+        // can still resolve it. Otherwise mark needsShopifySync so the create flow re-creates
+        // it for the current shop instead of failing with "not found in this store".
         let imageUrl: string | null = (pt as any).mockupImageUrl ?? null;
-        let needsShopifySync = !pt.shopifyProductId;
+        let resolvedProductId: string | null = null;
+        let needsShopifySync = true;
         if (pt.shopifyProductId) {
-          const pResult = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${pt.shopifyProductId}.json?fields=id,title,images`,
-          );
-          if (pResult.ok && pResult.data?.product) {
-            imageUrl = pResult.data.product.images?.[0]?.src ?? imageUrl;
-            needsShopifySync = false;
+          const storedDomain = normalizeMyshopifyShopDomain(pt.shopifyShopDomain ?? "");
+          // If we know it was published to a different shop, don't even call Admin API.
+          if (storedDomain && storedDomain !== shop) {
+            needsShopifySync = true;
+          } else {
+            const pResult = await shopifyApiCall(
+              shop,
+              installation.accessToken,
+              `products/${pt.shopifyProductId}.json?fields=id,title,images`,
+            );
+            if (pResult.ok && pResult.data?.product) {
+              imageUrl = pResult.data.product.images?.[0]?.src ?? imageUrl;
+              resolvedProductId = pt.shopifyProductId;
+              needsShopifySync = false;
+            } else {
+              // Stored ID is stale (deleted in Shopify or owned by another shop) — force re-sync.
+              needsShopifySync = true;
+            }
           }
         }
 
         enriched.push({
           productTypeId: pt.id,
-          productId: pt.shopifyProductId ?? null,
+          productId: resolvedProductId,
           title: pt.name,
           imageUrl,
           needsShopifySync,
@@ -15377,6 +15670,12 @@ ${textEdgeRestrictions}
     const page = await storage.getCustomizerPageByHandle(shop, handle);
     if (!page || page.status !== "active") return res.status(404).json({ error: "Customizer page not found" });
 
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (installation?.accessToken && page.shopifyPageId) {
+      ensureCustomizerBootHtml(shop, installation.accessToken, page.shopifyPageId)
+        .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
+    }
+
     // Embed the full designer config so the iframe never needs to call
     // /api/storefront/product-types/:id/designer (eliminates the timeout).
     let designerConfig = null;
@@ -15401,7 +15700,6 @@ ${textEdgeRestrictions}
     let productPublished: boolean | null = null;
     if (page.baseProductId) {
       try {
-        const installation = await storage.getShopifyInstallationByShop(shop);
         if (installation?.accessToken) {
           const prodResult = await shopifyApiCall(
             shop,
@@ -15830,6 +16128,36 @@ ${textEdgeRestrictions}
     const plan = getEffectivePlan(installation as any, installation.shopDomain);
     const pagesCount = await storage.countCustomizerPages(installation.shopDomain);
 
+    // Generation quota status (free allotment + overage usage this bucket).
+    const q = await peekMerchantGenerationQuota(installation);
+    const finite = (n: number) => (Number.isFinite(n) ? n : null);
+    const generationQuota = {
+      plan: q.planName,
+      unlimited: q.unlimited,
+      freeQuota: finite(q.freeQuota),
+      overageCap: q.overageCap,
+      limit: finite(q.hardCap),
+      used: q.used,
+      remaining: finite(q.remaining),
+      overageUsed: q.overageUsed,
+      overagePriceUsd: q.overagePriceUsd,
+      isOverage: q.isOverage,
+    };
+
+    // Overage billing readiness. A paid, active plan that can incur overages but
+    // has no usage line on its subscription (legacy subscriber who subscribed
+    // before metered billing existed, or owner bypass) cannot be charged for
+    // overages until they re-subscribe via create-subscription.
+    const hasUsageLine = !!(installation as any).billingUsageLineItemId;
+    const planHasOverage = plan.isActive && q.overageCap > 0 && !q.unlimited;
+    const needsOverageBillingUpgrade = planHasOverage && !hasUsageLine;
+
+    // Opportunistically flush any unbilled overage charges for this shop while
+    // they're looking at the billing page (best-effort, non-blocking).
+    if (hasUsageLine) {
+      retryPendingOverageCharges(installation as any).catch(() => {});
+    }
+
     return res.json({
       planName: plan.planName,
       planStatus: plan.planStatus,
@@ -15841,6 +16169,9 @@ ${textEdgeRestrictions}
       overLimit: plan.isActive && pagesCount > plan.pageLimit,
       trialStartedAt: (installation as any).trialStartedAt ?? null,
       billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
+      overageBillingActive: hasUsageLine,
+      needsOverageBillingUpgrade,
+      generationQuota,
     });
   }));
 
@@ -15905,13 +16236,44 @@ ${textEdgeRestrictions}
     const appUrl = process.env.APP_URL?.replace(/\/$/, "") ?? `https://${req.headers.host}`;
     const returnUrl = `${appUrl}/api/appai/billing/callback?shop=${encodeURIComponent(installation.shopDomain)}&plan=${encodeURIComponent(plan)}`;
 
-    // Call Shopify Admin GraphQL to create app subscription
+    // Metered (usage) pricing line for AI-generation overages. The cappedAmount
+    // is the plan's max monthly overage cost (overage cap × $0.08); Shopify
+    // rejects usage records once that amount is reached, matching our hard cap.
+    const overageCappedUsd = getPlanOverageCappedAmountUsd(plan);
+    const lineItems: any[] = [{
+      plan: {
+        appRecurringPricingDetails: {
+          price: { amount: priceUsd, currencyCode: "USD" },
+          interval: "EVERY_30_DAYS",
+        },
+      },
+    }];
+    if (overageCappedUsd > 0) {
+      lineItems.push({
+        plan: {
+          appUsagePricingDetails: {
+            terms: OVERAGE_USAGE_TERMS,
+            cappedAmount: { amount: overageCappedUsd, currencyCode: "USD" },
+          },
+        },
+      });
+    }
+
+    // Call Shopify Admin GraphQL to create app subscription. We request the
+    // line items + their pricing-detail typenames so we can store the usage
+    // line's GID (needed later to target appUsageRecordCreate).
     const gqlBody = JSON.stringify({
       query: `
         mutation appSubscriptionCreate($name: String!, $returnUrl: URL!, $lineItems: [AppSubscriptionLineItemInput!]!, $test: Boolean) {
           appSubscriptionCreate(name: $name, returnUrl: $returnUrl, lineItems: $lineItems, test: $test) {
             userErrors { field message }
-            appSubscription { id }
+            appSubscription {
+              id
+              lineItems {
+                id
+                plan { pricingDetails { __typename } }
+              }
+            }
             confirmationUrl
           }
         }
@@ -15920,14 +16282,7 @@ ${textEdgeRestrictions}
         name: `${displayName} Plan`,
         returnUrl,
         test: process.env.NODE_ENV !== "production",
-        lineItems: [{
-          plan: {
-            appRecurringPricingDetails: {
-              price: { amount: priceUsd, currencyCode: "USD" },
-              interval: "EVERY_30_DAYS",
-            },
-          },
-        }],
+        lineItems,
       },
     });
 
@@ -15961,10 +16316,14 @@ ${textEdgeRestrictions}
       return res.status(502).json({ error: "No confirmation URL returned from Shopify" });
     }
 
-    // Store pending subscription ID so we can match it on callback
+    // Store pending subscription ID (and the usage line GID if present) so we can
+    // match it on callback and target usage charges. The line items already have
+    // GIDs at create time, even though the subscription is PENDING until approved.
     if (result?.appSubscription?.id) {
+      const usageLineItemId = extractUsageLineItemId(result.appSubscription);
       await storage.updateShopifyInstallation(installation.id, {
         billingSubscriptionId: result.appSubscription.id,
+        billingUsageLineItemId: usageLineItemId,
       } as any);
     }
 
@@ -16010,6 +16369,10 @@ ${textEdgeRestrictions}
                 node(id: $id) {
                   ... on AppSubscription {
                     id status currentPeriodEnd
+                    lineItems {
+                      id
+                      plan { pricingDetails { __typename } }
+                    }
                   }
                 }
               }
@@ -16021,6 +16384,7 @@ ${textEdgeRestrictions}
 
       let subscriptionStatus = "ACTIVE";
       let currentPeriodEnd: Date | null = null;
+      let usageLineItemId: string | null = null;
 
       if (gqlResponse.ok) {
         const gqlData = await gqlResponse.json() as any;
@@ -16028,6 +16392,7 @@ ${textEdgeRestrictions}
         if (sub) {
           subscriptionStatus = sub.status ?? "ACTIVE";
           if (sub.currentPeriodEnd) currentPeriodEnd = new Date(sub.currentPeriodEnd);
+          usageLineItemId = extractUsageLineItemId(sub);
         }
       }
 
@@ -16036,9 +16401,18 @@ ${textEdgeRestrictions}
           planName: plan,
           planStatus: "active",
           billingSubscriptionId: charge_id,
+          billingUsageLineItemId: usageLineItemId,
           billingCurrentPeriodEnd: currentPeriodEnd ?? undefined,
         } as any);
-        console.log(`[Billing] Activated ${plan} plan for ${shop}`);
+        console.log(`[Billing] Activated ${plan} plan for ${shop} (usageLine=${usageLineItemId ? "yes" : "none"})`);
+        // A re-subscribe may have just attached a usage line — flush any overage
+        // charges that were recorded as skipped/failed while it was missing.
+        if (usageLineItemId) {
+          const refreshed = await storage.getShopifyInstallation(installation.id);
+          if (refreshed) {
+            retryPendingOverageCharges(refreshed as any).catch(() => {});
+          }
+        }
       }
     } catch (err: any) {
       console.error(`[Billing] Callback verification failed for ${shop}:`, err.message);

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -13,24 +13,48 @@ import {
   Save,
   FolderOpen,
   Plus,
+  Loader2,
+  Check,
+  Sparkles,
 } from "lucide-react";
 import type { HoodieToolId, HoodieView } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import { readImageDimensions, saveTemplate, uploadMockup } from "./api";
+import AopPreviewModal from "./AopPreviewModal";
 
 type Props = {
   onOpenLoadDialog: () => void;
 };
 
-const TOOL_BUTTONS: Array<{ id: HoodieToolId; icon: React.ComponentType<{ className?: string }>; label: string; phase: number }> = [
-  { id: "move", icon: MousePointer2, label: "Move", phase: 1 },
-  { id: "polygon-pen", icon: PenLine, label: "Polygon Pen", phase: 2 },
-  { id: "magnetic-pen", icon: Magnet, label: "Magnetic Pen", phase: 3 },
-  { id: "mesh-warp", icon: Grid3X3, label: "Mesh Warp", phase: 4 },
+const TOOL_BUTTONS: Array<{
+  id: HoodieToolId;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  /** Earliest phase that ships this tool. Tools from earlier phases are enabled. */
+  phase: number;
+  shortcut?: string;
+}> = [
+  { id: "move", icon: MousePointer2, label: "Move (V)", phase: 1, shortcut: "v" },
+  { id: "polygon-pen", icon: PenLine, label: "Polygon Pen (P)", phase: 2, shortcut: "p" },
+  { id: "magnetic-pen", icon: Magnet, label: "Magnetic Pen (M)", phase: 2, shortcut: "m" },
+  { id: "mesh-warp", icon: Grid3X3, label: "Mesh Warp (W)", phase: 4, shortcut: "w" },
   { id: "corner-pin", icon: Frame, label: "Corner Pin", phase: 4 },
   { id: "rotate", icon: RotateCw, label: "Rotate", phase: 4 },
   { id: "scale", icon: Maximize2, label: "Scale", phase: 4 },
 ];
+
+const HIGHEST_ENABLED_PHASE = 2;
+/**
+ * Phase-4 tools that we've shipped early. Mesh warp is enabled even though
+ * it's nominally phase 4 — corner-pin / rotate / scale stay disabled.
+ */
+const ENABLED_PHASE_4_TOOLS: ReadonlySet<HoodieToolId> = new Set<HoodieToolId>([
+  "mesh-warp",
+]);
+
+function isToolEnabled(t: { id: HoodieToolId; phase: number }): boolean {
+  return t.phase <= HIGHEST_ENABLED_PHASE || ENABLED_PHASE_4_TOOLS.has(t.id);
+}
 
 export default function Toolbar({ onOpenLoadDialog }: Props) {
   const { toast } = useToast();
@@ -43,6 +67,36 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
 
   const frontInputRef = useRef<HTMLInputElement | null>(null);
   const backInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+
+  // Per-view layer counts for the Preview button's enabled state. We don't
+  // want users opening the modal on a totally empty template — that's just
+  // a confusing "blank canvas" experience.
+  const totalLayers =
+    template.views.front.layers.length + template.views.back.layers.length;
+  const hasMockup = Boolean(
+    template.views.front.mockup?.src || template.views.back.mockup?.src,
+  );
+  const previewReady = totalLayers > 0 && hasMockup;
+
+  // Keyboard shortcuts: V (Move), P (Polygon Pen), M (Magnetic Pen).
+  // Skipped while typing in form fields so we don't hijack input.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && /input|textarea|select/i.test(target.tagName)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const match = TOOL_BUTTONS.find((t) => t.shortcut === key);
+      if (!match) return;
+      if (!isToolEnabled(match)) return;
+      e.preventDefault();
+      actions.setTool(match.id);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [actions]);
 
   async function handleMockupUpload(targetView: HoodieView, file: File) {
     actions.setBusy(true);
@@ -63,7 +117,57 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
     try {
       const result = await saveTemplate(template.name, template);
       actions.markSaved();
-      toast({ title: "Template saved", description: result.file });
+      const meta = [
+        result.bodySource ? `body=${result.bodySource}` : null,
+        typeof result.elapsedMs === "number" ? `${result.elapsedMs}ms` : null,
+        result.handler ? `srv=${result.handler}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      // Surface the auto-publish result so the admin knows whether the
+      // save also pushed to Supabase (production storefront) or only landed
+      // on local disk. Three cases:
+      //   1. publish.ok           → "Published to Supabase".
+      //   2. publish.skipped      → "Published skipped" (e.g. dev with no SB env).
+      //   3. publish.error        → red toast so they know to retry/check creds.
+      const publish = result.publish;
+      if (publish && publish.ok) {
+        const mockupSummary =
+          publish.uploadedMockups.length > 0
+            ? `mockups: ${publish.uploadedMockups.join(", ")}`
+            : "JSON only (mockups unchanged)";
+        toast({
+          title: "Saved & published",
+          description: [
+            `${result.file} → ${publish.publicName}`,
+            mockupSummary,
+            meta,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        });
+      } else if (publish && !publish.ok && publish.skipped) {
+        toast({
+          title: "Saved (publish skipped)",
+          description: [result.file, publish.reason, meta]
+            .filter(Boolean)
+            .join("\n"),
+        });
+      } else if (publish && !publish.ok && !publish.skipped) {
+        toast({
+          title: "Saved, but publish FAILED",
+          description: [result.file, publish.error, meta]
+            .filter(Boolean)
+            .join("\n"),
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Template saved",
+          description: meta ? `${result.file}\n${meta}` : result.file,
+        });
+      }
     } catch (err: any) {
       toast({ title: "Save failed", description: err?.message || String(err), variant: "destructive" });
     } finally {
@@ -76,7 +180,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       {/* Tool buttons */}
       <div className="flex items-center gap-1 rounded-md border border-slate-800 bg-slate-950 p-1">
         {TOOL_BUTTONS.map(({ id, icon: Icon, label, phase }) => {
-          const enabled = phase === 1; // phase 1 only enables Move
+          const enabled = isToolEnabled({ id, phase });
           return (
             <Button
               key={id}
@@ -161,7 +265,40 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       />
 
       <div className="ml-auto flex items-center gap-2">
-        {dirty && <span className="text-[11px] text-amber-300">unsaved</span>}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 gap-1 border-fuchsia-700/60 bg-fuchsia-500/10 text-xs text-fuchsia-200 hover:bg-fuchsia-500/20"
+          onClick={() => setPreviewOpen(true)}
+          disabled={busy || !previewReady}
+          title={
+            !hasMockup
+              ? "Attach a mockup first"
+              : totalLayers === 0
+                ? "Trace at least one panel mask first"
+                : "Preview the AOP composited onto your masks"
+          }
+          data-testid="hoodie-preview-aop"
+        >
+          <Sparkles className="h-3.5 w-3.5" />
+          Preview AOP
+        </Button>
+        {dirty ? (
+          <span
+            className="rounded-sm bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-300"
+            title="You have unsaved changes"
+          >
+            unsaved
+          </span>
+        ) : (
+          <span
+            className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-slate-500"
+            title="All changes saved"
+          >
+            <Check className="h-3 w-3" />
+            saved
+          </span>
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -188,15 +325,33 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
         <Button
           size="sm"
           variant="default"
-          className="h-8 gap-1 text-xs"
+          className={
+            "h-8 gap-1 text-xs " +
+            (dirty && !busy
+              ? "border-emerald-400 bg-emerald-500 text-white hover:bg-emerald-400"
+              : "border-slate-700 bg-slate-800 text-slate-400")
+          }
           onClick={handleSave}
-          disabled={busy}
+          disabled={busy || !dirty}
+          title={
+            busy
+              ? "Saving…"
+              : dirty
+                ? "Save template (unsaved changes)"
+                : "Nothing to save"
+          }
           data-testid="hoodie-save"
         >
-          <Save className="h-3.5 w-3.5" />
-          Save
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Save className="h-3.5 w-3.5" />
+          )}
+          {busy ? "Saving…" : "Save"}
         </Button>
       </div>
+
+      <AopPreviewModal open={previewOpen} onOpenChange={setPreviewOpen} />
     </div>
   );
 }

@@ -1,10 +1,11 @@
 /**
  * Background removal client.
  *
- * Previously used Picsart/remove.bg. Now uses Replicate's 851-labs
- * background-remover model so we are not blocked by remove.bg credits.
+ * Previously used Picsart/remove.bg and Replicate's 851-labs background-remover.
+ * Now prefers Bria's Replicate background remover, with 851-labs as a fallback.
  *
  * Docs:
+ *   https://replicate.com/bria/remove-background
  *   https://replicate.com/851-labs/background-remover
  *
  * Environment variable required:
@@ -14,11 +15,26 @@
 import sharp from "sharp";
 
 const REPLICATE_API_BASE = "https://api.replicate.com/v1";
-const REPLICATE_BG_REMOVER_VERSION =
+const REPLICATE_BRIA_BG_REMOVER_VERSION =
+  process.env.REPLICATE_BRIA_BG_REMOVER_VERSION ||
+  "4ed060b3587b7c3912353dd7d59000c883a6e1c5c9181ed7415c2624c2e8e392";
+const REPLICATE_851_LABS_BG_REMOVER_VERSION =
+  process.env.REPLICATE_851_LABS_BG_REMOVER_VERSION ||
   process.env.REPLICATE_BG_REMOVER_VERSION ||
   "a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc";
 const REPLICATE_POLL_INTERVAL_MS = 750;
 const REPLICATE_POLL_TIMEOUT_MS = 60_000;
+const REPLICATE_BG_REMOVER_PROVIDER = normalizeBgRemoverProvider(
+  process.env.REPLICATE_BG_REMOVER_PROVIDER,
+);
+
+type BgRemoverProvider = "bria" | "851labs";
+
+type BgRemoverConfig = {
+  provider: BgRemoverProvider;
+  version: string;
+  input: Record<string, unknown>;
+};
 
 // ─── Remove Background ────────────────────────────────────────────────────────
 
@@ -41,7 +57,7 @@ export interface RemoveBgResult {
 }
 
 /**
- * Remove (or replace) the background of an image using Replicate 851-labs.
+ * Remove (or replace) the background of an image using Replicate.
  * Returns a data URL (base64 PNG) wrapped in a fake URL object for compatibility.
  */
 export async function removeBackground(params: RemoveBgParams): Promise<RemoveBgResult> {
@@ -58,10 +74,9 @@ export async function removeBackground(params: RemoveBgParams): Promise<RemoveBg
     ? `data:image/png;base64,${params.imageBuffer.toString("base64")}`
     : params.imageUrl!;
 
-  const prediction = await createReplicatePrediction(token, {
-    image: imageInput,
+  const completedPrediction = await runBackgroundRemovalPrediction(token, imageInput, {
+    hasImageBuffer: Boolean(params.imageBuffer),
   });
-  const completedPrediction = await pollReplicatePrediction(token, prediction);
   const outputUrl = getReplicateOutputUrl(completedPrediction.output);
   if (!outputUrl) {
     throw new Error("Replicate background remover returned no output image");
@@ -86,6 +101,83 @@ export async function removeBackground(params: RemoveBgParams): Promise<RemoveBg
   return { url: dataUrl, id: completedPrediction.id || crypto.randomUUID() };
 }
 
+async function runBackgroundRemovalPrediction(
+  token: string,
+  imageInput: string,
+  options: { hasImageBuffer: boolean },
+): Promise<ReplicatePrediction> {
+  const configs = buildBgRemoverConfigs(imageInput, options);
+  let lastError: unknown;
+
+  for (const config of configs) {
+    try {
+      const prediction = await createReplicatePrediction(token, config);
+      return await pollReplicatePrediction(token, prediction, config.provider);
+    } catch (err) {
+      lastError = err;
+      if (config.provider === "bria" && configs.some((candidate) => candidate.provider === "851labs")) {
+        console.warn(
+          `[removeBackground] Bria background removal failed; falling back to 851-labs: ${(err as Error).message}`,
+        );
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Replicate background remover failed");
+}
+
+function buildBgRemoverConfigs(
+  imageInput: string,
+  options: { hasImageBuffer: boolean },
+): BgRemoverConfig[] {
+  const primary = createBgRemoverConfig(REPLICATE_BG_REMOVER_PROVIDER, imageInput, options);
+  if (primary.provider !== "bria") return [primary];
+
+  return [
+    primary,
+    createBgRemoverConfig("851labs", imageInput, options),
+  ];
+}
+
+function createBgRemoverConfig(
+  provider: BgRemoverProvider,
+  imageInput: string,
+  options: { hasImageBuffer: boolean },
+): BgRemoverConfig {
+  if (provider === "bria") {
+    return {
+      provider,
+      version: REPLICATE_BRIA_BG_REMOVER_VERSION,
+      input: {
+        ...(options.hasImageBuffer ? { image: imageInput } : { image_url: imageInput }),
+        preserve_alpha: true,
+        content_moderation: false,
+      },
+    };
+  }
+
+  return {
+    provider,
+    version: REPLICATE_851_LABS_BG_REMOVER_VERSION,
+    input: {
+      image: imageInput,
+    },
+  };
+}
+
+function normalizeBgRemoverProvider(value: string | undefined): BgRemoverProvider {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "bria") return "bria";
+  if (normalized === "851labs" || normalized === "851-labs" || normalized === "851_labs") {
+    return "851labs";
+  }
+
+  console.warn(`[removeBackground] Unknown REPLICATE_BG_REMOVER_PROVIDER="${value}"; using Bria`);
+  return "bria";
+}
+
 type ReplicatePrediction = {
   id: string;
   status: "starting" | "processing" | "succeeded" | "failed" | "canceled";
@@ -98,13 +190,13 @@ type ReplicatePrediction = {
 
 async function createReplicatePrediction(
   token: string,
-  input: Record<string, unknown>,
+  config: BgRemoverConfig,
 ): Promise<ReplicatePrediction> {
   return fetchReplicateJson(`${REPLICATE_API_BASE}/predictions`, token, {
     method: "POST",
     body: JSON.stringify({
-      version: REPLICATE_BG_REMOVER_VERSION,
-      input,
+      version: config.version,
+      input: config.input,
     }),
   });
 }
@@ -112,6 +204,7 @@ async function createReplicatePrediction(
 async function pollReplicatePrediction(
   token: string,
   prediction: ReplicatePrediction,
+  provider: BgRemoverProvider,
 ): Promise<ReplicatePrediction> {
   const getUrl = prediction.urls?.get;
   if (!getUrl) {
@@ -130,7 +223,7 @@ async function pollReplicatePrediction(
 
   if (latest.status !== "succeeded") {
     const detail = typeof latest.error === "string" ? latest.error : JSON.stringify(latest.error);
-    throw new Error(`Replicate background remover failed: ${detail || latest.status}`);
+    throw new Error(`Replicate ${provider} background remover failed: ${detail || latest.status}`);
   }
 
   return latest;

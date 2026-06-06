@@ -13,6 +13,7 @@ export interface MockupJobState {
   mockupUrls?: string[];
   mockupImages?: MockupImage[];
   error?: string;
+  step?: MockupResult["step"];
   source?: MockupResult["source"];
 }
 
@@ -148,6 +149,7 @@ async function runMockupJob(jobId: string, cacheKey: string, request: MockupRequ
     job.mockupUrls = durableResult.mockupUrls;
     job.mockupImages = durableResult.mockupImages;
     job.error = durableResult.error;
+    job.step = durableResult.step;
     job.source = durableResult.source;
 
     if (durableResult.success) {

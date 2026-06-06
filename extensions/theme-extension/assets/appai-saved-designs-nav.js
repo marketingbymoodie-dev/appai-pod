@@ -61,6 +61,12 @@
   var NAV_ITEM_ID = 'appai-saved-designs-nav-item';
   var CUSTOMIZER_LABEL = 'Customizer';
 
+  // Module-scoped session context so openDrawer() can re-fetch the latest
+  // designs (e.g. after a customer edits an already-saved design in the
+  // customizer iframe) without relying on a stale closure from init().
+  var _customerId = null;
+  var _shop = null;
+
   // ─── Helpers ────────────────────────────────────────────────────────────
 
   function getStoredCustomerId() {
@@ -226,7 +232,9 @@
     a.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      openDrawer(designs);
+      // Open with the latest list (openDrawer reads the live cache and
+      // kicks a background refresh) rather than this stale closure.
+      openDrawer();
     });
 
     wrapper.appendChild(a);
@@ -332,7 +340,57 @@
     return drawer;
   }
 
-  function openDrawer(designs) {
+  // Compact signature of the design list so we can tell whether a refresh
+  // actually changed anything (avoids needless re-render + refetch loops).
+  function designsSignature(designs) {
+    if (!designs || !designs.length) return '0';
+    return designs
+      .map(function (d) {
+        var m = (d.mockupUrls && d.mockupUrls.length) ? d.mockupUrls[0] : (d.artworkUrl || '');
+        return d.id + ':' + m;
+      })
+      .join('|');
+  }
+
+  // Re-fetch designs and, if the list changed while the drawer is open,
+  // re-render it in place. Called when the drawer is opened so an edit
+  // made in the customizer iframe shows up without a full page reload.
+  function refreshDrawerIfChanged() {
+    if (!_customerId) return;
+    var before = designsSignature(window.__APPAI_SAVED_DESIGNS__ || []);
+    fetchDesigns(_customerId, _shop).then(function (data) {
+      if (!data || !data.designs) return;
+      window.__APPAI_SAVED_DESIGNS__ = data.designs;
+      var badge = document.getElementById('appai-saved-count');
+      if (badge) badge.textContent = data.designs.length;
+      var drawer = document.getElementById(DRAWER_ID);
+      var isOpen = drawer && drawer.classList.contains('appai-open');
+      if (isOpen && designsSignature(data.designs) !== before) {
+        renderDrawer(data.designs);
+      }
+    }).catch(function () { /* ignore */ });
+  }
+
+  // Open the drawer using the freshest list we have, then kick a background
+  // refresh so any just-saved edit appears immediately.
+  function openDrawer(designsArg) {
+    var designs = designsArg || window.__APPAI_SAVED_DESIGNS__ || [];
+    renderDrawer(designs);
+    var overlay = document.getElementById('appai-saved-designs-overlay');
+    var drawer = document.getElementById(DRAWER_ID);
+    overlay.classList.add('appai-open');
+    drawer.classList.add('appai-open');
+    document.body.style.overflow = 'hidden';
+    setTimeout(function () {
+      var closeBtn = document.getElementById('appai-drawer-close');
+      if (closeBtn) closeBtn.focus();
+    }, 330);
+    refreshDrawerIfChanged();
+  }
+
+  // Render (or re-render) the drawer grid from a designs array. Does NOT
+  // touch open/close state, so it's safe to call to refresh in place.
+  function renderDrawer(designs) {
     buildDrawer();
     var grid = document.getElementById('appai-drawer-grid');
     grid.innerHTML = '';
@@ -387,16 +445,6 @@
         grid.appendChild(card);
       });
     }
-
-    var overlay = document.getElementById('appai-saved-designs-overlay');
-    var drawer = document.getElementById(DRAWER_ID);
-    overlay.classList.add('appai-open');
-    drawer.classList.add('appai-open');
-    document.body.style.overflow = 'hidden';
-    setTimeout(function () {
-      var closeBtn = document.getElementById('appai-drawer-close');
-      if (closeBtn) closeBtn.focus();
-    }, 330);
   }
 
   function closeDrawer() {
@@ -414,13 +462,129 @@
     }
   });
 
+  // Paint an opaque full-viewport overlay showing the chosen design's mockup,
+  // then navigate. During a full page reload the browser keeps the *current*
+  // (old) page painted until the new one is ready — so covering it now means
+  // the customer only ever sees the correct design, never a flash of the
+  // previously-open product page. The destination page repaints the same
+  // mockup (via ?loadMockup=) so the hand-off is seamless.
+  function showNavOverlay(mockupUrl, productName) {
+    if (!document.getElementById('appai-transition-styles')) {
+      var style = document.createElement('style');
+      style.id = 'appai-transition-styles';
+      style.textContent = [
+        '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
+        '@media(max-width:640px){.appai-transition-title{font-size:28px!important;}}',
+      ].join('');
+      document.head.appendChild(style);
+    }
+    document.documentElement.style.background = '#f4f4f5';
+    document.documentElement.style.overflowY = 'scroll';
+    document.documentElement.style.scrollbarGutter = 'stable both-edges';
+    if (document.body) {
+      document.body.style.background = '#f4f4f5';
+      document.body.style.overflowY = 'scroll';
+      document.body.style.scrollbarGutter = 'stable both-edges';
+    }
+    var overlay = document.getElementById('appai-nav-transition');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'appai-nav-transition';
+      overlay.setAttribute('aria-hidden', 'true');
+      var inner = document.createElement('div');
+      inner.className = 'appai-transition-inner';
+      inner.style.cssText = 'display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;';
+      var title = document.createElement('div');
+      title.className = 'appai-transition-title';
+      title.textContent = 'Loading AI Art Studio';
+      title.style.cssText = [
+        'margin:0',
+        'display:inline-block',
+        'padding:0.08em 0.04em 0.14em',
+        'font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+        'letter-spacing:-0.04em',
+        'text-align:center',
+        'background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
+        'background-size:200% auto',
+        '-webkit-background-clip:text',
+        'background-clip:text',
+        '-webkit-text-fill-color:transparent',
+        'color:transparent',
+        'animation:appai-transition-title-shimmer 2.4s linear infinite'
+      ].join(';') + ';';
+      inner.appendChild(title);
+      overlay.appendChild(inner);
+      var root = document.documentElement || document.body;
+      if (document.body && root === document.documentElement && document.body.parentNode === root) {
+        root.insertBefore(overlay, document.body);
+      } else {
+        root.appendChild(overlay);
+      }
+    }
+    overlay.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:2147483647',
+      'background:#f4f4f5',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'padding:24px',
+      'box-sizing:border-box',
+      'opacity:1',
+      'visibility:visible',
+      'transition:none',
+      'pointer-events:auto',
+      'transform:none'
+    ].join(';') + ';';
+    // Flush layout so the loader is painted before navigation starts.
+    void overlay.offsetHeight;
+  }
+
+  function navigateAfterOverlay(url) {
+    var go = function () { window.location.href = url; };
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(go);
+      });
+    } else {
+      window.setTimeout(go, 32);
+    }
+  }
+
   function navigateToDesign(design) {
     closeDrawer();
     if (!design.pageHandle) {
       console.warn('[AppAI Nav] No pageHandle for design', design.id);
       return;
     }
-    window.location.href = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    var url = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    // Pass the design's mockup so the customizer can paint it instantly while
+    // the full design data loads (avoids the grey loading scan on open).
+    var mockup = (design.mockupUrls && design.mockupUrls[0]) || '';
+    if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
+    var productName = design.baseTitle || 'saved design';
+    if (productName) url += '&loadProductName=' + encodeURIComponent(productName);
+    try {
+      var activeIframe = document.querySelector('.ai-art-studio-embed iframe[title="AI Art Design Studio"], iframe[title="AI Art Design Studio"]');
+      if (activeIframe && activeIframe.contentWindow) {
+        activeIframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_SWITCH_SAVED_DESIGN',
+          design: {
+            id: design.id,
+            pageHandle: design.pageHandle,
+            mockupUrls: mockup ? [mockup] : [],
+            baseTitle: productName,
+            productTypeId: design.productTypeId || null
+          }
+        }, '*');
+        return;
+      }
+    } catch (e) {
+      console.warn('[AppAI Nav] Iframe saved design switch failed, using full page navigation:', e);
+    }
+    showNavOverlay(mockup, productName);
+    navigateAfterOverlay(url);
   }
 
   // ─── Main init ───────────────────────────────────────────────────────────
@@ -430,6 +594,10 @@
     if (!customerId) return;
 
     var shop = getShop();
+    // Expose to module scope so openDrawer()/refreshDrawerIfChanged() can
+    // re-fetch without a stale closure.
+    _customerId = customerId;
+    _shop = shop;
 
     fetchDesigns(customerId, shop).then(function (data) {
       if (!data || !data.designs || data.designs.length === 0) {
@@ -466,7 +634,10 @@
       retryInject();
 
       window.__APPAI_SAVED_DESIGNS__ = designs;
-      window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(designs); };
+      // Always open with the latest cached list (openDrawer reads
+      // window.__APPAI_SAVED_DESIGNS__) and let it kick a background
+      // refresh — never close over this initial `designs` snapshot.
+      window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(); };
 
       // ── MutationObserver: re-inject if the nav item is removed from the DOM ──
       // Some Shopify themes re-render the nav when the URL changes via
@@ -499,10 +670,11 @@
               // Update the count badge if it exists
               var badge = document.getElementById('appai-saved-count');
               if (badge) badge.textContent = newData.designs.length;
-              // If the drawer is currently open, re-render its content
+              // If the drawer is currently open, re-render its content in
+              // place (renderDrawer doesn't touch open/close state).
               var drawer = document.getElementById(DRAWER_ID);
               if (drawer && drawer.classList.contains('appai-open')) {
-                openDrawer(newData.designs);
+                renderDrawer(newData.designs);
               }
             }
           });

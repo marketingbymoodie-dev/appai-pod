@@ -33,6 +33,10 @@ import {
   type CanvasConfig,
   type AopPlacementSettings,
 } from "@/components/designer";
+import HoodieAopPlacer, {
+  type HoodieAopPlacerState,
+  type HoodieAopPlacerApplyResult,
+} from "@/components/designer/HoodieAopPlacer";
 
 declare global {
   interface Window {
@@ -73,8 +77,16 @@ interface ProductTypeConfig {
   frameColors: Array<{ id: string; name: string; hex: string }>;
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, any>;
+  doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;
   aopTemplateId?: string | null;
+  /**
+   * Optional published hoodie panel-mapping template name. When set, this
+   * product uses the new mesh-warp HoodieAopPlacer (Stage 1+ rollout) instead
+   * of the legacy PatternCustomizer. Server-side handle only — never shown
+   * to customers.
+   */
+  panelMappingTemplate?: string | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
@@ -207,6 +219,38 @@ function adjustHSLLightness(hsl: string, delta: number): string {
 }
 
 /**
+ * Lightness 0-100 from an "H S% L%" HSL string, or null if unparseable.
+ */
+function hslLightness(hsl: string | null | undefined): number | null {
+  if (!hsl) return null;
+  const parts = hsl.match(/^(\d+)\s+(\d+)%\s+(\d+)%$/);
+  if (!parts) return null;
+  return parseInt(parts[3]);
+}
+
+/**
+ * Guarantee that `fgHSL` has enough contrast with `bgHSL`. If the lightness
+ * delta between them is below `minDelta`, returns a forced black or white
+ * instead. Used to bulletproof `--primary-foreground` when a merchant's
+ * storefront extractor returns a non-contrasting pair (some themes set
+ * button text via inheritance / CSS that resolves to the same colour as
+ * the bg in computed styles).
+ */
+function ensureContrastingForeground(
+  bgHSL: string | null,
+  fgHSL: string | null,
+  minDelta = 35,
+): string | null {
+  if (!bgHSL) return fgHSL;
+  const bgL = hslLightness(bgHSL);
+  if (bgL === null) return fgHSL;
+  const fgL = hslLightness(fgHSL);
+  if (fgL !== null && Math.abs(bgL - fgL) >= minDelta) return fgHSL;
+  // Insufficient contrast (or no fg given) → pick black/white from bg.
+  return bgL < 50 ? "0 0% 100%" : "0 0% 9%";
+}
+
+/**
  * Resolve an image URL to an absolute URL suitable for sending to the backend.
  * Handles three cases:
  * - Already absolute (http/https) → pass through
@@ -283,7 +327,16 @@ async function ensureHostedUrl(url: string): Promise<string> {
     });
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
     const { objectPath } = await uploadRes.json();
-    const hostedUrl = buildAppUrl(objectPath);
+    // The upload endpoint now returns an ABSOLUTE Supabase public URL when
+    // Supabase is configured (durable across deploys), or a relative
+    // `/objects/uploads/...` path on the local-disk fallback. Pass absolute
+    // URLs through untouched — wrapping them in buildAppUrl() would mangle them
+    // into `/apps/appai/https://...` and break every image that uses them.
+    const hostedUrl =
+      typeof objectPath === "string" &&
+      (objectPath.startsWith("http://") || objectPath.startsWith("https://"))
+        ? objectPath
+        : buildAppUrl(objectPath);
     console.log("[EmbedDesign] Data URL uploaded, hosted URL:", hostedUrl);
     return hostedUrl;
   }
@@ -485,12 +538,20 @@ if (typeof window !== 'undefined' && !(window as any).__APP_AI_EMBED_PINGED__) {
  * Modes:
  * - storefront: Embedded on Shopify storefront (storefront=true). NO session token, uses public /api/storefront/* endpoints.
  * - admin-embedded: Embedded in Shopify admin (embedded=true, shopify=true). Uses App Bridge and session tokens.
+ * - admin-tester: Hosted inside the merchant admin "Generator Tester" page (adminTester=true), usually in an iframe.
+ *   Renders the IDENTICAL customizer UI but sources data from the admin-authenticated /api/* endpoints
+ *   (no shop param, no storefront identity/cart/checkout/shadow-SKU). Lets the Generator Tester always
+ *   stay in sync with the live customizer without maintaining a separate copy.
  * - standalone: Direct access without Shopify context. Uses standard auth.
  */
-type RuntimeMode = 'storefront' | 'admin-embedded' | 'standalone';
+type RuntimeMode = 'storefront' | 'admin-embedded' | 'admin-tester' | 'standalone';
 
 function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
   const path = window.location.pathname;
+
+  // Admin "Generator Tester" host: explicit flag wins over path-based detection so the
+  // same /s/designer route can be reused inside the merchant admin without storefront wiring.
+  if (params.get("adminTester") === "true") return 'admin-tester';
 
   // App Proxy path: /apps/appai/s/designer (iframe on Shopify domain via proxy)
   if (path.startsWith(`${PROXY_PREFIX}/s/`)) return 'storefront';
@@ -575,18 +636,43 @@ function ProductInfoSections({
   );
 }
 
-export default function EmbedDesign() {
+/**
+ * Optional props for hosting the customizer IN-PROCESS inside the merchant admin
+ * "Art Generator Tester" page. Rendering in-process (instead of an iframe) is required
+ * because:
+ *   1. The admin app is an embedded Shopify app — a nested iframe would be blocked by the
+ *      app's `frame-ancestors` CSP (which only allows myshopify.com / admin.shopify.com).
+ *   2. Auth uses App Bridge session tokens injected into `window.fetch` in the TOP admin
+ *      frame only. In-process render reuses that patched fetch, so /api/generate and
+ *      /api/mockup/generate authenticate. A nested iframe has no App Bridge → 401.
+ * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
+ */
+export interface EmbedDesignProps {
+  embeddedContext?: {
+    mode: 'admin-tester';
+    productTypeId: string | number;
+  };
+}
+
+export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
-  // Detect runtime mode
-  const runtimeMode = detectRuntimeMode(searchParams);
+  // Detect runtime mode. When hosted in-process by the admin tester, the prop forces
+  // 'admin-tester' regardless of the surrounding admin URL/path.
+  const runtimeMode: RuntimeMode = embeddedContext?.mode === 'admin-tester'
+    ? 'admin-tester'
+    : detectRuntimeMode(searchParams);
 
+  const isStorefront = runtimeMode === 'storefront';
+  // admin-tester: merchant admin "Art Generator Tester" host. Behaves like standalone for
+  // endpoints (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU
+  // left inert. Force isEmbedded off so it renders as a clean standalone designer surface.
+  const isAdminTester = runtimeMode === 'admin-tester';
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
-  const isEmbedded = searchParams.get("embedded") === "true";
-  const isStorefront = runtimeMode === 'storefront';
-  const isShopify = !isStorefront && searchParams.get("shopify") === "true";
+  const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
+  const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
   const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
 
   // Key behavioral flags based on runtime mode
@@ -631,8 +717,68 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const productTypeId = searchParams.get("productTypeId") || "1";
-  const productId = searchParams.get("productId") || "";
+  // Get productHandle from URL params, or extract from referrer if not provided.
+  // This value can later be overridden in state for in-iframe cross-product saved-design switches.
+  const getInitialProductHandle = (): string => {
+    const handleFromParams = searchParams.get("productHandle") || "";
+    if (handleFromParams) {
+      console.log('[Design Studio] Using productHandle from params:', handleFromParams);
+      return handleFromParams;
+    }
+
+    // Try to extract from referrer (e.g., https://store.myshopify.com/products/custom-tumbler-20oz)
+    try {
+      const referrer = document.referrer;
+      console.log('[Design Studio] Attempting to extract productHandle from referrer:', referrer);
+      if (referrer) {
+        const match = referrer.match(/\/products\/([^/?#]+)/);
+        if (match && match[1]) {
+          console.log('[Design Studio] Extracted productHandle from referrer:', match[1]);
+          return match[1];
+        } else {
+          console.log('[Design Studio] No /products/ path found in referrer');
+        }
+      } else {
+        console.log('[Design Studio] Referrer is empty');
+      }
+    } catch (e) {
+      console.log('[Design Studio] Error extracting productHandle from referrer:', e);
+    }
+    console.log('[Design Studio] Could not determine productHandle');
+    return "";
+  };
+
+  const initialProductTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Product");
+  const getInitialPageHandle = (): string => {
+    try {
+      const parentPath = window.parent.location.pathname || "";
+      const match = parentPath.match(/^\/pages\/([^/?#]+)/);
+      if (match && match[1]) return match[1];
+    } catch {
+      // Ignore cross-origin/local embed contexts.
+    }
+    return "";
+  };
+  const [activeProductContext, setActiveProductContext] = useState(() => ({
+    productTypeId: embeddedContext?.productTypeId != null
+      ? String(embeddedContext.productTypeId)
+      : (searchParams.get("productTypeId") || "1"),
+    productId: searchParams.get("productId") || "",
+    productHandle: getInitialProductHandle(),
+    productTitle: initialProductTitle,
+    displayName: decodeURIComponent(searchParams.get("displayName") || initialProductTitle.replace("Custom ", "")),
+    selectedVariant: searchParams.get("selectedVariant") || "",
+    pageHandle: getInitialPageHandle(),
+    designerConfig: null as any,
+    stylePresets: null as StylePreset[] | null,
+  }));
+
+  const productTypeId = activeProductContext.productTypeId || "1";
+  const productId = activeProductContext.productId || "";
+  const productHandle = activeProductContext.productHandle || "";
+  const productTitle = activeProductContext.productTitle || "Custom Product";
+  const displayName = activeProductContext.displayName || productTitle.replace("Custom ", "");
+  const selectedVariantParam = activeProductContext.selectedVariant || "";
 
   // Log all URL parameters for debugging
   // Compute endpoint prefixes once for logging and assertions
@@ -671,41 +817,7 @@ export default function EmbedDesign() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   
-  // Get productHandle from URL params, or extract from referrer if not provided
-  const getProductHandle = (): string => {
-    const handleFromParams = searchParams.get("productHandle") || "";
-    if (handleFromParams) {
-      console.log('[Design Studio] Using productHandle from params:', handleFromParams);
-      return handleFromParams;
-    }
-    
-    // Try to extract from referrer (e.g., https://store.myshopify.com/products/custom-tumbler-20oz)
-    try {
-      const referrer = document.referrer;
-      console.log('[Design Studio] Attempting to extract productHandle from referrer:', referrer);
-      if (referrer) {
-        const match = referrer.match(/\/products\/([^/?#]+)/);
-        if (match && match[1]) {
-          console.log('[Design Studio] Extracted productHandle from referrer:', match[1]);
-          return match[1];
-        } else {
-          console.log('[Design Studio] No /products/ path found in referrer');
-        }
-      } else {
-        console.log('[Design Studio] Referrer is empty');
-      }
-    } catch (e) {
-      console.log('[Design Studio] Error extracting productHandle from referrer:', e);
-    }
-    console.log('[Design Studio] Could not determine productHandle');
-    return "";
-  };
-  const productHandle = getProductHandle();
-  
-  const productTitle = decodeURIComponent(searchParams.get("productTitle") || "Custom Product");
-  const displayName = decodeURIComponent(searchParams.get("displayName") || productTitle.replace("Custom ", ""));
   const showPresetsParam = searchParams.get("showPresets") !== "false";
-  const selectedVariantParam = searchParams.get("selectedVariant") || "";
   const shopifyCustomerId = searchParams.get("customerId") || "";
   const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
   const shopifyCustomerName = searchParams.get("customerName") || "";
@@ -726,6 +838,26 @@ export default function EmbedDesign() {
   const [bridgeLoadDesignId, setBridgeLoadDesignId] = useState("");
   // The effective loadDesignId — prefer parent URL (most reliable), then bridge, then iframe URL param
   const effectiveLoadDesignId = parentLoadDesignId || bridgeLoadDesignId || loadDesignId;
+
+  // loadMockup: the gallery passes the clicked design's mockup URL so we can
+  // paint it instantly while the full design data loads over the App Proxy
+  // (~3-4s), instead of showing the grey skeleton scan. Read from the parent
+  // URL first (most reliable; iframe liquid can be CDN-cached), then iframe URL.
+  const initialPreviewMockupUrl = (() => {
+    let raw = "";
+    try {
+      raw = new URLSearchParams(window.parent.location.search).get("loadMockup") || "";
+    } catch {
+      /* cross-origin guard */
+    }
+    if (!raw) raw = searchParams.get("loadMockup") || "";
+    if (!raw) return "";
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  })();
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
@@ -763,6 +895,7 @@ export default function EmbedDesign() {
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
+  const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
   const [sizeChart, setSizeChart] = useState<NormalizedSizeChart | null>(null);
@@ -948,6 +1081,17 @@ export default function EmbedDesign() {
   // Persisted Place on Item placement — survive close/reopen
   const [aopPlacementSettings, setAopPlacementSettings] = useState<AopPlacementSettings | undefined>(undefined);
 
+  /**
+   * Stage 3 — persisted state for the new mesh-warp HoodieAopPlacer.
+   * Only used when `productTypeConfig.panelMappingTemplate` is set
+   * (currently product 20). Saved into `designState.hoodieAopPlacerState`
+   * so the customer can resume mid-edit, and used as the source of truth
+   * for the cart/checkout mockup image (rendered locally — no Printify
+   * roundtrip until Stage 5 ships per-panel reverse-warp export).
+   */
+  const [hoodieAopPlacerState, setHoodieAopPlacerState] =
+    useState<HoodieAopPlacerState | null>(null);
+
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
@@ -964,6 +1108,7 @@ export default function EmbedDesign() {
   const lastAopPanelUrlsRef = useRef<{ position: string; dataUrl: string }[] | null>(null);
   // Ensures quick successive AOP edits do not let an older mockup response overwrite the latest one.
   const mockupRequestSeqRef = useRef(0);
+  const activeMockupJobKeyRef = useRef<string | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
@@ -972,6 +1117,11 @@ export default function EmbedDesign() {
   const isApparel = productTypeConfig?.designerType === "apparel";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
+  const supportsPrintPlacementSelection = !!(
+    productTypeConfig?.hasPrintifyMockups &&
+    !productTypeConfig?.isAllOverPrint &&
+    productTypeConfig?.doubleSidedPrint
+  );
 
   // Stable references for PatternCustomizer props — prevents the SVG-loading useEffect from
   // re-firing on every parent render (e.g. polling intervals) due to new object/function refs.
@@ -995,6 +1145,12 @@ export default function EmbedDesign() {
     if (merged.right_side && !merged.right_leg) merged.right_leg = merged.right_side;
     return proxifyPrintifyPanelUrls(merged);
   }, [productTypeConfig]);
+
+  useEffect(() => {
+    if (productTypeConfig && !supportsPrintPlacementSelection && printPlacement !== "front") {
+      setPrintPlacement("front");
+    }
+  }, [productTypeConfig, supportsPrintPlacementSelection, printPlacement]);
 
   // Filter styles based on designerType
   // - framed-print, pillow, mug -> "decor" category (full-bleed artwork)
@@ -1106,8 +1262,10 @@ export default function EmbedDesign() {
       frameColors: dc.frameColors || [],
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
+      doubleSidedPrint: dc.doubleSidedPrint || false,
       isAllOverPrint: dc.isAllOverPrint || false,
       aopTemplateId: dc.aopTemplateId ?? null,
+      panelMappingTemplate: dc.panelMappingTemplate ?? null,
       placeholderPositions: dc.placeholderPositions || [],
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
@@ -1287,6 +1445,15 @@ export default function EmbedDesign() {
         return;
       }
 
+      if (activeProductContext.designerConfig) {
+        applyDesignerConfig(activeProductContext.designerConfig, 'ACTIVE CONTEXT');
+        if (activeProductContext.stylePresets) {
+          setStylePresets(activeProductContext.stylePresets);
+        }
+        if (!isCancelled) setConfigLoading(false);
+        return;
+      }
+
       // ⚡ INLINE CONFIG FAST PATH: When the parent embed passes designerConfig directly
       // via the inlineDesignerConfig URL param, skip ALL /api/storefront/product-types/* calls.
       // This is the primary path for /pages/:handle customizer pages.
@@ -1356,21 +1523,30 @@ export default function EmbedDesign() {
       try {
         if (isCancelled) return;
 
-        // GUARD: Ensure we have a valid shop domain before calling designer endpoint
-        if (!myshopifyDomain) {
-          console.error('[EmbedDesign] CRITICAL: No shop domain available for designer API call');
-          setProductTypeError('Unable to determine shop domain. Please ensure the shop parameter is provided in the URL.');
-          setConfigLoading(false);
-          return;
-        }
+        let designerUrl: string;
+        if (isAdminTester) {
+          // Admin "Generator Tester" host: use the admin-authenticated designer endpoint
+          // (resolves merchant from the session cookie — no shop param required). This keeps
+          // the tester rendering the IDENTICAL customizer while sourcing data from the same
+          // place the admin product-config screens use.
+          designerUrl = `${API_BASE}/api/product-types/${resolvedProductTypeId}/designer?_t=${Date.now()}`;
+        } else {
+          // GUARD: Ensure we have a valid shop domain before calling designer endpoint
+          if (!myshopifyDomain) {
+            console.error('[EmbedDesign] CRITICAL: No shop domain available for designer API call');
+            setProductTypeError('Unable to determine shop domain. Please ensure the shop parameter is provided in the URL.');
+            setConfigLoading(false);
+            return;
+          }
 
-        const designerParams = new URLSearchParams({
-          shop: myshopifyDomain,
-          _t: String(Date.now()),
-        });
-        if (productHandle) designerParams.set('productHandle', productHandle);
-        if (displayName) designerParams.set('displayName', displayName);
-        const designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?${designerParams.toString()}`;
+          const designerParams = new URLSearchParams({
+            shop: myshopifyDomain,
+            _t: String(Date.now()),
+          });
+          if (productHandle) designerParams.set('productHandle', productHandle);
+          if (displayName) designerParams.set('displayName', displayName);
+          designerUrl = `${API_BASE}/api/storefront/product-types/${resolvedProductTypeId}/designer?${designerParams.toString()}`;
+        }
         console.log('[EmbedDesign] Designer fetch URL:', designerUrl);
 
         const [configRes, designerRes] = await Promise.all([
@@ -1423,8 +1599,10 @@ export default function EmbedDesign() {
             frameColors: designerConfig.frameColors || [],
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
+            doubleSidedPrint: designerConfig.doubleSidedPrint || false,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             aopTemplateId: designerConfig.aopTemplateId ?? null,
+            panelMappingTemplate: designerConfig.panelMappingTemplate ?? null,
             placeholderPositions: designerConfig.placeholderPositions || [],
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
@@ -1496,11 +1674,11 @@ export default function EmbedDesign() {
       isCancelled = true;
       masterAbort.abort();
     };
-  }, [productTypeId, productHandle, applyDesignerConfig]);
+  }, [productTypeId, productHandle, activeProductContext.designerConfig, activeProductContext.stylePresets, applyDesignerConfig]);
 
   // Fetch merchant's branding settings and apply to designer
   useEffect(() => {
-    if (!shopDomain) return;
+    if (!shopDomain || isStorefront) return;
 
     const fetchBranding = async () => {
       try {
@@ -1546,7 +1724,7 @@ export default function EmbedDesign() {
     };
 
     fetchBranding();
-  }, [shopDomain]);
+  }, [shopDomain, isStorefront]);
 
   // Load shared design if sharedDesignId is present in URL
   useEffect(() => {
@@ -1637,6 +1815,13 @@ export default function EmbedDesign() {
       if (typeof ds.aopPatternUrl === 'string' && ds.aopPatternUrl) {
         setAopPatternUrl(abs(ds.aopPatternUrl) || ds.aopPatternUrl);
       }
+      // Stage 3 — restore the new mesh-warp HoodieAopPlacer state. The
+      // placer reads this via its `initialState` prop on first render and
+      // seeds the customer's last placement / mode / link state so they
+      // resume exactly where they left off.
+      if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
+        setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
+      }
     } else {
       if (topLevel.size) setSelectedSize(topLevel.size);
       if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
@@ -1685,6 +1870,25 @@ export default function EmbedDesign() {
     }
     scrollArtworkIntoViewOnMobile(150);
 
+    // Let the Shopify parent page know it is now safe to remove any full-page
+    // transition cover. Use two animation frames so React has a chance to paint
+    // the restored design/mockup before the cover fades away.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          try {
+            window.parent?.postMessage({
+              type: "AI_ART_STUDIO_DESIGN_APPLIED",
+              designId,
+            }, "*");
+          } catch {
+            /* parent may be unavailable in local/dev embeds */
+          }
+        });
+      });
+    }
+    setIsInAppProductSwitching(false);
+
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =
@@ -1716,6 +1920,97 @@ export default function EmbedDesign() {
   // Track whether we've already restored the loadDesignId so we don't do it twice
   const loadDesignAppliedRef = useRef(false);
 
+  const switchToSavedDesignProduct = useCallback(async (design: any) => {
+    const pageHandle = design?.pageHandle ? String(design.pageHandle) : "";
+    const designId = design?.id ? String(design.id) : "";
+    if (!pageHandle || !designId) {
+      throw new Error("Saved design is missing its customizer page");
+    }
+
+    setIsInAppProductSwitching(true);
+    setConfigLoading(true);
+    setProductTypeError(null);
+    setGeneratedDesign(null);
+    setDesignSource(null);
+    setShowPatternStep(false);
+    setAopPendingMotifUrl(null);
+    setAopPatternUrl(null);
+    setAopPlacementSettings(undefined);
+    setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+    setHoodieAopPlacerState(null);
+    lastAopPanelUrlsRef.current = null;
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(0);
+    setMockupsStale(false);
+    setMockupTriggered(false);
+    setMockupLoading(false);
+    setMockupFailed(false);
+    setVariantError(null);
+    setPreShadowVariantId(null);
+    setPreShadowProductId(null);
+    loadDesignAppliedRef.current = false;
+
+    const res = await safeFetch(`/apps/appai/customizer-page?handle=${encodeURIComponent(pageHandle)}`, {
+      credentials: "same-origin",
+    }, 30000);
+    if (!res.ok) {
+      throw new Error(`Could not load customizer page "${pageHandle}" (${res.status})`);
+    }
+    const config = await res.json();
+    if (!config?.designerConfig) {
+      throw new Error(`Customizer page "${pageHandle}" has no designer config`);
+    }
+
+    const baseVariant = config.baseVariantId ? String(config.baseVariantId) : "";
+    const targetVariants = Array.isArray(config.variants) ? config.variants : [];
+    setVariants(targetVariants);
+    setVariantsFetched(true);
+    setShopifyVariants(targetVariants);
+    setShopifyVariantId(baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null));
+    setOverrideVariantId(baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null));
+    baseVariantForShadowRef.current = baseVariant ? normalizeVariantId(baseVariant) : "";
+
+    setActiveProductContext({
+      productTypeId: config.productTypeId ? String(config.productTypeId) : "0",
+      productId: config.baseProductId ? String(config.baseProductId) : "",
+      productHandle: config.baseProductHandle || pageHandle,
+      productTitle: config.baseProductTitle || config.title || design.baseTitle || "Custom Product",
+      displayName: config.title || design.baseTitle || "Custom Product",
+      selectedVariant: baseVariant,
+      pageHandle,
+      designerConfig: config.designerConfig,
+      stylePresets: Array.isArray(config.stylePresets) ? config.stylePresets : null,
+    });
+
+    const mockupSrc = (design.mockupUrls && design.mockupUrls[0]) || "";
+    const mockupAbsForUrl = mockupSrc ? toAbsoluteImageUrl(mockupSrc) : "";
+    try {
+      const parentUrl = new URL(window.parent.location.href);
+      parentUrl.pathname = `/pages/${pageHandle}`;
+      parentUrl.searchParams.set("loadDesignId", designId);
+      if (mockupAbsForUrl) parentUrl.searchParams.set("loadMockup", mockupAbsForUrl);
+      const loadingProductName = design.baseTitle || config.title || "saved design";
+      if (loadingProductName) parentUrl.searchParams.set("loadProductName", loadingProductName);
+      window.parent.history.replaceState({}, "", parentUrl.toString());
+    } catch {
+      // Parent history may be inaccessible in local/dev embeds.
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    params.set("productTypeId", config.productTypeId ? String(config.productTypeId) : "0");
+    if (config.baseProductId) params.set("productId", String(config.baseProductId));
+    if (config.baseProductHandle || pageHandle) params.set("productHandle", config.baseProductHandle || pageHandle);
+    if (config.baseProductTitle || config.title) params.set("productTitle", config.baseProductTitle || config.title);
+    if (config.title) params.set("displayName", config.title);
+    if (baseVariant) params.set("selectedVariant", baseVariant);
+    params.set("loadDesignId", designId);
+    if (mockupAbsForUrl) params.set("loadMockup", mockupAbsForUrl);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+
+    setBridgeLoadDesignId(designId);
+  }, []);
+
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
     loadDesignAppliedRef.current = false;
@@ -1728,6 +2023,7 @@ export default function EmbedDesign() {
       setAopPatternUrl(null);
       setAopPlacementSettings(undefined);
       setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+      setHoodieAopPlacerState(null);
       lastAopPanelUrlsRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
@@ -1739,6 +2035,7 @@ export default function EmbedDesign() {
   // Primary path: restore from savedDesigns list once it's populated
   useEffect(() => {
     if (!effectiveLoadDesignId || loadDesignAppliedRef.current) return;
+    if (configLoading) return;
     if (!savedDesigns.length) return; // wait until list is loaded
     console.log('[LoadDesign] savedDesigns IDs:', savedDesigns.map(x => x.id), 'looking for:', effectiveLoadDesignId);
     const d = savedDesigns.find(x => x.id === effectiveLoadDesignId);
@@ -1750,12 +2047,13 @@ export default function EmbedDesign() {
     loadDesignAppliedRef.current = true;
     applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, savedDesigns]);
+  }, [effectiveLoadDesignId, savedDesigns, configLoading]);
 
   // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
   // fetch the job status directly from the server
   useEffect(() => {
     if (!effectiveLoadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
+    if (configLoading) return;
     // Only run fallback after a short delay to give savedDesigns time to populate
     const timer = setTimeout(() => {
       if (loadDesignAppliedRef.current) return; // already restored from list
@@ -1773,7 +2071,7 @@ export default function EmbedDesign() {
     }, 2000);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, shopDomain]);
+  }, [effectiveLoadDesignId, shopDomain, configLoading]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -1921,6 +2219,10 @@ export default function EmbedDesign() {
     let pollAttempts = 0;
     const maxAttempts = 12;
     const pollShadow = async () => {
+      if (activeMockupJobKeyRef.current) {
+        preShadowPollRef.current = setTimeout(pollShadow, 5000);
+        return;
+      }
       try {
         const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?shop=${encodeURIComponent(shop)}`);
         if (r.ok) {
@@ -2085,6 +2387,27 @@ export default function EmbedDesign() {
       console.log(`[EmbedDesign] AOP preflight OK: ${panelUrls.length} panel(s) — sizes: ${panelUrls.map(p => `${p.position}:${(p.dataUrl.length / 1024).toFixed(0)}KB`).join(', ')}`);
     }
 
+    // Clamp values to valid ranges
+    const clampedX = Math.max(0, Math.min(100, x));
+    const clampedY = Math.max(0, Math.min(100, y));
+    const clampedScale = Math.max(10, Math.min(200, scale));
+    const mockupJobKey = JSON.stringify({
+      imageUrl: designImageUrl,
+      productTypeId: ptId,
+      sizeId,
+      colorId,
+      scale: clampedScale,
+      x: clampedX,
+      y: clampedY,
+      printPlacement: printPlacementOverride ?? printPlacement,
+      panelHash: panelUrls?.map((p) => `${p.position}:${p.dataUrl.length}`).join("|") ?? "",
+    });
+
+    if (activeMockupJobKeyRef.current === mockupJobKey) {
+      console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
+      return;
+    }
+    activeMockupJobKeyRef.current = mockupJobKey;
     const requestSeq = ++mockupRequestSeqRef.current;
     setMockupLoading(true);
     setMockupsStale(false);
@@ -2092,10 +2415,6 @@ export default function EmbedDesign() {
     if (runtimeMode !== 'standalone') {
       window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
     }
-    // Clamp values to valid ranges
-    const clampedX = Math.max(0, Math.min(100, x));
-    const clampedY = Math.max(0, Math.min(100, y));
-    const clampedScale = Math.max(10, Math.min(200, scale));
 
     try {
       // The server's uploadImageToPrintify() handles data URLs natively
@@ -2122,6 +2441,11 @@ export default function EmbedDesign() {
               : undefined;
           })()
         : undefined;
+      const mockupPrintPlacement = productTypeConfig?.isAllOverPrint
+        ? undefined
+        : supportsPrintPlacementSelection
+          ? (printPlacementOverride ?? printPlacement)
+          : "front";
 
       const payload: Record<string, unknown> = isStorefront ? {
         productTypeId: ptId,
@@ -2129,7 +2453,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
+        printPlacement: mockupPrintPlacement,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2143,7 +2467,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
+        printPlacement: mockupPrintPlacement,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2158,7 +2482,7 @@ export default function EmbedDesign() {
         patternUrl: patternUrl || undefined,
         panelUrls: panelUrls && panelUrls.length > 0 ? panelUrls : undefined,
         mirrorLegs: mirrorLegs ?? false,
-        printPlacement: !productTypeConfig?.isAllOverPrint ? (printPlacementOverride ?? printPlacement) : undefined,
+        printPlacement: mockupPrintPlacement,
         sizeId,
         colorId,
         scale: clampedScale,
@@ -2320,6 +2644,9 @@ export default function EmbedDesign() {
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
       setMockupFailed(true);
     } finally {
+      if (activeMockupJobKeyRef.current === mockupJobKey) {
+        activeMockupJobKeyRef.current = null;
+      }
       if (requestSeq === mockupRequestSeqRef.current) {
         setMockupLoading(false);
         setMockupTriggered(false);
@@ -2329,7 +2656,7 @@ export default function EmbedDesign() {
         }
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -3866,6 +4193,171 @@ export default function EmbedDesign() {
     }
   };
 
+  /**
+   * Stage 3 — handle the customer's "Apply" tap from the new mesh-warp
+   * `HoodieAopPlacer`. Mirrors the legacy `PatternCustomizer.onApply` shape
+   * just enough to feed the existing cart/checkout pipeline: render the
+   * front + back placer mockups locally, upload them, and pin the front
+   * raster as `printifyMockupImages[front]` so `getPreferredMockupUrl()`
+   * returns it (cart `_mockup_url` line property, ATC enabled state, etc).
+   *
+   * Stage 5 will layer in the per-panel reverse-mesh-warp print files and
+   * the optional Printify "Printers Mockup" background-fire on top of this
+   * — for now we deliberately ship without it because (a) the user already
+   * gets a high-fidelity local preview that matches what Printify will
+   * produce, and (b) Printify mockup generation needs the per-panel print
+   * files we don't compute yet.
+   */
+  const handleHoodieAopApply = useCallback(async (
+    result: HoodieAopPlacerApplyResult,
+  ) => {
+    setHoodieAopPlacerState(result.state);
+    // NOTE: Do NOT call `setShowPatternStep(false)` here. The placer is now
+    // live-editing — auto-apply fires 1.5 s after every change to keep the
+    // cart preview in sync, so closing the step on every apply would boot
+    // the customer out of the placer immediately after they open it. The
+    // customer leaves the placer via the explicit "Back" toolbar button.
+
+    // Front is the canonical "preferred" mockup the cart references.
+    const frontCanvas = result.renderView("front");
+    const backCanvas = result.renderView("back");
+    if (!frontCanvas) {
+      console.warn("[HoodieAopApply] No front canvas — placer not ready?");
+      return;
+    }
+    const frontDataUrl = frontCanvas.toDataURL("image/png");
+    const backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+
+    setMockupLoading(true);
+    setMockupTriggered(true);
+    try {
+      const [frontHosted, backHosted] = await Promise.all([
+        ensureHostedUrl(frontDataUrl),
+        backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
+      ]);
+
+      const images: { url: string; label: string }[] = [
+        { url: frontHosted, label: "front" },
+      ];
+      if (backHosted) images.push({ url: backHosted, label: "back" });
+      const urls = images.map((i) => i.url);
+
+      setPrintifyMockupImages(images);
+      setPrintifyMockups(urls);
+      setSelectedMockupIndex(0);
+      // The AOP cart guard checks `aopPatternUrl` is non-null before enabling
+      // ATC. The hoodie placer has no separate "pattern" — the local
+      // composite IS the artwork — so we point it at the front raster.
+      setAopPatternUrl(frontHosted);
+      setMockupFailed(false);
+      setMockupError(null);
+      setMockupsStale(false);
+
+      // Persist customer state + the rendered cart image on the saved
+      // generation job so Edit-from-cart and reload-after-close both
+      // resume the customer at exactly this point.
+      //
+      // We fire two requests in parallel:
+      //   1. save-state  — merges the placer's full state into designState
+      //      so the placer can re-open mid-edit on next visit.
+      //   2. save-mockups — writes the rendered front/back URLs into the
+      //      job's `mockupUrls` field. This is what the Saved Designs nav
+      //      gallery reads as the thumbnail, so without it product-20
+      //      designs would fall back to the raw artwork on a flat hoodie
+      //      instead of the customer's actual placement preview.
+      if (isStorefront && savedJobIdRef.current && shopDomain) {
+        const jobId = savedJobIdRef.current;
+        void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId,
+            shop: shopDomain,
+            designState: {
+              hoodieAopPlacerState: result.state,
+              aopPatternUrl: frontHosted,
+              hoodieAopMockups: { front: frontHosted, back: backHosted },
+            },
+          }),
+        }).catch((e) => {
+          console.error("[HoodieAopApply] Failed to persist designState:", e);
+        });
+
+        // `save-mockups` only persists URLs that start with "http" (it was
+        // built for Printify CDN URLs). Our local renders come back from
+        // ensureHostedUrl as a *relative* App Proxy path
+        // (`/apps/appai/objects/...`), which the endpoint would silently
+        // drop — leaving `mockupUrls` empty so the Saved Designs gallery
+        // falls back to the raw artwork. Convert to an absolute app-origin
+        // URL so it survives the filter AND renders as an <img> in the
+        // gallery (which passes http URLs through unchanged).
+        const toAbsoluteMockupUrl = (u: string | null): string | null => {
+          if (!u) return null;
+          if (u.startsWith("http://") || u.startsWith("https://")) return u;
+          const resolved = toAbsoluteImageUrl(u);
+          if (resolved.startsWith("http")) return resolved;
+          // Still relative → force onto the app origin, stripping the
+          // proxy prefix so it hits the app's /objects/ route directly.
+          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
+          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+        };
+        const frontAbs = toAbsoluteMockupUrl(frontHosted);
+        const backAbs = toAbsoluteMockupUrl(backHosted);
+        const mockupUrls = [frontAbs, backAbs].filter(
+          (u): u is string => !!u,
+        );
+        if (mockupUrls.length > 0) {
+          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jobId,
+              shop: shopDomain,
+              // Front first (gallery thumbnail), back second.
+              mockupUrls,
+            }),
+          })
+            .then(() => {
+              // Tell the parent storefront page to re-pull the gallery so a
+              // changed thumbnail shows up the next time the Saved Designs
+              // drawer is opened — no full page reload needed. Posted after
+              // the DB write resolves so the refetch sees the new URL.
+              try {
+                window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+              } catch {
+                /* cross-origin parent — ignore */
+              }
+              // Also refresh the in-iframe (product-page) Saved Designs
+              // gallery so its thumbnail updates on the fly without the
+              // customer reopening the panel.
+              if (storefrontCustomerId && shopDomain) {
+                void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+                })
+                  .then((r) => r.json())
+                  .then((d) => {
+                    if (d?.designs) setSavedDesigns(d.designs);
+                  })
+                  .catch(() => {});
+              }
+            })
+            .catch((e) => {
+              console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
+            });
+        }
+      }
+    } catch (err: any) {
+      console.error("[HoodieAopApply] Upload failed:", err);
+      setMockupError(err?.message || "Failed to apply design");
+      setMockupFailed(true);
+    } finally {
+      setMockupLoading(false);
+      setMockupTriggered(false);
+    }
+  }, [isStorefront, shopDomain, storefrontCustomerId]);
+
   const handleShare = async () => {
     if (!generatedDesign) return;
 
@@ -4053,6 +4545,9 @@ export default function EmbedDesign() {
         if (bgHSL) root.setProperty('--background', bgHSL);
         if (fgHSL) {
           root.setProperty('--foreground', fgHSL);
+          // Tentative card-foreground = body text. Re-validated against
+          // --card below once it's set, since input bg can differ from
+          // body bg and would otherwise leave invisible card text.
           root.setProperty('--card-foreground', fgHSL);
         }
 
@@ -4065,8 +4560,14 @@ export default function EmbedDesign() {
           root.setProperty('--sidebar-primary', btnBgHSL);
           // Derive primary-border as slightly darker
           root.setProperty('--primary-border', adjustHSLLightness(btnBgHSL, -8));
-        }
-        if (btnFgHSL) {
+          // Bulletproof: if the merchant's button text colour didn't
+          // extract (or extracted to something low-contrast like inherited
+          // body text), force a black/white pair against the button bg.
+          // Without this, active segmented buttons render as solid black
+          // rectangles with invisible text on themes that use color: inherit.
+          const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
+          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
+        } else if (btnFgHSL) {
           root.setProperty('--primary-foreground', btnFgHSL);
         }
         if (t.buttonRadius) {
@@ -4102,6 +4603,11 @@ export default function EmbedDesign() {
         const inputBgHSL = cssColorToHSL(t.inputBg);
         if (inputBgHSL) {
           root.setProperty('--card', inputBgHSL);
+          // Bulletproof card-foreground against the (possibly different)
+          // card bg. If body text doesn't contrast with input bg, fall
+          // back to black/white based on luminance.
+          const safeCardFg = ensureContrastingForeground(inputBgHSL, fgHSL);
+          if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
         }
 
         // -- Accent (links) --
@@ -4138,6 +4644,14 @@ export default function EmbedDesign() {
         loadDesignAppliedRef.current = false;
         // Set the bridge-provided loadDesignId into state so the restore effect can use it
         setBridgeLoadDesignId(bridgeLoadId);
+      }
+
+      if (type === "AI_ART_STUDIO_SWITCH_SAVED_DESIGN" && event.data.design) {
+        void switchToSavedDesignProduct(event.data.design).catch((error) => {
+          console.error('[SavedDesigns] Parent-requested in-app switch failed:', error);
+          setConfigLoading(false);
+          setIsInAppProductSwitching(false);
+        });
       }
     };
 
@@ -4202,7 +4716,7 @@ export default function EmbedDesign() {
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig]);
+  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -4250,10 +4764,20 @@ export default function EmbedDesign() {
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
-  // This also fixes the initial scroll glitch where the first few scrolls are swallowed.
+  // In fixed-height mobile-native mode, first let the iframe try to scroll itself;
+  // if the wheel delta is swallowed, hand it off to the Shopify page.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    if (mobileNativeScroll) return;
+    let fallbackRaf = 0;
+    const postWheelToParent = (e: WheelEvent) => {
+      window.parent.postMessage({
+        type: 'ai-art-studio:wheel',
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaZ: e.deltaZ,
+        deltaMode: e.deltaMode,
+      }, '*');
+    };
     const handleWheel = (e: WheelEvent) => {
       // Check if a Radix dropdown/popover is currently open
       const isRadixOpen = !!document.querySelector(
@@ -4269,19 +4793,39 @@ export default function EmbedDesign() {
         // Mouse is outside the dropdown but a dropdown is open — still forward to parent
         // so the background page can scroll while the dropdown is open
       }
-      // Forward wheel event to parent page
-      window.parent.postMessage({
-        type: 'ai-art-studio:wheel',
-        deltaX: e.deltaX,
-        deltaY: e.deltaY,
-        deltaZ: e.deltaZ,
-        deltaMode: e.deltaMode,
-      }, '*');
+      if (mobileNativeScroll) {
+        const scrollEl = document.scrollingElement || document.documentElement;
+        const beforeTop = scrollEl.scrollTop;
+        const beforeLeft = scrollEl.scrollLeft;
+        const deltaX = e.deltaX;
+        const deltaY = e.deltaY;
+        const deltaZ = e.deltaZ;
+        const deltaMode = e.deltaMode;
+        if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
+        fallbackRaf = window.requestAnimationFrame(() => {
+          fallbackRaf = 0;
+          const topUnchanged = Math.abs(scrollEl.scrollTop - beforeTop) < 1;
+          const leftUnchanged = Math.abs(scrollEl.scrollLeft - beforeLeft) < 1;
+          if (topUnchanged && leftUnchanged) {
+            window.parent.postMessage({
+              type: 'ai-art-studio:wheel',
+              deltaX,
+              deltaY,
+              deltaZ,
+              deltaMode,
+            }, '*');
+          }
+        });
+        return;
+      }
+      postWheelToParent(e);
     };
-    // Use passive:false so we can call preventDefault if needed, but we don't
-    // preventDefault here — we want the iframe to also process the event
+    // Passive because we do not block native iframe scrolling.
     window.addEventListener('wheel', handleWheel, { passive: true });
-    return () => window.removeEventListener('wheel', handleWheel);
+    return () => {
+      if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
+      window.removeEventListener('wheel', handleWheel);
+    };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   // Mobile native scroll mode: minimal, passive boundary-only touch handoff.
@@ -4777,6 +5321,25 @@ export default function EmbedDesign() {
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
+    if (isInAppProductSwitching) {
+      return (
+        <div className="min-h-[520px] flex items-center justify-center bg-[#f4f4f5]" data-testid="container-loading">
+          <style>{'@keyframes appai-iframe-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}'}</style>
+          <div
+            className="text-[34px] max-sm:text-[28px] font-extrabold leading-tight tracking-[-0.04em] text-transparent bg-clip-text"
+            style={{
+              backgroundImage: 'linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
+              backgroundSize: '200% auto',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              animation: 'appai-iframe-title-shimmer 2.4s linear infinite',
+            }}
+          >
+            Loading AI Art Studio
+          </div>
+        </div>
+      );
+    }
     // In storefront/Shopify mode the bridge loading screen already covers the page,
     // so returning anything here causes a double-up. Return a transparent placeholder.
     if (isStorefront || isShopify) {
@@ -5448,29 +6011,51 @@ export default function EmbedDesign() {
                                   className="rounded-md overflow-hidden border border-border cursor-pointer hover:border-primary transition-colors"
                                   onClick={() => {
                                     setShowSavedDesigns(false);
-                                    // If this design belongs to a different product type, navigate
-                                    // the parent page to the correct customizer page first.
+                                    // If this design belongs to a different product type, switch
+                                    // the iframe's active customizer context without navigating the
+                                    // Shopify parent document.
                                     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
                                     const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
-                                    const needsNavigation = d.pageHandle && designProductTypeId && currentProductTypeId && designProductTypeId !== currentProductTypeId;
+                                    const designPageHandle = d.pageHandle ? String(d.pageHandle) : null;
+                                    const currentPageHandle = activeProductContext.pageHandle || null;
+                                    const isDifferentProduct =
+                                      (!!designProductTypeId &&
+                                        !!currentProductTypeId &&
+                                        designProductTypeId !== currentProductTypeId) ||
+                                      (!!designPageHandle &&
+                                        !!currentPageHandle &&
+                                        designPageHandle !== currentPageHandle);
+                                    const needsNavigation = isDifferentProduct && !!d.pageHandle;
+                                    if (isDifferentProduct && !d.pageHandle) {
+                                      toast({
+                                        title: "Design product unavailable",
+                                        description: "This saved design belongs to a product that is no longer published.",
+                                        variant: "destructive",
+                                      });
+                                      return;
+                                    }
                                     if (needsNavigation) {
-                                      // Navigate parent to the correct customizer page with loadDesignId
-                                      try {
-                                        const parentUrl = new URL(window.parent.location.href);
-                                        parentUrl.pathname = `/pages/${d.pageHandle}`;
-                                        parentUrl.searchParams.set('loadDesignId', d.id);
-                                        window.parent.location.href = parentUrl.toString();
-                                      } catch {
-                                        // Fallback: reload current page (cross-origin guard)
-                                        const params = new URLSearchParams(window.location.search);
-                                        params.set('loadDesignId', d.id);
-                                        window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                        window.location.reload();
-                                      }
+                                      void (async () => {
+                                        try {
+                                          await switchToSavedDesignProduct(d);
+                                        } catch (error: any) {
+                                          console.error('[SavedDesigns] Cross-product in-app switch failed:', error);
+                                          setConfigLoading(false);
+                                          setIsInAppProductSwitching(false);
+                                          toast({
+                                            title: "Could not switch product",
+                                            description: error?.message || "Please refresh and try again.",
+                                            variant: "destructive",
+                                          });
+                                        }
+                                      })();
                                     } else {
-                                      // Update both the parent page URL and the iframe URL so
-                                      // parentLoadDesignId (which takes priority) picks up the
-                                      // correct design after the iframe reloads.
+                                      // Same product → load IN-PLACE. No iframe reload means no
+                                      // blank/stale frame and no flash: we just update the URLs
+                                      // (so a manual refresh still restores this design) and bump
+                                      // bridgeLoadDesignId, which drives the restore effect to swap
+                                      // the design via React state. The placer remounts cleanly
+                                      // because its key includes generatedDesign.id.
                                       try {
                                         const parentUrl = new URL(window.parent.location.href);
                                         parentUrl.searchParams.set('loadDesignId', d.id);
@@ -5481,7 +6066,7 @@ export default function EmbedDesign() {
                                       const params = new URLSearchParams(window.location.search);
                                       params.set('loadDesignId', d.id);
                                       window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
-                                      window.location.reload();
+                                      setBridgeLoadDesignId(d.id);
                                     }
                                   }}
                                 >
@@ -5965,7 +6550,7 @@ export default function EmbedDesign() {
                   </div>
                 )}
 
-                {(frameColorObjects.length > 0 || (!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups)) && (
+                {(frameColorObjects.length > 0 || supportsPrintPlacementSelection) && (
                   <div className={showPresetsParam && filteredStylePresets.length > 0 && printSizes.length > 0 ? "sm:col-span-2" : ""}>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {frameColorObjects.length > 0 && (
@@ -5976,7 +6561,7 @@ export default function EmbedDesign() {
                           colorLabel={productTypeConfig?.colorLabel || "Color"}
                         />
                       )}
-                      {!productTypeConfig?.isAllOverPrint && productTypeConfig?.hasPrintifyMockups && (
+                      {supportsPrintPlacementSelection && (
                         <div className="space-y-2">
                           <Label htmlFor="print-placement-select" className="uppercase">
                             Print Side
@@ -6156,6 +6741,77 @@ export default function EmbedDesign() {
 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
+              productTypeConfig?.panelMappingTemplate ? (
+                <div className="flex flex-col gap-2 min-h-0">
+                  {/* Back / Share toolbar — mirrors PatternCustomizer.footerSlot.
+                      The placer auto-saves on every change (no Apply button) —
+                      handleHoodieAopApply is fired ~1.5 s after the customer's
+                      last edit and uploads the local front+back render to
+                      Supabase so the cart preview is always in sync. */}
+                  {(isStorefront || isShopify) && (
+                    <div className="flex w-full gap-2 justify-stretch">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={() => setShowPatternStep(false)}
+                        title="Return to product preview without applying"
+                        data-testid="button-back-from-hoodie-placer"
+                      >
+                        <ChevronLeft className="w-4 h-4 mr-1 shrink-0" />
+                        <span className="text-xs truncate">Back</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 min-w-0"
+                        onClick={handleShare}
+                        disabled={isSharing || !generatedDesign?.imageUrl}
+                        data-testid="button-share-hoodie-placer"
+                      >
+                        {isSharing ? (
+                          <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                        ) : (
+                          <Share2 className="w-4 h-4 mr-1 shrink-0" />
+                        )}
+                        <span className="text-xs truncate">Share</span>
+                      </Button>
+                    </div>
+                  )}
+                  <HoodieAopPlacer
+                    // Re-mount when the customer regenerates artwork or
+                    // switches products so the placer re-seeds initialState
+                    // from the fresh motif. Keeping the saved customer state
+                    // mid-edit is handled by `hoodieAopPlacerState` flowing
+                    // back in via initialState below.
+                    key={`hap-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}`}
+                    templateName={productTypeConfig.panelMappingTemplate}
+                    initialState={{
+                      ...(hoodieAopPlacerState ?? {}),
+                      // Always seed the latest AI-generated motif as the
+                      // active artwork, even if the saved state pointed at
+                      // an older one — fresh generations should take over.
+                      artworkUrl: aopPendingMotifUrl,
+                    }}
+                    onChange={(s) => setHoodieAopPlacerState(s)}
+                    onApply={handleHoodieAopApply}
+                    // Resuming a saved design (we have a restored placer
+                    // state) → don't re-render + re-upload on open. The saved
+                    // mockup is already restored into the preview, so firing
+                    // the auto-apply here would just replay the grey scanning
+                    // animation for no reason. This flag is true immediately
+                    // from the restored state (no async/timing gap), so the
+                    // initial apply is reliably skipped. Fresh designs (no
+                    // restored state) still auto-apply once to generate the
+                    // initial cart image. Broken/missing thumbnails are already
+                    // repaired server-side at read time, so we no longer need
+                    // to heal-on-open.
+                    skipInitialAutoApply={!!hoodieAopPlacerState}
+                  />
+                </div>
+              ) : (
               <PatternCustomizer
                 key={`aop-pc-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? aopPendingMotifUrl}-${patternPanelPositions.length}`}
                 motifUrl={aopPendingMotifUrl}
@@ -6308,6 +6964,7 @@ export default function EmbedDesign() {
                   ) : undefined
                 }
               />
+              )
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
@@ -6379,6 +7036,10 @@ export default function EmbedDesign() {
                       mockupUrl={selectedMockupUrl}
                       isLoading={isGeneratingArtwork || isGeneratingMockups || isAopReapplying || isLoadingSaved}
                       loadingStage={loadingStage}
+                      // Paint the gallery's mockup instantly while a saved
+                      // design loads, instead of the grey skeleton scan. Only
+                      // relevant before the real design data arrives.
+                      initialPreviewUrl={!generatedDesign?.imageUrl ? (initialPreviewMockupUrl || null) : null}
                       isAop={isAopProduct}
                       selectedSize={selectedSizeConfig}
                       selectedFrameColor={selectedFrameColorConfig}
@@ -6613,7 +7274,9 @@ export default function EmbedDesign() {
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && mockupError && (
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
-                  <span className="text-sm text-destructive flex-1">Preview unavailable — you can still add to cart</span>
+                  <span className="text-sm text-destructive flex-1">
+                    Preview unavailable — {mockupError || 'mockup generation failed'}. You can still add to cart.
+                  </span>
                   <button
                     type="button"
                     className="text-xs text-destructive underline shrink-0"

@@ -11,7 +11,8 @@
  *   - Mockup pixel coordinates: origin top-left, +x right, +y down,
  *     measured against `MockupAsset.width` x `MockupAsset.height`.
  *   - `maskPath` uses SVG path "d" syntax in mockup pixel coordinates.
- *   - `mesh.points` are mockup pixel coordinates (NOT normalized).
+ *   - `mesh.targetPoints` are mockup pixel coordinates (NOT normalized);
+ *     source UVs are computed implicitly from the grid and `sourceRect`.
  *
  * Storage:
  *   - Templates live as JSON under tmp/hoodie-templates/templates/<name>.json
@@ -32,6 +33,8 @@ export type HoodiePanelKey =
   | "front_right"
   | "front_left"
   | "front_pocket"
+  | "pocket_left"
+  | "pocket_right"
   | "left_sleeve"
   | "right_sleeve"
   | "left_cuff"
@@ -58,11 +61,66 @@ export type SvgPathD = string;
 /** Top-left, top-right, bottom-right, bottom-left in mockup pixel coords. */
 export type CornerPins = [Pt, Pt, Pt, Pt];
 
+/**
+ * Rectangular sub-region of a source artwork sheet that a mesh samples
+ * from. Lets the front-view sleeve mask reference the front-half of the
+ * full sleeve artwork, while the back-view sleeve mask references the
+ * back-half of the same artwork file.
+ *
+ * Coordinates are in source-image pixels.
+ */
+export type SourceRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/**
+ * Source-image rotation in degrees (clockwise positive), applied before
+ * warping. Stored as an arbitrary number so the user can drag a rotate
+ * handle freely; the previous quantised 0/90/180/270 values remain valid
+ * data and stay backward-compatible.
+ */
+export type MeshSourceRotation = number;
+
+/**
+ * Mesh warp grid for projecting a rectangular slice of a panel artwork
+ * onto an irregular hoodie panel polygon. The mesh is regular in source
+ * space (`cols × rows` evenly spaced grid points spanning `sourceRect`)
+ * and irregular in target space (each grid point's position on the
+ * mockup is editable, allowing fabric curvature, sleeve foreshortening,
+ * and similar real-world distortions).
+ *
+ * Source UVs are computed implicitly: for grid point `(col, row)` they
+ * are `(col / (cols-1), row / (rows-1))` mapped through `sourceRect`,
+ * then rotated/flipped per `sourceRotation`/`sourceFlipX`/`sourceFlipY`.
+ * Stored explicitly only the `targetPoints` so the JSON stays compact.
+ *
+ * Length invariant: `targetPoints.length === cols * rows`.
+ */
 export type MeshGrid = {
+  /** 2..16 — number of columns in the control grid. */
   cols: number;
+  /** 2..16 — number of rows. */
   rows: number;
-  /** Length must equal (cols+1)*(rows+1). Mockup pixel coords. */
-  points: Pt[];
+  /**
+   * Sub-region of the source artwork the mesh samples. `null` means use
+   * the entire artwork as the source rectangle.
+   */
+  sourceRect: SourceRect | null;
+  /** Row-major: index = row * cols + col. Mockup pixel coords. */
+  targetPoints: Pt[];
+  /**
+   * Rotation applied to the source UVs before sampling, in degrees CW.
+   * Free-form (any number); UI typically normalises to [-180, 180].
+   * Defaults to 0 when omitted (legacy data).
+   */
+  sourceRotation?: number;
+  /** Mirror the source horizontally (after rotation). Default false. */
+  sourceFlipX?: boolean;
+  /** Mirror the source vertically (after rotation). Default false. */
+  sourceFlipY?: boolean;
 };
 
 export type Transform2D = {
@@ -121,6 +179,20 @@ export type MaskLayer = {
   productionPanelSrc: string | null;
   /** True for exclusion masks that block artwork (zipper, hood interior, etc.). */
   isExclusion: boolean;
+  /**
+   * In single-sheet AOP mode, controls whether this panel participates
+   * in the design (i.e. receives the customer artwork and contributes
+   * its bounding box to the union design canvas). Default: undefined
+   * → treated as `true` for back-compat with templates traced before
+   * this flag existed.
+   *
+   * Setting this to `false` lets an admin keep the panel polygon
+   * around (still useful for per-panel modes, calibration verification,
+   * exclusion punching) while pulling it out of the single-sheet
+   * composition — e.g. excluding sleeves so a portrait artwork only
+   * spans hood + body and the sleeves take the background colour.
+   */
+  includeInSingleSheet?: boolean;
   /** Free-form admin notes. */
   notes?: string;
 };
@@ -134,13 +206,132 @@ export type MockupAsset = {
 
 export type ReferenceOverlayAsset = {
   src: string;
+  /** Natural image dimensions (in image pixels). Stays constant. */
   width: number;
   height: number;
   opacity: number;
   visible: boolean;
+  /** When false, the canvas exposes drag + corner-resize handles. */
   locked: boolean;
   /** "below" places overlay under masks; "above" places it on top for ghosting. */
   placement: "below" | "above";
+  /**
+   * Top-left position of the rendered overlay in mockup pixels. Defaults
+   * to (0, 0) so legacy uploads stay where they were.
+   */
+  x?: number;
+  y?: number;
+  /**
+   * Uniform scale applied to (width, height). Defaults to 1. Aspect
+   * ratio is locked — the editor only exposes proportional resize
+   * handles so the reference image can never be squished.
+   */
+  scale?: number;
+};
+
+/**
+ * Customer-facing artwork placement applied to a single design group.
+ * Mirrors the renderer's ArtworkPlacement (kept duplicated in client
+ * code as well, but the canonical type lives here so the template
+ * file can be parsed without touching client modules).
+ */
+export type GroupPlacement = {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+export const DEFAULT_GROUP_PLACEMENT: GroupPlacement = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
+
+/**
+ * A "design group" bundles related panels (e.g. front_left + front_right
+ * = the front body) so they can be scaled/positioned together,
+ * independent of other groups. The artwork still comes from the global
+ * upload — each group just controls how much of that artwork lands on
+ * its panels. A group with an L/R seam pair (front body, hood) can
+ * specify a `seamAllowance` so the customer's design doesn't visually
+ * cross the physical seam.
+ */
+export type DesignGroup = {
+  id: string;
+  /** Human label shown in the UI ("Hood", "Front body", etc.). */
+  name: string;
+  /**
+   * Panel keys that participate in this group. Panels in the same
+   * group share one design rect / placement / seam allowance, so they
+   * appear as a single coherent surface.
+   */
+  panelKeys: HoodiePanelKey[];
+  /**
+   * Per-view placement so the front-body group's offset doesn't
+   * follow the user when they tab to back. Hood placements stay
+   * independent in Phase 2; Phase 3 will optionally link them for
+   * the front↔back wrap.
+   */
+  placement: Record<HoodieView, GroupPlacement>;
+  /**
+   * Width of the seam (centre seam between L and R panels of this
+   * group), expressed as a percentage of the group's design rect
+   * width. The renderer trims this strip out of the artwork's middle
+   * so the L and R panels don't visually share pixels across what
+   * would be a sewn seam in real life. Range 0..15. Only applied
+   * when the group contains a known L/R pair (zip seam for front
+   * body, centre seam for hood). 0 = no seam compensation.
+   */
+  seamAllowance: number;
+  /**
+   * When the lock-ratio toggle is on, this stores the captured scale
+   * for this group at the moment the lock was engaged. Dragging any
+   * locked group's scale rescales the others proportionally so the
+   * captured ratios are preserved. `null` = not currently locked.
+   */
+  lockedRatio: number | null;
+  /** When false, this group's panels render the background colour only (no artwork). */
+  enabled: boolean;
+};
+
+/**
+ * Repeating-tile mode settings — when the AOP mode is `tile`, the
+ * artwork tiles uniformly across every panel under the calibrated
+ * meshes at a real-world size. Independent of design groups (groups
+ * only matter for single-sheet mode).
+ */
+export type TileSettings = {
+  /** Tile pattern arrangement. */
+  pattern: "grid" | "brick" | "half-drop";
+  /**
+   * Real-world size of one tile in inches. The renderer converts this
+   * to mockup pixels using `realWorldCalibration.pixelsPerInch`, so
+   * the same template can output a "1.5 inch tile" preview that
+   * matches what Printify would actually print.
+   */
+  tileSizeInches: number;
+};
+
+export const DEFAULT_TILE_SETTINGS: TileSettings = {
+  pattern: "grid",
+  tileSizeInches: 1.5,
+};
+
+/**
+ * Anchor for converting mockup pixels to real-world units. Required
+ * for the tile-size slider to be physically meaningful. The admin
+ * sets it once based on a known measurement (e.g. "the front-body
+ * panel is 22 inches wide on the size L hoodie") and the renderer
+ * derives the px/inch ratio from there.
+ */
+export type RealWorldCalibration = {
+  /** How many mockup pixels equal one real-world inch on the hoodie's surface. */
+  pixelsPerInch: number;
+};
+
+/** Sensible default for a 1024-px-wide mockup of a size-L hoodie body (~24"). */
+export const DEFAULT_REAL_WORLD_CALIBRATION: RealWorldCalibration = {
+  pixelsPerInch: 1024 / 24,
 };
 
 export type HoodieViewState = {
@@ -171,6 +362,17 @@ export type HoodieTemplate = {
    * Each entry is the canonical id; matching exclusion mask layers carry the id in their name/notes.
    */
   globalExclusions: string[];
+  /**
+   * Design groups — collections of panels that scale and translate
+   * together in single-sheet mode. Optional for back-compat; older
+   * templates fall back to "everything is one group" inside the
+   * renderer. Edited in the AOP modal and persisted as defaults.
+   */
+  designGroups?: DesignGroup[];
+  /** Repeating-tile mode settings (independent of designGroups). */
+  tileSettings?: TileSettings;
+  /** Mockup-px ↔ real-world conversion. Used by the tile-size slider. */
+  realWorldCalibration?: RealWorldCalibration;
 };
 
 export const EMPTY_HOODIE_VIEW: HoodieViewState = {
@@ -178,6 +380,168 @@ export const EMPTY_HOODIE_VIEW: HoodieViewState = {
   referenceOverlay: null,
   layers: [],
 };
+
+/**
+ * Sensible default design groups for the zip-hoodie-aop template.
+ * Existing templates without a `designGroups` field fall through to
+ * this list at load time so the AOP preview behaves as expected
+ * without needing a manual migration step. Five groups, deliberately
+ * matching the user's mental model:
+ *   - Hood (L+R, paired)
+ *   - Front body (L+R + pocket halves, paired) — pocket joins the
+ *     front zip seam allowance per the user's request
+ *   - Back body (single panel)
+ *   - Sleeves (L+R + cuffs)
+ *   - Trim (waistband + legacy front_pocket)
+ */
+export function defaultDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  return [
+    {
+      id: "hood",
+      name: "Hood",
+      panelKeys: ["left_hood", "right_hood"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "front-body",
+      name: "Front body",
+      // Pocket halves ride with the front body so the customer's
+      // print continues across the pocket / chest boundary using
+      // the same zip-seam allowance.
+      panelKeys: ["front_left", "front_right", "pocket_left", "pocket_right"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-body",
+      name: "Back body",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      // Sleeves are physically separate fabric tubes, NOT an L/R
+      // seam pair — splitting them into independent groups means
+      // their union AABBs don't collide across the front torso when
+      // both are enabled.
+      id: "left-sleeve",
+      name: "Left sleeve",
+      panelKeys: ["left_sleeve", "left_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-sleeve",
+      name: "Right sleeve",
+      panelKeys: ["right_sleeve", "right_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "trim",
+      name: "Trim",
+      panelKeys: ["waistband", "front_pocket"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+  // Hint to TS that we're definitely returning the right shape.
+  void blankPair;
+}
+
+/**
+ * Look up which design group a given panel belongs to. Returns null
+ * for unmatched panels — the renderer treats those as "ungrouped"
+ * and falls back to the legacy single-design-rect behaviour.
+ */
+export function findGroupForPanel(
+  groups: DesignGroup[] | undefined,
+  panelKey: HoodiePanelKey | null,
+): DesignGroup | null {
+  if (!groups || !panelKey) return null;
+  for (const g of groups) {
+    if (g.panelKeys.includes(panelKey)) return g;
+  }
+  return null;
+}
+
+/**
+ * Panel keys recognised as the LEFT / RIGHT halves of a centre-seam
+ * pair. Used by the renderer to know which panels in a group
+ * contribute to seam-allowance UV insetting.
+ */
+export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
+  left: ["front_left", "left_hood", "pocket_left"],
+  right: ["front_right", "right_hood", "pocket_right"],
+};
+
+/**
+ * Fill in any optional fields a loaded template might be missing
+ * (older saves predate `designGroups`, `tileSettings`, etc.). Returns
+ * a new shallow-copy with the defaults applied so the loader can
+ * pass the result straight into the store. Existing values are
+ * preserved — defaults only fill genuinely-undefined fields.
+ */
+export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
+  let designGroups = template.designGroups ?? defaultDesignGroups();
+  // Migrate legacy single-Sleeves group → Left/Right sleeve groups.
+  // Older templates persisted before this split contained one group
+  // covering all four sleeve+cuff panels, which made the design rect
+  // explode across the front when both sides were enabled.
+  const legacyIdx = designGroups.findIndex((g) => g.id === "sleeves");
+  if (legacyIdx >= 0) {
+    const legacy = designGroups[legacyIdx];
+    const has = (k: HoodiePanelKey) => legacy.panelKeys.includes(k);
+    if (
+      has("left_sleeve") &&
+      has("right_sleeve") &&
+      has("left_cuff") &&
+      has("right_cuff")
+    ) {
+      designGroups = [
+        ...designGroups.slice(0, legacyIdx),
+        {
+          ...legacy,
+          id: "left-sleeve",
+          name: "Left sleeve",
+          panelKeys: ["left_sleeve", "left_cuff"],
+        },
+        {
+          ...legacy,
+          id: "right-sleeve",
+          name: "Right sleeve",
+          panelKeys: ["right_sleeve", "right_cuff"],
+        },
+        ...designGroups.slice(legacyIdx + 1),
+      ];
+    }
+  }
+  return {
+    ...template,
+    designGroups,
+    tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
+    realWorldCalibration:
+      template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
+  };
+}
 
 export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplate {
   const now = new Date().toISOString();
@@ -195,6 +559,9 @@ export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplat
       back: { ...EMPTY_HOODIE_VIEW },
     },
     globalExclusions: [],
+    designGroups: defaultDesignGroups(),
+    tileSettings: { ...DEFAULT_TILE_SETTINGS },
+    realWorldCalibration: { ...DEFAULT_REAL_WORLD_CALIBRATION },
   };
 }
 
@@ -207,6 +574,8 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "front_right",
     "front_left",
     "front_pocket",
+    "pocket_left",
+    "pocket_right",
     "left_sleeve",
     "right_sleeve",
     "left_cuff",
@@ -230,7 +599,9 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
 export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   front_right: "Front Right",
   front_left: "Front Left",
-  front_pocket: "Front Pocket",
+  front_pocket: "Front Pocket (legacy)",
+  pocket_left: "Pocket Left",
+  pocket_right: "Pocket Right",
   left_sleeve: "Left Sleeve",
   right_sleeve: "Right Sleeve",
   left_cuff: "Left Cuff",
@@ -240,3 +611,134 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   waistband: "Waistband",
   back: "Back",
 };
+
+/**
+ * Anatomical render order for hoodie panels. Pieces that physically sit
+ * on top of others on the garment must draw on top in the renderer too —
+ * otherwise a kangaroo pocket gets covered by the front-left body panel,
+ * cuffs disappear under sleeves, etc.
+ *
+ * Higher number = drawn later (on top). The mapper canvas, the AOP
+ * preview, and any future production renderer all share this ordering.
+ *
+ * The user's per-layer `zIndex` is still respected as a tiebreaker WITHIN
+ * the same anatomical tier — the Forward/Back buttons in the Properties
+ * panel let you rearrange e.g. two overlapping shadow passes on the same
+ * Front Left panel — but they will not push a body panel above the
+ * pocket. That ordering is structurally correct so it shouldn't be a
+ * per-layer chore.
+ */
+export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
+  back: 10,
+  front_left: 20,
+  front_right: 20,
+  left_sleeve: 30,
+  right_sleeve: 30,
+  left_hood: 40,
+  right_hood: 40,
+  left_cuff: 50,
+  right_cuff: 50,
+  waistband: 60,
+  front_pocket: 70,
+  pocket_left: 70,
+  pocket_right: 70,
+};
+
+/** Tier used when a layer has no panelKey assigned yet. Sits in the middle so unassigned scratch layers don't all collapse to the bottom of the stack. */
+const UNASSIGNED_RENDER_TIER = 35;
+
+/**
+ * Generate a default rectangular mesh that fills `bounds` (mockup pixels).
+ * Used to initialise a layer's mesh on the first switch to the mesh-warp
+ * tool — the user can then drag interior control points to deform the
+ * grid against fabric curvature.
+ */
+export function createDefaultMesh(
+  bounds: { x: number; y: number; width: number; height: number },
+  cols = 4,
+  rows = 4,
+  sourceRect: SourceRect | null = null,
+): MeshGrid {
+  const safeCols = Math.max(2, Math.min(16, Math.floor(cols)));
+  const safeRows = Math.max(2, Math.min(16, Math.floor(rows)));
+  const targetPoints: Pt[] = [];
+  for (let r = 0; r < safeRows; r += 1) {
+    const v = r / (safeRows - 1);
+    for (let c = 0; c < safeCols; c += 1) {
+      const u = c / (safeCols - 1);
+      targetPoints.push({
+        x: bounds.x + u * bounds.width,
+        y: bounds.y + v * bounds.height,
+      });
+    }
+  }
+  return { cols: safeCols, rows: safeRows, sourceRect, targetPoints };
+}
+
+/**
+ * Resize an existing mesh to a new (cols, rows) shape, preserving the
+ * deformation as much as possible by bilinearly resampling the target
+ * positions of the old grid into the new grid.
+ *
+ * Falls back to a default rectangular mesh if the old mesh is empty or
+ * malformed.
+ */
+export function resizeMesh(
+  mesh: MeshGrid,
+  newCols: number,
+  newRows: number,
+  fallbackBounds: { x: number; y: number; width: number; height: number },
+): MeshGrid {
+  const safeCols = Math.max(2, Math.min(16, Math.floor(newCols)));
+  const safeRows = Math.max(2, Math.min(16, Math.floor(newRows)));
+  const old = mesh.targetPoints;
+  if (
+    old.length !== mesh.cols * mesh.rows ||
+    mesh.cols < 2 ||
+    mesh.rows < 2
+  ) {
+    return createDefaultMesh(fallbackBounds, safeCols, safeRows, mesh.sourceRect);
+  }
+  const targetPoints: Pt[] = [];
+  for (let r = 0; r < safeRows; r += 1) {
+    const v = r / (safeRows - 1);
+    const yIdx = v * (mesh.rows - 1);
+    const y0 = Math.floor(yIdx);
+    const y1 = Math.min(mesh.rows - 1, y0 + 1);
+    const ty = yIdx - y0;
+    for (let c = 0; c < safeCols; c += 1) {
+      const u = c / (safeCols - 1);
+      const xIdx = u * (mesh.cols - 1);
+      const x0 = Math.floor(xIdx);
+      const x1 = Math.min(mesh.cols - 1, x0 + 1);
+      const tx = xIdx - x0;
+      const tl = old[y0 * mesh.cols + x0];
+      const tr = old[y0 * mesh.cols + x1];
+      const bl = old[y1 * mesh.cols + x0];
+      const br = old[y1 * mesh.cols + x1];
+      const top = { x: tl.x + (tr.x - tl.x) * tx, y: tl.y + (tr.y - tl.y) * tx };
+      const bot = { x: bl.x + (br.x - bl.x) * tx, y: bl.y + (br.y - bl.y) * tx };
+      targetPoints.push({
+        x: top.x + (bot.x - top.x) * ty,
+        y: top.y + (bot.y - top.y) * ty,
+      });
+    }
+  }
+  return { cols: safeCols, rows: safeRows, sourceRect: mesh.sourceRect, targetPoints };
+}
+
+/**
+ * Combined render priority for a mask layer. Sorts ascending: lower
+ * priority draws first (background), higher priority draws on top.
+ *
+ * Combines an anatomical tier (per panelKey) with the user's per-layer
+ * zIndex so the Forward/Back buttons still have a useful within-tier
+ * effect. Multiplying tier by 1000 means user zIndex (small integers)
+ * never crosses tier boundaries.
+ */
+export function layerRenderPriority(layer: MaskLayer): number {
+  const tier = layer.panelKey
+    ? (PANEL_RENDER_ORDER[layer.panelKey] ?? UNASSIGNED_RENDER_TIER)
+    : UNASSIGNED_RENDER_TIER;
+  return tier * 1000 + layer.zIndex;
+}

@@ -50,6 +50,162 @@
   }
   window.__APPAI_CUSTOMIZER_INIT__ = true;
 
+  function appaiTransitionInner(mockupUrl, productName) {
+    return ''
+      + '<div class="appai-transition-inner">'
+      + '<div class="appai-transition-title">Loading AI Art Studio</div>'
+      + '</div>';
+  }
+
+  function appaiApplyTransitionDocumentState() {
+    document.documentElement.style.background = '#f4f4f5';
+    document.documentElement.style.overflowY = 'scroll';
+    document.documentElement.style.scrollbarGutter = 'stable both-edges';
+    if (document.body) {
+      document.body.style.background = '#f4f4f5';
+      document.body.style.overflowY = 'scroll';
+      document.body.style.scrollbarGutter = 'stable both-edges';
+    }
+  }
+
+  function appaiStyleTransitionOverlay(overlay) {
+    overlay.style.cssText = [
+      'position:fixed',
+      'inset:0',
+      'z-index:2147483647',
+      'background:#f4f4f5',
+      'display:flex',
+      'align-items:center',
+      'justify-content:center',
+      'padding:24px',
+      'box-sizing:border-box',
+      'opacity:1',
+      'visibility:visible',
+      'transition:none',
+      'pointer-events:auto',
+      'transform:none'
+    ].join(';') + ';';
+  }
+
+  function appaiBuildTransitionInner() {
+    var inner = document.createElement('div');
+    inner.className = 'appai-transition-inner';
+    inner.style.cssText = 'display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;';
+    var title = document.createElement('div');
+    title.className = 'appai-transition-title';
+    title.textContent = 'Loading AI Art Studio';
+    title.style.cssText = [
+      'margin:0',
+      'display:inline-block',
+      'padding:0.08em 0.04em 0.14em',
+      'font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+      'letter-spacing:-0.04em',
+      'text-align:center',
+      'background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%)',
+      'background-size:200% auto',
+      '-webkit-background-clip:text',
+      'background-clip:text',
+      '-webkit-text-fill-color:transparent',
+      'color:transparent',
+      'animation:appai-transition-title-shimmer 2.4s linear infinite'
+    ].join(';') + ';';
+    inner.appendChild(title);
+    return inner;
+  }
+
+  function appaiEnsureTransitionStyles() {
+    if (document.getElementById('appai-transition-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'appai-transition-styles';
+    style.textContent = [
+      '@keyframes appai-transition-title-shimmer{0%{background-position:200% center}100%{background-position:-200% center}}',
+      'html:has(#appai-nav-transition),body:has(#appai-nav-transition){scrollbar-gutter:stable both-edges;}',
+      'html:has(#appai-nav-transition),body:has(#appai-nav-transition){overflow-y:scroll;}',
+      '#appai-nav-transition{position:fixed;inset:0;z-index:2147483647;background:#f4f4f5;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}',
+      '.appai-transition-inner{display:flex;align-items:center;justify-content:center;width:min(92vw,760px);text-align:center;}',
+      '.appai-transition-title{margin:0;display:inline-block;padding:0.08em 0.04em 0.14em;font:800 34px/1.18 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:-0.04em;background:linear-gradient(90deg,#111827 0%,#111827 35%,#d1d5db 50%,#111827 65%,#111827 100%);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent;animation:appai-transition-title-shimmer 2.4s linear infinite;}',
+      '@media(max-width:640px){.appai-transition-title{font-size:28px;}}',
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  function appaiAttachTransitionOverlay(overlay) {
+    var root = document.documentElement || document.body;
+    if (document.body && root === document.documentElement && document.body.parentNode === root) {
+      root.insertBefore(overlay, document.body);
+    } else {
+      root.appendChild(overlay);
+    }
+  }
+
+  function appaiShowTransitionOverlay() {
+    appaiEnsureTransitionStyles();
+    appaiApplyTransitionDocumentState();
+    var overlay = document.getElementById('appai-nav-transition');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'appai-nav-transition';
+      overlay.setAttribute('aria-hidden', 'true');
+      overlay.appendChild(appaiBuildTransitionInner());
+      appaiAttachTransitionOverlay(overlay);
+    } else if (!overlay.querySelector('.appai-transition-title')) {
+      overlay.innerHTML = '';
+      overlay.appendChild(appaiBuildTransitionInner());
+    }
+    appaiStyleTransitionOverlay(overlay);
+    void overlay.offsetHeight;
+    return overlay;
+  }
+
+  function appaiAfterTransitionPaint(cb) {
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(cb);
+      });
+    } else {
+      window.setTimeout(cb, 32);
+    }
+  }
+
+  function appaiShowSavedDesignTransitionFromUrl() {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var loadDesignId = params.get('loadDesignId') || '';
+      if (!loadDesignId || document.getElementById('appai-nav-transition')) return;
+      appaiShowTransitionOverlay();
+    } catch (e) {}
+  }
+
+  window.addEventListener('message', function(event) {
+    var data = event && event.data;
+    if (!data || data.type !== 'AI_ART_STUDIO_SHOW_TRANSITION') return;
+    try {
+      appaiShowTransitionOverlay();
+      appaiAfterTransitionPaint(function () {
+        try {
+          if (event.source && event.source.postMessage) {
+            event.source.postMessage({
+              type: 'AI_ART_STUDIO_TRANSITION_SHOWN',
+              requestId: data.requestId || ''
+            }, event.origin || '*');
+          }
+        } catch (replyError) {}
+      });
+    } catch (e) {
+      try {
+        if (event.source && event.source.postMessage) {
+          event.source.postMessage({
+            type: 'AI_ART_STUDIO_TRANSITION_SHOWN',
+            requestId: data.requestId || '',
+            error: true
+          }, event.origin || '*');
+        }
+      } catch (replyError) {}
+    }
+  });
+
+  appaiShowSavedDesignTransitionFromUrl();
+
   console.log('[AI Art Embed] Script starting...');
 
   // Customer ID is available if the customer is logged in on the storefront.
@@ -314,6 +470,54 @@
       studioContainer.style.webkitOverflowScrolling = 'touch';
     }
 
+    const urlParams = new URLSearchParams(window.location.search);
+    const transitionDesignId = urlParams.get('loadDesignId') || '';
+
+    function appaiLoadingInner() {
+      return '<p class="ai-art-studio-embed__loading-title">Loading AI Art Studio</p>';
+    }
+
+    function ensureAppaiLoadingCover() {
+      if (transitionDesignId && !document.getElementById('appai-nav-transition')) {
+        appaiShowTransitionOverlay();
+      }
+      if (!studioContainer || studioContainer.querySelector('.ai-art-studio-embed__loading')) return;
+      try {
+        var position = window.getComputedStyle(studioContainer).position;
+        if (!position || position === 'static') studioContainer.style.position = 'relative';
+      } catch (e) {
+        studioContainer.style.position = 'relative';
+      }
+      var loading = document.createElement('div');
+      loading.className = 'ai-art-studio-embed__loading';
+      loading.style.cssText = 'display:flex;align-items:center;justify-content:center;background:#f4f4f5;';
+      loading.innerHTML = appaiLoadingInner();
+      studioContainer.appendChild(loading);
+    }
+
+    function removeAppaiLoadingCover() {
+      var loadingEl = studioContainer && studioContainer.querySelector('.ai-art-studio-embed__loading');
+      if (loadingEl) {
+        loadingEl.style.transition = 'opacity 0.2s ease';
+        loadingEl.style.opacity = '0';
+        setTimeout(function() { if (loadingEl.parentNode) loadingEl.remove(); }, 220);
+      }
+      try {
+        var fullCover = document.getElementById('appai-nav-transition');
+        if (fullCover) {
+          fullCover.style.transition = 'opacity 0.2s ease';
+          fullCover.style.opacity = '0';
+          setTimeout(function() { if (fullCover.parentNode) fullCover.remove(); }, 220);
+        }
+        var bootCover = document.getElementById('appai-boot');
+        if (bootCover) {
+          bootCover.style.transition = 'opacity 0.2s ease';
+          bootCover.style.opacity = '0';
+          setTimeout(function() { if (bootCover.parentNode) bootCover.remove(); }, 220);
+        }
+      } catch (e) {}
+    }
+
     if (existingBlock) {
       console.log('[AI Art Embed] Found existing app block container, mounting into it.');
       // Clear the block's "Loading design studio…" placeholder
@@ -329,15 +533,15 @@
       container.innerHTML = `
         <div class="ai-art-studio-embed__wrapper">
           <div class="ai-art-studio-embed__studio" style="height:600px;">
-            <div class="ai-art-studio-embed__loading">
-              <div class="ai-art-studio-embed__spinner"></div>
-              <p class="ai-art-studio-embed__loading-title">AI Art Studio</p>
+            <div class="ai-art-studio-embed__loading" style="display:flex;align-items:center;justify-content:center;background:#f4f4f5;">
+              ${appaiLoadingInner()}
             </div>
           </div>
         </div>
       `;
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
+    ensureAppaiLoadingCover();
     applyMobileNativeScrollFrame();
     if (mobileNativeScroll) {
       var resizeFrame = function() { applyMobileNativeScrollFrame(); };
@@ -370,7 +574,6 @@
       params.set('customerId', String(customerId));
     }
     
-    const urlParams = new URLSearchParams(window.location.search);
     const sharedDesignId = urlParams.get('sharedDesignId');
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
@@ -378,6 +581,10 @@
     const loadDesignId = urlParams.get('loadDesignId');
     if (loadDesignId) {
       params.set('loadDesignId', loadDesignId);
+    }
+    const loadMockup = urlParams.get('loadMockup');
+    if (loadMockup) {
+      params.set('loadMockup', loadMockup);
     }
     
     const iframe = document.createElement('iframe');
@@ -851,12 +1058,12 @@
         bridgeAcked = true;
         if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
         console.log(B, 'Handshake COMPLETE. parent:', BRIDGE_VERSION, 'iframe:', data._bridgeVersion, 'after', heartbeatN, 'heartbeats');
-        // Remove the loading screen now that the React app is fully mounted and rendered.
-        const loadingEl = studioContainer.querySelector('.ai-art-studio-embed__loading');
-        if (loadingEl) {
-          loadingEl.style.transition = 'opacity 0.2s ease';
-          loadingEl.style.opacity = '0';
-          setTimeout(function() { if (loadingEl.parentNode) loadingEl.remove(); }, 220);
+        // If this page is restoring a saved design, keep the cover up until the
+        // iframe confirms that exact design has been applied and painted. ACK
+        // only means "React mounted", which is too early and exposes the
+        // intermediate product/page states during cross-product navigation.
+        if (!transitionDesignId) {
+          removeAppaiLoadingCover();
         }
 
         // Push Shopify variants (with prices) into the iframe so the generator
@@ -917,6 +1124,15 @@
           console.warn(B, 'Failed to send LOAD_DESIGN:', e.message);
         }
 
+        return;
+      }
+
+      // ===== DESIGN_APPLIED =====
+      if (data.type === 'AI_ART_STUDIO_DESIGN_APPLIED') {
+        var appliedDesignId = data.designId ? String(data.designId) : '';
+        if (!transitionDesignId || appliedDesignId === transitionDesignId) {
+          removeAppaiLoadingCover();
+        }
         return;
       }
 
@@ -1663,13 +1879,99 @@
    * Only one customizer instance can ever mount — the global guards
    * (__APPAI_CUSTOMIZER_INIT__ + __APPAI_CUSTOMIZER_HANDLED) ensure this.
    */
-  function initCustomizerPage(handle) {
+  function appaiMountCustomizerConfig(handle, config, opts) {
+    opts = opts || {};
+    var replaceExisting = !!opts.replaceExisting;
+    console.log('[AI Art Embed] STATE=CONFIG_LOADED handle=' + handle +
+      ' productTypeId=' + config.productTypeId +
+      ' hasDesignerConfig=' + !!config.designerConfig);
+
+    var mount = document.querySelector('#MainContent') ||
+                document.querySelector('main[role="main"]') ||
+                document.querySelector('main') ||
+                document.body;
+
+    if (replaceExisting) {
+      document.querySelectorAll('#ai-art-studio-auto-embed, .ai-art-studio-embed').forEach(function(el) {
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      });
+      Array.prototype.slice.call(mount.children || []).forEach(function(el) {
+        if (el.id === 'appai-boot' || el.id === 'appai-nav-transition') return;
+        if (el.classList && el.classList.contains('ai-art-studio-embed')) return;
+        el.style.display = 'none';
+      });
+    }
+
+    var hideThemeElement = function(el) {
+      if (!el || el.querySelector('#appai-boot') || el.closest('#appai-boot')) return;
+      el.style.display = 'none';
+    };
+
+    // Hide theme's generic page text (title, body copy)
+    ['#MainContent > .page-width', 'main .page', '.page__content',
+     '.shopify-section--rich-text', 'h1.page-title', 'h1.title'].forEach(function(sel) {
+      document.querySelectorAll(sel).forEach(hideThemeElement);
+    });
+
+    // Hide the page's body_html rendered by the theme (e.g. stale "Loading customizer..." text
+    // that was set as the page body before we switched to empty body_html).
+    document.querySelectorAll('.page-content, .rte, article .rte, .page__body').forEach(function(el) {
+      if (el.closest('.ai-art-studio-embed') || el.closest('.ai-art-studio-block')) return;
+      hideThemeElement(el);
+    });
+    var shopDomain = (function () {
+      var el = document.getElementById('appai-root');
+      var ds = el && el.getAttribute('data-shop');
+      var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
+      var s = String(raw).trim().toLowerCase();
+      if (s.indexOf('.myshopify.com') !== -1) return s;
+      if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
+      return s;
+    })();
+    var studioEl = createDesignStudio({
+      appUrl:               config.appUrl,
+      shopDomain:           shopDomain,
+      productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
+      productId:            config.baseProductId || '',
+      productHandle:        config.baseProductHandle || handle,
+      productTitle:         config.baseProductTitle || config.title,
+      displayName:          config.title,
+      description:          '',
+      selectedVariant:      config.baseVariantId,
+      hideAddToCart:        false,
+      enabled:              true,
+      inlineDesignerConfig: config.designerConfig || null,
+      // Shopify variants with prices and style presets — pushed into the
+      // iframe via postMessage in the BRIDGE_ACK handler so the generator
+      // can render them internally (no external dropdown needed).
+      shopifyVariants:      config.variants || [],
+      stylePresets:         config.stylePresets || [],
+    });
+
+    // null means the iframe was mounted into an existing theme app block.
+    if (studioEl) {
+      mount.insertBefore(studioEl, mount.firstChild);
+    }
+    console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
+
+    // Remove any duplicate generators that old cached block scripts may have created
+    cleanupDuplicateGenerators();
+    // Run again after a short delay to catch iframes that load asynchronously
+    setTimeout(cleanupDuplicateGenerators, 1500);
+  }
+
+  function initCustomizerPage(handle, opts) {
+    opts = opts || {};
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
 
     fetch('/apps/appai/customizer-page?handle=' + encodeURIComponent(handle), { credentials: 'same-origin' })
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(config) {
         if (!config) {
+          if (opts.fallbackUrl) {
+            window.location.href = opts.fallbackUrl;
+            return;
+          }
           // STATE=ERROR — not a registered/active customizer page.
           // Show a clear message instead of silently releasing the flag.
           console.log('[AI Art Embed] STATE=ERROR /pages/' + handle + ' is not a customizer page (404).');
@@ -1686,76 +1988,7 @@
           return;
         }
 
-        console.log('[AI Art Embed] STATE=CONFIG_LOADED handle=' + handle +
-          ' productTypeId=' + config.productTypeId +
-          ' hasDesignerConfig=' + !!config.designerConfig);
-
-        var mount = document.querySelector('#MainContent') ||
-                    document.querySelector('main[role="main"]') ||
-                    document.querySelector('main') ||
-                    document.body;
-
-        // Hide theme's generic page text (title, body copy)
-        ['#MainContent > .page-width', 'main .page', '.page__content',
-         '.shopify-section--rich-text', 'h1.page-title', 'h1.title'].forEach(function(sel) {
-          document.querySelectorAll(sel).forEach(function(el) { el.style.display = 'none'; });
-        });
-
-        // Hide the page's body_html rendered by the theme (e.g. stale "Loading customizer..." text
-        // that was set as the page body before we switched to empty body_html).
-        document.querySelectorAll('.page-content, .rte, article .rte, .page__body').forEach(function(el) {
-          if (el.closest('.ai-art-studio-embed') || el.closest('.ai-art-studio-block')) return;
-          el.style.display = 'none';
-        });
-
-        // Add a single shimmer sweep to the page heading (e.g. "Slim Phone Cases")
-        var pageH1 = document.querySelector('h1');
-        if (pageH1 && !pageH1.classList.contains('appai-page-title-shimmer')) {
-          pageH1.classList.add('appai-page-title-shimmer');
-          // Remove class after animation completes so it doesn't replay on re-render
-          pageH1.addEventListener('animationend', function() {
-            pageH1.classList.remove('appai-page-title-shimmer');
-          }, { once: true });
-        }
-        var shopDomain = (function () {
-          var el = document.getElementById('appai-root');
-          var ds = el && el.getAttribute('data-shop');
-          var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
-          var s = String(raw).trim().toLowerCase();
-          if (s.indexOf('.myshopify.com') !== -1) return s;
-          if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
-          return s;
-        })();
-        var studioEl = createDesignStudio({
-          appUrl:               config.appUrl,
-          shopDomain:           shopDomain,
-          productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
-          productId:            config.baseProductId || '',
-          productHandle:        config.baseProductHandle || handle,
-          productTitle:         config.baseProductTitle || config.title,
-          displayName:          config.title,
-          description:          '',
-          selectedVariant:      config.baseVariantId,
-          hideAddToCart:        false,
-          enabled:              true,
-          inlineDesignerConfig: config.designerConfig || null,
-          // Shopify variants with prices and style presets — pushed into the
-          // iframe via postMessage in the BRIDGE_ACK handler so the generator
-          // can render them internally (no external dropdown needed).
-          shopifyVariants:      config.variants || [],
-          stylePresets:         config.stylePresets || [],
-        });
-
-        // null means the iframe was mounted into an existing theme app block.
-        if (studioEl) {
-          mount.insertBefore(studioEl, mount.firstChild);
-        }
-        console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
-
-        // Remove any duplicate generators that old cached block scripts may have created
-        cleanupDuplicateGenerators();
-        // Run again after a short delay to catch iframes that load asynchronously
-        setTimeout(cleanupDuplicateGenerators, 1500);
+        appaiMountCustomizerConfig(handle, config, opts);
 
         // Variant selector and style presets are now rendered INSIDE the
         // generator iframe (via AI_ART_STUDIO_SHOPIFY_VARIANTS and
@@ -1763,6 +1996,10 @@
         // handler).  No external DOM is needed here.
       })
       .catch(function(e) {
+        if (opts.fallbackUrl) {
+          window.location.href = opts.fallbackUrl;
+          return;
+        }
         // STATE=ERROR — network or parse failure.  Show error instead of blank page.
         console.error('[AI Art Embed] STATE=ERROR initCustomizerPage failed:', e);
         var mount = document.querySelector('#MainContent') ||
@@ -1844,17 +2081,20 @@
 }
 .ai-art-studio-embed__loading .ai-art-studio-embed__loading-title,
 .ai-art-studio-embed__loading p.ai-art-studio-embed__loading-title {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  display: inline-block;
+  padding: 0.08em 0.04em 0.14em;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1.18;
+  letter-spacing: -0.04em;
   margin: 0;
   background: linear-gradient(
     90deg,
-    #111 0%,
-    #111 30%,
-    #888 50%,
-    #111 70%,
-    #111 100%
+    #111827 0%,
+    #111827 35%,
+    #d1d5db 50%,
+    #111827 65%,
+    #111827 100%
   );
   background-size: 200% auto;
   -webkit-background-clip: text;
@@ -1863,30 +2103,12 @@
   color: transparent;
   animation: ai-art-title-shimmer 2.4s linear infinite;
 }
-/* Page heading shimmer — text colour sweep from dark to light-grey and back, plays once */
-@keyframes appai-page-title-sweep {
-  0%   { background-position: 200% center; }
-  100% { background-position: -200% center; }
-}
-h1.appai-page-title-shimmer,
-h2.appai-page-title-shimmer {
-  /* Universal shimmer: dark text fades to light-grey mid-point and back.
-     Higher specificity (h1.class) beats theme's h1 rules. */
-  background: linear-gradient(
-    90deg,
-    #111 0%,
-    #111 30%,
-    #aaa 50%,
-    #111 70%,
-    #111 100%
-  );
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  animation: appai-page-title-sweep 1.8s ease-in-out 1 forwards;
-  display: inline-block;
+
+@media (max-width: 640px) {
+  .ai-art-studio-embed__loading .ai-art-studio-embed__loading-title,
+  .ai-art-studio-embed__loading p.ai-art-studio-embed__loading-title {
+    font-size: 28px;
+  }
 }
 
 /* Parent-side Add to Cart button */
