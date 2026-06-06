@@ -99,10 +99,6 @@ function PlanCard({
           </li>
           <li className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            <span>Unlimited customer designs</span>
-          </li>
-          <li className="flex items-center gap-2">
-            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
             <span>Native cart & checkout mockups</span>
           </li>
         </ul>
@@ -185,7 +181,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
         <h2 className="text-2xl font-bold mb-2">Pick a plan to get started</h2>
         <p className="text-muted-foreground">
           Start with a free trial, or pick a paid plan for more customizer pages and a larger
-          monthly allotment of free AI generations. Unlimited customer designs on every plan.
+          monthly allotment of free AI generations.
         </p>
       </div>
 
