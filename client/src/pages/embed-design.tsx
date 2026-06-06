@@ -4540,10 +4540,20 @@ export default function EmbedDesign() {
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
-  // This also fixes the initial scroll glitch where the first few scrolls are swallowed.
+  // In fixed-height mobile-native mode, first let the iframe try to scroll itself;
+  // if the wheel delta is swallowed, hand it off to the Shopify page.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
-    if (mobileNativeScroll) return;
+    let fallbackRaf = 0;
+    const postWheelToParent = (e: WheelEvent) => {
+      window.parent.postMessage({
+        type: 'ai-art-studio:wheel',
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaZ: e.deltaZ,
+        deltaMode: e.deltaMode,
+      }, '*');
+    };
     const handleWheel = (e: WheelEvent) => {
       // Check if a Radix dropdown/popover is currently open
       const isRadixOpen = !!document.querySelector(
@@ -4559,19 +4569,39 @@ export default function EmbedDesign() {
         // Mouse is outside the dropdown but a dropdown is open — still forward to parent
         // so the background page can scroll while the dropdown is open
       }
-      // Forward wheel event to parent page
-      window.parent.postMessage({
-        type: 'ai-art-studio:wheel',
-        deltaX: e.deltaX,
-        deltaY: e.deltaY,
-        deltaZ: e.deltaZ,
-        deltaMode: e.deltaMode,
-      }, '*');
+      if (mobileNativeScroll) {
+        const scrollEl = document.scrollingElement || document.documentElement;
+        const beforeTop = scrollEl.scrollTop;
+        const beforeLeft = scrollEl.scrollLeft;
+        const deltaX = e.deltaX;
+        const deltaY = e.deltaY;
+        const deltaZ = e.deltaZ;
+        const deltaMode = e.deltaMode;
+        if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
+        fallbackRaf = window.requestAnimationFrame(() => {
+          fallbackRaf = 0;
+          const topUnchanged = Math.abs(scrollEl.scrollTop - beforeTop) < 1;
+          const leftUnchanged = Math.abs(scrollEl.scrollLeft - beforeLeft) < 1;
+          if (topUnchanged && leftUnchanged) {
+            window.parent.postMessage({
+              type: 'ai-art-studio:wheel',
+              deltaX,
+              deltaY,
+              deltaZ,
+              deltaMode,
+            }, '*');
+          }
+        });
+        return;
+      }
+      postWheelToParent(e);
     };
-    // Use passive:false so we can call preventDefault if needed, but we don't
-    // preventDefault here — we want the iframe to also process the event
+    // Passive because we do not block native iframe scrolling.
     window.addEventListener('wheel', handleWheel, { passive: true });
-    return () => window.removeEventListener('wheel', handleWheel);
+    return () => {
+      if (fallbackRaf) window.cancelAnimationFrame(fallbackRaf);
+      window.removeEventListener('wheel', handleWheel);
+    };
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   // Mobile native scroll mode: minimal, passive boundary-only touch handoff.
