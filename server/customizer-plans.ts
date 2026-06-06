@@ -3,8 +3,6 @@
  *
  * Maps plan name → max customizer pages allowed.
  * The plan state lives on shopifyInstallations.planName / planStatus.
- *
- * Future: add per-plan generation quota limits here as well.
  */
 
 export const PLAN_PAGE_LIMITS: Record<string, number> = {
@@ -13,6 +11,38 @@ export const PLAN_PAGE_LIMITS: Record<string, number> = {
   dabbler:  5,
   pro:      15,
   pro_plus: 30,
+};
+
+/**
+ * Monthly free AI-generation allotment per plan.
+ *
+ * NOTE: These numbers currently drive the billing/pricing DISPLAY (plan picker
+ * cards). Per-merchant monthly quota *enforcement* (counting generations,
+ * blocking at the cap, charging overages) is NOT yet wired up — see
+ * `merchants.monthlyGenerationLimit` / `generationsThisMonth` in the schema,
+ * which still default to 100 and are not tied to these values. Wire these in
+ * when implementing metered billing.
+ *
+ * The separate per-CUSTOMER 10-free-generation limit IS enforced today
+ * (FREE_GENERATION_LIMIT in server/routes.ts + server/storage.ts).
+ */
+export const PLAN_GENERATION_QUOTAS: Record<string, number> = {
+  trial:    20,
+  starter:  250,
+  dabbler:  600,
+  pro:      1500,
+  pro_plus: 3000,
+};
+
+/** Per-generation overage price in USD (applies once the monthly quota is exhausted). */
+export const OVERAGE_PRICE_USD = 0.08;
+
+/** Max extra (overage) generations allowed per calendar month, per paid plan. */
+export const PLAN_OVERAGE_CAPS: Record<string, number> = {
+  starter:  200,
+  dabbler:  300,
+  pro:      500,
+  pro_plus: 1000,
 };
 
 /** Monthly price in USD (shown in plan picker UI). */

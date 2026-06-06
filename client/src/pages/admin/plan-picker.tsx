@@ -7,14 +7,30 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Loader2, CheckCircle, Zap, LayoutTemplate, Star, Rocket, Info } from "lucide-react";
+
+/**
+ * Shared note appended to every paid plan's info popover (and the Trial card).
+ * Explains the per-customer 10-free-generation limit and the $1 top-up packs.
+ */
+const CUSTOMER_ABUSE_NOTE =
+  "Free generations per customer are limited to 10 to avoid abuse of free generations. " +
+  "Customers are offered extra packs of 10 generations for a dollar directly from AI Art Studio " +
+  "if they wish to continue creating. The maximum of a dollar is reimbursed if the customer makes a physical transaction.";
 
 interface PlanCardProps {
   name: string;
   displayName: string;
   price: number | null;
   pageLimit: number;
+  /** Monthly free AI-generation allotment for this plan. */
+  freeGenerations: number;
   description: string;
+  /** First line of the info popover, describing this plan's overage terms (paid plans only). */
+  overageNote?: string;
+  /** Extra free-text shown on the Trial card explaining the upgrade path. */
+  trialNote?: string;
   highlight?: boolean;
   icon: React.ReactNode;
   ctaLabel: string;
@@ -23,7 +39,8 @@ interface PlanCardProps {
 }
 
 function PlanCard({
-  displayName, price, pageLimit, description, highlight, icon, ctaLabel, onSelect, loading,
+  displayName, price, pageLimit, freeGenerations, description, overageNote, trialNote,
+  highlight, icon, ctaLabel, onSelect, loading,
 }: PlanCardProps) {
   return (
     <Card className={`relative flex flex-col ${highlight ? "border-primary ring-2 ring-primary/20" : ""}`}>
@@ -51,6 +68,31 @@ function PlanCard({
       </CardHeader>
       <CardContent className="flex flex-col flex-1">
         <ul className="space-y-2 mb-6 flex-1 text-sm">
+          <li className="flex items-center gap-2">
+            <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
+            <span className="flex items-center gap-1">
+              <span>
+                {freeGenerations.toLocaleString()} free generation{freeGenerations !== 1 ? "s" : ""}
+                {price === null ? "" : "/mo"}
+              </span>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={`${displayName} generation details`}
+                    className="inline-flex text-muted-foreground hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring rounded-full"
+                  >
+                    <Info className="h-3.5 w-3.5" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="text-sm leading-relaxed space-y-2">
+                  {overageNote ? <p>{overageNote}</p> : null}
+                  {trialNote ? <p>{trialNote}</p> : null}
+                  <p className="text-muted-foreground">{CUSTOMER_ABUSE_NOTE}</p>
+                </PopoverContent>
+              </Popover>
+            </span>
+          </li>
           <li className="flex items-center gap-2">
             <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
             <span>{pageLimit} customizer page{pageLimit !== 1 ? "s" : ""}</span>
@@ -142,8 +184,8 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold mb-2">Pick a plan to get started</h2>
         <p className="text-muted-foreground">
-          Start with a free trial, or pick a paid plan to unlock more customizer pages.
-          No monthly generation quotas — unlimited customer designs on all plans.
+          Start with a free trial, or pick a paid plan for more customizer pages and a larger
+          monthly allotment of free AI generations. Unlimited customer designs on every plan.
         </p>
       </div>
 
@@ -154,7 +196,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           displayName="Trial"
           price={null}
           pageLimit={1}
+          freeGenerations={20}
           description="Evaluate the app with 1 customizer page. No credit card needed."
+          trialNote="Your trial includes 20 free generations. Once they're used, upgrade to the Starter plan to keep using the customizer page you set up."
           icon={<Zap className="h-5 w-5 text-yellow-500" />}
           ctaLabel="Start Free Trial"
           onSelect={handleTrial}
@@ -166,7 +210,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           displayName="Starter"
           price={29}
           pageLimit={1}
+          freeGenerations={250}
           description="Perfect for shops selling 1 custom product."
+          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 200 generations per calendar month."
           icon={<LayoutTemplate className="h-5 w-5 text-blue-500" />}
           ctaLabel="Choose Starter"
           onSelect={() => handlePaid("starter")}
@@ -178,7 +224,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           displayName="Dabbler"
           price={49}
           pageLimit={5}
+          freeGenerations={600}
           description="Try several products with up to 5 customizer pages."
+          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 300 generations per calendar month."
           highlight
           icon={<Star className="h-5 w-5 text-purple-500" />}
           ctaLabel="Choose Dabbler"
@@ -191,7 +239,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           displayName="Pro"
           price={99}
           pageLimit={15}
+          freeGenerations={1500}
           description="Scale across your full catalog with 15 pages."
+          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 500 generations per calendar month."
           icon={<Rocket className="h-5 w-5 text-green-500" />}
           ctaLabel="Choose Pro"
           onSelect={() => handlePaid("pro")}
@@ -203,7 +253,9 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
           displayName="Pro Plus"
           price={199}
           pageLimit={30}
+          freeGenerations={3000}
           description="Maximum scale: 30 customizer pages for large catalogs."
+          overageNote="Additional generations can be added at $0.08 per generation, capped at an extra 1000 generations per calendar month."
           icon={<Rocket className="h-5 w-5 text-orange-500" />}
           ctaLabel="Choose Pro Plus"
           onSelect={() => handlePaid("pro_plus")}
@@ -213,7 +265,7 @@ export default function PlanPicker({ onActivated, inline = false }: PlanPickerPr
 
       <p className="text-center text-xs text-muted-foreground">
         Paid plans are billed monthly through Shopify. Cancel anytime.
-        Generation quotas coming in a future release.
+        Each plan includes a monthly allotment of free AI generations — tap the ⓘ icon on a plan for overage details.
       </p>
     </div>
   );
