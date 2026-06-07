@@ -48,6 +48,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "aop_template_id",             type: "TEXT" },
   { table: "product_types",         column: "panel_mapping_template",      type: "TEXT" },
+  { table: "product_types",         column: "on_the_fly_tier",             type: "TEXT" },
+  { table: "product_types",         column: "flat_calibration_status",     type: "TEXT" },
+  { table: "product_types",         column: "flat_calibration",            type: "TEXT DEFAULT '{}'" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
 ];
 
@@ -385,6 +388,30 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "flat_order_submissions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "flat_order_submissions" (
+        "id"                  SERIAL PRIMARY KEY,
+        "idempotency_key"     TEXT NOT NULL UNIQUE,
+        "shop"                TEXT,
+        "shopify_order_id"    TEXT,
+        "shopify_line_id"     TEXT,
+        "design_id"           TEXT,
+        "product_type_id"     INTEGER,
+        "printify_shop_id"    TEXT,
+        "printify_order_id"   TEXT,
+        "status"              TEXT NOT NULL DEFAULT 'pending',
+        "sent_to_production"  BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_test"             BOOLEAN NOT NULL DEFAULT FALSE,
+        "print_file_urls"     JSONB,
+        "error"               TEXT,
+        "metadata"            JSONB,
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -452,6 +479,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "merchant_usage_charges_status_idx",
     sql: `CREATE INDEX IF NOT EXISTS "merchant_usage_charges_status_idx"
       ON "merchant_usage_charges" ("installation_id", "status")`,
+  },
+  {
+    name: "flat_order_submissions_order_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_order_idx"
+      ON "flat_order_submissions" ("shopify_order_id")`,
+  },
+  {
+    name: "flat_order_submissions_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_product_type_idx"
+      ON "flat_order_submissions" ("product_type_id")`,
   },
 ];
 

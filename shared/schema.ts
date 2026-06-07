@@ -421,6 +421,25 @@ export const productTypes = pgTable("product_types", {
    * to customers.
    */
   panelMappingTemplate: text("panel_mapping_template"),
+  /**
+   * On-the-fly mockup eligibility tier, derived at import time by the flat
+   * calibration harvest (`server/flat-calibration.ts`):
+   *   - `flat`   : planar print surface -> homography composite locally
+   *   - `mesh`   : mildly curved (e.g. cap front) -> low-density mesh warp
+   *   - `reject` : curved/wrap/3D (mug, shoe) -> keep using Printify mockups
+   * Null/empty means not yet calibrated (falls back to Printify).
+   */
+  onTheFlyTier: text("on_the_fly_tier"),
+  /** Calibration lifecycle: pending | running | ready | failed | unsupported. */
+  flatCalibrationStatus: text("flat_calibration_status"),
+  /**
+   * Flat-mockup calibration manifest (JSON). Per view (front/back): print-file
+   * pixel dims, visible + bleed rects (normalized), mask/shading asset URLs,
+   * optional mesh nodes (mesh tier), planarity score and coverage. Plus a
+   * `blanks` map of {colorOrModelId: {view: blankUrl}}. Assets live in the
+   * Supabase `flat-calibration` bucket (see server/supabaseFlatCalibration.ts).
+   */
+  flatCalibration: text("flat_calibration").default("{}"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -891,3 +910,42 @@ export const insertAopProjectionMapSchema = createInsertSchema(aopProjectionMaps
 });
 export type AopProjectionMap = typeof aopProjectionMaps.$inferSelect;
 export type InsertAopProjectionMap = z.infer<typeof insertAopProjectionMapSchema>;
+
+// Audit + idempotency record for flat/mesh on-the-fly print files pushed to
+// Printify at order time. One row per (shopify order line / test submission).
+// `idempotencyKey` mirrors the credit-ledger idempotency pattern:
+//   - live  : shopify-order-fulfill:{orderId}:{lineId}
+//   - test  : flat-test-order:{productTypeId}:{designId}:{timestamp}
+// `status`: pending → submitted | failed | skipped
+//   skipped = the line was resolved but is not an eligible flat/mesh on-the-fly
+//             product (mixed carts / normal products / AOP), recorded for audit.
+export const flatOrderSubmissions = pgTable("flat_order_submissions", {
+  id: serial("id").primaryKey(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  shop: text("shop"),
+  shopifyOrderId: text("shopify_order_id"),
+  shopifyLineId: text("shopify_line_id"),
+  designId: text("design_id"),
+  productTypeId: integer("product_type_id"),
+  printifyShopId: text("printify_shop_id"),
+  printifyOrderId: text("printify_order_id"),
+  status: text("status").notNull().default("pending"),
+  sentToProduction: boolean("sent_to_production").notNull().default(false),
+  isTest: boolean("is_test").notNull().default(false),
+  printFileUrls: jsonb("print_file_urls"),
+  error: text("error"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("flat_order_submissions_order_idx").on(table.shopifyOrderId),
+  index("flat_order_submissions_product_type_idx").on(table.productTypeId),
+]);
+
+export const insertFlatOrderSubmissionSchema = createInsertSchema(flatOrderSubmissions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type FlatOrderSubmission = typeof flatOrderSubmissions.$inferSelect;
+export type InsertFlatOrderSubmission = z.infer<typeof insertFlatOrderSubmissionSchema>;

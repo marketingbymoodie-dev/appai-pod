@@ -40,6 +40,101 @@ import {
   listPublicTemplateNames,
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
+import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
+import {
+  submitFlatTestOrder,
+  submitFlatOrderToPrintify,
+  normalizeShopifyOrderLine,
+} from "./flat-order-fulfillment";
+
+/**
+ * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
+ * (or re-calibrated) product. Marks status running -> ready/unsupported/failed
+ * and persists the manifest to product_types. Safe no-op when the merchant lacks
+ * Printify creds or the product is all-over-print (those keep their own flow).
+ */
+function kickoffFlatCalibration(args: {
+  productTypeId: number;
+  name: string;
+  blueprintId: number | null | undefined;
+  providerId: number | null | undefined;
+  token: string | null | undefined;
+  shopId: string | null | undefined;
+  isAllOverPrint: boolean;
+}): void {
+  const { productTypeId, name, blueprintId, providerId, token, shopId, isAllOverPrint } = args;
+  if (isAllOverPrint) {
+    // AOP products use the hoodie/pattern mesh pipeline, not on-the-fly flat mockups.
+    void storage.updateProductType(productTypeId, { flatCalibrationStatus: "unsupported" }).catch(() => {});
+    return;
+  }
+  if (!token || !shopId || !blueprintId || !providerId) {
+    void storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
+    return;
+  }
+  void (async () => {
+    try {
+      await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
+      const opts: HarvestOptions = { productTypeId, name, blueprintId, providerId, token, shopId };
+      const result = await harvestFlatCalibration(opts);
+      await storage.updateProductType(productTypeId, {
+        onTheFlyTier: result.tier,
+        flatCalibrationStatus: result.status,
+        flatCalibration: JSON.stringify(result.manifest),
+      });
+      console.log(`[flat-calibration] ${name} (pt ${productTypeId}) -> tier=${result.tier} status=${result.status}${result.error ? ` (${result.error})` : ""}`);
+    } catch (err) {
+      console.error(`[flat-calibration] harvest failed for pt ${productTypeId}:`, err);
+      await storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
+    }
+  })();
+}
+
+/**
+ * Parse the stored flat-calibration manifest for delivery to the storefront.
+ * Returns the manifest only for eligible (flat/mesh) products with at least one
+ * harvested view; otherwise null (storefront falls back to Printify mockups).
+ */
+function parseFlatCalibrationManifest(raw: unknown): any | null {
+  if (!raw || typeof raw !== "string") return null;
+  try {
+    const m = JSON.parse(raw);
+    if (!m || (m.tier !== "flat" && m.tier !== "mesh")) return null;
+    if (!m.views || Object.keys(m.views).length === 0) return null;
+    return m;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify a Shopify webhook HMAC against the raw request body. Mirrors the
+ * pattern in `server/shopify-gdpr.ts` (raw-body buffer + timingSafeEqual). The
+ * raw body is captured by the express.json `verify` hook (`server/index.ts`).
+ * Returns false when the secret/header is missing or the digest mismatches.
+ */
+function verifyShopifyWebhookHmac(req: Request): boolean {
+  const SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET || "";
+  const hmacHeader = req.headers["x-shopify-hmac-sha256"];
+  const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
+  if (!SHOPIFY_API_SECRET || !hmac) return false;
+  const rawBody = (req as any).rawBody;
+  const buf: Buffer = Buffer.isBuffer(rawBody)
+    ? rawBody
+    : typeof rawBody === "string"
+      ? Buffer.from(rawBody, "utf8")
+      : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
+  const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(buf).digest("base64");
+  try {
+    return (
+      digest.length === hmac.length &&
+      crypto.timingSafeEqual(Buffer.from(digest, "utf8"), Buffer.from(hmac, "utf8"))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function toUint8Array(buf: Buffer) {
   // Creates a NEW Uint8Array backed by a normal ArrayBuffer (fixes TS BlobPart typing)
   return Uint8Array.from(buf);
@@ -5153,6 +5248,8 @@ ${textEdgeRestrictions}
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
         panelMappingTemplate: (productType as any).panelMappingTemplate || null,
+        onTheFlyTier: (productType as any).onTheFlyTier || null,
+        flatCalibration: parseFlatCalibrationManifest((productType as any).flatCalibration),
         placeholderPositions: typeof productType.placeholderPositions === "string"
           ? JSON.parse(productType.placeholderPositions || "[]")
           : productType.placeholderPositions || [],
@@ -5437,6 +5534,8 @@ ${textEdgeRestrictions}
       isAllOverPrint: productTypeToUse.isAllOverPrint || false,
       aopTemplateId: productTypeToUse.aopTemplateId || null,
       panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
+      onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
+      flatCalibration: parseFlatCalibrationManifest((productTypeToUse as any).flatCalibration),
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
         ? JSON.parse(productTypeToUse.placeholderPositions || "[]")
         : productTypeToUse.placeholderPositions || [],
@@ -8928,7 +9027,12 @@ ${textEdgeRestrictions}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      console.log("[Shopify Orders Paid] received", { shop, orderId });
+      // Compute webhook HMAC validity. The legacy credit-ledger path below is
+      // preserved as-is (additive change); the NEW Printify fulfillment path is
+      // strictly gated behind a valid HMAC + the FLAT_ORDER_FULFILLMENT_ENABLED
+      // flag, so forged/unverified requests can never trigger a Printify order.
+      const hmacValid = verifyShopifyWebhookHmac(req);
+      console.log("[Shopify Orders Paid] received", { shop, orderId, hmacValid });
       const shopifyCustomerId = order.customer?.admin_graphql_api_id || order.customer?.id;
       const discountApplications = Array.isArray(order.discount_applications) ? order.discount_applications : [];
       const appaiDiscountApplied = discountApplications.some((discount: any) =>
@@ -8974,6 +9078,55 @@ ${textEdgeRestrictions}
           });
         }
       }
+
+      // ── Flat/mesh on-the-fly Printify fulfillment (DISABLED BY DEFAULT) ──────
+      // Gated behind FLAT_ORDER_FULFILLMENT_ENABLED so it never runs in
+      // production until prerequisites (e.g. Protected Customer Data approval
+      // for shipping address access) are met. Requires a valid webhook HMAC.
+      // Runs async AFTER we return 200 so the webhook stays fast.
+      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && hmacValid && Array.isArray(order.line_items)) {
+        const rawLines = order.line_items as any[];
+        const shippingAddress = order.shipping_address || order.customer?.default_address || {};
+        // Map the Shopify shipping address → Printify address_to. NOTE: this
+        // path depends on Protected Customer Data access; until approved, the
+        // flag stays OFF. We never source the address from an unverified body.
+        const addressTo = {
+          first_name: String(shippingAddress.first_name || order.customer?.first_name || "Customer"),
+          last_name: String(shippingAddress.last_name || order.customer?.last_name || ""),
+          email: String(order.email || order.contact_email || ""),
+          phone: String(shippingAddress.phone || order.phone || ""),
+          country: String(shippingAddress.country_code || shippingAddress.country || "US"),
+          region: String(shippingAddress.province_code || shippingAddress.province || ""),
+          address1: String(shippingAddress.address1 || ""),
+          address2: String(shippingAddress.address2 || ""),
+          city: String(shippingAddress.city || ""),
+          zip: String(shippingAddress.zip || ""),
+        };
+        const normalizedLines = rawLines.map((l) => normalizeShopifyOrderLine(l));
+        // Fire-and-forget: respond 200 first, run Printify work in the background.
+        void (async () => {
+          try {
+            const result = await submitFlatOrderToPrintify({
+              shopifyOrder: { ...order, __shop: shop, shop_domain: shop },
+              lines: normalizedLines,
+              sendToProduction: true,
+              addressTo,
+              idempotencyKey: `shopify-order-fulfill:${orderId}`,
+              isTest: false,
+            });
+            console.log("[Shopify Orders Paid] flat fulfillment", {
+              orderId,
+              status: result.status,
+              printifyOrderId: result.printifyOrderId,
+              eligibleLines: result.eligibleLines,
+              skippedReasons: result.skippedReasons,
+            });
+          } catch (e: any) {
+            console.error("[Shopify Orders Paid] flat fulfillment error:", e?.message || e);
+          }
+        })();
+      }
+
       return res.status(200).send("OK");
     } catch (error: any) {
       console.error("[Shopify Orders Paid] error:", error);
@@ -12715,14 +12868,124 @@ ${textEdgeRestrictions}
         placeholderPositions: JSON.stringify(placeholderPositions),
         panelFlatLayImages: JSON.stringify(panelFlatLayImages),
         colorOptionName: blueprintColorOptionName,
+        flatCalibrationStatus: "pending",
         isActive: true,
         sortOrder: existingTypes.length,
       });
 
       res.json(productType);
+
+      // Kick off on-the-fly mockup calibration in the background (does not block
+      // the import response). Determines flat/mesh/reject tier and harvests
+      // masks/shading/blanks for eligible products.
+      kickoffFlatCalibration({
+        productTypeId: productType.id,
+        name: productType.name,
+        blueprintId: parseInt(blueprintId),
+        providerId,
+        token: merchant.printifyApiToken,
+        shopId: merchant.printifyShopId,
+        isAllOverPrint,
+      });
     } catch (error) {
       console.error("Error importing Printify blueprint:", error);
       res.status(500).json({ error: "Failed to import blueprint" });
+    }
+  });
+
+  // POST /api/admin/product-types/:id/calibrate-flat - (Re)run on-the-fly flat
+  // mockup calibration for an existing product. Returns 202 and runs in the
+  // background; poll the product's flatCalibrationStatus for progress.
+  app.post("/api/admin/product-types/:id/calibrate-flat", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+      kickoffFlatCalibration({
+        productTypeId: productType.id,
+        name: productType.name,
+        blueprintId: productType.printifyBlueprintId,
+        providerId: productType.printifyProviderId,
+        token: merchant.printifyApiToken,
+        shopId: merchant.printifyShopId,
+        isAllOverPrint: productType.isAllOverPrint,
+      });
+      res.status(202).json({ status: "running", productTypeId: productType.id });
+    } catch (error) {
+      console.error("Error starting flat calibration:", error);
+      res.status(500).json({ error: "Failed to start calibration" });
+    }
+  });
+
+  // POST /api/admin/product-types/:id/test-printify-order - Bake the print file
+  // for a chosen (or latest) design and create a DRAFT Printify order so the
+  // merchant can verify, in Printify, that the print file matches the on-screen
+  // design BEFORE going live. Never sends to production / never charges.
+  // Mandatory per-product pre-launch check for flat/mesh on-the-fly products.
+  app.post("/api/admin/product-types/:id/test-printify-order", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id);
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+      if (!merchant.printifyApiToken || !merchant.printifyShopId) {
+        return res.status(400).json({ error: "Printify credentials not configured for this merchant" });
+      }
+      if (productType.onTheFlyTier !== "flat" && productType.onTheFlyTier !== "mesh") {
+        return res.status(400).json({
+          error: `This product is not a flat/mesh on-the-fly product (tier=${productType.onTheFlyTier ?? "none"}). Calibrate it first.`,
+        });
+      }
+
+      const designId = typeof req.body?.designId === "string" ? req.body.designId : null;
+      let result;
+      try {
+        result = await submitFlatTestOrder({ productType, designId });
+      } catch (e: any) {
+        return res.status(400).json({ error: e?.message || "Failed to create test order" });
+      }
+
+      if (result.status === "failed") {
+        return res.status(502).json({
+          error: result.error || "Printify rejected the test order",
+          skippedReasons: result.skippedReasons,
+          designId: result.designId,
+        });
+      }
+      if (result.status === "skipped") {
+        return res.status(400).json({
+          error: "Could not build a print file for this design (no eligible/enabled view).",
+          skippedReasons: result.skippedReasons,
+          designId: result.designId,
+        });
+      }
+
+      const printifyOrderUrl = result.printifyOrderId
+        ? `https://printify.com/app/orders/${merchant.printifyShopId}/${result.printifyOrderId}`
+        : null;
+      return res.json({
+        success: true,
+        draft: true,
+        sentToProduction: false,
+        message: "Created a DRAFT Printify order (not sent to production, nothing produced or charged). Open it in Printify to verify the print file matches the design.",
+        designId: result.designId,
+        printifyOrderId: result.printifyOrderId,
+        printifyOrderUrl,
+        printFileUrls: result.printFileUrls,
+        eligibleLines: result.eligibleLines,
+      });
+    } catch (error: any) {
+      console.error("Error creating test Printify order:", error);
+      res.status(500).json({ error: error?.message || "Failed to create test order" });
     }
   });
 
