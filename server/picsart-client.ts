@@ -101,6 +101,56 @@ export async function removeBackground(params: RemoveBgParams): Promise<RemoveBg
   return { url: dataUrl, id: completedPrediction.id || crypto.randomUUID() };
 }
 
+/**
+ * Remove the magenta (#FF00FF chroma-key) colour cast left on anti-aliased
+ * edges after background removal — the visible "hot pink fringe".
+ *
+ * The generator paints a solid #FF00FF background behind every design and is
+ * instructed to never use magenta in the artwork itself, so any pixel whose
+ * red AND blue both clearly exceed green is chroma-key spill rather than real
+ * artwork. We therefore:
+ *   - neutralise the pink cast on feathered edge pixels (partial alpha), and
+ *   - drop any solid, strongly-magenta leftover the matte missed.
+ *
+ * Real design colours (reds, blues, greens, muted purples) are left intact
+ * because they are fully opaque and/or not strongly magenta.
+ */
+export async function despillMagenta(buffer: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const ch = info.channels; // 4 after ensureAlpha
+  if (ch < 4) return buffer;
+
+  for (let i = 0; i < data.length; i += ch) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const a = data[i + 3];
+    if (a === 0) continue;
+
+    // How magenta the pixel is: both red and blue sitting above green.
+    const magenta = Math.min(r, b) - g;
+    if (magenta <= 12) continue; // a genuine red/blue/green/etc. — leave it
+
+    if (a < 255) {
+      // Feathered halo pixel — neutralise the pink cast toward the green level.
+      data[i] = g;
+      data[i + 2] = g;
+    } else if (r > 180 && b > 180 && g < 120 && magenta > 80) {
+      // Solid residual chroma key the matte left behind — cut it out.
+      data[i + 3] = 0;
+    }
+  }
+
+  return sharp(data, {
+    raw: { width: info.width, height: info.height, channels: ch },
+  })
+    .png()
+    .toBuffer();
+}
+
 async function runBackgroundRemovalPrediction(
   token: string,
   imageInput: string,

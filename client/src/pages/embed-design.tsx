@@ -37,6 +37,10 @@ import HoodieAopPlacer, {
   type HoodieAopPlacerState,
   type HoodieAopPlacerApplyResult,
 } from "@/components/designer/HoodieAopPlacer";
+import FlatProductPlacer, {
+  type FlatProductPlacerState,
+  type FlatProductPlacerApplyResult,
+} from "@/components/designer/FlatProductPlacer";
 
 declare global {
   interface Window {
@@ -65,6 +69,45 @@ const DEFAULT_AOP_PATTERN_SETTINGS: {
   bgColor: string;
 } = { tilesAcross: 4, tileInches: 1.5, pattern: "grid", bgColor: "#ffffff" };
 
+/** On-the-fly flat/mesh mockup tier (mirrors server FlatTier). */
+export type FlatTier = "flat" | "mesh" | "reject";
+
+/** Mesh control point (mesh tier): normalized source coord -> mockup pixel. */
+export interface FlatMeshNode {
+  row: number;
+  col: number;
+  xn: number;
+  yn: number;
+  px: { x: number; y: number };
+}
+
+/** Per-view calibration delivered to the storefront (subset of server manifest). */
+export interface FlatViewCalibration {
+  printFileDims: { width: number; height: number };
+  visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
+  mockupDims: { width: number; height: number } | null;
+  maskUrl: string | null;
+  shadingUrl: string | null;
+  shadingMode: "blank" | "map";
+  meshNodes: FlatMeshNode[] | null;
+  meshGrid: { cols: number; rows: number } | null;
+  planarityScore: number | null;
+  coverage: number | null;
+}
+
+/** On-the-fly flat/mesh mockup calibration manifest (mirrors server). */
+export interface FlatCalibrationManifest {
+  productTypeId: number;
+  name: string;
+  blueprintId: number;
+  providerId: number;
+  tier: FlatTier;
+  views: Partial<Record<"front" | "back", FlatViewCalibration>>;
+  blanks: Record<string, Partial<Record<"front" | "back", string>>>;
+  representativeGeometry: boolean;
+  generatedAt: string;
+}
+
 interface ProductTypeConfig {
   id: number;
   name: string;
@@ -87,6 +130,14 @@ interface ProductTypeConfig {
    * to customers.
    */
   panelMappingTemplate?: string | null;
+  /**
+   * On-the-fly flat/mesh mockup tier. When `flat` or `mesh` AND `flatCalibration`
+   * is present, this product renders its mockup locally (masked artwork over a
+   * stored blank) instead of round-tripping to Printify. `reject`/null => Printify.
+   */
+  onTheFlyTier?: FlatTier | null;
+  /** Calibration manifest for on-the-fly rendering; null unless tier is flat/mesh. */
+  flatCalibration?: FlatCalibrationManifest | null;
   placeholderPositions?: { position: string; width: number; height: number }[];
   panelFlatLayImages?: Record<string, string>;
   colorLabel?: string;
@@ -636,20 +687,42 @@ function ProductInfoSections({
   );
 }
 
-export default function EmbedDesign() {
+/**
+ * Optional props for hosting the customizer IN-PROCESS inside the merchant admin
+ * "Art Generator Tester" page. Rendering in-process (instead of an iframe) is required
+ * because:
+ *   1. The admin app is an embedded Shopify app — a nested iframe would be blocked by the
+ *      app's `frame-ancestors` CSP (which only allows myshopify.com / admin.shopify.com).
+ *   2. Auth uses App Bridge session tokens injected into `window.fetch` in the TOP admin
+ *      frame only. In-process render reuses that patched fetch, so /api/generate and
+ *      /api/mockup/generate authenticate. A nested iframe has no App Bridge → 401.
+ * When omitted (storefront, /s/designer, standalone) the component behaves exactly as before.
+ */
+export interface EmbedDesignProps {
+  embeddedContext?: {
+    mode: 'admin-tester';
+    productTypeId: string | number;
+  };
+}
+
+export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
-  // Detect runtime mode
-  const runtimeMode = detectRuntimeMode(searchParams);
+  // Detect runtime mode. When hosted in-process by the admin tester, the prop forces
+  // 'admin-tester' regardless of the surrounding admin URL/path.
+  const runtimeMode: RuntimeMode = embeddedContext?.mode === 'admin-tester'
+    ? 'admin-tester'
+    : detectRuntimeMode(searchParams);
 
+  const isStorefront = runtimeMode === 'storefront';
+  // admin-tester: merchant admin "Art Generator Tester" host. Behaves like standalone for
+  // endpoints (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU
+  // left inert. Force isEmbedded off so it renders as a clean standalone designer surface.
+  const isAdminTester = runtimeMode === 'admin-tester';
   // Legacy params - kept for backwards compatibility
   // Storefront mode must override embedded Shopify mode: when both
   // storefront=true and shopify=true appear in the URL, storefront wins.
-  const isEmbedded = searchParams.get("embedded") === "true";
-  const isStorefront = runtimeMode === 'storefront';
-  // admin-tester: merchant admin "Generator Tester" host. Behaves like standalone for endpoints
-  // (admin-authenticated /api/*), with storefront identity/cart/checkout/shadow-SKU left inert.
-  const isAdminTester = runtimeMode === 'admin-tester';
+  const isEmbedded = !isAdminTester && searchParams.get("embedded") === "true";
   const isShopify = !isStorefront && !isAdminTester && searchParams.get("shopify") === "true";
   const mobileNativeScroll = searchParams.get("mobileNativeScroll") === "1";
 
@@ -738,7 +811,9 @@ export default function EmbedDesign() {
     return "";
   };
   const [activeProductContext, setActiveProductContext] = useState(() => ({
-    productTypeId: searchParams.get("productTypeId") || "1",
+    productTypeId: embeddedContext?.productTypeId != null
+      ? String(embeddedContext.productTypeId)
+      : (searchParams.get("productTypeId") || "1"),
     productId: searchParams.get("productId") || "",
     productHandle: getInitialProductHandle(),
     productTitle: initialProductTitle,
@@ -1068,6 +1143,16 @@ export default function EmbedDesign() {
   const [hoodieAopPlacerState, setHoodieAopPlacerState] =
     useState<HoodieAopPlacerState | null>(null);
 
+  /**
+   * On-the-fly flat/mesh placer state + a graceful-fallback flag. When the
+   * local renderer or its assets fail, `flatRenderFailed` flips true and the
+   * customizer falls back to the normal Printify mockup flow instead of
+   * hard-erroring. Persisted into `designState.flatPlacerState` for resume.
+   */
+  const [flatPlacerState, setFlatPlacerState] =
+    useState<FlatProductPlacerState | null>(null);
+  const [flatRenderFailed, setFlatRenderFailed] = useState(false);
+
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
   const currentMockupColorRef = useRef<string>('');
@@ -1242,6 +1327,8 @@ export default function EmbedDesign() {
       isAllOverPrint: dc.isAllOverPrint || false,
       aopTemplateId: dc.aopTemplateId ?? null,
       panelMappingTemplate: dc.panelMappingTemplate ?? null,
+      onTheFlyTier: dc.onTheFlyTier ?? null,
+      flatCalibration: dc.flatCalibration ?? null,
       placeholderPositions: dc.placeholderPositions || [],
       panelFlatLayImages: dc.panelFlatLayImages || {},
       colorLabel: dc.colorLabel || "Color",
@@ -1579,6 +1666,8 @@ export default function EmbedDesign() {
             isAllOverPrint: designerConfig.isAllOverPrint || false,
             aopTemplateId: designerConfig.aopTemplateId ?? null,
             panelMappingTemplate: designerConfig.panelMappingTemplate ?? null,
+            onTheFlyTier: designerConfig.onTheFlyTier ?? null,
+            flatCalibration: designerConfig.flatCalibration ?? null,
             placeholderPositions: designerConfig.placeholderPositions || [],
             panelFlatLayImages: designerConfig.panelFlatLayImages || {},
             colorLabel: designerConfig.colorLabel || "Color",
@@ -1679,8 +1768,11 @@ export default function EmbedDesign() {
               root.setProperty('--ring', primaryHSL);
             }
             if (textHSL) {
-              root.setProperty('--foreground', textHSL);
-              root.setProperty('--card-foreground', textHSL);
+              // Guard against the merchant background so a light brand text
+              // colour can't render white-on-pale; no-op when contrast is fine.
+              const safeFg = ensureContrastingForeground(bgHSL, textHSL) ?? textHSL;
+              root.setProperty('--foreground', safeFg);
+              root.setProperty('--card-foreground', safeFg);
             }
             if (bgHSL) {
               root.setProperty('--background', bgHSL);
@@ -1798,6 +1890,11 @@ export default function EmbedDesign() {
       if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
         setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
       }
+      // Restore on-the-fly flat/mesh placer state so the customer resumes
+      // their per-view placement mid-edit.
+      if (ds.flatPlacerState && typeof ds.flatPlacerState === 'object') {
+        setFlatPlacerState(ds.flatPlacerState as FlatProductPlacerState);
+      }
     } else {
       if (topLevel.size) setSelectedSize(topLevel.size);
       if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
@@ -1914,6 +2011,8 @@ export default function EmbedDesign() {
     setAopPlacementSettings(undefined);
     setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
     setHoodieAopPlacerState(null);
+    setFlatPlacerState(null);
+    setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
@@ -2000,6 +2099,8 @@ export default function EmbedDesign() {
       setAopPlacementSettings(undefined);
       setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
       setHoodieAopPlacerState(null);
+      setFlatPlacerState(null);
+      setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
@@ -4334,6 +4435,122 @@ export default function EmbedDesign() {
     }
   }, [isStorefront, shopDomain, storefrontCustomerId]);
 
+  /**
+   * Handle the customer's auto-apply from `FlatProductPlacer` (on-the-fly
+   * flat/mesh products). Renders the enabled view(s) locally, uploads the PNGs
+   * via the SAME upload path the hoodie placer uses (`ensureHostedUrl` →
+   * object storage), and pins the front raster as `printifyMockupImages[front]`
+   * so `getPreferredMockupUrl()` returns it for the cart `_mockup_url` line
+   * property + the shadow-SKU checkout image. Per-view placement is persisted
+   * to `designState` so the placer resumes mid-edit. If anything fails we flag
+   * `flatRenderFailed` so the customizer falls back to the Printify flow.
+   *
+   * This is preview-only: it never touches the file sent to print. The
+   * normalized placement saved here is what a later (out-of-scope) order-time
+   * task will reuse to build the print file.
+   */
+  const handleFlatApply = useCallback(async (
+    result: FlatProductPlacerApplyResult,
+  ) => {
+    setFlatPlacerState(result.state);
+
+    const frontCanvas = result.renderView("front");
+    const backCanvas = result.renderView("back");
+    if (!frontCanvas) {
+      console.warn("[FlatApply] No front canvas — placer not ready?");
+      return;
+    }
+
+    let frontDataUrl: string;
+    let backDataUrl: string | null = null;
+    try {
+      frontDataUrl = frontCanvas.toDataURL("image/png");
+      backDataUrl = backCanvas?.toDataURL("image/png") ?? null;
+    } catch (e) {
+      // Tainted canvas (cross-origin asset without CORS) — can't export.
+      // Fall back to the normal Printify mockup flow rather than hard-error.
+      console.error("[FlatApply] Canvas export failed, falling back:", e);
+      setFlatRenderFailed(true);
+      return;
+    }
+
+    setMockupLoading(true);
+    setMockupTriggered(true);
+    try {
+      const [frontHosted, backHosted] = await Promise.all([
+        ensureHostedUrl(frontDataUrl),
+        backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
+      ]);
+
+      const images: { url: string; label: string }[] = [
+        { url: frontHosted, label: "front" },
+      ];
+      if (backHosted) images.push({ url: backHosted, label: "back" });
+      const urls = images.map((i) => i.url);
+
+      setPrintifyMockupImages(images);
+      setPrintifyMockups(urls);
+      setSelectedMockupIndex(0);
+      setMockupFailed(false);
+      setMockupError(null);
+      setMockupsStale(false);
+
+      if (isStorefront && savedJobIdRef.current && shopDomain) {
+        const jobId = savedJobIdRef.current;
+        void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId,
+            shop: shopDomain,
+            designState: {
+              flatPlacerState: result.state,
+              flatMockups: { front: frontHosted, back: backHosted },
+            },
+          }),
+        }).catch((e) => {
+          console.error("[FlatApply] Failed to persist designState:", e);
+        });
+
+        const toAbsoluteMockupUrl = (u: string | null): string | null => {
+          if (!u) return null;
+          if (u.startsWith("http://") || u.startsWith("https://")) return u;
+          const resolved = toAbsoluteImageUrl(u);
+          if (resolved.startsWith("http")) return resolved;
+          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
+          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+        };
+        const frontAbs = toAbsoluteMockupUrl(frontHosted);
+        const backAbs = toAbsoluteMockupUrl(backHosted);
+        const mockupUrls = [frontAbs, backAbs].filter((u): u is string => !!u);
+        if (mockupUrls.length > 0) {
+          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId, shop: shopDomain, mockupUrls }),
+          })
+            .then(() => {
+              try {
+                window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+              } catch {
+                /* cross-origin parent — ignore */
+              }
+            })
+            .catch((e) => {
+              console.error("[FlatApply] Failed to save mockup URLs:", e);
+            });
+        }
+      }
+    } catch (err: any) {
+      console.error("[FlatApply] Upload failed:", err);
+      setMockupError(err?.message || "Failed to apply design");
+      setMockupFailed(true);
+    } finally {
+      setMockupLoading(false);
+      setMockupTriggered(false);
+    }
+  }, [isStorefront, shopDomain]);
+
   const handleShare = async () => {
     if (!generatedDesign) return;
 
@@ -4520,11 +4737,16 @@ export default function EmbedDesign() {
         const fgHSL = cssColorToHSL(t.textColor);
         if (bgHSL) root.setProperty('--background', bgHSL);
         if (fgHSL) {
-          root.setProperty('--foreground', fgHSL);
-          // Tentative card-foreground = body text. Re-validated against
+          // Guard body text against the body background. Some themes set a
+          // light heading/body colour intended for dark hero sections; applied
+          // verbatim it renders white-on-pale inside the studio's light cards.
+          // The guard is a no-op whenever the merchant's pair already contrasts.
+          const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
+          root.setProperty('--foreground', safeFg);
+          // Tentative card-foreground = guarded body text. Re-validated against
           // --card below once it's set, since input bg can differ from
           // body bg and would otherwise leave invisible card text.
-          root.setProperty('--card-foreground', fgHSL);
+          root.setProperty('--card-foreground', safeFg);
         }
 
         // -- Primary button --
@@ -4577,12 +4799,27 @@ export default function EmbedDesign() {
           root.setProperty('--input', inputBorderHSL);
         }
         const inputBgHSL = cssColorToHSL(t.inputBg);
-        if (inputBgHSL) {
-          root.setProperty('--card', inputBgHSL);
-          // Bulletproof card-foreground against the (possibly different)
-          // card bg. If body text doesn't contrast with input bg, fall
-          // back to black/white based on luminance.
-          const safeCardFg = ensureContrastingForeground(inputBgHSL, fgHSL);
+        // The studio is a light-surface UI: its cards/panels render on
+        // `--background` AND `--card`, so these must stay on the same
+        // light/dark side. A mis-extracted input bg (e.g. from a dark
+        // footer/search field) would otherwise invert `--card`, flip
+        // `--card-foreground` to white, and render white-on-pale text in
+        // panels that use `bg-background` (Saved Designs, Redeem, etc.).
+        // App default `--background` is white, so when the theme didn't supply
+        // a background colour treat the surface as light (lightness 100).
+        const effectiveBgHSL = bgHSL ?? '0 0% 100%';
+        const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
+        const cardLightness = hslLightness(inputBgHSL);
+        let cardHSL = inputBgHSL;
+        if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
+          // No usable input bg, or it disagrees with the page background —
+          // derive a card surface from the background instead of trusting it.
+          cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
+        }
+        if (cardHSL) {
+          root.setProperty('--card', cardHSL);
+          // Guarantee card text contrasts the (reconciled) card surface.
+          const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
           if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
         }
 
@@ -4603,9 +4840,13 @@ export default function EmbedDesign() {
           root.setProperty('--popover', adjustHSLLightness(bgHSL, -3));
         }
         if (fgHSL) {
-          // Muted foreground is a lighter version of the text color
-          root.setProperty('--muted-foreground', adjustHSLLightness(fgHSL, 30));
-          root.setProperty('--secondary-foreground', fgHSL);
+          // Muted foreground is a lighter version of the text color, but still
+          // guarded so it can't drop below readable contrast on its surface.
+          const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
+          const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
+          const mutedFg = adjustHSLLightness(fgHSL, 30);
+          root.setProperty('--muted-foreground', ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
+          root.setProperty('--secondary-foreground', ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
         }
 
         console.log('[Design Studio] Applied store theme CSS variables');
@@ -5094,6 +5335,19 @@ export default function EmbedDesign() {
 
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
+
+  // On-the-fly flat/mesh placer: render the mockup locally (masked artwork over
+  // a calibrated blank) instead of round-tripping to Printify. Active only when
+  // the product is tier flat/mesh, the calibration manifest is present, the
+  // customer has a design, and the local renderer hasn't failed (graceful
+  // fallback to the Printify flow). `reject`/null tier → unchanged behaviour.
+  const flatPlacerActive = !!(
+    (productTypeConfig?.onTheFlyTier === "flat" ||
+      productTypeConfig?.onTheFlyTier === "mesh") &&
+    productTypeConfig?.flatCalibration &&
+    generatedDesign?.imageUrl &&
+    !flatRenderFailed
+  );
 
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
@@ -6941,6 +7195,44 @@ export default function EmbedDesign() {
                 }
               />
               )
+            ) : flatPlacerActive && productTypeConfig?.flatCalibration ? (
+              // On-the-fly flat/mesh local mockup placer (replaces the Printify
+              // mockup flow for calibrated flat/mesh products). Falls back to
+              // the Printify flow automatically if the renderer/assets fail.
+              <div className="flex flex-col gap-2 min-h-0">
+                {(isStorefront || isShopify) && (
+                  <div className="flex w-full gap-2 justify-stretch">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 min-w-0"
+                      onClick={handleShare}
+                      disabled={isSharing || !generatedDesign?.imageUrl}
+                      data-testid="button-share-flat-placer"
+                    >
+                      {isSharing ? (
+                        <Loader2 className="w-4 h-4 animate-spin mr-1 shrink-0" />
+                      ) : (
+                        <Share2 className="w-4 h-4 mr-1 shrink-0" />
+                      )}
+                      <span className="text-xs truncate">Share</span>
+                    </Button>
+                  </div>
+                )}
+                <FlatProductPlacer
+                  key={`flat-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  manifest={productTypeConfig.flatCalibration}
+                  colorId={selectedFrameColor}
+                  initialState={{
+                    ...(flatPlacerState ?? {}),
+                    artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
+                  }}
+                  onChange={(s) => setFlatPlacerState(s)}
+                  onApply={handleFlatApply}
+                  skipInitialAutoApply={!!flatPlacerState}
+                />
+              </div>
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div

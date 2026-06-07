@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
 import SizeChartTable from "@/components/SizeChartTable";
@@ -105,6 +105,8 @@ export default function AdminProducts() {
   const [refreshVariantsMutatingId, setRefreshVariantsMutatingId] = useState<number | null>(null);
   const [refreshColorsMutatingId, setRefreshColorsMutatingId] = useState<number | null>(null);
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
+  const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
+  const [calibrateMutatingId, setCalibrateMutatingId] = useState<number | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -357,6 +359,58 @@ export default function AdminProducts() {
       toast({ title: "Failed to update AOP template", description: error.message, variant: "destructive" });
     },
     onSettled: () => setAopTemplateMutatingId(null),
+  });
+
+  // Send a DRAFT test order to Printify so the merchant can verify the baked
+  // print file matches the on-screen design before going live. Never produces
+  // or charges — it creates a draft Printify order only.
+  const testPrintifyOrderMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setTestOrderMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/test-printify-order`);
+      return response.json();
+    },
+    onSuccess: (data) => {
+      const url = data?.printifyOrderUrl as string | undefined;
+      toast({
+        title: "Draft test order created in Printify",
+        description: data?.printifyOrderId
+          ? `Order ${data.printifyOrderId} (DRAFT — not sent to production). Open it in Printify to verify the print file.`
+          : "Draft order created. Open Printify to verify the print file.",
+        action: url ? (
+          <a href={url} target="_blank" rel="noopener noreferrer" className="underline text-xs">
+            Open
+          </a>
+        ) : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Test order failed", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setTestOrderMutatingId(null),
+  });
+
+  // (Re)run on-the-fly flat/mesh calibration for an existing product. Only
+  // surfaced for products that have never been calibrated (legacy imports) or
+  // whose last run failed — new imports auto-calibrate, so this never lingers.
+  const calibrateFlatMutation = useMutation({
+    mutationFn: async (id: number) => {
+      setCalibrateMutatingId(id);
+      const response = await apiRequest("POST", `/api/admin/product-types/${id}/calibrate-flat`);
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Calibration started",
+        description: "Probing the print area and harvesting masks/blanks. This runs in the background (≈1–2 min); refresh to see the tier once it's ready.",
+      });
+      // Refresh after a delay so the updated status/tier shows up.
+      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["/api/product-types"] }), 4000);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Couldn't start calibration", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setCalibrateMutatingId(null),
   });
 
   // Fetch connected Shopify shops
@@ -767,6 +821,55 @@ export default function AdminProducts() {
                           </>
                         )}
                       </Button>
+                      {/* On-the-fly calibration: only for non-AOP products that
+                          have never been calibrated (legacy imports) or whose
+                          last run failed. New imports auto-calibrate, so this
+                          self-removes and never shows for healthy products. */}
+                      {!pt.isAllOverPrint && (!pt.flatCalibrationStatus || pt.flatCalibrationStatus === "failed") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
+                          disabled={calibrateMutatingId === pt.id}
+                          title="Probe this product's print area and harvest masks/blanks so it can use on-the-fly mockups (flat/mesh) instead of Printify. Runs in the background."
+                          data-testid={`button-calibrate-flat-${pt.id}`}
+                        >
+                          <FlaskConical className={`h-3 w-3 mr-1 ${calibrateMutatingId === pt.id ? 'animate-pulse' : ''}`} />
+                          {pt.flatCalibrationStatus === "failed" ? "Retry calibration" : "Calibrate for on-the-fly"}
+                        </Button>
+                      )}
+                      {!pt.isAllOverPrint && (pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") && (
+                        <span className="inline-flex items-center text-xs text-muted-foreground px-2">
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          Calibrating…
+                        </span>
+                      )}
+                      {pt.onTheFlyTier && (
+                        <Badge
+                          variant={pt.onTheFlyTier === "reject" ? "secondary" : "default"}
+                          className="self-center"
+                          title={
+                            pt.onTheFlyTier === "reject"
+                              ? "Curved/3D surface — stays on Printify mockups."
+                              : "Eligible for on-the-fly local mockups."
+                          }
+                        >
+                          {pt.onTheFlyTier === "flat" ? "On-the-fly: flat" : pt.onTheFlyTier === "mesh" ? "On-the-fly: mesh" : "On-the-fly: n/a"}
+                        </Badge>
+                      )}
+                      {(pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => testPrintifyOrderMutation.mutate(pt.id)}
+                          disabled={testOrderMutatingId === pt.id}
+                          title="Bakes the print file for the latest design and creates a DRAFT Printify order (not sent to production) so you can verify the print file matches the design."
+                          data-testid={`button-test-printify-order-${pt.id}`}
+                        >
+                          <FlaskConical className={`h-3 w-3 mr-1 ${testOrderMutatingId === pt.id ? 'animate-pulse' : ''}`} />
+                          Send test order to Printify (draft)
+                        </Button>
+                      )}
                       <Button 
                         variant="ghost" 
                         size="icon"

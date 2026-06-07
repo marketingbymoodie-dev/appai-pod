@@ -18,7 +18,11 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "plan_status",                 type: "TEXT" },
   { table: "shopify_installations", column: "trial_started_at",            type: "TIMESTAMP" },
   { table: "shopify_installations", column: "billing_subscription_id",     type: "TEXT" },
+  { table: "shopify_installations", column: "billing_usage_line_item_id",  type: "TEXT" },
   { table: "shopify_installations", column: "billing_current_period_end",  type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "generation_month",            type: "TEXT" },
+  { table: "shopify_installations", column: "monthly_generations_used",    type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "shopify_installations", column: "monthly_overage_used",        type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
@@ -44,6 +48,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'product_types',         column: 'panel_flat_lay_images',       type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "aop_template_id",             type: "TEXT" },
   { table: "product_types",         column: "panel_mapping_template",      type: "TEXT" },
+  { table: "product_types",         column: "on_the_fly_tier",             type: "TEXT" },
+  { table: "product_types",         column: "flat_calibration_status",     type: "TEXT" },
+  { table: "product_types",         column: "flat_calibration",            type: "TEXT DEFAULT '{}'" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
 ];
 
@@ -347,6 +354,26 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "merchant_usage_charges",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "merchant_usage_charges" (
+        "id"                         SERIAL PRIMARY KEY,
+        "installation_id"            INTEGER NOT NULL,
+        "shop_domain"                TEXT NOT NULL,
+        "bucket_key"                 TEXT NOT NULL,
+        "overage_seq"                INTEGER NOT NULL,
+        "subscription_line_item_id"  TEXT,
+        "price_usd"                  NUMERIC(10,4) NOT NULL,
+        "status"                     TEXT NOT NULL DEFAULT 'pending',
+        "shopify_usage_record_id"    TEXT,
+        "attempts"                   INTEGER NOT NULL DEFAULT 0,
+        "error"                      TEXT,
+        "created_at"                 TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"                 TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "aop_projection_maps",
     sql: `
       CREATE TABLE IF NOT EXISTS "aop_projection_maps" (
@@ -358,6 +385,30 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "map_json"        JSONB NOT NULL,
         "created_at"      TIMESTAMP DEFAULT NOW() NOT NULL,
         "updated_at"      TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "flat_order_submissions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "flat_order_submissions" (
+        "id"                  SERIAL PRIMARY KEY,
+        "idempotency_key"     TEXT NOT NULL UNIQUE,
+        "shop"                TEXT,
+        "shopify_order_id"    TEXT,
+        "shopify_line_id"     TEXT,
+        "design_id"           TEXT,
+        "product_type_id"     INTEGER,
+        "printify_shop_id"    TEXT,
+        "printify_order_id"   TEXT,
+        "status"              TEXT NOT NULL DEFAULT 'pending',
+        "sent_to_production"  BOOLEAN NOT NULL DEFAULT FALSE,
+        "is_test"             BOOLEAN NOT NULL DEFAULT FALSE,
+        "print_file_urls"     JSONB,
+        "error"               TEXT,
+        "metadata"            JSONB,
+        "created_at"          TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"          TIMESTAMP DEFAULT NOW() NOT NULL
       )
     `,
   },
@@ -418,6 +469,26 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "aop_projection_maps_created_idx",
     sql: `CREATE INDEX IF NOT EXISTS "aop_projection_maps_created_idx"
       ON "aop_projection_maps" ("created_at")`,
+  },
+  {
+    name: "merchant_usage_charges_unit_unique",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "merchant_usage_charges_unit_unique"
+      ON "merchant_usage_charges" ("installation_id", "bucket_key", "overage_seq")`,
+  },
+  {
+    name: "merchant_usage_charges_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "merchant_usage_charges_status_idx"
+      ON "merchant_usage_charges" ("installation_id", "status")`,
+  },
+  {
+    name: "flat_order_submissions_order_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_order_idx"
+      ON "flat_order_submissions" ("shopify_order_id")`,
+  },
+  {
+    name: "flat_order_submissions_product_type_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "flat_order_submissions_product_type_idx"
+      ON "flat_order_submissions" ("product_type_id")`,
   },
 ];
 

@@ -155,7 +155,22 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   planStatus: text("plan_status"),
   trialStartedAt: timestamp("trial_started_at"),
   billingSubscriptionId: text("billing_subscription_id"), // Shopify AppSubscription GID
+  // Shopify AppSubscriptionLineItem GID for the metered (usage) pricing line.
+  // Set when a paid subscription is created/approved with an overage usage line.
+  // Null for trial subscriptions (no overage) and for legacy subscribers who
+  // subscribed before usage-charge billing existed — those merchants must
+  // re-subscribe to enable overage billing (see /api/appai/billing/plan).
+  billingUsageLineItemId: text("billing_usage_line_item_id"),
   billingCurrentPeriodEnd: timestamp("billing_current_period_end"),
+  // Per-merchant generation metering (plan quota enforcement).
+  // generationMonth is the bucket key the counters belong to:
+  //   - "YYYY-MM" (UTC) for paid plans (resets each calendar month)
+  //   - "trial"          for trial / no-plan (cumulative — 20 free total, never resets)
+  // monthlyGenerationsUsed counts ALL generations (free + overage) in the bucket.
+  // monthlyOverageUsed counts only the overage units (for billing tally).
+  generationMonth: text("generation_month"),
+  monthlyGenerationsUsed: integer("monthly_generations_used").notNull().default(0),
+  monthlyOverageUsed: integer("monthly_overage_used").notNull().default(0),
 });
 
 export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstallations).omit({
@@ -163,6 +178,41 @@ export const insertShopifyInstallationSchema = createInsertSchema(shopifyInstall
 });
 export type ShopifyInstallation = typeof shopifyInstallations.$inferSelect;
 export type InsertShopifyInstallation = z.infer<typeof insertShopifyInstallationSchema>;
+
+// One row per overage AI-generation that should be billed to the merchant via a
+// Shopify usage charge. Each row is the audit + idempotency + retry record for a
+// single appUsageRecordCreate call.
+//   - (installation_id, bucket_key, overage_seq) is UNIQUE: overage_seq is the
+//     merchant's running overage count within the month bucket (1..overageCap),
+//     so each overage unit is billed at most once even under retries/races.
+//   - status: pending → charged | failed | skipped
+//       pending  = recorded, charge not yet confirmed
+//       charged  = Shopify accepted the usage record (shopify_usage_record_id set)
+//       failed   = Shopify/API error; eligible for retry
+//       skipped  = no usage line on the subscription (legacy subscriber) — the
+//                  generation was still allowed; merchant must re-subscribe.
+export const merchantUsageCharges = pgTable("merchant_usage_charges", {
+  id: serial("id").primaryKey(),
+  installationId: integer("installation_id").notNull(),
+  shopDomain: text("shop_domain").notNull(),
+  bucketKey: text("bucket_key").notNull(),
+  overageSeq: integer("overage_seq").notNull(),
+  subscriptionLineItemId: text("subscription_line_item_id"),
+  priceUsd: decimal("price_usd", { precision: 10, scale: 4 }).notNull(),
+  status: text("status").notNull().default("pending"),
+  shopifyUsageRecordId: text("shopify_usage_record_id"),
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  unitUnique: uniqueIndex("merchant_usage_charges_unit_unique").on(
+    t.installationId, t.bucketKey, t.overageSeq,
+  ),
+  statusIdx: index("merchant_usage_charges_status_idx").on(t.installationId, t.status),
+}));
+
+export type MerchantUsageCharge = typeof merchantUsageCharges.$inferSelect;
 
 export const insertMerchantSchema = createInsertSchema(merchants).omit({
   id: true,
@@ -371,6 +421,25 @@ export const productTypes = pgTable("product_types", {
    * to customers.
    */
   panelMappingTemplate: text("panel_mapping_template"),
+  /**
+   * On-the-fly mockup eligibility tier, derived at import time by the flat
+   * calibration harvest (`server/flat-calibration.ts`):
+   *   - `flat`   : planar print surface -> homography composite locally
+   *   - `mesh`   : mildly curved (e.g. cap front) -> low-density mesh warp
+   *   - `reject` : curved/wrap/3D (mug, shoe) -> keep using Printify mockups
+   * Null/empty means not yet calibrated (falls back to Printify).
+   */
+  onTheFlyTier: text("on_the_fly_tier"),
+  /** Calibration lifecycle: pending | running | ready | failed | unsupported. */
+  flatCalibrationStatus: text("flat_calibration_status"),
+  /**
+   * Flat-mockup calibration manifest (JSON). Per view (front/back): print-file
+   * pixel dims, visible + bleed rects (normalized), mask/shading asset URLs,
+   * optional mesh nodes (mesh tier), planarity score and coverage. Plus a
+   * `blanks` map of {colorOrModelId: {view: blankUrl}}. Assets live in the
+   * Supabase `flat-calibration` bucket (see server/supabaseFlatCalibration.ts).
+   */
+  flatCalibration: text("flat_calibration").default("{}"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -841,3 +910,42 @@ export const insertAopProjectionMapSchema = createInsertSchema(aopProjectionMaps
 });
 export type AopProjectionMap = typeof aopProjectionMaps.$inferSelect;
 export type InsertAopProjectionMap = z.infer<typeof insertAopProjectionMapSchema>;
+
+// Audit + idempotency record for flat/mesh on-the-fly print files pushed to
+// Printify at order time. One row per (shopify order line / test submission).
+// `idempotencyKey` mirrors the credit-ledger idempotency pattern:
+//   - live  : shopify-order-fulfill:{orderId}:{lineId}
+//   - test  : flat-test-order:{productTypeId}:{designId}:{timestamp}
+// `status`: pending → submitted | failed | skipped
+//   skipped = the line was resolved but is not an eligible flat/mesh on-the-fly
+//             product (mixed carts / normal products / AOP), recorded for audit.
+export const flatOrderSubmissions = pgTable("flat_order_submissions", {
+  id: serial("id").primaryKey(),
+  idempotencyKey: text("idempotency_key").notNull().unique(),
+  shop: text("shop"),
+  shopifyOrderId: text("shopify_order_id"),
+  shopifyLineId: text("shopify_line_id"),
+  designId: text("design_id"),
+  productTypeId: integer("product_type_id"),
+  printifyShopId: text("printify_shop_id"),
+  printifyOrderId: text("printify_order_id"),
+  status: text("status").notNull().default("pending"),
+  sentToProduction: boolean("sent_to_production").notNull().default(false),
+  isTest: boolean("is_test").notNull().default(false),
+  printFileUrls: jsonb("print_file_urls"),
+  error: text("error"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("flat_order_submissions_order_idx").on(table.shopifyOrderId),
+  index("flat_order_submissions_product_type_idx").on(table.productTypeId),
+]);
+
+export const insertFlatOrderSubmissionSchema = createInsertSchema(flatOrderSubmissions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type FlatOrderSubmission = typeof flatOrderSubmissions.$inferSelect;
+export type InsertFlatOrderSubmission = z.infer<typeof insertFlatOrderSubmissionSchema>;
