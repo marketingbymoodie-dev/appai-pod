@@ -8,7 +8,7 @@ import { API_BASE } from "@/lib/urlBase";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   flatArtBox,
-  flatCovers,
+  flatOverflows,
   flatVisibleRectPx,
   renderFlatView,
   FLAT_SCALE_MAX,
@@ -56,13 +56,21 @@ export type FlatProductPlacerApplyResult = {
   renderView: (view: ViewName) => HTMLCanvasElement | null;
 };
 
+/** Debounced auto-save lifecycle — parent can gate ATC until `saved`. */
+export type FlatApplyStatus = "idle" | "pending" | "saving" | "saved" | "error";
+
+/** Wait this long after the last placement edit before uploading + persisting. */
+const FLAT_AUTO_APPLY_DEBOUNCE_MS = 3000;
+
 export type FlatProductPlacerProps = {
   manifest: FlatCalibrationManifest;
   /** Currently selected colour/model id — picks the blank from `manifest.blanks`. */
   colorId: string;
   initialState?: Partial<FlatProductPlacerState> | null;
-  onApply?: (result: FlatProductPlacerApplyResult) => void;
+  onApply?: (result: FlatProductPlacerApplyResult) => void | Promise<void>;
   onChange?: (state: FlatProductPlacerState) => void;
+  /** Fired whenever debounced auto-save status changes (for ATC gating). */
+  onApplyStatusChange?: (status: FlatApplyStatus) => void;
   /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
   onAssetsFailed?: (reason: string) => void;
   /** Skip the first auto-apply when resuming an already-saved design. */
@@ -157,6 +165,7 @@ export default function FlatProductPlacer({
   initialState,
   onApply,
   onChange,
+  onApplyStatusChange,
   onAssetsFailed,
   skipInitialAutoApply = false,
 }: FlatProductPlacerProps) {
@@ -266,9 +275,11 @@ export default function FlatProductPlacer({
   const [overlayVisible, setOverlayVisible] = useState(true);
 
   // ---------- Auto-apply status ----------
-  const [autoApplyStatus, setAutoApplyStatus] = useState<
-    "idle" | "pending" | "saving" | "saved" | "error"
-  >("idle");
+  const [autoApplyStatus, setAutoApplyStatus] = useState<FlatApplyStatus>("idle");
+
+  useEffect(() => {
+    onApplyStatusChange?.(autoApplyStatus);
+  }, [autoApplyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
   const renderInto = useCallback(
@@ -340,19 +351,29 @@ export default function FlatProductPlacer({
     }
 
     setAutoApplyStatus("pending");
+    let cancelled = false;
     const t = window.setTimeout(() => {
-      setAutoApplyStatus("saving");
-      try {
-        onApply({ state, renderView: renderViewToCanvas });
-        baselineSignatureRef.current = sig;
-        window.setTimeout(() => setAutoApplyStatus("saved"), 800);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error("[FlatProductPlacer] auto-apply error:", e);
-        setAutoApplyStatus("error");
-      }
-    }, 1500);
-    return () => window.clearTimeout(t);
+      void (async () => {
+        setAutoApplyStatus("saving");
+        try {
+          await Promise.resolve(
+            onApply({ state, renderView: renderViewToCanvas }),
+          );
+          if (cancelled) return;
+          baselineSignatureRef.current = sig;
+          setAutoApplyStatus("saved");
+        } catch (e) {
+          if (cancelled) return;
+          // eslint-disable-next-line no-console
+          console.error("[FlatProductPlacer] auto-apply error:", e);
+          setAutoApplyStatus("error");
+        }
+      })();
+    }, FLAT_AUTO_APPLY_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
   }, [
     state,
     artworkImg,
@@ -436,8 +457,8 @@ export default function FlatProductPlacer({
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
 
-  // Coverage check for the current view (warn when garment edges may show).
-  let coverageOk = true;
+  // Warn only when artwork is larger than the print rect (mask will trim edges).
+  let artworkTrimmed = false;
   if (calib && artworkImg && viewEnabled) {
     const W = viewAssets.blank?.naturalWidth || calib.mockupDims?.width || 1;
     const H = viewAssets.blank?.naturalHeight || calib.mockupDims?.height || 1;
@@ -448,7 +469,7 @@ export default function FlatProductPlacer({
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
-    coverageOk = flatCovers(rect, box);
+    artworkTrimmed = flatOverflows(rect, box);
   }
 
   const showOverlay =
@@ -458,9 +479,11 @@ export default function FlatProductPlacer({
     !!calib &&
     !!viewAssets.blank;
 
+  // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
+  // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div className="flex w-full flex-col gap-4 lg:flex-row">
-      {/* Left: live canvas + overlay */}
+      {/* Live canvas + overlay */}
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
@@ -496,7 +519,7 @@ export default function FlatProductPlacer({
         </div>
       </div>
 
-      {/* Right: controls */}
+      {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
       <div className="w-full shrink-0 space-y-4 lg:w-80">
         {/* View row: Front always; Back only when available */}
         {availableViews.length > 1 && (
@@ -576,13 +599,14 @@ export default function FlatProductPlacer({
           </div>
         )}
 
-        {/* Coverage warning */}
-        {viewEnabled && artworkImg && !coverageOk && (
+        {/* Trim warning — only when artwork exceeds the print rect (mask clips it). */}
+        {viewEnabled && artworkImg && artworkTrimmed && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Your artwork doesn't fully cover the print area — the garment may
-              show around the edges. Scale up or reposition to fill it.
+              Artwork extends past the printable area — edges will be trimmed by
+              the garment mask. Scale down or reposition to keep important details
+              visible.
             </span>
           </div>
         )}
@@ -613,7 +637,7 @@ export default function FlatProductPlacer({
             ) : autoApplyStatus === "error" ? (
               <span className="text-destructive">Couldn't save — try again</span>
             ) : (
-              <span className="opacity-60">Design syncs automatically</span>
+              <span className="opacity-60">Saves 3s after you stop editing</span>
             )}
           </div>
         )}

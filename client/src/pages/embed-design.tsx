@@ -38,6 +38,7 @@ import HoodieAopPlacer, {
   type HoodieAopPlacerApplyResult,
 } from "@/components/designer/HoodieAopPlacer";
 import FlatProductPlacer, {
+  type FlatApplyStatus,
   type FlatProductPlacerState,
   type FlatProductPlacerApplyResult,
 } from "@/components/designer/FlatProductPlacer";
@@ -1151,6 +1152,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
    */
   const [flatPlacerState, setFlatPlacerState] =
     useState<FlatProductPlacerState | null>(null);
+  const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
@@ -2015,6 +2017,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
     setHoodieAopPlacerState(null);
     setFlatPlacerState(null);
+    setFlatApplyStatus("idle");
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
     setPrintifyMockups([]);
@@ -2103,6 +2106,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
       setHoodieAopPlacerState(null);
       setFlatPlacerState(null);
+      setFlatApplyStatus("idle");
       setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
       setPrintifyMockups([]);
@@ -3037,16 +3041,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (selectedSize) properties['Size'] = selectedSize;
     if (selectedFrameColor) properties['Color'] = selectedFrameColor;
 
-    const shouldDisable = waitingForMockups || isAddingToCart || mockupsStale;
-    const label = waitingForMockups
-      ? 'Generating preview\u2026'
-      : mockupsStale
-        ? 'Refresh Mockups to Continue'
-        : 'Add to Cart';
+    const flatPlacerOn = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      generatedDesign?.imageUrl &&
+      !flatRenderFailed
+    );
+    const flatSaveBlocking = !!(
+      flatPlacerOn &&
+      (flatApplyStatus === "pending" ||
+        flatApplyStatus === "saving" ||
+        mockupLoading)
+    );
+    const shouldDisable =
+      waitingForMockups || isAddingToCart || mockupsStale || flatSaveBlocking;
+    const label = flatSaveBlocking
+      ? flatApplyStatus === "pending"
+        ? "Saving design\u2026"
+        : "Updating preview\u2026"
+      : waitingForMockups
+        ? "Generating preview\u2026"
+        : mockupsStale
+          ? "Refresh Mockups to Continue"
+          : "Add to Cart";
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStale,
+      ready: !waitingForMockups && !mockupsStale && !flatSaveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -3056,7 +3078,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId, mockupsStale]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -4500,7 +4522,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (isStorefront && savedJobIdRef.current && shopDomain) {
         const jobId = savedJobIdRef.current;
-        void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        await safeFetch(`${API_BASE}/api/storefront/save-state`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -4527,7 +4549,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const backAbs = toAbsoluteMockupUrl(backHosted);
         const mockupUrls = [frontAbs, backAbs].filter((u): u is string => !!u);
         if (mockupUrls.length > 0) {
-          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+          await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ jobId, shop: shopDomain, mockupUrls }),
@@ -5352,6 +5374,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !flatRenderFailed
   );
 
+  // Flat placer: block ATC while debounce is counting down or upload/save is in flight.
+  const flatPlacerSaveBlocking = !!(
+    flatPlacerActive &&
+    (flatApplyStatus === "pending" ||
+      flatApplyStatus === "saving" ||
+      mockupLoading)
+  );
+
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
@@ -5655,7 +5685,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -5663,6 +5693,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Adding to Cart...</span>
+                </>
+              ) : flatPlacerSaveBlocking ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  <span className="shimmer-text-white">
+                    {flatApplyStatus === "pending" ? "Saving design…" : "Updating preview…"}
+                  </span>
                 </>
               ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
                 <>
@@ -5844,7 +5881,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       `}</style>
       <div
         className={
-          showPatternStep && aopPendingMotifUrl
+          (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
             ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-3 space-y-3"
             : "max-w-6xl mx-auto space-y-3"
         }
@@ -5931,7 +5968,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
         <div
           className={`grid grid-cols-1 gap-4 sm:gap-6 ${
-            showPatternStep && aopPendingMotifUrl
+            (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
               ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)]"
               : "md:grid-cols-2"
           }`}
@@ -5939,7 +5976,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           {/* Generator/form panel — right on desktop, first on mobile */}
           <div
             className={`space-y-4 order-1 ${
-              showPatternStep && aopPendingMotifUrl
+              (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3"
                 : "md:order-2"
             }`}
@@ -6518,7 +6555,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
@@ -6526,6 +6563,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Adding to Cart...</span>
+                          </>
+                        ) : flatPlacerSaveBlocking ? (
+                          <>
+                            <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                            <span className="shimmer-text-white">
+                              {flatApplyStatus === "pending" ? "Saving design…" : "Updating preview…"}
+                            </span>
                           </>
                         ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
                           <>
@@ -6966,7 +7010,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <div
             ref={artworkColumnRef}
             className={`order-2 min-w-0 w-full ${
-              showPatternStep && aopPendingMotifUrl
+              (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-1 lg:col-span-2 flex flex-col min-h-0"
                 : "space-y-3 md:order-1"
             }`}
@@ -7233,6 +7277,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   }}
                   onChange={(s) => setFlatPlacerState(s)}
                   onApply={handleFlatApply}
+                  onApplyStatusChange={setFlatApplyStatus}
                   onAssetsFailed={() => setFlatRenderFailed(true)}
                   skipInitialAutoApply={!!flatPlacerState}
                 />

@@ -122,6 +122,17 @@ export function flatCovers(rect: Rect, box: Rect): boolean {
   );
 }
 
+/** True when artwork extends past the print rect — mask clip will trim edges. */
+export function flatOverflows(rect: Rect, box: Rect): boolean {
+  const eps = 1;
+  return (
+    box.x < rect.x - eps ||
+    box.y < rect.y - eps ||
+    box.x + box.width > rect.x + rect.width + eps ||
+    box.y + box.height > rect.y + rect.height + eps
+  );
+}
+
 /**
  * Build a complete `MeshGrid` (mockup-px target points) from the manifest's
  * mesh nodes. Returns `null` when the grid is incomplete (we then fall back to
