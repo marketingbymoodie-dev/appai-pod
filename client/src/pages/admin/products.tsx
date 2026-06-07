@@ -114,6 +114,16 @@ export default function AdminProducts() {
 
   const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
     queryKey: ["/api/product-types"],
+    // Calibration runs server-side for several minutes; poll while any product
+    // is pending/running so the button doesn't stay on "Recalibrating…" until
+    // a manual refresh.
+    refetchInterval: (query) => {
+      const pts = query.state.data as ProductType[] | undefined;
+      const calibrating = pts?.some(
+        (pt) => pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running",
+      );
+      return calibrating ? 15_000 : false;
+    },
   });
 
   const { data: printifyBlueprints, isLoading: blueprintsLoading, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
@@ -402,10 +412,11 @@ export default function AdminProducts() {
     onSuccess: () => {
       toast({
         title: "Calibration started",
-        description: "Probing the print area and harvesting masks/blanks. This runs in the background (≈1–2 min); refresh to see the tier once it's ready.",
+        description:
+          "Harvesting masks and blank photos via Printify (up to 8 colours, not all variants). " +
+          "Apparel with front + back usually takes 3–8 min. This page auto-refreshes status.",
       });
-      // Refresh after a delay so the updated status/tier shows up.
-      setTimeout(() => queryClient.invalidateQueries({ queryKey: ["/api/product-types"] }), 4000);
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
     },
     onError: (error: Error) => {
       toast({ title: "Couldn't start calibration", description: error.message, variant: "destructive" });
@@ -879,7 +890,7 @@ export default function AdminProducts() {
                           size="sm"
                           onClick={() => calibrateFlatMutation.mutate(pt.id)}
                           disabled={calibrateMutatingId === pt.id}
-                          title="Re-harvest masks, shading, and per-colour blank photos. Runs in the background (~1–2 min)."
+                          title="Re-harvest masks, shading, and up to 8 blank garment photos (not one per variant). Apparel front+back: typically 3–8 min."
                           data-testid={`button-recalibrate-flat-${pt.id}`}
                         >
                           {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
