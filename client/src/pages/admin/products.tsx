@@ -821,28 +821,39 @@ export default function AdminProducts() {
                           </>
                         )}
                       </Button>
-                      {/* On-the-fly calibration: only for non-AOP products that
-                          have never been calibrated (legacy imports) or whose
-                          last run failed. New imports auto-calibrate, so this
-                          self-removes and never shows for healthy products. */}
-                      {!pt.isAllOverPrint && (!pt.flatCalibrationStatus || pt.flatCalibrationStatus === "failed") && (
+                      {/* On-the-fly calibration: shown for non-AOP products that
+                          don't yet have a final tier and weren't ruled out
+                          (unsupported). New imports auto-calibrate to a tier, so
+                          this self-removes for healthy products. It stays
+                          clickable even while "running" so an interrupted run
+                          (e.g. a server restart) can be restarted — it never
+                          gets permanently stuck on "Calibrating…". */}
+                      {!pt.isAllOverPrint && !pt.onTheFlyTier && pt.flatCalibrationStatus !== "unsupported" && (
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => calibrateFlatMutation.mutate(pt.id)}
                           disabled={calibrateMutatingId === pt.id}
-                          title="Probe this product's print area and harvest masks/blanks so it can use on-the-fly mockups (flat/mesh) instead of Printify. Runs in the background."
+                          title="Probe this product's print area and harvest masks/blanks so it can use on-the-fly mockups (flat/mesh) instead of Printify. Runs in the background (~1–2 min). Click again to restart if it stalls."
                           data-testid={`button-calibrate-flat-${pt.id}`}
                         >
-                          <FlaskConical className={`h-3 w-3 mr-1 ${calibrateMutatingId === pt.id ? 'animate-pulse' : ''}`} />
-                          {pt.flatCalibrationStatus === "failed" ? "Retry calibration" : "Calibrate for on-the-fly"}
+                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
+                            <>
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              Calibrating… (click to restart)
+                            </>
+                          ) : pt.flatCalibrationStatus === "failed" ? (
+                            <>
+                              <FlaskConical className="h-3 w-3 mr-1" />
+                              Retry calibration
+                            </>
+                          ) : (
+                            <>
+                              <FlaskConical className="h-3 w-3 mr-1" />
+                              Calibrate for on-the-fly
+                            </>
+                          )}
                         </Button>
-                      )}
-                      {!pt.isAllOverPrint && (pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") && (
-                        <span className="inline-flex items-center text-xs text-muted-foreground px-2">
-                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                          Calibrating…
-                        </span>
                       )}
                       {pt.onTheFlyTier && (
                         <Badge

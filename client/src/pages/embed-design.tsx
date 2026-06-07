@@ -1442,9 +1442,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const logPrefix = `[EmbedDesign] [${sessionId}]`;
       let lastError: Error | null = null;
 
-      // GUARD: If this is a designer endpoint call, it MUST have shop= parameter
-      if (frozenUrl.includes('/designer') && !frozenUrl.includes('shop=')) {
-        const errorMsg = `CRITICAL BUG: Designer endpoint called without shop parameter! URL: ${frozenUrl}`;
+      // GUARD: A STOREFRONT designer endpoint call MUST have a shop= parameter
+      // (it resolves the merchant from the shop). The admin-tester path uses the
+      // session-authenticated admin endpoint `/api/product-types/:id/designer`,
+      // which has no shop and must NOT trip this guard.
+      if (frozenUrl.includes('/storefront/') && frozenUrl.includes('/designer') && !frozenUrl.includes('shop=')) {
+        const errorMsg = `CRITICAL BUG: Storefront designer endpoint called without shop parameter! URL: ${frozenUrl}`;
         console.error(`${logPrefix} ${errorMsg}`);
         throw new Error(errorMsg);
       }
