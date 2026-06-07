@@ -7233,6 +7233,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   }}
                   onChange={(s) => setFlatPlacerState(s)}
                   onApply={handleFlatApply}
+                  onAssetsFailed={() => setFlatRenderFailed(true)}
                   skipInitialAutoApply={!!flatPlacerState}
                 />
               </div>

@@ -485,6 +485,95 @@ async function resolveColorsFromCatalog(token: string, blueprintId: number, prov
   return [...byColor.values()];
 }
 
+function parseJsonArray(raw: unknown): any[] {
+  if (!raw) return [];
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(raw) ? raw : [];
+}
+
+function parseJsonRecord(raw: unknown): Record<string, any> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {};
+}
+
+/**
+ * Resolve harvest colours from the persisted product type (frameColors +
+ * variantMap). This mirrors the import path's slug ids and is far more reliable
+ * than `resolveColorsFromCatalog`, which often returns [] for apparel blueprints
+ * whose Printify option metadata doesn't expose a classic "color" dimension.
+ */
+export function buildHarvestColorsFromProductType(productType: {
+  frameColors?: unknown;
+  sizes?: unknown;
+  variantMap?: unknown;
+}): ColorEntry[] {
+  const frameColors = parseJsonArray(productType.frameColors);
+  const sizes = parseJsonArray(productType.sizes);
+  const variantMap = parseJsonRecord(productType.variantMap);
+  const colors: ColorEntry[] = [];
+
+  for (const fc of frameColors) {
+    if (!fc?.id) continue;
+    let variantId: number | null = null;
+
+    for (const size of sizes) {
+      const key = `${size.id}:${fc.id}`;
+      const entry = variantMap[key];
+      if (entry?.printifyVariantId) {
+        variantId = Number(entry.printifyVariantId);
+        break;
+      }
+    }
+
+    if (variantId == null) {
+      for (const [key, entry] of Object.entries(variantMap)) {
+        if (key.endsWith(`:${fc.id}`) && entry?.printifyVariantId) {
+          variantId = Number(entry.printifyVariantId);
+          break;
+        }
+      }
+    }
+
+    if (variantId == null && sizes.length > 0) {
+      const key = `${sizes[0].id}:${fc.id}`;
+      const entry = variantMap[key];
+      if (entry?.printifyVariantId) variantId = Number(entry.printifyVariantId);
+    }
+
+    if (variantId != null) {
+      colors.push({
+        id: String(fc.id),
+        name: fc.name || String(fc.id),
+        hex: fc.hex,
+        variantId,
+      });
+    }
+  }
+
+  return colors;
+}
+
+function manifestHasBlanks(manifest: FlatCalibrationManifest): boolean {
+  return Object.values(manifest.blanks || {}).some(
+    (perView) => !!(perView?.front || perView?.back),
+  );
+}
+
 export type HarvestOptions = {
   productTypeId: number;
   name: string;
@@ -616,7 +705,16 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
 
     // ── 3. BLANK pass per color/model -> plain garment photos ─────────────────
-    const colors = (opts.colors && opts.colors.length > 0 ? opts.colors : await resolveColorsFromCatalog(token, blueprintId, providerId, variants)).slice(0, Math.max(1, maxBlankColors));
+    let colors =
+      opts.colors && opts.colors.length > 0
+        ? opts.colors
+        : await resolveColorsFromCatalog(token, blueprintId, providerId, variants);
+    if (colors.length === 0) {
+      console.warn(
+        `[flat-calibration] ${name} (pt ${productTypeId}): catalog colour resolution returned 0 — blank harvest skipped`,
+      );
+    }
+    colors = colors.slice(0, Math.max(1, maxBlankColors));
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
     for (const color of colors) {
       const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));
@@ -632,6 +730,15 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
       }
       baseManifest.blanks[color.id] = perView;
+    }
+
+    if (!manifestHasBlanks(baseManifest)) {
+      return {
+        tier: productTier,
+        status: "failed",
+        manifest: baseManifest,
+        error: "blank garment photos could not be harvested (no colours resolved or Printify mockups missing)",
+      };
     }
 
     return { tier: productTier, status: "ready", manifest: baseManifest };

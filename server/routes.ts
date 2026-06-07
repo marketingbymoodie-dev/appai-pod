@@ -40,7 +40,7 @@ import {
   listPublicTemplateNames,
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
-import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
+import { harvestFlatCalibration, buildHarvestColorsFromProductType, type HarvestOptions } from "./flat-calibration";
 import {
   submitFlatTestOrder,
   submitFlatOrderToPrintify,
@@ -61,8 +61,12 @@ function kickoffFlatCalibration(args: {
   token: string | null | undefined;
   shopId: string | null | undefined;
   isAllOverPrint: boolean;
+  /** Persisted import data — used to harvest per-colour blank photos reliably. */
+  frameColors?: unknown;
+  sizes?: unknown;
+  variantMap?: unknown;
 }): void {
-  const { productTypeId, name, blueprintId, providerId, token, shopId, isAllOverPrint } = args;
+  const { productTypeId, name, blueprintId, providerId, token, shopId, isAllOverPrint, frameColors, sizes, variantMap } = args;
   if (isAllOverPrint) {
     // AOP products use the hoodie/pattern mesh pipeline, not on-the-fly flat mockups.
     void storage.updateProductType(productTypeId, { flatCalibrationStatus: "unsupported" }).catch(() => {});
@@ -75,7 +79,16 @@ function kickoffFlatCalibration(args: {
   void (async () => {
     try {
       await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
-      const opts: HarvestOptions = { productTypeId, name, blueprintId, providerId, token, shopId };
+      const colors = buildHarvestColorsFromProductType({ frameColors, sizes, variantMap });
+      const opts: HarvestOptions = {
+        productTypeId,
+        name,
+        blueprintId,
+        providerId,
+        token,
+        shopId,
+        colors: colors.length > 0 ? colors : undefined,
+      };
       const result = await harvestFlatCalibration(opts);
       await storage.updateProductType(productTypeId, {
         onTheFlyTier: result.tier,
@@ -101,6 +114,10 @@ function parseFlatCalibrationManifest(raw: unknown): any | null {
     const m = JSON.parse(raw);
     if (!m || (m.tier !== "flat" && m.tier !== "mesh")) return null;
     if (!m.views || Object.keys(m.views).length === 0) return null;
+    const hasBlanks = Object.values(m.blanks || {}).some(
+      (perView: any) => !!(perView?.front || perView?.back),
+    );
+    if (!hasBlanks) return null;
     return m;
   } catch {
     return null;
@@ -12886,6 +12903,9 @@ ${textEdgeRestrictions}
         token: merchant.printifyApiToken,
         shopId: merchant.printifyShopId,
         isAllOverPrint,
+        frameColors,
+        sizes,
+        variantMap,
       });
     } catch (error) {
       console.error("Error importing Printify blueprint:", error);
@@ -12914,6 +12934,9 @@ ${textEdgeRestrictions}
         token: merchant.printifyApiToken,
         shopId: merchant.printifyShopId,
         isAllOverPrint: productType.isAllOverPrint,
+        frameColors: productType.frameColors,
+        sizes: productType.sizes,
+        variantMap: productType.variantMap,
       });
       res.status(202).json({ status: "running", productTypeId: productType.id });
     } catch (error) {

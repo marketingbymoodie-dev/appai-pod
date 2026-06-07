@@ -63,6 +63,8 @@ export type FlatProductPlacerProps = {
   initialState?: Partial<FlatProductPlacerState> | null;
   onApply?: (result: FlatProductPlacerApplyResult) => void;
   onChange?: (state: FlatProductPlacerState) => void;
+  /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
+  onAssetsFailed?: (reason: string) => void;
   /** Skip the first auto-apply when resuming an already-saved design. */
   skipInitialAutoApply?: boolean;
 };
@@ -155,6 +157,7 @@ export default function FlatProductPlacer({
   initialState,
   onApply,
   onChange,
+  onAssetsFailed,
   skipInitialAutoApply = false,
 }: FlatProductPlacerProps) {
   const blank = useMemo(() => resolveBlank(manifest, colorId), [manifest, colorId]);
@@ -200,13 +203,21 @@ export default function FlatProductPlacer({
       if (cancelled) return;
       setAssets(next);
       const anyBlank = availableViews.some((v) => next[v].blank);
-      setAssetError(anyBlank ? null : "Could not load product images");
+      const err = anyBlank ? null : "Could not load product images";
+      setAssetError(err);
       setAssetsLoading(false);
+      if (err) onAssetsFailed?.(err);
     })();
     return () => {
       cancelled = true;
     };
-  }, [availableViews, manifest, blank]);
+  }, [availableViews, manifest, blank, onAssetsFailed]);
+
+  useEffect(() => {
+    if (!assetsLoading && availableViews.length === 0) {
+      onAssetsFailed?.("No printable views available");
+    }
+  }, [assetsLoading, availableViews.length, onAssetsFailed]);
 
   // ---------- Customer state ----------
   const [state, setState] = useState<FlatProductPlacerState | null>(null);
