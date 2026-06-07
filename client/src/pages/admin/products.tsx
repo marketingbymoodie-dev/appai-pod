@@ -868,6 +868,33 @@ export default function AdminProducts() {
                           {pt.onTheFlyTier === "flat" ? "On-the-fly: flat" : pt.onTheFlyTier === "mesh" ? "On-the-fly: mesh" : "On-the-fly: n/a"}
                         </Badge>
                       )}
+                      {/* Re-run calibration for products that already have a tier
+                          (e.g. after a code fix, or when a prior run left masks
+                          but missing blank photos). */}
+                      {!pt.isAllOverPrint &&
+                        (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") &&
+                        pt.flatCalibrationStatus !== "unsupported" && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => calibrateFlatMutation.mutate(pt.id)}
+                          disabled={calibrateMutatingId === pt.id}
+                          title="Re-harvest masks, shading, and per-colour blank photos. Runs in the background (~1–2 min)."
+                          data-testid={`button-recalibrate-flat-${pt.id}`}
+                        >
+                          {(calibrateMutatingId === pt.id || pt.flatCalibrationStatus === "pending" || pt.flatCalibrationStatus === "running") ? (
+                            <>
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              Recalibrating…
+                            </>
+                          ) : (
+                            <>
+                              <FlaskConical className="h-3 w-3 mr-1" />
+                              Recalibrate
+                            </>
+                          )}
+                        </Button>
+                      )}
                       {(pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
                         <Button
                           variant="outline"
