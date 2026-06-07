@@ -1,11 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff, Loader2, RotateCcw, Check, AlertTriangle } from "lucide-react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
 import {
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
-import { API_BASE } from "@/lib/urlBase";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
+import {
+  loadFlatImage,
+  resolveFlatBlank,
+  type FlatViewName,
+} from "./lib/flatAssets";
 import {
   flatArtBox,
   flatOverflows,
@@ -37,7 +49,7 @@ import type {
  *     the UI never implies more coverage than the print file provides.
  */
 
-type ViewName = "front" | "back";
+type ViewName = FlatViewName;
 
 export type FlatProductPlacerState = {
   /** Currently visible view. */
@@ -56,11 +68,14 @@ export type FlatProductPlacerApplyResult = {
   renderView: (view: ViewName) => HTMLCanvasElement | null;
 };
 
-/** Debounced auto-save lifecycle — parent can gate ATC until `saved`. */
-export type FlatApplyStatus = "idle" | "pending" | "saving" | "saved" | "error";
+/** Explicit persist lifecycle — parent flushes on ATC / leave editor / page hide. */
+export type FlatApplyStatus = "idle" | "saving" | "saved" | "error";
 
-/** Wait this long after the last placement edit before uploading + persisting. */
-const FLAT_AUTO_APPLY_DEBOUNCE_MS = 3000;
+export type FlatProductPlacerHandle = {
+  /** Upload + persist when placement or colour changed since last apply. */
+  applyIfNeeded: () => Promise<void>;
+  hasPendingChanges: () => boolean;
+};
 
 export type FlatProductPlacerProps = {
   manifest: FlatCalibrationManifest;
@@ -69,7 +84,7 @@ export type FlatProductPlacerProps = {
   initialState?: Partial<FlatProductPlacerState> | null;
   onApply?: (result: FlatProductPlacerApplyResult) => void | Promise<void>;
   onChange?: (state: FlatProductPlacerState) => void;
-  /** Fired whenever debounced auto-save status changes (for ATC gating). */
+  /** Fired when an explicit persist starts / finishes (for ATC gating). */
   onApplyStatusChange?: (status: FlatApplyStatus) => void;
   /** Called when blank/mask assets cannot load — parent should fall back to Printify. */
   onAssetsFailed?: (reason: string) => void;
@@ -84,47 +99,6 @@ type LoadedAssets = {
 };
 
 const EMPTY_ASSETS: LoadedAssets = { blank: null, mask: null, shading: null };
-
-/** Resolve absolute URL (manifest urls are usually Supabase absolutes already). */
-function toAbs(url: string): string {
-  if (!url) return url;
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  return `${API_BASE}${url.startsWith("/") ? "" : "/"}${url}`;
-}
-
-function normalizeColorKey(id: string): string {
-  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-}
-
-/**
- * Pick the blank photo set for `colorId`, with graceful fallback: exact key →
- * normalized-key match (server lowercases/strips when keying) → first entry.
- */
-function resolveBlank(
-  manifest: FlatCalibrationManifest,
-  colorId: string,
-): Partial<Record<ViewName, string>> {
-  const blanks = manifest.blanks || {};
-  if (colorId && blanks[colorId]) return blanks[colorId];
-  if (colorId) {
-    const norm = normalizeColorKey(colorId);
-    for (const k of Object.keys(blanks)) {
-      if (normalizeColorKey(k) === norm) return blanks[k];
-    }
-  }
-  const first = Object.keys(blanks)[0];
-  return first ? blanks[first] : {};
-}
-
-function loadImage(url: string): Promise<HTMLImageElement | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = toAbs(url);
-  });
-}
 
 function outputSignature(s: FlatProductPlacerState): string {
   return JSON.stringify({
@@ -159,17 +133,21 @@ function buildInitialState(
   };
 }
 
-export default function FlatProductPlacer({
-  manifest,
-  colorId,
-  initialState,
-  onApply,
-  onChange,
-  onApplyStatusChange,
-  onAssetsFailed,
-  skipInitialAutoApply = false,
-}: FlatProductPlacerProps) {
-  const blank = useMemo(() => resolveBlank(manifest, colorId), [manifest, colorId]);
+const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerProps>(
+  function FlatProductPlacer(
+    {
+      manifest,
+      colorId,
+      initialState,
+      onApply,
+      onChange,
+      onApplyStatusChange,
+      onAssetsFailed,
+      skipInitialAutoApply = false,
+    },
+    ref,
+  ) {
+  const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
 
   const availableViews = useMemo<ViewName[]>(() => {
     const views: ViewName[] = [];
@@ -189,7 +167,8 @@ export default function FlatProductPlacer({
   // ---------- Preload blank / mask / shading for every available view ----------
   useEffect(() => {
     let cancelled = false;
-    setAssetsLoading(true);
+    const hasExistingAssets = availableViews.some((v) => assets[v].blank);
+    if (!hasExistingAssets) setAssetsLoading(true);
     setAssetError(null);
     (async () => {
       const next: Record<ViewName, LoadedAssets> = {
@@ -201,10 +180,10 @@ export default function FlatProductPlacer({
         const blankUrl = blank[v];
         if (!blankUrl) continue;
         const [b, m, s] = await Promise.all([
-          loadImage(blankUrl),
-          calib.maskUrl ? loadImage(calib.maskUrl) : Promise.resolve(null),
+          loadFlatImage(blankUrl),
+          calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
           calib.shadingMode === "map" && calib.shadingUrl
-            ? loadImage(calib.shadingUrl)
+            ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
         next[v] = { blank: b, mask: m, shading: s };
@@ -220,6 +199,7 @@ export default function FlatProductPlacer({
     return () => {
       cancelled = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
   }, [availableViews, manifest, blank, onAssetsFailed]);
 
   useEffect(() => {
@@ -230,8 +210,10 @@ export default function FlatProductPlacer({
 
   // ---------- Customer state ----------
   const [state, setState] = useState<FlatProductPlacerState | null>(null);
-  const baselineSignatureRef = useRef<string | null>(null);
+  const lastAppliedSignatureRef = useRef<string | null>(null);
+  const lastAppliedColorRef = useRef<string | null>(null);
   const seededAsResumeRef = useRef(false);
+  const resumeBaselineSeededRef = useRef(false);
 
   useEffect(() => {
     setState((prev) => {
@@ -261,7 +243,7 @@ export default function FlatProductPlacer({
     }
     let cancelled = false;
     setArtworkLoading(true);
-    loadImage(url).then((img) => {
+    loadFlatImage(url).then((img) => {
       if (cancelled) return;
       setArtworkImg(img);
       setArtworkLoading(false);
@@ -274,12 +256,12 @@ export default function FlatProductPlacer({
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);
 
-  // ---------- Auto-apply status ----------
-  const [autoApplyStatus, setAutoApplyStatus] = useState<FlatApplyStatus>("idle");
+  // ---------- Persist status (explicit flush only) ----------
+  const [applyStatus, setApplyStatus] = useState<FlatApplyStatus>("idle");
 
   useEffect(() => {
-    onApplyStatusChange?.(autoApplyStatus);
-  }, [autoApplyStatus, onApplyStatusChange]);
+    onApplyStatusChange?.(applyStatus);
+  }, [applyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
   const renderInto = useCallback(
@@ -331,57 +313,56 @@ export default function FlatProductPlacer({
     [renderInto],
   );
 
-  // ---------- Debounced auto-apply (mirrors HoodieAopPlacer) ----------
-  useEffect(() => {
-    if (!onApply) return;
-    if (!state || !artworkImg) return;
-    if (assetsLoading) return;
+  const hasPendingChanges = useCallback((): boolean => {
+    if (!state || !artworkImg) return false;
+    if (lastAppliedSignatureRef.current === null) return true;
+    if (lastAppliedColorRef.current !== colorId) return true;
+    return outputSignature(state) !== lastAppliedSignatureRef.current;
+  }, [state, artworkImg, colorId]);
 
-    const sig = outputSignature(state);
+  const applyIfNeeded = useCallback(async () => {
+    if (!onApply || !state || !artworkImg || assetsLoading) return;
+    if (!hasPendingChanges()) return;
 
-    if (baselineSignatureRef.current === null) {
-      baselineSignatureRef.current = sig;
-      if (skipInitialAutoApply || seededAsResumeRef.current) {
-        setAutoApplyStatus("saved");
-        return;
-      }
-    } else if (sig === baselineSignatureRef.current) {
-      setAutoApplyStatus((s) => (s === "pending" || s === "saving" ? "saved" : s));
-      return;
+    setApplyStatus("saving");
+    try {
+      await Promise.resolve(
+        onApply({ state, renderView: renderViewToCanvas }),
+      );
+      lastAppliedSignatureRef.current = outputSignature(state);
+      lastAppliedColorRef.current = colorId;
+      setApplyStatus("saved");
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[FlatProductPlacer] apply error:", e);
+      setApplyStatus("error");
+      throw e;
     }
-
-    setAutoApplyStatus("pending");
-    let cancelled = false;
-    const t = window.setTimeout(() => {
-      void (async () => {
-        setAutoApplyStatus("saving");
-        try {
-          await Promise.resolve(
-            onApply({ state, renderView: renderViewToCanvas }),
-          );
-          if (cancelled) return;
-          baselineSignatureRef.current = sig;
-          setAutoApplyStatus("saved");
-        } catch (e) {
-          if (cancelled) return;
-          // eslint-disable-next-line no-console
-          console.error("[FlatProductPlacer] auto-apply error:", e);
-          setAutoApplyStatus("error");
-        }
-      })();
-    }, FLAT_AUTO_APPLY_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(t);
-    };
   }, [
+    onApply,
     state,
     artworkImg,
     assetsLoading,
-    onApply,
+    hasPendingChanges,
     renderViewToCanvas,
-    skipInitialAutoApply,
+    colorId,
   ]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ applyIfNeeded, hasPendingChanges }),
+    [applyIfNeeded, hasPendingChanges],
+  );
+
+  // Seed baseline when resuming a saved design (no upload on open).
+  useEffect(() => {
+    if (!state || !artworkImg || assetsLoading || resumeBaselineSeededRef.current) return;
+    if (!(skipInitialAutoApply || seededAsResumeRef.current)) return;
+    lastAppliedSignatureRef.current = outputSignature(state);
+    lastAppliedColorRef.current = colorId;
+    resumeBaselineSeededRef.current = true;
+    setApplyStatus("saved");
+  }, [state, artworkImg, assetsLoading, skipInitialAutoApply, colorId]);
 
   // ---------- Mutators ----------
   const setView = useCallback((view: ViewName) => {
@@ -433,8 +414,10 @@ export default function FlatProductPlacer({
     );
   }, []);
 
+  const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
+
   // ---------- Render guards ----------
-  if (!state || assetsLoading) {
+  if (!state || (assetsLoading && !hasDisplayableAssets)) {
     return (
       <div className="flex h-[400px] items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading preview…
@@ -513,6 +496,11 @@ export default function FlatProductPlacer({
             {artworkLoading && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading artwork…
+              </div>
+            )}
+            {assetsLoading && hasDisplayableAssets && (
+              <div className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 rounded bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm">
+                <Loader2 className="h-3 w-3 animate-spin" /> Updating colour…
               </div>
             )}
           </div>
@@ -621,30 +609,31 @@ export default function FlatProductPlacer({
           </button>
         )}
 
-        {/* Auto-save indicator */}
+        {/* Persist hint — uploads happen on add-to-cart / leave editor */}
         {onApply && artworkImg && (
-          <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-            {autoApplyStatus === "saving" || autoApplyStatus === "pending" ? (
+          <div className="flex items-center justify-center gap-1.5 text-center text-[11px] text-muted-foreground">
+            {applyStatus === "saving" ? (
               <>
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>Saving design…</span>
               </>
-            ) : autoApplyStatus === "saved" ? (
-              <>
-                <Check className="h-3 w-3 text-green-600" />
-                <span>Design saved</span>
-              </>
-            ) : autoApplyStatus === "error" ? (
-              <span className="text-destructive">Couldn't save — try again</span>
+            ) : applyStatus === "error" ? (
+              <span className="text-destructive">Couldn't save — try add to cart again</span>
+            ) : hasPendingChanges() ? (
+              <span className="opacity-80">
+                Unsaved changes — saved when you add to cart or leave the editor
+              </span>
             ) : (
-              <span className="opacity-60">Saves 3s after you stop editing</span>
+              <span className="opacity-60">Placement ready</span>
             )}
           </div>
         )}
       </div>
     </div>
   );
-}
+});
+
+export default FlatProductPlacer;
 
 function Toggle({
   checked,
