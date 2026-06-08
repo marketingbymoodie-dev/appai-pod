@@ -16006,10 +16006,18 @@ ${textEdgeRestrictions}
             `products/${page.baseProductId}.json?fields=id,status,published_at,variants`
           );
           const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
-          variants = rawVariants.map((v: any) => ({
+          // Match /api/shopify/product-variants: include options for size/color
+          // matching in the embed, and drop per-design shadow variants (option3).
+          const baseVariants = rawVariants.filter(
+            (v: any) => !v.option3 || v.option3 === "base",
+          );
+          variants = baseVariants.map((v: any) => ({
             id: String(v.id),
             title: v.title || "",
             price: v.price || "0.00",
+            option1: v.option1 ?? undefined,
+            option2: v.option2 ?? undefined,
+            option3: v.option3 ?? undefined,
           }));
 
           // Ensure the product is published to the Online Store channel.

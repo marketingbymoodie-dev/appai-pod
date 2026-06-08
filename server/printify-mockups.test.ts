@@ -6,7 +6,7 @@
  * - Structured error responses with step info
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { normalizeMockupCameraLabel, pickPreferredMockupViews, extractBase64FromDataUrl } from "./printify-mockups";
+import { normalizeMockupCameraLabel, pickPreferredMockupViews, extractBase64FromDataUrl, isWrapOnlyPlaceholder } from "./printify-mockups";
 
 // We test the module's exported function
 // Mock fetch for Printify API calls
@@ -430,6 +430,18 @@ describe("Mockup camera_label preference", () => {
       { url: "https://x.example/front.png", label: "front" },
     ];
     expect(pickPreferredMockupViews(images, false, "front").map((p) => p.label)).toEqual(["front"]);
+  });
+
+  it("detects wrap-only placeholders (wide front, no back dims)", () => {
+    expect(
+      isWrapOnlyPlaceholder([{ position: "front", width: 7200, height: 3600 }]),
+    ).toBe(true);
+    expect(
+      isWrapOnlyPlaceholder([
+        { position: "front", width: 3600, height: 3600 },
+        { position: "back", width: 3600, height: 3600 },
+      ]),
+    ).toBe(false);
   });
 });
 

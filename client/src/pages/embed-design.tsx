@@ -425,50 +425,90 @@ type VariantCatalogEntry = {
   option2?: string;
 };
 
+/** Normalize size/color tokens for fuzzy matching (red ↔ Red, light_pink ↔ Light Pink). */
+function normalizeVariantToken(value: string): string {
+  return value.toLowerCase().trim().replace(/[\s_-]+/g, "_");
+}
+
+/** Resolve a saved frameColor value (id, name, or slug) to the config color id. */
+function resolveFrameColorId(
+  stored: string | null | undefined,
+  frameColors: Array<{ id: string; name: string }>,
+): string | null {
+  if (!stored?.trim()) return null;
+  const trimmed = stored.trim();
+  if (frameColors.some((f) => f.id === trimmed)) return trimmed;
+  const lower = trimmed.toLowerCase();
+  const byName = frameColors.find((f) => f.name.toLowerCase() === lower);
+  if (byName) return byName.id;
+  const slug = normalizeVariantToken(trimmed);
+  const bySlug = frameColors.find(
+    (f) =>
+      f.id === slug ||
+      normalizeVariantToken(f.id) === slug ||
+      normalizeVariantToken(f.name) === slug,
+  );
+  return bySlug?.id ?? null;
+}
+
 /** Match a Shopify variant from a catalog by human-readable size + color names. */
 function matchVariantBySizeColor(
   catalog: VariantCatalogEntry[],
   sizeName: string,
   frameName: string,
   hasColors: boolean,
+  frameColorId?: string,
 ): string | null {
   if (catalog.length === 0) return null;
 
-  const sizeLower = sizeName.toLowerCase();
-  const frameLower = frameName.toLowerCase();
+  const sizeNorm = normalizeVariantToken(sizeName);
+  const frameNameNorm = normalizeVariantToken(frameName);
+  const frameIdNorm = frameColorId ? normalizeVariantToken(frameColorId) : "";
+
+  const colorTokenMatches = (raw: string): boolean => {
+    const opt = normalizeVariantToken(raw);
+    if (!opt) return false;
+    if (frameNameNorm && (opt.includes(frameNameNorm) || frameNameNorm.includes(opt))) {
+      return true;
+    }
+    if (frameIdNorm && (opt === frameIdNorm || opt.includes(frameIdNorm) || frameIdNorm.includes(opt))) {
+      return true;
+    }
+    return false;
+  };
 
   const titleMatch = (v: VariantCatalogEntry) => {
-    const t = (v.title || "").toLowerCase();
+    const t = normalizeVariantToken(v.title || "");
     if (!t) return false;
-    const hasSize = !sizeName || t.includes(sizeLower) || sizeLower.includes(t);
-    const hasFrame =
-      !frameName || !hasColors || t.includes(frameLower) || frameLower.includes(t);
+    const hasSize = !sizeNorm || t.includes(sizeNorm) || sizeNorm.includes(t);
+    const hasFrame = !hasColors || !frameNameNorm && !frameIdNorm
+      ? true
+      : colorTokenMatches(v.title || "");
     return hasSize && hasFrame;
   };
 
   const optionMatch = (v: VariantCatalogEntry) => {
     const options = [v.option1, v.option2]
       .filter(Boolean)
-      .map((o) => String(o).toLowerCase());
+      .map((o) => String(o));
     if (options.length === 0) return false;
-    let sizeMatch = !sizeName;
-    let colorMatch = !frameName || !hasColors;
-    if (sizeName) {
-      sizeMatch = options.some(
-        (opt) => opt.includes(sizeLower) || sizeLower.includes(opt),
-      );
+    let sizeMatch = !sizeNorm;
+    let colorMatch = !hasColors || (!frameNameNorm && !frameIdNorm);
+    if (sizeNorm) {
+      sizeMatch = options.some((opt) => {
+        const o = normalizeVariantToken(opt);
+        return o.includes(sizeNorm) || sizeNorm.includes(o);
+      });
     }
-    if (frameName && hasColors) {
-      colorMatch = options.some(
-        (opt) => opt.includes(frameLower) || frameLower.includes(opt),
-      );
+    if (hasColors && (frameNameNorm || frameIdNorm)) {
+      colorMatch = options.some(colorTokenMatches);
     }
     return sizeMatch && colorMatch;
   };
 
   let match = catalog.find(titleMatch);
-  if (!match && sizeName) {
-    match = catalog.find((v) => (v.title || "").toLowerCase().includes(sizeLower));
+  if (!match && sizeNorm) {
+    match = catalog.find((v) => normalizeVariantToken(v.title || "").includes(sizeNorm));
   }
   if (!match) {
     match = catalog.find(optionMatch);
@@ -1258,6 +1298,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [addedToCart, setAddedToCart] = useState(false);
   const { toast } = useToast();
 
+  const notifyInsufficientCredits = useCallback(() => {
+    setCreditsPopoverOpen(true);
+    toast({
+      title: "No artwork credits remaining",
+      description:
+        "Purchase more credits to generate new artwork. Credits are refunded when you complete a purchase.",
+      duration: 8000,
+    });
+  }, [toast]);
+
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
   const flatEdgeWrapMode = !!(
@@ -1962,8 +2012,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (sizeOk) setSelectedSize(ds.selectedSize);
       }
       if (ds.selectedFrameColor) {
-        const colorOk = !frameColorObjects.length || frameColorObjects.some((f) => f.id === ds.selectedFrameColor);
-        if (colorOk) setSelectedFrameColor(ds.selectedFrameColor);
+        const resolved = resolveFrameColorId(ds.selectedFrameColor, frameColorObjects);
+        if (resolved) setSelectedFrameColor(resolved);
       }
       if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
       if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
@@ -2014,8 +2064,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (sizeOk) setSelectedSize(topLevel.size);
       }
       if (topLevel.frameColor) {
-        const colorOk = !frameColorObjects.length || frameColorObjects.some((f) => f.id === topLevel.frameColor);
-        if (colorOk) setSelectedFrameColor(topLevel.frameColor);
+        const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
+        if (resolved) setSelectedFrameColor(resolved);
       }
       if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     }
@@ -2027,8 +2077,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (sizeOk) setSelectedSize(topLevel.size);
     }
     if (!ds?.selectedFrameColor && topLevel.frameColor) {
-      const colorOk = !frameColorObjects.length || frameColorObjects.some((f) => f.id === topLevel.frameColor);
-      if (colorOk) setSelectedFrameColor(topLevel.frameColor);
+      const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
+      if (resolved) setSelectedFrameColor(resolved);
     }
     if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
@@ -2218,10 +2268,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const variantCatalogKey = `${config.productTypeId ? String(config.productTypeId) : "0"}|${config.baseProductHandle || pageHandle}`;
-    // Only mark the catalog loaded when we actually have variants — an empty array
-    // must not block the product-variants fetch effect (otherwise stale override IDs
-    // from the previous product win when catalogIds.size === 0).
-    if (targetVariants.length > 0) {
+    const configFrameColors = Array.isArray(config.designerConfig?.frameColors)
+      ? config.designerConfig.frameColors
+      : [];
+    const variantsHaveOptions = targetVariants.some((v) => v.option1 || v.option2);
+    // Only mark the catalog loaded when variants include option columns (needed for
+    // size+color matching) or the product has no color dimension.
+    if (targetVariants.length > 0 && (variantsHaveOptions || configFrameColors.length === 0)) {
       variantsLoadedKeyRef.current = variantCatalogKey;
       variantsFetchingKeyRef.current = "";
     } else {
@@ -3352,7 +3405,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             throw new Error(jobData.message || "Free generation limit reached. Please create an account to continue.");
           }
           if (jobData.error === 'INSUFFICIENT_CREDITS') {
-            setCreditsPopoverOpen(true);
+            notifyInsufficientCredits();
             throw new Error(jobData.message || "You've run out of credits. Purchase more to continue.");
           }
           if (jobData.error === 'GALLERY_FULL') {
@@ -3606,6 +3659,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     onError: (err: any) => {
       console.error('[EmbedDesign] Generation error:', err?.message ?? err);
       const msg: string = err?.message ?? '';
+      if (/credit/i.test(msg)) {
+        return;
+      }
       if (msg.startsWith('SHOP_NEEDS_REINSTALL:')) {
         const reinstallUrl = msg.replace('SHOP_NEEDS_REINSTALL:', '');
         setLoginError(`The app needs to be reconnected to your store. <a href="${reinstallUrl}" target="_top" style="text-decoration:underline">Click here to reconnect</a>.`);
@@ -3721,7 +3777,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!prompt.trim() && !activePresetForCheck?.descriptionOptional) return;
 
     if ((isShopify || isStorefront) && customer && credits <= 0) {
-      setCreditsPopoverOpen(true);
+      notifyInsufficientCredits();
       return;
     }
 
@@ -3993,9 +4049,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (variantsData) {
         const parsed = JSON.parse(variantsData);
         if (Array.isArray(parsed)) {
-          setVariants(parsed);
+          const mapped = mapServerVariantsToCatalog(parsed);
+          setVariants(mapped);
+          setShopifyVariants(mapped);
           setVariantsFetched(true);
-          console.log('[Design Studio] Parsed variants from URL:', parsed.length);
+          console.log('[Design Studio] Parsed variants from URL:', mapped.length);
         }
       }
     } catch (e) {
@@ -4010,7 +4068,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (!isShopify && !isStorefront) return;
 
     const fetchKey = `${productTypeId}|${productHandle}`;
-    if (variantsLoadedKeyRef.current === fetchKey || variantsFetchingKeyRef.current === fetchKey) {
+    if (variantsFetchingKeyRef.current === fetchKey) {
+      return;
+    }
+
+    const needsColorOptions = (productTypeConfig?.frameColors?.length ?? 0) > 0;
+    const catalogHasOptions =
+      variants.some((v: any) => v.option1 || v.option2) ||
+      shopifyVariants.some((v: any) => v.option1 || v.option2);
+    if (
+      variantsLoadedKeyRef.current === fetchKey &&
+      (!needsColorOptions || catalogHasOptions)
+    ) {
       return;
     }
     variantsFetchingKeyRef.current = fetchKey;
@@ -4064,7 +4133,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         variantsFetchingKeyRef.current = "";
         setVariantsFetched(true);
       });
-  }, [isShopify, isStorefront, productHandle, productTypeId]);
+  }, [isShopify, isStorefront, productHandle, productTypeId, productTypeConfig?.frameColors?.length, variants, shopifyVariants]);
 
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
@@ -4083,7 +4152,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // This must beat overrideVariantId/selectedVariantParam, which can be stale after
     // in-app product switches (e.g. pillow → sweatshirt).
     const fromShopify = shopifyVariants.length > 0
-      ? matchVariantBySizeColor(shopifyVariants, sizeName, frameName, hasColors)
+      ? matchVariantBySizeColor(
+          shopifyVariants,
+          sizeName,
+          frameName,
+          hasColors,
+          selectedFrameColor || undefined,
+        )
       : null;
     if (fromShopify) {
       console.log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
@@ -4101,6 +4176,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           sizeName,
           frameName,
           hasColors,
+          selectedFrameColor || undefined,
         )
       : null;
     if (fromVariants) {
@@ -5783,6 +5859,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       sizeName,
       frameName,
       frameColorObjects.length > 0,
+      selectedFrameColor || undefined,
     );
 
     if (matchedId) {
@@ -6069,7 +6146,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           <Button
             onClick={() => {
               if ((isShopify || isStorefront) && customer && credits <= 0) {
-                setCreditsPopoverOpen(true);
+                notifyInsufficientCredits();
                 return;
               }
               if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
@@ -6946,7 +7023,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     <Button
                       onClick={() => {
                         if ((isShopify || isStorefront) && customer && credits <= 0) {
-                          setCreditsPopoverOpen(true);
+                          notifyInsufficientCredits();
                           return;
                         }
                         if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
@@ -8055,7 +8132,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               </div>
             )}
 
-            {generateMutation.isError && generateMutation.error?.message !== 'GALLERY_FULL' && (
+            {generateMutation.isError &&
+              generateMutation.error?.message !== 'GALLERY_FULL' &&
+              !/credit/i.test(generateMutation.error?.message ?? '') && (
               <p className="text-destructive text-sm" data-testid="text-error">
                 {generateMutation.error?.message || "Failed to generate design. Please try again."}
               </p>
