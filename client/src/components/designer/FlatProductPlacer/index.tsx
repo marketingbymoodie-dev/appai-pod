@@ -23,7 +23,9 @@ import {
   flatArtBox,
   flatCovers,
   flatEdgeWrapGuideRects,
-  flatInsufficientEdgeWrap,
+  flatInsufficientSafeZoneCoverage,
+  flatPlacementRectPx,
+  flatPrintBoundsPx,
   flatOverflows,
   flatPrintBoundsPx,
   flatVisibleRectPx,
@@ -343,6 +345,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           tier: manifest.tier,
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
+          edgeWrapMode,
         });
         return true;
       } catch (e) {
@@ -351,7 +354,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, colorId, artworkImg, artworkCorsClean],
+    [state, assets, manifest, colorId, artworkImg, artworkCorsClean, edgeWrapMode],
   );
 
   // ---------- Live canvas ----------
@@ -508,29 +511,35 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode && calib
       ? flatEdgeWrapGuideRects(calib, viewAssets.mask, mockupW, mockupH)
       : null;
+  const placementRect =
+    calib && edgeWrapMode
+      ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, true)
+      : calib
+        ? flatVisibleRectPx(calib, mockupW, mockupH)
+        : null;
 
-  // Coverage warnings differ by product: apparel trims overflow; phone cases need edge bleed.
+  // Coverage warnings differ by product: apparel trims overflow; phone cases need full print + safe zone bleed.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
-  if (calib && artworkImg && viewEnabled) {
-    const rect = edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
+  if (calib && artworkImg && viewEnabled && placementRect) {
     const printBounds =
       edgeGuides?.outer ??
       flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
+    const safeZone = edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
     const box = flatArtBox(
-      rect,
+      placementRect,
       placement,
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
     if (edgeWrapMode) {
       if (
-        flatInsufficientEdgeWrap(rect, box) ||
-        !flatCovers(printBounds, box)
+        !flatCovers(printBounds, box) ||
+        flatInsufficientSafeZoneCoverage(safeZone, box)
       ) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatOverflows(rect, box)) {
+    } else if (flatOverflows(placementRect, box)) {
       coverageWarning = "trim";
     }
   }
@@ -574,6 +583,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 edgeWrapMode={edgeWrapMode}
                 innerGuideRect={edgeGuides?.inner ?? null}
                 outerGuideRect={edgeGuides?.outer ?? null}
+                placementRect={placementRect}
                 onChange={(next) => updatePlacement(state.view, next)}
                 onDragActivity={() => {
                   canvasDragRef.current = true;
@@ -678,9 +688,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             />
             {edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Inner dashed line = visible back face. Outer line = print
-                silhouette — extend the artwork box past both so case edges receive
-                print.
+                Amber dashed line = safe visible back face. Blue outer line = full
+                print canvas (includes edge bleed and side wrap). Scale artwork to
+                cover the blue outline and extend past the amber line.
               </p>
             )}
           </div>
@@ -701,9 +711,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Artwork doesn&apos;t reach the case edges — scale up or reposition
-              so the design covers the outer print silhouette and extends past the
-              inner back-face guide for full edge printing.
+              Artwork doesn&apos;t fully cover the print area — scale up or
+              reposition so the design covers the blue outline and extends past
+              the amber safe-zone line for edge printing.
             </span>
           </div>
         )}

@@ -11,13 +11,10 @@
  * `server/flat-calibration.ts:42-44`): Printify ignores the uploaded image's
  * pixel size, clamps the placement `scale` at 1.0, and at scale=1 lays the
  * image at the print-area width and clips to the printable rect. The harvested
- * `visibleRectNormalized` was captured as the full print area at scale=1.
- *
- * RECOMMENDED APPROACH — bake, don't transform:
- *   - Rasterize the print file ourselves at `printFileDims` (the full print
- *     area). Because the harvested visible rect IS the full print area at
- *     scale=1, mapping the customer's placement onto `rect = {0,0,printW,printH}`
- *     reproduces the preview geometry exactly.
+ * `visibleRectNormalized` stores the printable rect at scale=1 for apparel.
+ * Edge-wrap phone cases store the safe back-face zone there and full print bounds
+ * in `printBoundsNormalized`; placement + print-file bake use the full canvas
+ * `{0,0,printW,printH}` so preview matches Printify's editor.
  *   - Draw the RAW artwork (no mask, no shading — those are mockup-only).
  *   - Submit to Printify at `{ x:0.5, y:0.5, scale:1, angle:0 }` (full-bleed
  *     center), which sidesteps the scale clamp.

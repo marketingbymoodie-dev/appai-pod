@@ -99,6 +99,8 @@ export type FlatCalibrationManifest = {
    *  (apparel: geometry is color-independent). Phone-case per-model masks are a
    *  documented follow-up. */
   representativeGeometry: boolean;
+  /** Phone cases / rigid edge-print products — guides + exact registration fill. */
+  edgeWrap?: boolean;
   generatedAt: string;
 };
 
@@ -209,16 +211,26 @@ function randomSpeck(maxR = 200, maxG = 100, maxB = 50) {
 }
 
 // ── full-bleed solid targets (cache-busted) ───────────────────────────────────
-async function solidPng(targetW: number, targetH: number, rgb: { r: number; g: number; b: number }): Promise<Buffer> {
+async function solidPng(
+  targetW: number,
+  targetH: number,
+  rgb: { r: number; g: number; b: number },
+  opts?: { verticalOverscan?: boolean },
+): Promise<Buffer> {
   const w = Math.max(1, Math.round(targetW));
-  const h = Math.max(1, Math.round(targetH * REG_VERTICAL_OVERSCAN));
+  const overscan = opts?.verticalOverscan !== false;
+  const h = Math.max(1, Math.round(overscan ? targetH * REG_VERTICAL_OVERSCAN : targetH));
   return sharp({ create: { width: w, height: h, channels: 4, background: { ...rgb, alpha: 1 } } })
     .composite([randomSpeck()])
     .png()
     .toBuffer();
 }
-const magentaPng = (w: number, h: number) => solidPng(w, h, { r: 255, g: 0, b: 255 });
-const grayPng = (w: number, h: number) => solidPng(w, h, { r: 128, g: 128, b: 128 });
+const registrationPng = (w: number, h: number, rgb: { r: number; g: number; b: number }, edgeWrap: boolean) =>
+  solidPng(w, h, rgb, { verticalOverscan: !edgeWrap });
+const magentaPng = (w: number, h: number, edgeWrap = false) =>
+  registrationPng(w, h, { r: 255, g: 0, b: 255 }, edgeWrap);
+const grayPng = (w: number, h: number, edgeWrap = false) =>
+  registrationPng(w, h, { r: 128, g: 128, b: 128 }, edgeWrap);
 async function transparentPng(): Promise<Buffer> {
   return sharp({ create: { width: 16, height: 16, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
 }
@@ -274,52 +286,6 @@ async function analyzeMagenta(buffer: Buffer): Promise<MagentaAnalysis> {
 
 function rawToPng(raw: Buffer, width: number, height: number): Promise<Buffer> {
   return sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
-}
-
-/** Visible product face on a blank mockup (non-background pixels), normalized. */
-async function analyzeBlankVisibleFace(buffer: Buffer): Promise<{
-  width: number;
-  height: number;
-  normalized: { x: number; y: number; width: number; height: number } | null;
-} | null> {
-  try {
-    const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const { width, height, channels } = info;
-    let minX = width;
-    let minY = height;
-    let maxX = -1;
-    let maxY = -1;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = (y * width + x) * channels;
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
-        const a = channels > 3 ? data[i + 3] : 255;
-        if (a < 16) continue;
-        // Skip near-white studio backgrounds common on case mockups.
-        if (r > 245 && g > 245 && b > 245) continue;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-    if (maxX < minX) return { width, height, normalized: null };
-    const px = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-    return {
-      width,
-      height,
-      normalized: {
-        x: +(px.x / width).toFixed(5),
-        y: +(px.y / height).toFixed(5),
-        width: +(px.width / width).toFixed(5),
-        height: +(px.height / height).toFixed(5),
-      },
-    };
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -578,16 +544,162 @@ function parseJsonRecord(raw: unknown): Record<string, any> {
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {};
 }
 
-function looksLikePhoneModelName(name: string): boolean {
+export function looksLikePhoneModelName(name: string): boolean {
   const lower = (name || "").toLowerCase().trim();
   return (
-    /^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i.test(lower) ||
+    /^iphone\s+(\d|x|xs|xr|se|pro|plus|max|air)/i.test(lower) ||
     /^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i.test(lower) ||
     /^pixel\s+(\d|fold|pro)/i.test(lower) ||
     /^samsung\s+(galaxy|note)/i.test(lower) ||
     /^oneplus\s+\d/i.test(lower) ||
     /^for\s+(iphone|galaxy|pixel|samsung)/i.test(lower)
   );
+}
+
+/** Detect phone-case / edge-print products for harvest + storefront guides. */
+export function isEdgeWrapHarvestProduct(productName: string, colors?: ColorEntry[]): boolean {
+  const lower = (productName || "").toLowerCase();
+  if (
+    /phone\s*case|tough\s*case|slim\s*case|snap\s*case|cell\s*case|iphone\s*case|galaxy\s*case|pixel\s*case|dye.?sub.*case|sublimation.*case/i.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+  if (colors?.some((c) => looksLikePhoneModelName(c.name || c.id))) return true;
+  return false;
+}
+
+type NormRect = { x: number; y: number; width: number; height: number };
+
+function pxRectToNormalized(
+  px: { x: number; y: number; width: number; height: number },
+  canvasW: number,
+  canvasH: number,
+): NormRect {
+  return {
+    x: +(px.x / canvasW).toFixed(5),
+    y: +(px.y / canvasH).toFixed(5),
+    width: +(px.width / canvasW).toFixed(5),
+    height: +(px.height / canvasH).toFixed(5),
+  };
+}
+
+/**
+ * Derive full-print bounds + safe back-face zone from a registration mask.
+ * Handles flat back-only unwraps and back+side composite mockups (side strip on
+ * the right of the unwrap is excluded from the safe zone but included in print bounds).
+ */
+export function analyzeEdgeWrapGeometryFromMask(
+  maskRaw: Buffer,
+  width: number,
+  height: number,
+  safeInsetFraction = 0.08,
+): { printBounds: NormRect; safeZone: NormRect } | null {
+  if (!maskRaw || width <= 0 || height <= 0) return null;
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (maskRaw[(y * width + x) * 4 + 3] > 10) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX) return null;
+
+  const bbox = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+
+  const rowLeft: number[] = [];
+  const rowRight: number[] = [];
+  const rowY: number[] = [];
+  for (let y = minY; y <= maxY; y++) {
+    let lx = -1;
+    let rx = -1;
+    for (let x = minX; x <= maxX; x++) {
+      if (maskRaw[(y * width + x) * 4 + 3] > 10) {
+        if (lx < 0) lx = x;
+        rx = x;
+      }
+    }
+    if (lx >= 0) {
+      rowLeft.push(lx);
+      rowRight.push(rx);
+      rowY.push(y);
+    }
+  }
+  if (rowLeft.length === 0) return null;
+
+  let maxRowWidth = 0;
+  for (let i = 0; i < rowLeft.length; i++) {
+    maxRowWidth = Math.max(maxRowWidth, rowRight[i] - rowLeft[i] + 1);
+  }
+
+  const backLefts: number[] = [];
+  const backRights: number[] = [];
+  const backRows: number[] = [];
+  for (let i = 0; i < rowLeft.length; i++) {
+    const rw = rowRight[i] - rowLeft[i] + 1;
+    if (rw >= maxRowWidth * 0.72) {
+      backLefts.push(rowLeft[i]);
+      backRights.push(rowRight[i]);
+      backRows.push(rowY[i]);
+    }
+  }
+
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+
+  let backPanel = bbox;
+  if (backLefts.length >= Math.max(3, rowLeft.length * 0.35)) {
+    backPanel = {
+      x: median(backLefts),
+      y: Math.min(...backRows),
+      width: median(backRights) - median(backLefts) + 1,
+      height: Math.max(...backRows) - Math.min(...backRows) + 1,
+    };
+  }
+
+  const inset = Math.max(2, Math.min(backPanel.width, backPanel.height) * safeInsetFraction);
+  const safePanel = {
+    x: backPanel.x + inset,
+    y: backPanel.y + inset,
+    width: Math.max(1, backPanel.width - 2 * inset),
+    height: Math.max(1, backPanel.height - 2 * inset),
+  };
+
+  return {
+    printBounds: pxRectToNormalized(bbox, width, height),
+    safeZone: pxRectToNormalized(safePanel, width, height),
+  };
+}
+
+function geometryFromMagentaAnalysis(
+  a: MagentaAnalysis,
+  edgeWrap: boolean,
+): { visibleRectNormalized: NormRect | null; printBoundsNormalized: NormRect | null } {
+  if (!a.found || !a.normalized) {
+    return { visibleRectNormalized: null, printBoundsNormalized: null };
+  }
+  if (!edgeWrap) {
+    return { visibleRectNormalized: a.normalized, printBoundsNormalized: a.normalized };
+  }
+  const derived = analyzeEdgeWrapGeometryFromMask(a.maskRaw, a.width, a.height);
+  if (!derived) {
+    return { visibleRectNormalized: a.normalized, printBoundsNormalized: a.normalized };
+  }
+  return {
+    visibleRectNormalized: derived.safeZone,
+    printBoundsNormalized: derived.printBounds,
+  };
 }
 
 function variantIdForKey(variantMap: Record<string, any>, key: string): number | null {
@@ -753,6 +865,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
 
   const representativeVariantId = variants[0].id;
   const createdProductIds: string[] = [];
+  const edgeWrapProduct = isEdgeWrapHarvestProduct(name, opts.colors);
 
   try {
     await ensureFlatCalibrationBucket();
@@ -769,6 +882,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const tiers = Object.values(probes).map((p) => p!.tier);
     const productTier: FlatTier = tiers.includes("reject") || tiers.length === 0 ? "reject" : tiers.includes("mesh") ? "mesh" : "flat";
     baseManifest.tier = productTier;
+    baseManifest.edgeWrap = edgeWrapProduct;
 
     if (productTier === "reject") {
       // Curved/wrap/3D or undetectable -> keep Printify mockups. Skip the rest.
@@ -779,7 +893,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const regPlaceholders: Placeholder[] = [];
     for (const view of availableViews) {
       const dims = placeholderDims.get(view)!;
-      const id = await uploadImage(token, `reg-${view}.png`, await magentaPng(dims.width, dims.height));
+      const id = await uploadImage(token, `reg-${view}.png`, await magentaPng(dims.width, dims.height, edgeWrapProduct));
       regPlaceholders.push({ position: view, images: [{ id, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
     }
     const reg = await createTempProduct(token, shopId, blueprintId, providerId, representativeVariantId, regPlaceholders);
@@ -797,10 +911,11 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const maskPng = await rawToPng(a.maskRaw, a.width, a.height);
         maskUrl = await uploadToFlatCalibrationBucket(`products/${productTypeId}/mask-${view}.png`, maskPng, "image/png");
       }
+      const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct);
       baseManifest.views[view] = {
         printFileDims: placeholderDims.get(view)!,
-        visibleRectNormalized: a.normalized,
-        printBoundsNormalized: a.normalized,
+        visibleRectNormalized: geo.visibleRectNormalized,
+        printBoundsNormalized: geo.printBoundsNormalized,
         mockupDims: { width: a.width, height: a.height },
         maskUrl,
         shadingUrl: null,
@@ -816,7 +931,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const grayPlaceholders: Placeholder[] = [];
     for (const view of availableViews) {
       const dims = placeholderDims.get(view)!;
-      const id = await uploadImage(token, `gray-${view}.png`, await grayPng(dims.width, dims.height));
+      const id = await uploadImage(token, `gray-${view}.png`, await grayPng(dims.width, dims.height, edgeWrapProduct));
       grayPlaceholders.push({ position: view, images: [{ id, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
     }
     const gray = await createTempProduct(token, shopId, blueprintId, providerId, representativeVariantId, grayPlaceholders);
@@ -877,7 +992,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
             const magId = await uploadImage(
               token,
               `reg-${safe}-${view}.png`,
-              await magentaPng(dims.width, dims.height),
+              await magentaPng(dims.width, dims.height, true),
             );
             const reg = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, [
               { position: view, images: [{ id: magId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] },
@@ -896,10 +1011,10 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
                 "image/png",
               );
             }
-            const face = await analyzeBlankVisibleFace(blankBuf);
+            const geoDerived = geometryFromMagentaAnalysis(a, true);
             geo[view] = {
-              printBoundsNormalized: a.normalized,
-              visibleRectNormalized: face?.normalized ?? a.normalized,
+              printBoundsNormalized: geoDerived.printBoundsNormalized,
+              visibleRectNormalized: geoDerived.visibleRectNormalized,
               mockupDims: { width: a.width, height: a.height },
               maskUrl,
               shadingUrl: vc.shadingUrl,
@@ -918,15 +1033,6 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           baseManifest.representativeGeometry = false;
         }
       }
-    }
-
-    // Edge-wrap (phone case): inner visible-face guide from blank photo; outer stays mask bbox.
-    for (const view of availableViews) {
-      const vc = baseManifest.views[view];
-      const buf = firstBlankByView[view];
-      if (!vc || !buf || vc.shadingMode !== "map" || !vc.printBoundsNormalized) continue;
-      const face = await analyzeBlankVisibleFace(buf);
-      if (face?.normalized) vc.visibleRectNormalized = face.normalized;
     }
 
     if (!manifestHasBlanks(baseManifest)) {

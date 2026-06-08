@@ -34,7 +34,8 @@ export async function renderFlatMockupDataUrl(
     view: calib,
     placement: placerState.placements[view] as ArtworkPlacement,
     tier: manifest.tier,
-    forceShadingMap: !!(calib.printBoundsNormalized && calib.shadingUrl),
+    forceShadingMap: !!manifest.edgeWrap,
+    edgeWrapMode: !!manifest.edgeWrap,
   });
 
   try {

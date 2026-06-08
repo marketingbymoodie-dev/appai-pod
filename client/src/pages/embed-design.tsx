@@ -92,7 +92,7 @@ export interface FlatMeshNode {
 export interface FlatViewCalibration {
   printFileDims: { width: number; height: number };
   visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
-  /** Full print silhouette bbox (mask); inner visible face may be tighter for edge-wrap. */
+  /** Full print canvas bbox (mask); safe visible back face is in visibleRectNormalized for edge-wrap. */
   printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
@@ -119,6 +119,8 @@ export interface FlatCalibrationManifest {
     Partial<Record<"front" | "back", Omit<FlatViewCalibration, "printFileDims" | "meshNodes" | "meshGrid" | "planarityScore" | "coverage">>>
   >;
   representativeGeometry: boolean;
+  /** Phone cases / rigid edge-print products (auto-detected at harvest). */
+  edgeWrap?: boolean;
   generatedAt: string;
 }
 
@@ -1349,7 +1351,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const isApparel = productTypeConfig?.designerType === "apparel";
   const flatEdgeWrapMode = !!(
     productTypeConfig?.flatCalibration &&
-    productTypeConfig.designerType !== "apparel"
+    (productTypeConfig.flatCalibration.edgeWrap ??
+      productTypeConfig.designerType !== "apparel")
   );
   const flatBlankColorId = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";

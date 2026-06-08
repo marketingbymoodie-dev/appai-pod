@@ -65,6 +65,8 @@ export type FlatRenderInput = {
   artworkCorsClean?: boolean;
   /** Phone cases / rigid products — use harvested gray shading map when present. */
   forceShadingMap?: boolean;
+  /** Edge-print phone cases — placement uses full print bounds, not safe zone. */
+  edgeWrapMode?: boolean;
 };
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
@@ -129,8 +131,8 @@ function rectsNearlyEqual(a: Rect, b: Rect, eps = 2): boolean {
   );
 }
 
-/** Approximate visible back-face guide when harvest stored only the outer bbox. */
-export function flatEdgeWrapInnerRectPx(outer: Rect, insetFraction = 0.1): Rect {
+/** Approximate safe back-face guide when harvest stored only one bbox (legacy manifests). */
+export function flatEdgeWrapSafeZoneRectPx(outer: Rect, insetFraction = 0.08): Rect {
   const mx = outer.width * insetFraction;
   const my = outer.height * insetFraction;
   return {
@@ -141,9 +143,30 @@ export function flatEdgeWrapInnerRectPx(outer: Rect, insetFraction = 0.1): Rect 
   };
 }
 
+/** @deprecated Use flatEdgeWrapSafeZoneRectPx */
+export function flatEdgeWrapInnerRectPx(outer: Rect, insetFraction = 0.1): Rect {
+  return flatEdgeWrapSafeZoneRectPx(outer, insetFraction);
+}
+
 /**
- * Edge-wrap overlay guides: inner = visible back face, outer = print silhouette.
- * Falls back to an inset inner rect when only one bbox is available.
+ * Coordinate system for placement + print-file bake (mockup px).
+ * Edge-wrap: full print unwrap bounds. Apparel: visible print rect.
+ */
+export function flatPlacementRectPx(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+  edgeWrapMode: boolean,
+): Rect {
+  if (edgeWrapMode) {
+    return flatPrintBoundsPx(view, mask, canvasW, canvasH);
+  }
+  return flatVisibleRectPx(view, canvasW, canvasH);
+}
+
+/**
+ * Edge-wrap overlay guides: inner = safe visible back face, outer = full print canvas.
  */
 export function flatEdgeWrapGuideRects(
   view: FlatViewCalibration,
@@ -151,13 +174,16 @@ export function flatEdgeWrapGuideRects(
   canvasW: number,
   canvasH: number,
 ): { inner: Rect; outer: Rect } {
-  const outerFromMask = mask ? flatImageAlphaBounds(mask) : null;
   const outerFromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
-  const outer = outerFromMask ?? outerFromManifest ?? flatVisibleRectPx(view, canvasW, canvasH);
+  const outerFromMask = mask ? flatImageAlphaBounds(mask) : null;
+  const outer =
+    outerFromManifest ??
+    outerFromMask ??
+    flatVisibleRectPx(view, canvasW, canvasH);
 
   let inner = flatVisibleRectPx(view, canvasW, canvasH);
   if (rectsNearlyEqual(inner, outer)) {
-    inner = flatEdgeWrapInnerRectPx(outer);
+    inner = flatEdgeWrapSafeZoneRectPx(outer);
   }
   return { inner, outer };
 }
@@ -207,18 +233,22 @@ export function flatOverflows(rect: Rect, box: Rect): boolean {
 }
 
 /**
- * Edge-wrap products (phone cases): artwork must extend past the visible back
- * face on every side so the side edges receive print. True when any edge of
- * the artwork box stops short of the visible-face boundary.
+ * Edge-wrap products: artwork must extend past the safe back-face zone so edges
+ * receive print. True when any edge of the artwork box stops short of the safe zone.
  */
-export function flatInsufficientEdgeWrap(rect: Rect, box: Rect): boolean {
+export function flatInsufficientSafeZoneCoverage(safeZone: Rect, box: Rect): boolean {
   const bleed = 1.5;
   return (
-    box.x > rect.x + bleed ||
-    box.y > rect.y + bleed ||
-    box.x + box.width < rect.x + rect.width - bleed ||
-    box.y + box.height < rect.y + rect.height - bleed
+    box.x > safeZone.x + bleed ||
+    box.y > safeZone.y + bleed ||
+    box.x + box.width < safeZone.x + safeZone.width - bleed ||
+    box.y + box.height < safeZone.y + safeZone.height - bleed
   );
+}
+
+/** @deprecated Use flatInsufficientSafeZoneCoverage */
+export function flatInsufficientEdgeWrap(rect: Rect, box: Rect): boolean {
+  return flatInsufficientSafeZoneCoverage(rect, box);
 }
 
 /**
@@ -267,13 +297,15 @@ export function flatImageAlphaBounds(
   }
 }
 
-/** Printable silhouette bounds — mask alpha bbox when available, else visible rect. */
+/** Full printable unwrap bounds — prefer manifest over live mask bbox. */
 export function flatPrintBoundsPx(
   view: FlatViewCalibration,
   mask: HTMLImageElement | null,
   canvasW: number,
   canvasH: number,
 ): Rect {
+  const fromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
+  if (fromManifest) return fromManifest;
   const fromMask = mask ? flatImageAlphaBounds(mask) : null;
   return fromMask ?? flatVisibleRectPx(view, canvasW, canvasH);
 }
@@ -436,6 +468,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     tier,
     artworkCorsClean = true,
     forceShadingMap = false,
+    edgeWrapMode = false,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
@@ -452,7 +485,13 @@ export function renderFlatView(input: FlatRenderInput): void {
   const { w: artW, h: artH } = imgDims(artwork);
   if (artW <= 0 || artH <= 0) return;
 
-  const rect = flatVisibleRectPx(view, W, H);
+  const rect = flatPlacementRectPx(
+    view,
+    mask,
+    W,
+    H,
+    edgeWrapMode,
+  );
 
   // Artwork layer (full canvas; clipped to mask afterwards).
   const art = document.createElement("canvas");

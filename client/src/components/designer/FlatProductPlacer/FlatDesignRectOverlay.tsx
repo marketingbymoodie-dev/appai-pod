@@ -5,6 +5,8 @@ const SNAP_SCREEN_PX = 5;
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   flatArtBox,
+  flatPlacementRectPx,
+  flatPrintBoundsPx,
   flatVisibleRectPx,
   FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
@@ -33,10 +35,12 @@ export type FlatDesignRectOverlayProps = {
   placement: ArtworkPlacement;
   /** Phone cases / rigid edge-wrap products (not apparel). */
   edgeWrapMode?: boolean;
-  /** Visible back-face guide in mockup px (edge-wrap inner dashed line). */
+  /** Safe visible back-face guide in mockup px (edge-wrap inner dashed line). */
   innerGuideRect?: Rect | null;
-  /** Print silhouette guide in mockup px (edge-wrap outer dashed line). */
+  /** Full print canvas guide in mockup px (edge-wrap outer dashed line). */
   outerGuideRect?: Rect | null;
+  /** Placement coordinate rect in mockup px (defaults to visible print rect). */
+  placementRect?: Rect | null;
   onChange: (next: ArtworkPlacement) => void;
   /** Fired on drag/resize so the canvas backdrop can ignore the trailing click. */
   onDragActivity?: () => void;
@@ -50,6 +54,7 @@ export default function FlatDesignRectOverlay({
   edgeWrapMode = false,
   innerGuideRect = null,
   outerGuideRect = null,
+  placementRect = null,
   onChange,
   onDragActivity,
 }: FlatDesignRectOverlayProps) {
@@ -79,9 +84,15 @@ export default function FlatDesignRectOverlay({
   const artH = artwork.naturalHeight || artwork.height;
 
   const rect = useMemo(() => {
-    if (edgeWrapMode && innerGuideRect) return innerGuideRect;
+    if (placementRect) return placementRect;
+    if (edgeWrapMode && outerGuideRect) return outerGuideRect;
     return flatVisibleRectPx(view, mockupW, mockupH);
-  }, [edgeWrapMode, innerGuideRect, view, mockupW, mockupH]);
+  }, [placementRect, edgeWrapMode, outerGuideRect, view, mockupW, mockupH]);
+
+  const safeGuideRect = useMemo(() => {
+    if (edgeWrapMode && innerGuideRect) return innerGuideRect;
+    return rect;
+  }, [edgeWrapMode, innerGuideRect, rect]);
   const box = useMemo(
     () => flatArtBox(rect, placement, artW, artH),
     [rect, placement, artW, artH],
@@ -194,7 +205,7 @@ export default function FlatDesignRectOverlay({
   const rectPct = pct(rect);
   const boxPct = pct(box);
   const outerPct = outerGuideRect ? pct(outerGuideRect) : null;
-  const innerPct = pct(rect);
+  const innerPct = pct(safeGuideRect);
   const guidesOverlap =
     outerPct &&
     Math.abs(innerPct.left - outerPct.left) < 0.5 &&
@@ -224,7 +235,7 @@ export default function FlatDesignRectOverlay({
       className="pointer-events-none absolute inset-0"
       data-testid="flat-rect-overlay"
     >
-      {/* Print silhouette (edge-wrap outer guide). */}
+      {/* Full print canvas (edge-wrap outer guide). */}
       {showOuterGuide && (
         <div
           className="pointer-events-none absolute border-2 border-dashed border-sky-400/95"
@@ -235,10 +246,11 @@ export default function FlatDesignRectOverlay({
             height: `${outerPct!.height}%`,
             boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
           }}
-          title="Print silhouette — extend artwork to cover this outline"
+          title="Full print area — artwork must cover this outline (includes edge bleed and side wrap)"
         />
       )}
 
+      {(edgeWrapMode ? safeGuideRect : rect) && (
       <div
         className={`pointer-events-none absolute border-2 border-dashed ${
           edgeWrapMode
@@ -246,18 +258,19 @@ export default function FlatDesignRectOverlay({
             : "border-white/70 mix-blend-difference"
         }`}
         style={{
-          left: `${rectPct.left}%`,
-          top: `${rectPct.top}%`,
-          width: `${rectPct.width}%`,
-          height: `${rectPct.height}%`,
+          left: `${innerPct.left}%`,
+          top: `${innerPct.top}%`,
+          width: `${innerPct.width}%`,
+          height: `${innerPct.height}%`,
           ...(edgeWrapMode ? { boxShadow: "0 0 0 1px rgba(0,0,0,0.35)" } : {}),
         }}
         title={
           edgeWrapMode
-            ? "Visible back face — extend artwork past this outline for full edge print"
+            ? "Safe visible back face — extend artwork past this line for edge printing"
             : "Printable area"
         }
       />
+      )}
 
       {/* Artwork bounding box with drag + corner-resize handles. */}
       <div

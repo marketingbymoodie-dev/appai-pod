@@ -10,6 +10,8 @@ interface ZoomControlsProps {
   disabled?: boolean;
   maxZoom?: number;
   extraActions?: React.ReactNode;
+  /** When false, hides the drag/resize hint (e.g. Printify composite mockup view). */
+  showDragHint?: boolean;
 }
 
 export function ZoomControls({
@@ -18,6 +20,7 @@ export function ZoomControls({
   disabled = false,
   maxZoom = 200,
   extraActions,
+  showDragHint = true,
 }: ZoomControlsProps) {
   const handleScaleChange = (value: number[]) => {
     onTransformChange({ ...transform, scale: value[0] });
@@ -71,9 +74,11 @@ export function ZoomControls({
       {extraActions ? (
         <div className="flex items-center gap-2 flex-wrap">{extraActions}</div>
       ) : null}
-      <p className="text-[10px] text-muted-foreground">
-        Drag the artwork box on the preview to reposition; use corners to resize.
-      </p>
+      {showDragHint ? (
+        <p className="text-[10px] text-muted-foreground">
+          Drag the artwork box on the preview to reposition; use corners to resize.
+        </p>
+      ) : null}
     </div>
   );
 }
