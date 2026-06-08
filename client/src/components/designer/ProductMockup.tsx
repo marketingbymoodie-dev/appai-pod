@@ -510,39 +510,11 @@ export function ProductMockup({
 
   /* ── Product-type renderers ─────────────────────────────────────────────── */
 
-  const renderFramedPrint = () => {
-    const showFrameOverlay = !mockupUrl && !!imageUrl;
-    if (!showFrameOverlay) {
-      return (
-        <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
-          {renderImageContent()}
-        </div>
-      );
-    }
-    const getFrameInsets = () => {
-      if (!selectedSize) return { outer: "0.75rem", inner: "1rem" };
-      const sizeId = selectedSize.id;
-      if (sizeId === "11x14") return { outer: "0.5rem", inner: "1.5rem" };
-      if (["12x16", "16x16"].includes(sizeId)) return { outer: "0.625rem", inner: "1.25rem" };
-      return { outer: "0.75rem", inner: "1rem" };
-    };
-    const frameInsets = getFrameInsets();
-    return (
-      <>
-        <div
-          className="absolute rounded-sm flex items-center justify-center"
-          style={{ backgroundColor: selectedFrameColor?.hex || "#1a1a1a", pointerEvents: "none", inset: frameInsets.outer }}
-        >
-          <div
-            className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
-            style={{ pointerEvents: "none", inset: frameInsets.inner }}
-          >
-            {renderImageContent()}
-          </div>
-        </div>
-      </>
-    );
-  };
+  const renderFramedPrint = () => (
+    <div className="absolute inset-0 flex items-center justify-center overflow-hidden rounded-md">
+      {renderImageContent()}
+    </div>
+  );
 
   const renderPillow = () => {
     const productStyles = getProductStyles();

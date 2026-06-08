@@ -1,12 +1,10 @@
 import { useRef, useCallback } from "react";
 import { Loader2, Sparkles } from "lucide-react";
-import type { PrintSize, FrameColor, ImageTransform } from "./types";
+import type { ImageTransform } from "./types";
 
 interface MockupPreviewProps {
   imageUrl?: string | null;
   isLoading?: boolean;
-  selectedSize?: PrintSize | null;
-  selectedFrameColor?: FrameColor | null;
   transform: ImageTransform;
   onTransformChange: (transform: ImageTransform) => void;
   enableDrag?: boolean;
@@ -15,8 +13,6 @@ interface MockupPreviewProps {
 export function MockupPreview({
   imageUrl,
   isLoading = false,
-  selectedSize,
-  selectedFrameColor,
   transform,
   onTransformChange,
   enableDrag = true,
@@ -24,19 +20,6 @@ export function MockupPreview({
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const getFrameInsets = () => {
-    if (!selectedSize) return { outer: "0.75rem", inner: "1rem" };
-    const sizeId = selectedSize.id;
-    if (sizeId === "11x14") {
-      return { outer: "0.5rem", inner: "1.5rem" };
-    } else if (["12x16", "16x16"].includes(sizeId)) {
-      return { outer: "0.625rem", inner: "1.25rem" };
-    }
-    return { outer: "0.75rem", inner: "1rem" };
-  };
-
-  const frameInsets = getFrameInsets();
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -47,7 +30,7 @@ export function MockupPreview({
       dragStartRef.current = { x: e.clientX, y: e.clientY };
       containerRef.current = e.currentTarget;
     },
-    [imageUrl, enableDrag]
+    [imageUrl, enableDrag],
   );
 
   const handleMouseMove = useCallback(
@@ -73,7 +56,7 @@ export function MockupPreview({
       });
       dragStartRef.current = { x: e.clientX, y: e.clientY };
     },
-    [transform, onTransformChange]
+    [transform, onTransformChange],
   );
 
   const handleMouseUp = useCallback(() => {
@@ -83,7 +66,7 @@ export function MockupPreview({
 
   return (
     <div
-      className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full ${
+      className={`relative bg-muted rounded-md flex items-center justify-center w-full h-full overflow-hidden ${
         imageUrl && enableDrag ? "cursor-move select-none" : ""
       }`}
       onMouseDown={handleMouseDown}
@@ -91,54 +74,33 @@ export function MockupPreview({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      <div
-        className="absolute rounded-sm flex items-center justify-center"
-        style={{
-          backgroundColor: selectedFrameColor?.hex || "#1a1a1a",
-          pointerEvents: "none",
-          inset: frameInsets.outer,
-        }}
-      >
+      {isLoading ? (
         <div
-          className="absolute bg-white dark:bg-gray-200 rounded-sm flex items-center justify-center overflow-hidden"
-          style={{ pointerEvents: "none", inset: frameInsets.inner }}
+          className="flex flex-col items-center gap-2 text-muted-foreground"
+          style={{ pointerEvents: "none" }}
         >
-          {isLoading ? (
-            <div
-              className="flex flex-col items-center gap-2 text-muted-foreground"
-              style={{ pointerEvents: "none" }}
-            >
-              <Loader2 className="h-8 w-8 animate-spin" />
-              <span className="text-xs">Creating...</span>
-            </div>
-          ) : imageUrl ? (
-            <img
-              src={imageUrl}
-              alt="Generated artwork"
-              className="select-none absolute"
-              style={{
-                width: `${transform.scale}%`,
-                height: `${transform.scale}%`,
-                objectFit: "cover",
-                left: `${transform.x}%`,
-                top: `${transform.y}%`,
-                transform: "translate(-50%, -50%)",
-                pointerEvents: "none",
-              }}
-              draggable={false}
-              data-testid="img-generated"
-            />
-          ) : (
-            <div
-              className="text-center text-muted-foreground p-4"
-              style={{ pointerEvents: "none" }}
-            >
-              <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
-              <p className="text-xs">Your artwork will appear here</p>
-            </div>
-          )}
+          <Loader2 className="h-8 w-8 animate-spin" />
+          <span className="text-xs">Creating...</span>
         </div>
-      </div>
+      ) : imageUrl ? (
+        <img
+          src={imageUrl}
+          alt="Generated artwork"
+          className="select-none absolute inset-0 w-full h-full object-contain"
+          style={{
+            transform: `scale(${transform.scale / 100}) translate(${transform.x - 50}%, ${transform.y - 50}%)`,
+            transformOrigin: "center center",
+            pointerEvents: "none",
+          }}
+          draggable={false}
+          data-testid="img-generated"
+        />
+      ) : (
+        <div className="text-center text-muted-foreground p-4" style={{ pointerEvents: "none" }}>
+          <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-50" />
+          <p className="text-xs">Your artwork will appear here</p>
+        </div>
+      )}
     </div>
   );
 }
