@@ -423,6 +423,14 @@ describe("Mockup camera_label preference", () => {
 
     expect(pickPreferredMockupViews(images, true).map((p) => p.label)).toEqual(["front", "back"]);
   });
+
+  it("returns only the front view when print placement is front", () => {
+    const images = [
+      { url: "https://x.example/back.png", label: "back" },
+      { url: "https://x.example/front.png", label: "front" },
+    ];
+    expect(pickPreferredMockupViews(images, false, "front").map((p) => p.label)).toEqual(["front"]);
+  });
 });
 
 describe("extractBase64FromDataUrl", () => {

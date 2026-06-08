@@ -598,7 +598,19 @@ export function normalizeMockupCameraLabel(raw: string): string {
   }
 }
 
-function selectPreferredViews(images: MockupImage[], frontBackOnly = false): MockupImage[] {
+function labelMatchesPrintPlacement(norm: string, placement: "front" | "back" | "both"): boolean {
+  if (placement === "both") return true;
+  if (placement === "front") {
+    return norm.includes("front") && !norm.includes("back");
+  }
+  return norm.includes("back");
+}
+
+function selectPreferredViews(
+  images: MockupImage[],
+  frontBackOnly = false,
+  printPlacement?: "front" | "back" | "both",
+): MockupImage[] {
   const selected: MockupImage[] = [];
   const seenUrls = new Set<string>();
   const annotated = images.map((img) => ({
@@ -606,11 +618,21 @@ function selectPreferredViews(images: MockupImage[], frontBackOnly = false): Moc
     norm: normalizeMockupCameraLabel(img.label),
   }));
   const preferredLabels = frontBackOnly ? AOP_FLAT_LAY_LABELS : PREFERRED_LABELS;
-  const maxViews = frontBackOnly ? AOP_FLAT_LAY_LABELS.length : MAX_MOCKUP_VIEWS;
+  const maxViews = frontBackOnly
+    ? AOP_FLAT_LAY_LABELS.length
+    : printPlacement === "front" || printPlacement === "back"
+      ? 1
+      : MAX_MOCKUP_VIEWS;
 
   for (const pref of preferredLabels) {
     const prefNorm = normalizeMockupCameraLabel(pref);
-    const match = annotated.find((img) => img.norm === prefNorm && !seenUrls.has(img.url));
+    if (printPlacement && !labelMatchesPrintPlacement(prefNorm, printPlacement)) continue;
+    const match = annotated.find(
+      (img) =>
+        img.norm === prefNorm &&
+        !seenUrls.has(img.url) &&
+        (!printPlacement || labelMatchesPrintPlacement(img.norm, printPlacement)),
+    );
     if (match) {
       selected.push({ url: match.url, label: match.label });
       seenUrls.add(match.url);
@@ -619,7 +641,12 @@ function selectPreferredViews(images: MockupImage[], frontBackOnly = false): Moc
   }
 
   if (selected.length === 0 && images.length > 0) {
-    return images.slice(0, maxViews);
+    const fallback = printPlacement
+      ? annotated.filter((img) => labelMatchesPrintPlacement(img.norm, printPlacement))
+      : annotated;
+    return (fallback.length > 0 ? fallback : annotated)
+      .slice(0, maxViews)
+      .map((img) => ({ url: img.url, label: img.label }));
   }
 
   return selected;
@@ -629,8 +656,9 @@ function selectPreferredViews(images: MockupImage[], frontBackOnly = false): Moc
 export function pickPreferredMockupViews(
   images: { url: string; label: string }[],
   frontBackOnly = false,
+  printPlacement?: "front" | "back" | "both",
 ): { url: string; label: string }[] {
-  return selectPreferredViews(images, frontBackOnly);
+  return selectPreferredViews(images, frontBackOnly, printPlacement);
 }
 
 async function deleteProduct(shopId: string, productId: string, apiToken: string) {
@@ -1103,7 +1131,9 @@ export async function generatePrintifyMockup(
       }
     }
 
-    const selected = selectPreferredViews(mockupData.images, isAop);
+    const placementForViews =
+      !isAop && effectivePrintPlacement ? effectivePrintPlacement : undefined;
+    const selected = selectPreferredViews(mockupData.images, isAop, placementForViews);
 
     return {
       success: true,

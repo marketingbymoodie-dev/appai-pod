@@ -1930,7 +1930,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
-  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null }) => {
+  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
     const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
     const absUrl = abs(imageUrl);
     if (!absUrl) return;
@@ -1957,8 +1957,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setTransform(restoredTransform);
         initialTransformRef.current = restoredTransform;
       }
-      if (ds.selectedSize) setSelectedSize(ds.selectedSize);
-      if (ds.selectedFrameColor) setSelectedFrameColor(ds.selectedFrameColor);
+      if (ds.selectedSize) {
+        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === ds.selectedSize);
+        if (sizeOk) setSelectedSize(ds.selectedSize);
+      }
+      if (ds.selectedFrameColor) {
+        const colorOk = !frameColorObjects.length || frameColorObjects.some((f) => f.id === ds.selectedFrameColor);
+        if (colorOk) setSelectedFrameColor(ds.selectedFrameColor);
+      }
       if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
       if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
         setAopPlacementSettings(ds.aopPlacementSettings as AopPlacementSettings);
@@ -2003,18 +2009,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
     } else {
-      if (topLevel.size) setSelectedSize(topLevel.size);
-      if (topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
+      if (topLevel.size) {
+        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
+        if (sizeOk) setSelectedSize(topLevel.size);
+      }
+      if (topLevel.frameColor) {
+        const colorOk = !frameColorObjects.length || frameColorObjects.some((f) => f.id === topLevel.frameColor);
+        if (colorOk) setSelectedFrameColor(topLevel.frameColor);
+      }
       if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     }
     // Some older saved AOP designs only persisted panel URLs in designState; their
     // size/color/style live on the top-level saved-design row. Always fall back to
     // those values so Edit Pattern -> Apply can regenerate mockups.
-    if (!ds?.selectedSize && topLevel.size) setSelectedSize(topLevel.size);
-    if (!ds?.selectedFrameColor && topLevel.frameColor) setSelectedFrameColor(topLevel.frameColor);
+    if (!ds?.selectedSize && topLevel.size) {
+      const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
+      if (sizeOk) setSelectedSize(topLevel.size);
+    }
+    if (!ds?.selectedFrameColor && topLevel.frameColor) {
+      const colorOk = !frameColorObjects.length || frameColorObjects.some((f) => f.id === topLevel.frameColor);
+      if (colorOk) setSelectedFrameColor(topLevel.frameColor);
+    }
     if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
-    if (mockups?.length) {
+    const savedProductTypeId = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
+    const currentProductTypeId = productTypeId ? String(productTypeId) : null;
+    const mockupsMatchProduct =
+      !savedProductTypeId || !currentProductTypeId || savedProductTypeId === currentProductTypeId;
+    if (mockups?.length && mockupsMatchProduct) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
       // Restore aopPatternUrl so the ATC button is not blocked by the
       // "productTypeConfig.isAllOverPrint && !aopPatternUrl" guard for saved AOP
@@ -2057,6 +2079,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setMockupsStale(true);
         sendMockupsToParent([]);
       }
+    } else if (mockups?.length && !mockupsMatchProduct) {
+      console.warn("[LoadDesign] Skipping mockup restore — saved design product type differs from active product");
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
+      setMockupsStale(true);
     }
     scrollArtworkIntoViewOnMobile(150);
 
@@ -2190,11 +2218,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const variantCatalogKey = `${config.productTypeId ? String(config.productTypeId) : "0"}|${config.baseProductHandle || pageHandle}`;
-    variantsLoadedKeyRef.current = variantCatalogKey;
-    variantsFetchingKeyRef.current = "";
+    // Only mark the catalog loaded when we actually have variants — an empty array
+    // must not block the product-variants fetch effect (otherwise stale override IDs
+    // from the previous product win when catalogIds.size === 0).
+    if (targetVariants.length > 0) {
+      variantsLoadedKeyRef.current = variantCatalogKey;
+      variantsFetchingKeyRef.current = "";
+    } else {
+      variantsLoadedKeyRef.current = "";
+      variantsFetchingKeyRef.current = "";
+    }
 
     setVariants(targetVariants);
-    setVariantsFetched(true);
+    setVariantsFetched(targetVariants.length > 0);
     setShopifyVariants(targetVariants);
     const initialVariantId =
       baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null);
@@ -2299,7 +2335,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
-    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls });
+    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLoadDesignId, savedDesigns, configLoading]);
 
@@ -2319,7 +2355,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           if (!status || status.status !== 'complete') return;
           if (loadDesignAppliedRef.current) return; // list restored it in the meantime
           loadDesignAppliedRef.current = true;
-          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls });
+          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
         })
         .catch(() => {});
     }, 2000);
@@ -4078,17 +4114,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     ]);
 
     // Only trust parent-provided IDs when they belong to the current product catalog.
-    if (overrideVariantId && (catalogIds.size === 0 || catalogIds.has(String(overrideVariantId)))) {
+    // Never fall back when the catalog is empty — that would reuse a stale ID from
+    // a prior product after an in-app switch (pillow → sweatshirt).
+    if (overrideVariantId && catalogIds.has(String(overrideVariantId))) {
       console.log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
       return overrideVariantId;
     }
 
-    if (selectedVariantParam && (catalogIds.size === 0 || catalogIds.has(selectedVariantParam))) {
+    if (selectedVariantParam && catalogIds.has(selectedVariantParam)) {
       console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
       return selectedVariantParam;
     }
 
-    if (shopifyVariantId && (catalogIds.size === 0 || catalogIds.has(String(shopifyVariantId)))) {
+    if (shopifyVariantId && catalogIds.has(String(shopifyVariantId))) {
       console.log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
       return shopifyVariantId;
     }

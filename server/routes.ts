@@ -7772,7 +7772,8 @@ ${textEdgeRestrictions}
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
         : effectivePrintPlacement === "both";
-      const resolvedWrapAround = resolveWrapAround(productType);
+      const resolvedWrapAround =
+        effectivePrintPlacement === "both" ? resolveWrapAround(productType) : false;
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { jobId, cached } = await enqueueMockupJob({
         blueprintId,
@@ -14503,6 +14504,8 @@ ${textEdgeRestrictions}
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
         : effectivePrintPlacement === "both";
+      const effectiveWrapAround =
+        effectivePrintPlacement === "both" ? resolveWrapAround(productType) : false;
 
       console.log("[Mockup Generate] AOP:", !!aopPositions, "positions:", aopPositions?.length, "mirrorLegs:", !!mirrorLegs, "imageUrl:", absoluteImageUrl.substring(0, 80));
 
@@ -14519,8 +14522,8 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
         printPlacement: effectivePrintPlacement,
-        wrapAround: resolveWrapAround(productType),
-        wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
+        wrapAround: effectiveWrapAround,
+        wrapDirection: effectiveWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions,
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
@@ -14649,6 +14652,8 @@ ${textEdgeRestrictions}
       const effectiveDoubleSided = productType.isAllOverPrint
         ? resolvedDoubleSided
         : effectivePrintPlacement === "both";
+      const effectiveWrapAround =
+        effectivePrintPlacement === "both" ? resolveWrapAround(productType) : false;
       const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const { jobId, cached } = await enqueueMockupJob({
         blueprintId: productType.printifyBlueprintId,
@@ -14662,8 +14667,8 @@ ${textEdgeRestrictions}
         y: y !== undefined ? (y - 50) / 50 : 0,
         doubleSided: effectiveDoubleSided,
         printPlacement: effectivePrintPlacement,
-        wrapAround: resolveWrapAround(productType),
-        wrapDirection: resolveWrapAround(productType) ? resolveWrapDirection(productType) : undefined,
+        wrapAround: effectiveWrapAround,
+        wrapDirection: effectiveWrapAround ? resolveWrapDirection(productType) : undefined,
         aopPositions: productType.isAllOverPrint && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
