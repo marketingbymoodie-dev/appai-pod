@@ -253,8 +253,10 @@ export default function FlatDesignRectOverlay({
           width: `${boxPct.width}%`,
           height: `${boxPct.height}%`,
         }}
+        // Stop clicks from toggling the canvas backdrop; drag/resize uses
+        // window pointerup (must not stopPropagation on pointerup or capture
+        // retargeting prevents the global listener from ending the gesture).
         onClick={(e) => e.stopPropagation()}
-        onPointerUp={(e) => e.stopPropagation()}
       >
         <div
           onPointerDown={(e) => startDrag(e, "translate")}
