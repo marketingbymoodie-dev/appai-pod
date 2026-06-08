@@ -4735,6 +4735,83 @@ ${textEdgeRestrictions}
   const VARIANT_RATE_WINDOW = 60 * 60 * 1000; // 1 hour in ms
 
   // Proxy endpoint to fetch Shopify product variants (validated against known installations)
+  function buildFallbackVariantsFromProductType(productType: any): Array<{
+    id: number | string;
+    title: string;
+    option1: string;
+    option2: string | null;
+    option3: null;
+    price: string;
+    available: boolean;
+  }> {
+    const sizes = (typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes) as Array<{ id: string; name: string }> || [];
+    const frameColors = (typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors) as Array<{ id: string; name: string }> || [];
+    const shopifyVariantIds = (typeof productType.shopifyVariantIds === 'string'
+      ? JSON.parse(productType.shopifyVariantIds)
+      : productType.shopifyVariantIds) as Record<string, number> || {};
+
+    if (sizes.length === 0) return [];
+
+    const lookupVariantId = (size: { id: string; name: string }, color?: { id: string; name: string }): number | undefined => {
+      const colorName = color?.name || 'default';
+      const colorId = color?.id || 'default';
+      const keys = color
+        ? [
+            `${size.name}:${colorName}`,
+            `${size.id}:${colorId}`,
+            `${size.name}:${colorId}`,
+            `${size.id}:${colorName}`,
+          ]
+        : [`${size.name}:default`, `${size.id}:default`];
+      for (const key of keys) {
+        if (shopifyVariantIds[key]) return shopifyVariantIds[key];
+      }
+      return undefined;
+    };
+
+    const fallbackVariants: Array<{
+      id: number | string;
+      title: string;
+      option1: string;
+      option2: string | null;
+      option3: null;
+      price: string;
+      available: boolean;
+    }> = [];
+
+    if (frameColors.length > 0) {
+      for (const size of sizes) {
+        for (const color of frameColors) {
+          const shopifyVariantId = lookupVariantId(size, color);
+          fallbackVariants.push({
+            id: shopifyVariantId || `fallback-${productType.id}-${size.id}-${color.id}`,
+            title: `${size.name} / ${color.name}`,
+            option1: size.name,
+            option2: color.name,
+            option3: null,
+            price: '0.00',
+            available: true,
+          });
+        }
+      }
+    } else {
+      for (const size of sizes) {
+        const shopifyVariantId = lookupVariantId(size);
+        fallbackVariants.push({
+          id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
+          title: size.name,
+          option1: size.name,
+          option2: null,
+          option3: null,
+          price: '0.00',
+          available: true,
+        });
+      }
+    }
+
+    return fallbackVariants;
+  }
+
   app.get("/api/shopify/product-variants", async (req: Request, res: Response) => {
     try {
       const { shop, handle, productTypeId } = req.query;
@@ -4868,31 +4945,9 @@ ${textEdgeRestrictions}
           
           // Fallback 2: Use product type's own variant data from our database
           // This allows add-to-cart to work even when Shopify API has auth issues
-          const sizes = (typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes) as Array<{id: string, name: string}> || [];
-          const shopifyVariantIds = (typeof productType.shopifyVariantIds === 'string' 
-            ? JSON.parse(productType.shopifyVariantIds) 
-            : productType.shopifyVariantIds) as Record<string, number> || {};
-          
-          if (sizes.length > 0) {
-            console.log(`[Product Variants] Using fallback variant data from product type (${sizes.length} sizes)`);
-            
-            // Build variants from our product type data
-            const fallbackVariants = sizes.map((size, index) => {
-              // Look up Shopify variant ID from shopifyVariantIds (key is sizeName:colorName)
-              const variantKey = `${size.name}:default`;
-              const shopifyVariantId = shopifyVariantIds[variantKey];
-              
-              return {
-                id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
-                title: size.name,
-                option1: size.name,
-                option2: null,
-                option3: null,
-                price: "0.00", // Price will be set by Shopify when adding to cart
-                available: true
-              };
-            });
-            
+          const fallbackVariants = buildFallbackVariantsFromProductType(productType);
+          if (fallbackVariants.length > 0) {
+            console.log(`[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`);
             return res.json({ variants: fallbackVariants, source: "fallback" });
           }
           

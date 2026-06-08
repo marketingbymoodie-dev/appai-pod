@@ -531,6 +531,35 @@ function mapServerVariantsToCatalog(
   }));
 }
 
+/** True when the variant catalog supports size+color matching for the active product. */
+function variantCatalogIsUsable(
+  catalog: Array<{ option1?: string; option2?: string }>,
+  needsColorOptions: boolean,
+): boolean {
+  if (catalog.length === 0) return false;
+  if (!needsColorOptions) return true;
+  return catalog.some((v) => v.option1 || v.option2);
+}
+
+/** Prefer productTypeId (Admin API) over handle — customizer pages often pass the page handle, not the Shopify product handle. */
+function buildProductVariantsFetchUrl(
+  shop: string,
+  productTypeId: string,
+  productHandle: string,
+): string | null {
+  if (!shop) return null;
+  const params = new URLSearchParams({ shop });
+  const parsedTypeId = parseInt(productTypeId, 10);
+  if (productTypeId && productTypeId !== "0" && !Number.isNaN(parsedTypeId) && parsedTypeId > 0) {
+    params.set("productTypeId", String(parsedTypeId));
+  } else if (productHandle) {
+    params.set("handle", productHandle);
+  } else {
+    return null;
+  }
+  return `${API_BASE}/api/shopify/product-variants?${params.toString()}`;
+}
+
 /**
  * Safe fetch that bypasses Shopify App Bridge's monkey-patched window.fetch.
  *
@@ -629,9 +658,9 @@ const safeFetch = async (url: string | RequestInfo | URL, options: RequestInit =
   }
 
   try {
-    const urlStr = String(url).substring(0, 120);
+    const urlStr = String(url);
     const impl = _isStorefrontIframe ? 'xhr' : 'fetch';
-    console.log(`[safeFetch] calling ${impl}`, urlStr);
+    console.log(`[safeFetch] calling ${impl}`, urlStr.substring(0, 120));
 
     let res: Response;
     if (_isStorefrontIframe) {
@@ -2243,17 +2272,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     // customizer-page may return an empty variants array; fetch from Admin API as fallback.
     if (targetVariants.length === 0) {
-      const myShopifyDomain = getMyShopifyDomain();
       const resolvedProductTypeId = config.productTypeId ? String(config.productTypeId) : "";
-      const resolvedHandle = config.baseProductHandle || pageHandle;
-      if (myShopifyDomain && (resolvedHandle || resolvedProductTypeId)) {
-        const variantQuery = resolvedHandle
-          ? `handle=${encodeURIComponent(resolvedHandle)}`
-          : `productTypeId=${encodeURIComponent(resolvedProductTypeId)}`;
+      const resolvedHandle = config.baseProductHandle || "";
+      const fetchUrl = buildProductVariantsFetchUrl(
+        shopDomain,
+        resolvedProductTypeId,
+        resolvedHandle,
+      );
+      if (fetchUrl) {
         try {
-          const variantRes = await safeFetch(
-            `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&${variantQuery}`,
-          );
+          const variantRes = await safeFetch(fetchUrl);
           if (variantRes.ok) {
             const variantData = await variantRes.json();
             if (Array.isArray(variantData.variants) && variantData.variants.length > 0) {
@@ -2348,7 +2376,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     setBridgeLoadDesignId(designId);
-  }, [applyDesignerConfig]);
+  }, [applyDesignerConfig, shopDomain]);
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
@@ -3331,18 +3359,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     );
     const flatSaveBlocking = !!(flatPlacerOn && flatApplyStatus === "saving");
     const shouldDisable =
-      waitingForMockups || isAddingToCart || mockupsStale || flatSaveBlocking;
+      waitingForMockups || isAddingToCart || mockupsStale || mockupLoading || flatSaveBlocking;
     const label = flatSaveBlocking
       ? "Saving design\u2026"
       : waitingForMockups
         ? "Generating preview\u2026"
+        : mockupLoading
+          ? "Refreshing Mockups\u2026"
         : mockupsStale
           ? "Refresh Mockups to Continue"
           : "Add to Cart";
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStale && !flatSaveBlocking,
+      ready: !waitingForMockups && !mockupsStale && !mockupLoading && !flatSaveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -4073,36 +4103,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const needsColorOptions = (productTypeConfig?.frameColors?.length ?? 0) > 0;
-    const catalogHasOptions =
-      variants.some((v: any) => v.option1 || v.option2) ||
-      shopifyVariants.some((v: any) => v.option1 || v.option2);
-    if (
-      variantsLoadedKeyRef.current === fetchKey &&
-      (!needsColorOptions || catalogHasOptions)
-    ) {
+    const catalogUsable =
+      variantCatalogIsUsable(shopifyVariants.length > 0 ? shopifyVariants : variants, needsColorOptions);
+    if (variantsLoadedKeyRef.current === fetchKey && catalogUsable) {
       return;
     }
     variantsFetchingKeyRef.current = fetchKey;
 
-    const myShopifyDomain = getMyShopifyDomain();
-    if (!myShopifyDomain) {
-      console.log('[Design Studio] Could not determine myshopify.com domain, skipping variant fetch');
-      variantsLoadedKeyRef.current = fetchKey;
-      variantsFetchingKeyRef.current = "";
-      setVariantsFetched(true);
-      return;
-    }
-
-    let fetchUrl: string | null = null;
-    if (productHandle) {
-      console.log('[Design Studio] Fetching variants using productHandle:', productHandle);
-      fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`;
-    } else if (productTypeId && productTypeId !== "0") {
-      console.log('[Design Studio] Fetching variants using productTypeId:', productTypeId);
-      fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&productTypeId=${encodeURIComponent(productTypeId)}`;
-    } else {
-      console.log('[Design Studio] No productHandle or productTypeId available, skipping variant fetch');
-      variantsLoadedKeyRef.current = fetchKey;
+    const fetchUrl = buildProductVariantsFetchUrl(shopDomain, productTypeId, productHandle);
+    if (!fetchUrl) {
+      console.log('[Design Studio] No shop/productTypeId/productHandle available, skipping variant fetch');
       variantsFetchingKeyRef.current = "";
       setVariantsFetched(true);
       return;
@@ -4118,22 +4128,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         return res.json();
       })
       .then(data => {
-        if (data.variants && Array.isArray(data.variants)) {
+        if (data.variants && Array.isArray(data.variants) && data.variants.length > 0) {
           const mapped = mapServerVariantsToCatalog(data.variants);
           console.log('[Design Studio] Fetched variants from server:', mapped.length);
           setVariants(mapped);
           setShopifyVariants(mapped);
+          if (variantCatalogIsUsable(mapped, needsColorOptions)) {
+            variantsLoadedKeyRef.current = fetchKey;
+          } else {
+            variantsLoadedKeyRef.current = "";
+            console.warn(
+              '[Design Studio] Variant catalog missing option columns for color product — will retry',
+              'productTypeId:', productTypeId, 'handle:', productHandle,
+            );
+          }
+        } else {
+          variantsLoadedKeyRef.current = "";
         }
       })
       .catch(err => {
         console.error('[Design Studio] Failed to fetch variants:', err);
+        variantsLoadedKeyRef.current = "";
       })
       .finally(() => {
-        variantsLoadedKeyRef.current = fetchKey;
         variantsFetchingKeyRef.current = "";
         setVariantsFetched(true);
       });
-  }, [isShopify, isStorefront, productHandle, productTypeId, productTypeConfig?.frameColors?.length, variants, shopifyVariants]);
+  }, [isShopify, isStorefront, shopDomain, productHandle, productTypeId, productTypeConfig?.frameColors?.length]);
 
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
@@ -6053,6 +6074,25 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     mockupLoading &&
     !atcMockupsReady
   );
+  const atcRefreshingMockups = !!(
+    atcHasMockups &&
+    generatedDesign?.imageUrl &&
+    mockupLoading &&
+    atcMockupsReady
+  );
+  const galleryMockupCount =
+    printifyMockupImages.length > 0 ? printifyMockupImages.length : printifyMockups.length;
+  const showingMockupAtArtworkSlot = !!(
+    isStorefront &&
+    selectedMockupIndex === 0 &&
+    galleryMockupCount === 0 &&
+    getPreferredMockupUrl()
+  );
+  const canShowDragHint = !!(
+    generatedDesign?.imageUrl &&
+    selectedMockupIndex === 0 &&
+    !showingMockupAtArtworkSlot
+  );
 
   const renderPrimaryAction = (className = "", testIdSuffix = "") => {
     const withSuffix = (id: string) => testIdSuffix ? `${id}-${testIdSuffix}` : id;
@@ -6122,7 +6162,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     Saving design…
                   </span>
                 </>
-              ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
+              ) : atcWaitingForMockups || atcRefreshingMockups ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Refreshing Mockups…</span>
@@ -6996,7 +7036,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               Saving design…
                             </span>
                           </>
-                        ) : atcWaitingForMockups || (mockupsStale && mockupLoading) ? (
+                        ) : atcWaitingForMockups || atcRefreshingMockups ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Refreshing Mockups…</span>
@@ -7920,6 +7960,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 transform={transform}
                 onTransformChange={setTransform}
                 disabled={!generatedDesign?.imageUrl}
+                showDragHint={canShowDragHint}
                 extraActions={
                   <div className="flex items-center gap-2">
                     {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && (
