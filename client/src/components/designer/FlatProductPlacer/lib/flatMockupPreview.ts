@@ -15,14 +15,14 @@ export async function renderFlatMockupDataUrl(
   view: FlatViewName,
   artworkUrl: string,
 ): Promise<string | null> {
-  if (!placerState.enabled[view]) return null;
-
   const assets = await loadFlatViewAssets(manifest, colorId, view);
   const calib = manifest.views[view];
   if (!assets?.blank || !calib) return null;
 
-  const artwork = artworkUrl ? await loadFlatImage(artworkUrl) : null;
-  if (!artwork) return null;
+  const includeArtwork = !!placerState.enabled[view];
+  const artwork =
+    includeArtwork && artworkUrl ? await loadFlatImage(artworkUrl) : null;
+  if (includeArtwork && !artwork) return null;
 
   const canvas = document.createElement("canvas");
   renderFlatView({

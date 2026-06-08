@@ -271,8 +271,6 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const calib: FlatViewCalibration | undefined = manifest.views[v];
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
-      // For apply, a disabled view contributes nothing.
-      if (forApply && !enabled) return false;
       try {
         renderFlatView({
           target: canvas,

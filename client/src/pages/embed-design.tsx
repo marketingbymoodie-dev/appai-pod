@@ -1948,7 +1948,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       if (durableMockups.length > 0) {
         setPrintifyMockups(durableMockups);
-        setPrintifyMockupImages(durableMockups.map((url: string, i: number) => ({ url, label: `Mockup ${i + 1}` })));
+        const isFlatTier =
+          productTypeConfig?.onTheFlyTier === "flat" ||
+          productTypeConfig?.onTheFlyTier === "mesh";
+        setPrintifyMockupImages(
+          durableMockups.map((url: string, i: number) => ({
+            url,
+            label: isFlatTier
+              ? (i === 0 ? "front" : i === 1 ? "back" : `view-${i + 1}`)
+              : (i === 0 ? "Front" : i === 1 ? "Back" : `View ${i + 1}`),
+          })),
+        );
         setSelectedMockupIndex(1); // Auto-show first mockup when loading a saved design
         // The loaded mockups are already correct for this design — mark them fresh.
         // Without this, setTransform() called above triggers the stale-on-transform
@@ -5065,7 +5075,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           document.body.scrollHeight,
           document.documentElement.offsetHeight
         );
-        if (Math.abs(h - lastSent) < 24) return; // ignore URL-bar-sized viewport jitter
+        if (Math.abs(h - lastSent) < 4) return;
         lastSent = h;
         window.parent.postMessage({ type: 'ai-art-studio:resize', height: h }, '*');
       }, 120);
@@ -5451,9 +5461,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   useEffect(() => {
     if (!flatPlacerEligible || flatPlacerEditOpen) return;
-    if (!flatPlacerState || !productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
+    if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
     if (!selectedFrameColor) return;
-    if (selectedFrameColor === currentMockupColorRef.current) return;
 
     let cancelled = false;
     const t = window.setTimeout(() => {
@@ -5461,13 +5470,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const manifest = productTypeConfig.flatCalibration!;
         const artworkUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
         const stateForRender: FlatProductPlacerState = {
-          ...flatPlacerState,
+          view: "front",
+          placements: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          enabled: { front: true, back: false },
           artworkUrl,
+          ...(flatPlacerState ?? {}),
         };
         const views = flatViewsForColor(manifest, selectedFrameColor);
+        if (
+          selectedFrameColor === currentMockupColorRef.current &&
+          printifyMockupImages.length >= views.length
+        ) {
+          return;
+        }
         const images: { url: string; label: string }[] = [];
         for (const view of views) {
-          if (!flatPlacerState.enabled[view]) continue;
           const dataUrl = await renderFlatMockupDataUrl(
             manifest,
             selectedFrameColor,
@@ -5498,6 +5518,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration,
     generatedDesign?.imageUrl,
     selectedFrameColor,
+    printifyMockupImages.length,
   ]);
 
   // Build a price map from shopifyVariants, keyed by size id
@@ -7562,7 +7583,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               const hasMockups = galleryMockups.length > 0;
               if (!hasMockups) return null;
               const totalItems = 1 + galleryMockups.slice(0, 3).length;
-              const getLabel = (idx: number) => idx === 0 ? "Artwork" : (galleryMockups[idx - 1]?.label || `View ${idx}`);
+              const getLabel = (idx: number) => {
+                if (idx === 0) return "Artwork";
+                const raw = (galleryMockups[idx - 1]?.label || "").toLowerCase();
+                if (raw === "front" || raw === "mockup 1") return "Front";
+                if (raw === "back" || raw === "mockup 2") return "Back";
+                return galleryMockups[idx - 1]?.label || `View ${idx}`;
+              };
               return (
                 <div className="flex justify-center gap-3 mt-1">
                   {Array.from({ length: totalItems }).map((_, idx) => (
@@ -7589,7 +7616,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               );
             })()}
 
-            {generatedDesign?.imageUrl && !productTypeConfig?.isAllOverPrint && (
+            {generatedDesign?.imageUrl && !productTypeConfig?.isAllOverPrint && !flatPlacerEligible && (
               <ZoomControls
                 transform={transform}
                 onTransformChange={setTransform}

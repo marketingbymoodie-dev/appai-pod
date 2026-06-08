@@ -439,6 +439,14 @@ html[data-appai-embed] body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Desktop embed: parent iframe grows to content height — no inner scrollbar. */
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]),
+html[data-appai-embed]:not([data-appai-mobile-native-scroll]) body {
+  overflow: hidden;
+  height: auto;
+  min-height: 0;
+}
+
 html[data-appai-embed][data-appai-mobile-native-scroll],
 html[data-appai-embed][data-appai-mobile-native-scroll] body {
   min-height: 100%;

@@ -3,6 +3,7 @@ import { Sparkles, Loader2 } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { PrintSize, FrameColor, ImageTransform, PrintShape, DesignerType } from "./types";
 import { SafeZoneMask } from "./SafeZoneMask";
+import ArtworkTransformOverlay from "./ArtworkTransformOverlay";
 
 interface ProductMockupProps {
   imageUrl?: string | null;
@@ -325,11 +326,22 @@ export function ProductMockup({
     (window as any).__productMockupDebug = { designerType, imageUrl, isLoading };
   }
 
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const touchDragTimerRef = useRef<number | null>(null);
-  const touchPendingRef = useRef(false);
+  const [artworkAspect, setArtworkAspect] = useState(1);
+
+  useEffect(() => {
+    if (!imageUrl || mockupUrl) {
+      setArtworkAspect(1);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        setArtworkAspect(img.naturalWidth / img.naturalHeight);
+      }
+    };
+    img.src = imageUrl;
+  }, [imageUrl, mockupUrl]);
 
   // Track loading state when switching between composite mockup images (carousel).
   // When `mockupUrl` changes we set loading=true, then drive a programmatic
@@ -371,111 +383,6 @@ export function ProductMockup({
     }
     return false;
   })();
-
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!imageUrl || !enableDrag) return;
-      e.preventDefault();
-      e.stopPropagation();
-      isDraggingRef.current = true;
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-      containerRef.current = e.currentTarget;
-    },
-    [imageUrl, enableDrag]
-  );
-
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isDraggingRef.current || !containerRef.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = containerRef.current.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      const dx = e.clientX - dragStartRef.current.x;
-      const dy = e.clientY - dragStartRef.current.y;
-      if (dx === 0 && dy === 0) return;
-      const deltaX = (dx / rect.width) * 100;
-      const deltaY = (dy / rect.height) * 100;
-      onTransformChange({
-        ...transform,
-        x: Math.max(0, Math.min(100, transform.x + deltaX)),
-        y: Math.max(0, Math.min(100, transform.y + deltaY)),
-      });
-      dragStartRef.current = { x: e.clientX, y: e.clientY };
-    },
-    [transform, onTransformChange]
-  );
-
-  const handleMouseUp = useCallback(() => {
-    isDraggingRef.current = false;
-    containerRef.current = null;
-  }, []);
-
-  const clearTouchDragTimer = useCallback(() => {
-    if (touchDragTimerRef.current !== null) {
-      window.clearTimeout(touchDragTimerRef.current);
-      touchDragTimerRef.current = null;
-    }
-  }, []);
-
-  const handleTouchStart = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      if (!imageUrl || !enableDrag || e.touches.length !== 1) return;
-      const touch = e.touches[0];
-      clearTouchDragTimer();
-      touchPendingRef.current = true;
-      isDraggingRef.current = false;
-      dragStartRef.current = { x: touch.clientX, y: touch.clientY };
-      containerRef.current = e.currentTarget;
-      touchDragTimerRef.current = window.setTimeout(() => {
-        if (!touchPendingRef.current) return;
-        isDraggingRef.current = true;
-        touchDragTimerRef.current = null;
-      }, 320);
-    },
-    [imageUrl, enableDrag, clearTouchDragTimer],
-  );
-
-  const handleTouchMove = useCallback(
-    (e: React.TouchEvent<HTMLDivElement>) => {
-      if (!touchPendingRef.current || !containerRef.current || e.touches.length !== 1) return;
-      const touch = e.touches[0];
-      if (!isDraggingRef.current) {
-        const moveX = Math.abs(touch.clientX - dragStartRef.current.x);
-        const moveY = Math.abs(touch.clientY - dragStartRef.current.y);
-        if (moveX > 8 || moveY > 8) {
-          clearTouchDragTimer();
-          touchPendingRef.current = false;
-          containerRef.current = null;
-        }
-        return;
-      }
-
-      e.preventDefault();
-      e.stopPropagation();
-      const rect = containerRef.current.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      const dx = touch.clientX - dragStartRef.current.x;
-      const dy = touch.clientY - dragStartRef.current.y;
-      if (dx === 0 && dy === 0) return;
-      const deltaX = (dx / rect.width) * 100;
-      const deltaY = (dy / rect.height) * 100;
-      onTransformChange({
-        ...transform,
-        x: Math.max(0, Math.min(100, transform.x + deltaX)),
-        y: Math.max(0, Math.min(100, transform.y + deltaY)),
-      });
-      dragStartRef.current = { x: touch.clientX, y: touch.clientY };
-    },
-    [transform, onTransformChange, clearTouchDragTimer],
-  );
-
-  const handleTouchEnd = useCallback(() => {
-    clearTouchDragTimer();
-    touchPendingRef.current = false;
-    isDraggingRef.current = false;
-    containerRef.current = null;
-  }, [clearTouchDragTimer]);
 
   const getProductStyles = () => {
     switch (designerType) {
@@ -684,25 +591,24 @@ export function ProductMockup({
     }
   };
 
-  const isDragActive = !!displayUrl && enableDrag && !mockupUrl;
+  const showTransformOverlay = !!imageUrl && enableDrag && !mockupUrl && !isLoading;
 
   return (
     <div
-      className={`relative rounded-md w-full h-full ${isDragActive ? "cursor-move select-none" : ""}`}
-      style={{ touchAction: "pan-y" }}
-      {...(isDragActive ? {
-        onMouseDown: handleMouseDown,
-        onMouseMove: handleMouseMove,
-        onMouseUp: handleMouseUp,
-        onMouseLeave: handleMouseUp,
-        onTouchStart: handleTouchStart,
-        onTouchMove: handleTouchMove,
-        onTouchEnd: handleTouchEnd,
-        onTouchCancel: handleTouchEnd,
-      } : {})}
+      ref={containerRef}
+      className="relative rounded-md w-full h-full"
+      style={{ touchAction: showTransformOverlay ? "none" : "pan-y" }}
       data-testid="product-mockup"
     >
       {renderProductMockup()}
+      {showTransformOverlay && (
+        <ArtworkTransformOverlay
+          containerRef={containerRef}
+          transform={transform}
+          onTransformChange={onTransformChange}
+          artworkAspect={artworkAspect}
+        />
+      )}
       {/* Small spinner shown only while the next carousel mockup image is loading for the first time. */}
       {mockupImageLoading && !isLoading && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
