@@ -1,8 +1,8 @@
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 import type { FlatProductPlacerState } from "../index";
-import { loadFlatImageRelaxed, loadFlatViewAssets, resolveFlatBlank, type FlatViewName } from "./flatAssets";
-import { renderFlatView } from "./flatRender";
+import { loadFlatImageRelaxed, loadFlatViewAssets, resolveFlatBlank, resolveFlatViewCalibration, type FlatViewName } from "./flatAssets";
+import { flatEdgeWrapHasSideProfileStrip, renderFlatView } from "./flatRender";
 
 /**
  * Client-side flat mockup raster for a single view — no upload. Used when the
@@ -16,8 +16,14 @@ export async function renderFlatMockupDataUrl(
   artworkUrl: string,
 ): Promise<string | null> {
   const assets = await loadFlatViewAssets(manifest, colorId, view);
-  const calib = manifest.views[view];
+  const calib = resolveFlatViewCalibration(manifest, colorId, view);
   if (!assets?.blank || !calib) return null;
+
+  const mW = assets.blank.naturalWidth || calib.mockupDims?.width || 1;
+  const mH = assets.blank.naturalHeight || calib.mockupDims?.height || 1;
+  const sideProfile =
+    !!manifest.edgeWrap &&
+    flatEdgeWrapHasSideProfileStrip(calib, assets.mask, mW, mH);
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =
@@ -37,7 +43,7 @@ export async function renderFlatMockupDataUrl(
     forceShadingMap: !!manifest.edgeWrap,
     edgeWrapMode: !!manifest.edgeWrap,
     decorMode: !!manifest.decorPerSize,
-    cropToBackFace: !!manifest.edgeWrap,
+    cropToBackFace: sideProfile,
   });
 
   try {

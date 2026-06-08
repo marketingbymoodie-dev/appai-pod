@@ -28,6 +28,7 @@ import {
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatBackFaceCropRectPx,
+  flatEdgeWrapHasSideProfileStrip,
   offsetRectByCrop,
   flatPrintBoundsPx,
   flatVisibleRectPx,
@@ -350,6 +351,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const calib = resolveFlatViewCalibration(manifest, colorId, v);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
+      const sideProfile =
+        edgeWrapMode &&
+        flatEdgeWrapHasSideProfileStrip(calib, a.mask, a.blank.naturalWidth, a.blank.naturalHeight);
       try {
         renderFlatView({
           target: canvas,
@@ -364,7 +368,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           decorMode,
-          cropToBackFace: edgeWrapMode,
+          cropToBackFace: sideProfile,
         });
         return true;
       } catch (e) {
@@ -564,8 +568,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     viewAssets.blank?.naturalWidth || calib?.mockupDims?.width || 1;
   const mockupH =
     viewAssets.blank?.naturalHeight || calib?.mockupDims?.height || 1;
+  const hasSideProfile =
+    edgeWrapMode &&
+    !!calib &&
+    flatEdgeWrapHasSideProfileStrip(calib, viewAssets.mask, mockupW, mockupH);
   const backFaceCrop =
-    edgeWrapMode && calib
+    hasSideProfile
       ? flatBackFaceCropRectPx(calib, viewAssets.mask, mockupW, mockupH)
       : null;
   const offsetForCrop = (r: Rect): Rect =>

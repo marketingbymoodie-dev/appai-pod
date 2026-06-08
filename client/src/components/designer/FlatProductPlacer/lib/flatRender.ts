@@ -82,7 +82,7 @@ export type FlatRenderInput = {
   edgeWrapMode?: boolean;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
-  /** Crop rendered output to back face (hides 3D side strip on phone mockups). */
+  /** Crop to back face when the mockup has a side-profile strip (iPhone 14/15). */
   cropToBackFace?: boolean;
 };
 
@@ -485,6 +485,53 @@ export function cropCanvasToRect(source: HTMLCanvasElement, crop: Rect): void {
   ctx.putImageData(imageData, 0, 0);
 }
 
+/**
+ * True when the harvested mask includes a perspective side strip (iPhone 14/15
+ * style). Back-only mockups (e.g. iPhone 11) return false — no viewport crop.
+ */
+export function flatEdgeWrapHasSideProfileStrip(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): boolean {
+  const back = flatBackFaceCropRectPx(view, mask, canvasW, canvasH);
+  if (!back) return false;
+  const full =
+    flatPrintBoundsRectPx(view, canvasW, canvasH) ??
+    (mask ? flatImageAlphaBounds(mask) : null) ??
+    { x: 0, y: 0, width: canvasW, height: canvasH };
+  if (back.width >= full.width * 0.94 && back.height >= full.height * 0.94) {
+    return false;
+  }
+  const sideStripPx = full.width - back.width;
+  return sideStripPx >= Math.max(8, full.width * 0.04);
+}
+
+function drawImageRegion(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  src: Rect,
+  destW: number,
+  destH: number,
+): void {
+  ctx.drawImage(img, src.x, src.y, src.width, src.height, 0, 0, destW, destH);
+}
+
+function regionToCanvas(
+  img: HTMLImageElement,
+  region: Rect,
+  outW: number,
+  outH: number,
+): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = outW;
+  c.height = outH;
+  const cx = c.getContext("2d");
+  if (cx) drawImageRegion(cx, img, region, outW, outH);
+  return c;
+}
+
 /** Full printable unwrap bounds — prefer manifest over live mask bbox. */
 export function flatPrintBoundsPx(
   view: FlatViewCalibration,
@@ -661,36 +708,44 @@ export function renderFlatView(input: FlatRenderInput): void {
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
 
-  target.width = W;
-  target.height = H;
+  const backFace =
+    cropToBackFace && edgeWrapMode && flatEdgeWrapHasSideProfileStrip(view, mask, W, H)
+      ? flatBackFaceCropRectPx(view, mask, W, H)
+      : null;
+  const outW = backFace?.width ?? W;
+  const outH = backFace?.height ?? H;
+
+  target.width = outW;
+  target.height = outH;
   const ctx = target.getContext("2d");
   if (!ctx) return;
 
-  ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(blank, 0, 0, W, H);
+  ctx.clearRect(0, 0, outW, outH);
+  if (backFace) {
+    drawImageRegion(ctx, blank, backFace, outW, outH);
+  } else {
+    ctx.drawImage(blank, 0, 0, W, H);
+  }
   if (!artwork) return;
 
   const { w: artW, h: artH } = imgDims(artwork);
   if (artW <= 0 || artH <= 0) return;
 
-  const rect = flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode });
+  const offset = (r: Rect): Rect => (backFace ? offsetRectByCrop(r, backFace) : r);
+  const rect = offset(flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }));
 
-  // Artwork layer (full canvas; clipped to mask afterwards).
   const art = document.createElement("canvas");
-  art.width = W;
-  art.height = H;
+  art.width = outW;
+  art.height = outH;
   const actx = art.getContext("2d");
   if (!actx) return;
 
   let drewMesh = false;
-  if (tier === "mesh" && view.meshNodes && view.meshNodes.length > 0) {
+  if (tier === "mesh" && view.meshNodes && view.meshNodes.length > 0 && !backFace) {
     const md = view.mockupDims;
     const scaleX = md && md.width > 0 ? W / md.width : 1;
     const scaleY = md && md.height > 0 ? H / md.height : 1;
 
-    // Render the placed artwork into a flat "print-area" canvas, then warp the
-    // whole thing through the mesh. The mesh nodes span the full placeholder
-    // (xn/yn 0..1), so the source rect is the entire print canvas.
     const printW = Math.max(2, Math.round(view.printFileDims.width));
     const printH = Math.max(2, Math.round(view.printFileDims.height));
     const printCanvas = document.createElement("canvas");
@@ -708,29 +763,37 @@ export function renderFlatView(input: FlatRenderInput): void {
   }
 
   if (!drewMesh) {
-    // Flat blit: scale the artwork into the visible rect (cover baseline).
     const box = flatArtBox(rect, placement, artW, artH);
     actx.drawImage(artwork, box.x, box.y, box.width, box.height);
   }
 
-  // Clip strictly to the printable silhouette.
   if (mask) {
     actx.globalCompositeOperation = "destination-in";
-    actx.drawImage(mask, 0, 0, W, H);
+    if (backFace) {
+      drawImageRegion(actx, mask, backFace, outW, outH);
+    } else {
+      actx.drawImage(mask, 0, 0, W, H);
+    }
     actx.globalCompositeOperation = "source-over";
   }
 
-  // Shading multiply (normalized). Prefer the harvested gray map when loaded.
   const shadeMode: "blank" | "map" =
     view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
-  applyShading(art, actx, shadeMode, blank, shading, W, H, artworkCorsClean);
+  const shadeBlank: HTMLImageElement | HTMLCanvasElement = backFace
+    ? regionToCanvas(blank, backFace, outW, outH)
+    : blank;
+  const shadeMap: HTMLImageElement | HTMLCanvasElement | null =
+    backFace && shading ? regionToCanvas(shading, backFace, outW, outH) : shading;
+  applyShading(
+    art,
+    actx,
+    shadeMode,
+    shadeBlank as HTMLImageElement,
+    shadeMap as HTMLImageElement | null,
+    outW,
+    outH,
+    artworkCorsClean,
+  );
 
   ctx.drawImage(art, 0, 0);
-
-  if (cropToBackFace && edgeWrapMode) {
-    const crop = flatBackFaceCropRectPx(view, mask, W, H);
-    if (crop && crop.width > 0 && crop.height > 0) {
-      cropCanvasToRect(target, crop);
-    }
-  }
 }
