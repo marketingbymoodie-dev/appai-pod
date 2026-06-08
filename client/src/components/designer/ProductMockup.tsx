@@ -471,7 +471,11 @@ export function ProductMockup({
     }
 
     if (blankImageUrl) {
-      if (designerType === "mug") {
+      const useContainBlank =
+        designerType === "mug" ||
+        (designerType === "pillow" &&
+          (printShape === "square" || printShape === "circle"));
+      if (useContainBlank) {
         return (
           <img
             src={blankImageUrl}

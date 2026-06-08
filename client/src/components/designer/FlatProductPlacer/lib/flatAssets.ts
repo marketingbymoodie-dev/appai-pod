@@ -20,24 +20,35 @@ export function normalizeFlatColorKey(id: string): string {
   return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 }
 
+function flatBlankHasViews(
+  entry: Partial<Record<FlatViewName, string>> | undefined,
+): entry is Partial<Record<FlatViewName, string>> {
+  return !!(entry?.front || entry?.back);
+}
+
 /**
  * Pick the blank photo set for `colorId`, with graceful fallback: exact key →
- * normalized-key match → first entry.
+ * normalized-key match → first entry with usable URLs.
+ *
+ * Empty `{}` entries (failed harvest for that colour) are skipped — treating
+ * them as missing avoids blocking fallback and breaking the placer.
  */
 export function resolveFlatBlank(
   manifest: FlatCalibrationManifest,
   colorId: string,
 ): Partial<Record<FlatViewName, string>> {
   const blanks = manifest.blanks || {};
-  if (colorId && blanks[colorId]) return blanks[colorId];
+  if (colorId && flatBlankHasViews(blanks[colorId])) return blanks[colorId];
   if (colorId) {
     const norm = normalizeFlatColorKey(colorId);
     for (const k of Object.keys(blanks)) {
-      if (normalizeFlatColorKey(k) === norm) return blanks[k];
+      if (normalizeFlatColorKey(k) === norm && flatBlankHasViews(blanks[k])) return blanks[k];
     }
   }
-  const first = Object.keys(blanks)[0];
-  return first ? blanks[first] : {};
+  for (const k of Object.keys(blanks)) {
+    if (flatBlankHasViews(blanks[k])) return blanks[k];
+  }
+  return {};
 }
 
 export function loadFlatImage(

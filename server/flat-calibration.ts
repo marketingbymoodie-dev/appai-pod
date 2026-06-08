@@ -42,7 +42,8 @@ const PROBE_MAX_SRC_SIDE = 1600;
 // scale=1 + vertical overscan fills the print area via clip-to-boundary
 // (Printify clamps placement scale at 1.0 and ignores uploaded image px size).
 const REG_VERTICAL_OVERSCAN = 1.12;
-const DEFAULT_MAX_BLANK_COLORS = 8;
+/** Harvest blanks for every resolved colour unless caller caps via maxBlankColors. */
+const DEFAULT_MAX_BLANK_COLORS = 64;
 
 export type FlatTier = "flat" | "mesh" | "reject";
 export type FlatCalibrationStatus = "ready" | "unsupported" | "failed";
@@ -729,7 +730,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const buf = await downloadBuffer(match.url);
         perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
       }
-      baseManifest.blanks[color.id] = perView;
+      if (Object.keys(perView).length > 0) {
+        baseManifest.blanks[color.id] = perView;
+      }
     }
 
     if (!manifestHasBlanks(baseManifest)) {

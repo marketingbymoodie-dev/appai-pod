@@ -4682,6 +4682,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setFlatRenderFailed(true);
   }, []);
 
+  // A failed colour swap must not permanently disable flat tier for other colours.
+  useEffect(() => {
+    setFlatRenderFailed(false);
+  }, [selectedFrameColor]);
+
   const handleShare = async () => {
     if (!generatedDesign) return;
 
@@ -7479,6 +7484,21 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   // For product types with dimensional sizes (width/height > 0), use those
                   if (selectedSizeConfig && selectedSizeConfig.width > 0 && selectedSizeConfig.height > 0) {
                     return `${selectedSizeConfig.width}/${selectedSizeConfig.height}`;
+                  }
+                  // Square / double-sided pillows: DB aspectRatio is often 2:1 (both faces)
+                  // but each printable face is 1:1 — keep the placeholder square before size pick.
+                  if (productTypeConfig?.designerType === "pillow") {
+                    const shape = productTypeConfig?.printShape;
+                    if (shape === "square" || shape === "circle") return "1/1";
+                    if (productTypeConfig?.doubleSidedPrint) {
+                      const ar = productTypeConfig?.aspectRatio || "1:1";
+                      if (ar.replace("/", ":") === "2:1") return "1/1";
+                    }
+                  }
+                  // Before a size is chosen, prefer the first size's dimensions over product AR
+                  const firstSize = printSizes[0];
+                  if (firstSize && firstSize.width > 0 && firstSize.height > 0) {
+                    return `${firstSize.width}/${firstSize.height}`;
                   }
                   // Otherwise use the product type's aspectRatio string (e.g., "4:3" for mugs/tumblers)
                   const ar = productTypeConfig?.aspectRatio || "3:4";
