@@ -5,6 +5,7 @@ const SNAP_SCREEN_PX = 5;
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   flatArtBox,
+  flatIsEdgeWrapView,
   flatVisibleRectPx,
   FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
@@ -32,6 +33,8 @@ export type FlatDesignRectOverlayProps = {
   artwork: HTMLImageElement;
   placement: ArtworkPlacement;
   onChange: (next: ArtworkPlacement) => void;
+  /** Fired on drag/resize so the canvas backdrop can ignore the trailing click. */
+  onDragActivity?: () => void;
 };
 
 export default function FlatDesignRectOverlay({
@@ -40,6 +43,7 @@ export default function FlatDesignRectOverlay({
   artwork,
   placement,
   onChange,
+  onDragActivity,
 }: FlatDesignRectOverlayProps) {
   const latestPlacementRef = useRef(placement);
   useEffect(() => {
@@ -79,6 +83,7 @@ export default function FlatDesignRectOverlay({
     function onMove(e: PointerEvent) {
       const drag = dragRef.current;
       if (!drag) return;
+      onDragActivity?.();
       const sx = mockupW / drag.canvasRect.width;
       const sy = mockupH / drag.canvasRect.height;
 
@@ -180,6 +185,7 @@ export default function FlatDesignRectOverlay({
   });
   const rectPct = pct(rect);
   const boxPct = pct(box);
+  const isEdgeWrap = flatIsEdgeWrapView(view);
 
   const handleSize = 14;
   const cornerStyle = (
@@ -202,15 +208,22 @@ export default function FlatDesignRectOverlay({
       className="pointer-events-none absolute inset-0"
       data-testid="flat-rect-overlay"
     >
-      {/* Faint printable-area / safe-zone guide. */}
+      {/* Visible back face (apparel: printable area; cases: extend artwork past this). */}
       <div
-        className="pointer-events-none absolute border border-dashed border-white/60 mix-blend-difference"
+        className={`pointer-events-none absolute border border-dashed mix-blend-difference ${
+          isEdgeWrap ? "border-amber-200/90" : "border-white/60"
+        }`}
         style={{
           left: `${rectPct.left}%`,
           top: `${rectPct.top}%`,
           width: `${rectPct.width}%`,
           height: `${rectPct.height}%`,
         }}
+        title={
+          isEdgeWrap
+            ? "Visible back face — extend artwork past this outline for full edge print"
+            : "Printable area"
+        }
       />
 
       {/* Artwork bounding box with drag + corner-resize handles. */}
@@ -223,6 +236,7 @@ export default function FlatDesignRectOverlay({
           height: `${boxPct.height}%`,
         }}
         onClick={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
       >
         <div
           onPointerDown={(e) => startDrag(e, "translate")}

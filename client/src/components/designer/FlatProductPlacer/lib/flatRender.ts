@@ -61,6 +61,8 @@ export type FlatRenderInput = {
   view: FlatViewCalibration;
   placement: ArtworkPlacement;
   tier: FlatTier;
+  /** When false, skip pixel-read shading normalize (display-only cross-origin art). */
+  artworkCorsClean?: boolean;
 };
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
@@ -131,6 +133,26 @@ export function flatOverflows(rect: Rect, box: Rect): boolean {
     box.x + box.width > rect.x + rect.width + eps ||
     box.y + box.height > rect.y + rect.height + eps
   );
+}
+
+/**
+ * Edge-wrap products (phone cases): artwork must extend past the visible back
+ * face on every side so the side edges receive print. True when any edge of
+ * the artwork box stops short of the visible-face boundary.
+ */
+export function flatInsufficientEdgeWrap(rect: Rect, box: Rect): boolean {
+  const bleed = 1.5;
+  return (
+    box.x > rect.x + bleed ||
+    box.y > rect.y + bleed ||
+    box.x + box.width < rect.x + rect.width - bleed ||
+    box.y + box.height < rect.y + rect.height - bleed
+  );
+}
+
+/** Rigid / edge-wrap surfaces use a shading map; apparel uses garment luminance. */
+export function flatIsEdgeWrapView(view: FlatViewCalibration): boolean {
+  return view.shadingMode === "map";
 }
 
 /**
@@ -221,6 +243,7 @@ function applyShading(
   shading: HTMLImageElement | null,
   w: number,
   h: number,
+  artworkCorsClean: boolean,
 ): void {
   const shade = document.createElement("canvas");
   shade.width = w;
@@ -237,13 +260,15 @@ function applyShading(
     sctx.filter = "none";
   }
 
-  let normalized = true;
-  try {
-    normalizeShadeInPlace(sctx, artCtx, w, h);
-  } catch {
-    // Tainted canvas (cross-origin artwork without CORS) — skip the pixel
-    // normalize and apply the raw layer gently below.
-    normalized = false;
+  let normalized = artworkCorsClean;
+  if (artworkCorsClean) {
+    try {
+      normalizeShadeInPlace(sctx, artCtx, w, h);
+    } catch {
+      // Tainted canvas (cross-origin artwork without CORS) — skip the pixel
+      // normalize and apply the raw layer gently below.
+      normalized = false;
+    }
   }
 
   // Restrict the shading to the artwork alpha so we don't paint garment areas.
@@ -272,7 +297,17 @@ function applyShading(
  * — callers should still try/catch and fall back to the Printify flow.
  */
 export function renderFlatView(input: FlatRenderInput): void {
-  const { target, blank, mask, shading, artwork, view, placement, tier } = input;
+  const {
+    target,
+    blank,
+    mask,
+    shading,
+    artwork,
+    view,
+    placement,
+    tier,
+    artworkCorsClean = true,
+  } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
 
@@ -335,8 +370,8 @@ export function renderFlatView(input: FlatRenderInput): void {
     actx.globalCompositeOperation = "source-over";
   }
 
-  // Shading multiply (normalized).
-  applyShading(art, actx, view.shadingMode, blank, shading, W, H);
+  // Shading multiply (normalized). Skip pixel reads when art is display-only (no CORS).
+  applyShading(art, actx, view.shadingMode, blank, shading, W, H, artworkCorsClean);
 
   ctx.drawImage(art, 0, 0);
 }

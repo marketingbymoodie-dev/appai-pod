@@ -4661,6 +4661,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [isStorefront, shopDomain, selectedFrameColor]);
 
+  const handleFlatPlacerChange = useCallback(
+    (s: FlatProductPlacerState) => {
+      const artworkUrl = generatedDesign?.imageUrl
+        ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+        : s.artworkUrl;
+      setFlatPlacerState({ ...s, artworkUrl });
+    },
+    [generatedDesign?.imageUrl],
+  );
+
   const handleShare = async () => {
     if (!generatedDesign) return;
 
@@ -7437,7 +7447,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     ...(flatPlacerState ?? {}),
                     artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),
                   }}
-                  onChange={(s) => setFlatPlacerState(s)}
+                  onChange={handleFlatPlacerChange}
                   onApply={handleFlatApply}
                   onApplyStatusChange={setFlatApplyStatus}
                   onAssetsFailed={() => setFlatRenderFailed(true)}

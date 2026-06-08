@@ -15,12 +15,13 @@ import {
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
-  loadFlatImageRelaxed,
   resolveFlatBlank,
   type FlatViewName,
 } from "./lib/flatAssets";
 import {
   flatArtBox,
+  flatInsufficientEdgeWrap,
+  flatIsEdgeWrapView,
   flatOverflows,
   flatVisibleRectPx,
   renderFlatView,
@@ -218,6 +219,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const lastAppliedColorRef = useRef<string | null>(null);
   const seededAsResumeRef = useRef(false);
   const resumeBaselineSeededRef = useRef(false);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const canvasDragRef = useRef(false);
 
   useEffect(() => {
     setState((prev) => {
@@ -242,30 +246,42 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [availableViews, artworkSourceUrl]);
 
   useEffect(() => {
-    if (state) onChange?.(state);
-  }, [state, onChange]);
+    if (state) onChangeRef.current?.(state);
+  }, [state]);
 
-  // ---------- Artwork loading ----------
+  // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
   const [artworkLoading, setArtworkLoading] = useState(false);
+  const [artworkCorsClean, setArtworkCorsClean] = useState(true);
   useEffect(() => {
-    const url = artworkSourceUrl || state?.artworkUrl || null;
+    const url = artworkSourceUrl?.trim() || null;
     if (!url) {
       setArtworkImg(null);
+      setArtworkCorsClean(true);
       setArtworkLoading(false);
       return;
     }
     let cancelled = false;
     setArtworkLoading(true);
-    loadFlatImageRelaxed(url).then((img) => {
+    void (async () => {
+      const withCors = await loadFlatImage(url, { cors: true });
       if (cancelled) return;
-      setArtworkImg(img);
+      if (withCors) {
+        setArtworkCorsClean(true);
+        setArtworkImg(withCors);
+        setArtworkLoading(false);
+        return;
+      }
+      const displayOnly = await loadFlatImage(url, { cors: false });
+      if (cancelled) return;
+      setArtworkCorsClean(false);
+      setArtworkImg(displayOnly);
       setArtworkLoading(false);
-    });
+    })();
     return () => {
       cancelled = true;
     };
-  }, [artworkSourceUrl, state?.artworkUrl]);
+  }, [artworkSourceUrl]);
 
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);
@@ -295,6 +311,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           view: calib,
           placement: state.placements[v],
           tier: manifest.tier,
+          artworkCorsClean,
         });
         return true;
       } catch (e) {
@@ -303,7 +320,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, artworkImg],
+    [state, assets, manifest, artworkImg, artworkCorsClean],
   );
 
   // ---------- Live canvas ----------
@@ -452,8 +469,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
 
-  // Warn only when artwork is larger than the print rect (mask will trim edges).
-  let artworkTrimmed = false;
+  // Coverage warnings differ by product: apparel trims overflow; phone cases need edge bleed.
+  type CoverageWarning = "none" | "trim" | "edge-gap";
+  let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled) {
     const W = viewAssets.blank?.naturalWidth || calib.mockupDims?.width || 1;
     const H = viewAssets.blank?.naturalHeight || calib.mockupDims?.height || 1;
@@ -464,7 +482,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
-    artworkTrimmed = flatOverflows(rect, box);
+    if (flatIsEdgeWrapView(calib)) {
+      if (flatInsufficientEdgeWrap(rect, box)) coverageWarning = "edge-gap";
+    } else if (flatOverflows(rect, box)) {
+      coverageWarning = "trim";
+    }
   }
 
   const showOverlay =
@@ -482,7 +504,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
-          onClick={() => setOverlayVisible((v) => !v)}
+          onClick={() => {
+            if (canvasDragRef.current) {
+              canvasDragRef.current = false;
+              return;
+            }
+            setOverlayVisible((v) => !v);
+          }}
           data-testid="flat-placer-canvas-area"
         >
           <div className="relative max-h-full max-w-full">
@@ -498,6 +526,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 artwork={artworkImg}
                 placement={placement}
                 onChange={(next) => updatePlacement(state.view, next)}
+                onDragActivity={() => {
+                  canvasDragRef.current = true;
+                }}
               />
             )}
             {!artworkImg && !artworkLoading && (
@@ -596,17 +627,33 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
+            {calib && flatIsEdgeWrapView(calib) && (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Dashed outline = visible back face. Extend the artwork box past
+                it on all sides so the case edges receive print.
+              </p>
+            )}
           </div>
         )}
 
-        {/* Trim warning — only when artwork exceeds the print rect (mask clips it). */}
-        {viewEnabled && artworkImg && artworkTrimmed && (
+        {viewEnabled && artworkImg && coverageWarning === "trim" && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork extends past the printable area — edges will be trimmed by
-              the garment mask. Scale down or reposition to keep important details
+              the product mask. Scale down or reposition to keep important details
               visible.
+            </span>
+          </div>
+        )}
+
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && (
+          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Artwork doesn&apos;t reach the case edges — scale up or reposition
+              so the design extends past the dashed back-face guide for full edge
+              printing.
             </span>
           </div>
         )}
