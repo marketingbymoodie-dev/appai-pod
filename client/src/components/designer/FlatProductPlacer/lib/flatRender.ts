@@ -39,10 +39,23 @@ import type {
 
 export type Rect = { x: number; y: number; width: number; height: number };
 
-/** Lowest allowed placement scale. Cap is 1.0 (Printify clamps placement). */
+/** Lowest allowed placement scale. */
 export const FLAT_SCALE_MIN = 0.2;
-/** Hard cap — never imply more coverage than the print file provides. */
+/** Default cap — Printify placement API clamps at 1; baked print files allow more. */
 export const FLAT_SCALE_MAX = 1.0;
+/** Phone edge-wrap — zoom in to cover side strip + bleed. */
+export const FLAT_SCALE_MAX_EDGE_WRAP = 2.0;
+/** Framed / decor — zoom in to crop built-in borders past the mat opening. */
+export const FLAT_SCALE_MAX_DECOR = 2.5;
+
+export function flatPlacementScaleMax(opts: {
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+}): number {
+  if (opts.edgeWrapMode) return FLAT_SCALE_MAX_EDGE_WRAP;
+  if (opts.decorMode) return FLAT_SCALE_MAX_DECOR;
+  return FLAT_SCALE_MAX;
+}
 
 /** Floor for the normalized shading multiply so artwork never goes fully black. */
 const SHADE_FACTOR_MIN = 0.45;
@@ -67,6 +80,8 @@ export type FlatRenderInput = {
   forceShadingMap?: boolean;
   /** Edge-print phone cases — placement uses full print bounds, not safe zone. */
   edgeWrapMode?: boolean;
+  /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
+  decorMode?: boolean;
 };
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
@@ -157,9 +172,9 @@ export function flatPlacementRectPx(
   mask: HTMLImageElement | null,
   canvasW: number,
   canvasH: number,
-  edgeWrapMode: boolean,
+  opts: { edgeWrapMode?: boolean; decorMode?: boolean },
 ): Rect {
-  if (edgeWrapMode) {
+  if (opts.edgeWrapMode) {
     return flatPrintBoundsPx(view, mask, canvasW, canvasH);
   }
   return flatVisibleRectPx(view, canvasW, canvasH);
@@ -469,6 +484,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     artworkCorsClean = true,
     forceShadingMap = false,
     edgeWrapMode = false,
+    decorMode = false,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
@@ -485,13 +501,7 @@ export function renderFlatView(input: FlatRenderInput): void {
   const { w: artW, h: artH } = imgDims(artwork);
   if (artW <= 0 || artH <= 0) return;
 
-  const rect = flatPlacementRectPx(
-    view,
-    mask,
-    W,
-    H,
-    edgeWrapMode,
-  );
+  const rect = flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode });
 
   // Artwork layer (full canvas; clipped to mask afterwards).
   const art = document.createElement("canvas");

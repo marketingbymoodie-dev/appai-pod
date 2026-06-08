@@ -24,13 +24,12 @@ import {
   flatCovers,
   flatEdgeWrapGuideRects,
   flatInsufficientSafeZoneCoverage,
-  flatPlacementRectPx,
-  flatPrintBoundsPx,
   flatOverflows,
+  flatPlacementRectPx,
+  flatPlacementScaleMax,
   flatPrintBoundsPx,
   flatVisibleRectPx,
   renderFlatView,
-  FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
 } from "./lib/flatRender";
 import type {
@@ -101,6 +100,8 @@ export type FlatProductPlacerProps = {
   skipInitialAutoApply?: boolean;
   /** Phone cases / rigid edge-wrap products — not apparel with a shading map. */
   edgeWrapMode?: boolean;
+  /** Framed posters / decor — mat-based placement, zoom past 100%. */
+  decorMode?: boolean;
 };
 
 type LoadedAssets = {
@@ -157,6 +158,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       onAssetsFailed,
       skipInitialAutoApply = false,
       edgeWrapMode = false,
+      decorMode = false,
     },
     ref,
   ) {
@@ -326,6 +328,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [applyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
+  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode });
+
   const renderInto = useCallback(
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
@@ -346,6 +350,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
+          decorMode,
         });
         return true;
       } catch (e) {
@@ -354,7 +359,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, colorId, artworkImg, artworkCorsClean, edgeWrapMode],
+    [state, assets, manifest, colorId, artworkImg, artworkCorsClean, edgeWrapMode, decorMode],
   );
 
   // ---------- Live canvas ----------
@@ -512,13 +517,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       ? flatEdgeWrapGuideRects(calib, viewAssets.mask, mockupW, mockupH)
       : null;
   const placementRect =
-    calib && edgeWrapMode
-      ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, true)
-      : calib
-        ? flatVisibleRectPx(calib, mockupW, mockupH)
-        : null;
+    calib
+      ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
+          edgeWrapMode,
+          decorMode,
+        })
+      : null;
 
-  // Coverage warnings differ by product: apparel trims overflow; phone cases need full print + safe zone bleed.
+  // Coverage warnings differ by product type.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled && placementRect) {
@@ -537,6 +543,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         !flatCovers(printBounds, box) ||
         flatInsufficientSafeZoneCoverage(safeZone, box)
       ) {
+        coverageWarning = "edge-gap";
+      }
+    } else if (decorMode) {
+      if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
     } else if (flatOverflows(placementRect, box)) {
@@ -584,6 +594,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 innerGuideRect={edgeGuides?.inner ?? null}
                 outerGuideRect={edgeGuides?.outer ?? null}
                 placementRect={placementRect}
+                scaleMax={scaleMax}
                 onChange={(next) => updatePlacement(state.view, next)}
                 onDragActivity={() => {
                   canvasDragRef.current = true;
@@ -678,7 +689,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             <input
               type="range"
               min={FLAT_SCALE_MIN}
-              max={FLAT_SCALE_MAX}
+              max={scaleMax}
               step={0.01}
               value={placement.scale}
               onChange={(e) => setScale(state.view, Number(e.target.value))}
@@ -686,6 +697,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
+            {decorMode && !edgeWrapMode && (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Scale above 100% to zoom in and crop built-in borders. The dashed
+                line is the mat opening — keep important details inside it.
+              </p>
+            )}
             {edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
                 Amber dashed line = safe visible back face. Blue outer line = full
@@ -707,7 +724,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
-        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && (
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && (
+          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Artwork doesn&apos;t fully cover the mat opening — scale up or
+              reposition so the design fills the dashed outline.
+            </span>
+          </div>
+        )}
+
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && edgeWrapMode && (
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>

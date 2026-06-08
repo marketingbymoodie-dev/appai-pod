@@ -84,6 +84,7 @@ export type FlatViewGeometryOverride = Pick<
   FlatViewCalibration,
   | "visibleRectNormalized"
   | "printBoundsNormalized"
+  | "printFileDims"
   | "mockupDims"
   | "maskUrl"
   | "shadingUrl"
@@ -111,7 +112,7 @@ export function resolveFlatViewCalibration(
   return {
     ...base,
     ...override,
-    printFileDims: base.printFileDims,
+    printFileDims: override.printFileDims ?? base.printFileDims,
     meshNodes: base.meshNodes,
     meshGrid: base.meshGrid,
     planarityScore: base.planarityScore,

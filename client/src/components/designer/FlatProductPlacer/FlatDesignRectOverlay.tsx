@@ -8,7 +8,6 @@ import {
   flatPlacementRectPx,
   flatPrintBoundsPx,
   flatVisibleRectPx,
-  FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
   type Rect,
 } from "./lib/flatRender";
@@ -41,6 +40,8 @@ export type FlatDesignRectOverlayProps = {
   outerGuideRect?: Rect | null;
   /** Placement coordinate rect in mockup px (defaults to visible print rect). */
   placementRect?: Rect | null;
+  /** Max placement scale (decor / edge-wrap allow zoom past 100%). */
+  scaleMax?: number;
   onChange: (next: ArtworkPlacement) => void;
   /** Fired on drag/resize so the canvas backdrop can ignore the trailing click. */
   onDragActivity?: () => void;
@@ -55,6 +56,7 @@ export default function FlatDesignRectOverlay({
   innerGuideRect = null,
   outerGuideRect = null,
   placementRect = null,
+  scaleMax = 1,
   onChange,
   onDragActivity,
 }: FlatDesignRectOverlayProps) {
@@ -138,7 +140,7 @@ export default function FlatDesignRectOverlay({
       const scaleFromW = baseW > 0 ? halfW / baseW : drag.startPlacement.scale;
       const scaleFromH = baseH > 0 ? halfH / baseH : drag.startPlacement.scale;
       let next = Math.max(scaleFromW, scaleFromH);
-      next = Math.max(FLAT_SCALE_MIN, Math.min(FLAT_SCALE_MAX, next));
+      next = Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, next));
       onChange({ ...drag.startPlacement, scale: next });
     }
     function onUp() {
@@ -174,7 +176,7 @@ export default function FlatDesignRectOverlay({
     };
     // onChange is read fresh from closure each move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mockupW, mockupH, artW, artH, onChange]);
+  }, [mockupW, mockupH, artW, artH, onChange, scaleMax]);
 
   const startDrag = (
     e: React.PointerEvent<HTMLDivElement>,

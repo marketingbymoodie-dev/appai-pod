@@ -87,6 +87,7 @@ export type FlatCalibrationManifest = {
           FlatViewCalibration,
           | "visibleRectNormalized"
           | "printBoundsNormalized"
+          | "printFileDims"
           | "mockupDims"
           | "maskUrl"
           | "shadingUrl"
@@ -101,6 +102,8 @@ export type FlatCalibrationManifest = {
   representativeGeometry: boolean;
   /** Phone cases / rigid edge-print products — guides + exact registration fill. */
   edgeWrap?: boolean;
+  /** Framed posters / multi-size decor — blanks keyed by size:color with per-size print dims. */
+  decorPerSize?: boolean;
   generatedAt: string;
 };
 
@@ -489,6 +492,103 @@ async function probeView(
 // ── catalog colour/model resolution (ported) ─────────────────────────────────
 type ColorEntry = { id: string; name: string; hex?: string; variantId: number };
 
+function placeholderDimsForVariant(variant: any): Map<ViewName, { width: number; height: number }> {
+  const map = new Map<ViewName, { width: number; height: number }>();
+  for (const ph of variant?.placeholders || []) {
+    const pos = String(ph.position);
+    if (WANTED_VIEWS.includes(pos as ViewName)) {
+      map.set(pos as ViewName, { width: ph.width, height: ph.height });
+    }
+  }
+  return map;
+}
+
+function blankKeyMatchesManifest(manifest: FlatCalibrationManifest, key: string): boolean {
+  const entry = manifest.blanks?.[key];
+  return !!(entry?.front || entry?.back);
+}
+
+function normalizeBlankKey(id: string): string {
+  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+}
+
+/** Resolve which harvested blank set to use (mirrors client flatAssets). */
+export function resolveFlatBlankColorId(
+  manifest: FlatCalibrationManifest,
+  opts: { sizeId?: string; frameColorId?: string },
+): string {
+  const candidates: string[] = [];
+  if (opts.sizeId) candidates.push(opts.sizeId);
+  if (opts.frameColorId) candidates.push(opts.frameColorId);
+  if (opts.sizeId && opts.frameColorId) {
+    candidates.push(`${opts.sizeId}:${opts.frameColorId}`);
+    candidates.push(`${opts.frameColorId}:${opts.sizeId}`);
+  }
+  for (const id of candidates) {
+    if (blankKeyMatchesManifest(manifest, id)) return id;
+    const norm = normalizeBlankKey(id);
+    for (const k of Object.keys(manifest.blanks || {})) {
+      if (normalizeBlankKey(k) === norm && blankKeyMatchesManifest(manifest, k)) return k;
+    }
+  }
+  const fallback = opts.frameColorId || opts.sizeId || "";
+  for (const k of Object.keys(manifest.blanks || {})) {
+    if (normalizeBlankKey(k) === normalizeBlankKey(fallback) && blankKeyMatchesManifest(manifest, k)) {
+      return k;
+    }
+  }
+  for (const k of Object.keys(manifest.blanks || {})) {
+    if (blankKeyMatchesManifest(manifest, k)) return k;
+  }
+  return fallback;
+}
+
+/** Per-size print canvas dims for order-time bake (falls back to shared view dims). */
+export function resolveFlatPrintFileDims(
+  manifest: FlatCalibrationManifest,
+  view: ViewName,
+  opts: { sizeId?: string; frameColorId?: string },
+): { width: number; height: number } | null {
+  const blankKey = resolveFlatBlankColorId(manifest, opts);
+  const override = manifest.geometryByBlank?.[blankKey]?.[view]?.printFileDims;
+  const base = manifest.views[view]?.printFileDims;
+  const dims = override ?? base;
+  if (!dims?.width || !dims.height) return null;
+  return { width: dims.width, height: dims.height };
+}
+
+/** Placement anchor for print-file bake — matches client preview semantics. */
+export function resolveFlatBakePlacementRect(
+  manifest: FlatCalibrationManifest,
+  view: ViewName,
+  opts: { sizeId?: string; frameColorId?: string },
+): Rect | null {
+  const dims = resolveFlatPrintFileDims(manifest, view, opts);
+  if (!dims) return null;
+  const { width: printW, height: printH } = dims;
+
+  if (manifest.edgeWrap) {
+    return { x: 0, y: 0, width: printW, height: printH };
+  }
+
+  if (manifest.decorPerSize) {
+    const blankKey = resolveFlatBlankColorId(manifest, opts);
+    const base = manifest.views[view];
+    const override = manifest.geometryByBlank?.[blankKey]?.[view];
+    const nr = override?.visibleRectNormalized ?? base?.visibleRectNormalized;
+    if (nr) {
+      return {
+        x: nr.x * printW,
+        y: nr.y * printH,
+        width: nr.width * printW,
+        height: nr.height * printH,
+      };
+    }
+  }
+
+  return { x: 0, y: 0, width: printW, height: printH };
+}
+
 /**
  * Slugify a colour/model name to match the storefront's frameColor id scheme
  * (see the import variant-options handler: `colorName.toLowerCase().replace(/\s+/g,'_')`).
@@ -770,6 +870,24 @@ export function buildHarvestColorsFromProductType(productType: {
         break;
       }
     }
+    return colors;
+  }
+
+  // Framed / decor: harvest one blank + geometry per size × frame colour.
+  if (sizes.length > 1 && frameColors.length > 0) {
+    for (const size of sizes) {
+      for (const fc of frameColors) {
+        const variantId = resolveVariantIdForHarvest(variantMap, String(size.id), String(fc.id));
+        if (variantId == null) continue;
+        pushColor({
+          id: `${size.id}:${fc.id}`,
+          name: `${size.name || size.id} / ${fc.name || fc.id}`,
+          hex: fc.hex,
+          variantId,
+        });
+      }
+    }
+    if (colors.length > 0) return colors;
   }
 
   for (const fc of frameColors) {
@@ -811,6 +929,92 @@ function manifestHasBlanks(manifest: FlatCalibrationManifest): boolean {
   return Object.values(manifest.blanks || {}).some(
     (perView) => !!(perView?.front || perView?.back),
   );
+}
+
+/** Per-blank registration mask + guides (phone models, framed size×colour, etc.). */
+async function harvestPerBlankGeometry(args: {
+  token: string;
+  shopId: string;
+  blueprintId: number;
+  providerId: number;
+  productTypeId: number;
+  color: ColorEntry;
+  safe: string;
+  availableViews: ViewName[];
+  variantPlaceholderDims: Map<ViewName, { width: number; height: number }>;
+  sharedViewCalib: Partial<Record<ViewName, FlatViewCalibration>>;
+  edgeWrap: boolean;
+  createdProductIds: string[];
+}): Promise<Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null> {
+  const {
+    token,
+    shopId,
+    blueprintId,
+    providerId,
+    productTypeId,
+    color,
+    safe,
+    availableViews,
+    variantPlaceholderDims,
+    sharedViewCalib,
+    edgeWrap,
+    createdProductIds,
+  } = args;
+  const geo: NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string] = {};
+  let any = false;
+
+  for (const view of availableViews) {
+    const vc = sharedViewCalib[view];
+    const dims = variantPlaceholderDims.get(view);
+    if (!vc || !dims) continue;
+    try {
+      const magId = await uploadImage(
+        token,
+        `reg-${safe}-${view}.png`,
+        await magentaPng(dims.width, dims.height, edgeWrap),
+      );
+      const reg = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, [
+        { position: view, images: [{ id: magId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] },
+      ]);
+      createdProductIds.push(reg.productId);
+      const regImages = await pollMockups(token, shopId, reg.productId, reg.images);
+      const regMatch = pickView(regImages, view);
+      if (!regMatch) continue;
+      const regBuf = await downloadBuffer(regMatch.url);
+      const a = await analyzeMagenta(regBuf);
+      let maskUrl: string | null = null;
+      if (a.found) {
+        maskUrl = await uploadToFlatCalibrationBucket(
+          `products/${productTypeId}/mask-${safe}-${view}.png`,
+          await rawToPng(a.maskRaw, a.width, a.height),
+          "image/png",
+        );
+      }
+      const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap);
+      geo[view] = {
+        printBoundsNormalized: geoDerived.printBoundsNormalized,
+        visibleRectNormalized: geoDerived.visibleRectNormalized,
+        printFileDims: { width: dims.width, height: dims.height },
+        mockupDims: { width: a.width, height: a.height },
+        maskUrl,
+        shadingUrl: vc.shadingUrl,
+        shadingMode: vc.shadingMode,
+      };
+      any = true;
+    } catch (e) {
+      console.warn(
+        `[flat-calibration] per-blank geometry failed for ${color.id}/${view}:`,
+        (e as Error).message,
+      );
+    }
+  }
+  return any ? geo : null;
+}
+
+function needsPerBlankGeometry(color: ColorEntry, edgeWrapProduct: boolean, decorPerSize: boolean): boolean {
+  if (edgeWrapProduct && looksLikePhoneModelName(color.name || color.id)) return true;
+  if (decorPerSize && color.id.includes(":")) return true;
+  return false;
 }
 
 export type HarvestOptions = {
@@ -958,9 +1162,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       );
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
+    const decorPerSize = !edgeWrapProduct && colors.some((c) => c.id.includes(":"));
+    baseManifest.decorPerSize = decorPerSize;
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
-    const firstBlankByView: Partial<Record<ViewName, Buffer>> = {};
-    const blankBufByColorView = new Map<string, Buffer>();
     for (const color of colors) {
       const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));
       const blank = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, placeholders);
@@ -972,62 +1176,33 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const match = pickView(blankImages, view);
         if (!match) continue;
         const buf = await downloadBuffer(match.url);
-        if (!firstBlankByView[view]) firstBlankByView[view] = buf;
-        blankBufByColorView.set(`${color.id}:${view}`, buf);
         perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
       }
       if (Object.keys(perView).length > 0) {
         baseManifest.blanks[color.id] = perView;
       }
 
-      // Phone cases: harvest mask + guides per model (camera cutout differs).
-      if (looksLikePhoneModelName(color.name || color.id)) {
-        const geo: NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string] = {};
-        for (const view of availableViews) {
-          const vc = baseManifest.views[view];
-          const blankBuf = blankBufByColorView.get(`${color.id}:${view}`);
-          if (!vc || !blankBuf || !perView[view]) continue;
-          const dims = placeholderDims.get(view)!;
-          try {
-            const magId = await uploadImage(
-              token,
-              `reg-${safe}-${view}.png`,
-              await magentaPng(dims.width, dims.height, true),
-            );
-            const reg = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, [
-              { position: view, images: [{ id: magId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] },
-            ]);
-            createdProductIds.push(reg.productId);
-            const regImages = await pollMockups(token, shopId, reg.productId, reg.images);
-            const regMatch = pickView(regImages, view);
-            if (!regMatch) continue;
-            const regBuf = await downloadBuffer(regMatch.url);
-            const a = await analyzeMagenta(regBuf);
-            let maskUrl: string | null = null;
-            if (a.found) {
-              maskUrl = await uploadToFlatCalibrationBucket(
-                `products/${productTypeId}/mask-${safe}-${view}.png`,
-                await rawToPng(a.maskRaw, a.width, a.height),
-                "image/png",
-              );
-            }
-            const geoDerived = geometryFromMagentaAnalysis(a, true);
-            geo[view] = {
-              printBoundsNormalized: geoDerived.printBoundsNormalized,
-              visibleRectNormalized: geoDerived.visibleRectNormalized,
-              mockupDims: { width: a.width, height: a.height },
-              maskUrl,
-              shadingUrl: vc.shadingUrl,
-              shadingMode: vc.shadingMode,
-            };
-          } catch (e) {
-            console.warn(
-              `[flat-calibration] per-model geometry failed for ${name}/${color.id}/${view}:`,
-              (e as Error).message,
-            );
-          }
-        }
-        if (Object.keys(geo).length > 0) {
+      const variant = variants.find((v) => v.id === color.variantId);
+      const variantDims = placeholderDimsForVariant(variant);
+      if (
+        needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize) &&
+        variantDims.size > 0
+      ) {
+        const geo = await harvestPerBlankGeometry({
+          token,
+          shopId,
+          blueprintId,
+          providerId,
+          productTypeId,
+          color,
+          safe,
+          availableViews,
+          variantPlaceholderDims: variantDims,
+          sharedViewCalib: baseManifest.views,
+          edgeWrap: edgeWrapProduct,
+          createdProductIds,
+        });
+        if (geo && Object.keys(geo).length > 0) {
           if (!baseManifest.geometryByBlank) baseManifest.geometryByBlank = {};
           baseManifest.geometryByBlank[color.id] = geo;
           baseManifest.representativeGeometry = false;

@@ -36,6 +36,7 @@ export async function renderFlatMockupDataUrl(
     tier: manifest.tier,
     forceShadingMap: !!manifest.edgeWrap,
     edgeWrapMode: !!manifest.edgeWrap,
+    decorMode: !!manifest.decorPerSize,
   });
 
   try {

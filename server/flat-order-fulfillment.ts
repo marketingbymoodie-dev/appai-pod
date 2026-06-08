@@ -53,6 +53,7 @@ import {
   persistBakedPrintFile,
   type FlatPlacement,
 } from "./flat-print-file";
+import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -347,14 +348,21 @@ async function buildPrintAreasForDesign(
   const urls: Record<string, string> = {};
   for (const view of VIEWS) {
     if (!design.enabled[view]) continue;
-    const viewCalib = design.flatCalibration.views?.[view];
-    const dims = viewCalib?.printFileDims;
-    if (!dims || !dims.width || !dims.height) continue;
+    const dims = resolveFlatPrintFileDims(design.flatCalibration, view, {
+      sizeId: design.sizeId,
+      frameColorId: design.colorId,
+    });
+    if (!dims?.width || !dims.height) continue;
     const placement = design.placements[view] ?? { scale: 1, offsetX: 0, offsetY: 0 };
+    const placementRect = resolveFlatBakePlacementRect(design.flatCalibration, view, {
+      sizeId: design.sizeId,
+      frameColorId: design.colorId,
+    });
     const baked = await bakeFlatPrintFile({
       artworkUrl: design.artworkUrl,
       placement,
       printFileDims: { width: dims.width, height: dims.height },
+      placementRect: placementRect ?? undefined,
     });
     const url = await persistBakedPrintFile(design.productType.id, design.designId, view, baked.buffer);
     if (!url) {

@@ -121,6 +121,8 @@ export interface FlatCalibrationManifest {
   representativeGeometry: boolean;
   /** Phone cases / rigid edge-print products (auto-detected at harvest). */
   edgeWrap?: boolean;
+  /** Framed / multi-size decor — blanks keyed by size:color. */
+  decorPerSize?: boolean;
   generatedAt: string;
 }
 
@@ -1349,10 +1351,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
-  const flatEdgeWrapMode = !!(
+  const flatEdgeWrapMode = !!productTypeConfig?.flatCalibration?.edgeWrap;
+  const flatDecorMode = !!(
     productTypeConfig?.flatCalibration &&
-    (productTypeConfig.flatCalibration.edgeWrap ??
-      productTypeConfig.designerType !== "apparel")
+    !flatEdgeWrapMode &&
+    (productTypeConfig.flatCalibration.decorPerSize ||
+      productTypeConfig.designerType === "framed-print")
   );
   const flatBlankColorId = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
@@ -7826,7 +7830,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 )}
                 <FlatProductPlacer
                   ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  key={`flat-${productTypeConfig?.id ?? 0}-${flatBlankColorId}-${selectedSize}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
                   manifest={productTypeConfig.flatCalibration}
                   colorId={flatBlankColorId}
                   artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
@@ -7839,6 +7843,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onApplyStatusChange={setFlatApplyStatus}
                   onAssetsFailed={handleFlatAssetsFailed}
                   edgeWrapMode={flatEdgeWrapMode}
+                  decorMode={flatDecorMode}
                   skipInitialAutoApply={!!flatPlacerState}
                 />
               </div>

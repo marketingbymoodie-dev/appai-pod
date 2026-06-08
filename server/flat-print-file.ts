@@ -75,6 +75,8 @@ export type BakeFlatPrintFileArgs = {
   placement: FlatPlacement;
   /** Print area pixel dims for this view (`flatCalibration.views[view].printFileDims`). */
   printFileDims: PrintFileDims;
+  /** Placement anchor in print-file px (defaults to full canvas). */
+  placementRect?: Rect;
 };
 
 export type BakeFlatPrintFileResult = {
@@ -106,7 +108,8 @@ export async function bakeFlatPrintFile(
   const artH = meta.height ?? 0;
   if (artW <= 0 || artH <= 0) throw new Error("bakeFlatPrintFile: could not read artwork dimensions");
 
-  const rect: Rect = { x: 0, y: 0, width: printW, height: printH };
+  const rect: Rect =
+    args.placementRect ?? { x: 0, y: 0, width: printW, height: printH };
   const box = flatArtBox(rect, placement, artW, artH);
 
   const drawW = Math.max(1, Math.round(box.width));
