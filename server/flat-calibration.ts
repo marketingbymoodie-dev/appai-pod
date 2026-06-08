@@ -768,30 +768,37 @@ export function analyzeEdgeWrapGeometryFromMask(
     maxRowWidth = Math.max(maxRowWidth, rowRight[i] - rowLeft[i] + 1);
   }
 
-  const backLefts: number[] = [];
-  const backRights: number[] = [];
-  const backRows: number[] = [];
-  for (let i = 0; i < rowLeft.length; i++) {
-    const rw = rowRight[i] - rowLeft[i] + 1;
-    if (rw >= maxRowWidth * 0.72) {
-      backLefts.push(rowLeft[i]);
-      backRights.push(rowRight[i]);
-      backRows.push(rowY[i]);
-    }
-  }
-
-  const median = (arr: number[]) => {
-    const s = [...arr].sort((a, b) => a - b);
-    return s[Math.floor(s.length / 2)];
-  };
-
   let backPanel = bbox;
-  if (backLefts.length >= Math.max(3, rowLeft.length * 0.35)) {
+  {
+    const bw = bbox.width;
+    const colFill = new Float32Array(bw);
+    for (let y = bbox.y; y < bbox.y + bbox.height; y++) {
+      for (let x = bbox.x; x < bbox.x + bw; x++) {
+        if (maskRaw[((y * width + x) * 4 + 3)] > 10) colFill[x - bbox.x]++;
+      }
+    }
+    const maxFill = Math.max(...colFill, 1);
+    let splitCol: number | null = null;
+    let minVal = Infinity;
+    const scanStart = Math.floor(bw * 0.52);
+    for (let i = scanStart; i < bw - 3; i++) {
+      const v = colFill[i];
+      if (v < minVal && v <= maxFill * 0.5) {
+        minVal = v;
+        splitCol = i;
+      }
+    }
+    let backRightIdx = bw - 1;
+    if (splitCol !== null) {
+      let stripFill = 0;
+      for (let i = splitCol; i < bw; i++) stripFill += colFill[i];
+      if (stripFill >= maxFill * 3) backRightIdx = Math.max(scanStart, splitCol - 1);
+    }
     backPanel = {
-      x: median(backLefts),
-      y: Math.min(...backRows),
-      width: median(backRights) - median(backLefts) + 1,
-      height: Math.max(...backRows) - Math.min(...backRows) + 1,
+      x: bbox.x,
+      y: bbox.y,
+      width: Math.max(1, backRightIdx + 1),
+      height: bbox.height,
     };
   }
 

@@ -21,9 +21,6 @@ export async function renderFlatMockupDataUrl(
 
   const mW = assets.blank.naturalWidth || calib.mockupDims?.width || 1;
   const mH = assets.blank.naturalHeight || calib.mockupDims?.height || 1;
-  const sideProfile =
-    !!manifest.edgeWrap &&
-    flatEdgeWrapHasSideProfileStrip(calib, assets.mask, mW, mH);
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =
@@ -43,7 +40,8 @@ export async function renderFlatMockupDataUrl(
     forceShadingMap: !!manifest.edgeWrap,
     edgeWrapMode: !!manifest.edgeWrap,
     decorMode: !!manifest.decorPerSize,
-    cropToBackFace: sideProfile,
+    cropToBackFace: !!manifest.edgeWrap,
+    sizeId: colorId,
   });
 
   try {

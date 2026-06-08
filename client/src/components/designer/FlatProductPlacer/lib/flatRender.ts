@@ -82,6 +82,7 @@ export type FlatRenderInput = {
   edgeWrapMode?: boolean;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
+  sizeId?: string;
   /** Crop to back face when the mockup has a side-profile strip (iPhone 14/15). */
   cropToBackFace?: boolean;
 };
@@ -358,9 +359,72 @@ export function flatImageAlphaBounds(
 
 type NormRect = { x: number; y: number; width: number; height: number };
 
+/** Side-profile phone models (14/15+) — fallback when mask valley detection is ambiguous. */
+export function looksLikeSideProfilePhoneModel(sizeId: string): boolean {
+  const n = sizeId.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return (
+    /iphone-(1[4-9]|[2-9][0-9])/.test(n) ||
+    /-(14|15|16|17)(-pro|-plus|-pro-max|-max|-air)?(\b|$)/.test(n)
+  );
+}
+
+function backFaceRectFromMaskAlpha(
+  data: Uint8ClampedArray,
+  imgW: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): Rect {
+  const bw = maxX - minX + 1;
+  const colFill = new Float32Array(bw);
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (data[(y * imgW + x) * 4 + 3] > 10) colFill[x - minX]++;
+    }
+  }
+  const maxFill = Math.max(...colFill, 1);
+
+  let splitCol: number | null = null;
+  let minVal = Infinity;
+  const scanStart = Math.floor(bw * 0.52);
+  for (let i = scanStart; i < bw - 3; i++) {
+    const v = colFill[i];
+    if (v < minVal && v <= maxFill * 0.5) {
+      minVal = v;
+      splitCol = i;
+    }
+  }
+
+  let backRightIdx = bw - 1;
+  if (splitCol !== null) {
+    let stripFill = 0;
+    for (let i = splitCol; i < bw; i++) stripFill += colFill[i];
+    if (stripFill >= maxFill * 3) {
+      backRightIdx = Math.max(scanStart, splitCol - 1);
+    }
+  }
+
+  if (splitCol === null || backRightIdx >= bw - 3) {
+    for (let i = bw - 1; i >= 0; i--) {
+      if (colFill[i] >= maxFill * 0.4) {
+        backRightIdx = i;
+        break;
+      }
+    }
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: Math.max(1, backRightIdx + 1),
+    height: maxY - minY + 1,
+  };
+}
+
 /**
  * Detect the flat back panel on phone mockups that include a perspective side
- * strip (mirrors server `analyzeEdgeWrapGeometryFromMask` back-panel logic).
+ * strip. Column-density valley detection — row-median width spans back+side.
  */
 export function detectEdgeWrapBackFaceFromMask(mask: HTMLImageElement): Rect | null {
   const w = mask.naturalWidth || mask.width;
@@ -395,58 +459,7 @@ export function detectEdgeWrapBackFaceFromMask(mask: HTMLImageElement): Rect | n
   }
   if (maxX < minX) return null;
 
-  const bbox = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-  const rowLeft: number[] = [];
-  const rowRight: number[] = [];
-  const rowY: number[] = [];
-  for (let y = minY; y <= maxY; y++) {
-    let lx = -1;
-    let rx = -1;
-    for (let x = minX; x <= maxX; x++) {
-      if (data[(y * w + x) * 4 + 3] > 10) {
-        if (lx < 0) lx = x;
-        rx = x;
-      }
-    }
-    if (lx >= 0) {
-      rowLeft.push(lx);
-      rowRight.push(rx);
-      rowY.push(y);
-    }
-  }
-  if (rowLeft.length === 0) return null;
-
-  let maxRowWidth = 0;
-  for (let i = 0; i < rowLeft.length; i++) {
-    maxRowWidth = Math.max(maxRowWidth, rowRight[i] - rowLeft[i] + 1);
-  }
-
-  const backLefts: number[] = [];
-  const backRights: number[] = [];
-  const backRows: number[] = [];
-  for (let i = 0; i < rowLeft.length; i++) {
-    const rw = rowRight[i] - rowLeft[i] + 1;
-    if (rw >= maxRowWidth * 0.72) {
-      backLefts.push(rowLeft[i]);
-      backRights.push(rowRight[i]);
-      backRows.push(rowY[i]);
-    }
-  }
-
-  const median = (arr: number[]) => {
-    const s = [...arr].sort((a, b) => a - b);
-    return s[Math.floor(s.length / 2)];
-  };
-
-  if (backLefts.length >= Math.max(3, rowLeft.length * 0.35)) {
-    return {
-      x: median(backLefts),
-      y: Math.min(...backRows),
-      width: median(backRights) - median(backLefts) + 1,
-      height: Math.max(...backRows) - Math.min(...backRows) + 1,
-    };
-  }
-  return bbox;
+  return backFaceRectFromMaskAlpha(data, w, minX, minY, maxX, maxY);
 }
 
 /** Back-face crop rect in mockup px (excludes side-profile strip when present). */
@@ -456,10 +469,16 @@ export function flatBackFaceCropRectPx(
   canvasW: number,
   canvasH: number,
 ): Rect | null {
-  const stored = normalizedRectPx(view.backFaceCropNormalized as NormRect | null | undefined, canvasW, canvasH);
-  if (stored) return stored;
-  if (mask) return detectEdgeWrapBackFaceFromMask(mask);
-  return null;
+  const fromMask = mask ? detectEdgeWrapBackFaceFromMask(mask) : null;
+  const stored = normalizedRectPx(
+    view.backFaceCropNormalized as NormRect | null | undefined,
+    canvasW,
+    canvasH,
+  );
+  if (fromMask && stored) {
+    return fromMask.width < stored.width * 0.97 ? fromMask : stored;
+  }
+  return fromMask ?? stored;
 }
 
 export function offsetRectByCrop(rect: Rect, crop: Rect): Rect {
@@ -494,18 +513,18 @@ export function flatEdgeWrapHasSideProfileStrip(
   mask: HTMLImageElement | null,
   canvasW: number,
   canvasH: number,
+  sizeId?: string,
 ): boolean {
+  const maskBbox =
+    mask ? flatImageAlphaBounds(mask) : normalizedRectPx(view.printBoundsNormalized, canvasW, canvasH);
   const back = flatBackFaceCropRectPx(view, mask, canvasW, canvasH);
-  if (!back) return false;
-  const full =
-    flatPrintBoundsRectPx(view, canvasW, canvasH) ??
-    (mask ? flatImageAlphaBounds(mask) : null) ??
-    { x: 0, y: 0, width: canvasW, height: canvasH };
-  if (back.width >= full.width * 0.94 && back.height >= full.height * 0.94) {
-    return false;
+  if (!back || !maskBbox) {
+    return !!(sizeId && looksLikeSideProfilePhoneModel(sizeId));
   }
-  const sideStripPx = full.width - back.width;
-  return sideStripPx >= Math.max(8, full.width * 0.04);
+  const stripRight = maskBbox.x + maskBbox.width - (back.x + back.width);
+  if (stripRight >= Math.max(10, maskBbox.width * 0.04)) return true;
+  if (back.width < maskBbox.width * 0.88) return true;
+  return !!(sizeId && looksLikeSideProfilePhoneModel(sizeId));
 }
 
 function drawImageRegion(
@@ -704,14 +723,17 @@ export function renderFlatView(input: FlatRenderInput): void {
     edgeWrapMode = false,
     decorMode = false,
     cropToBackFace = false,
+    sizeId,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
 
-  const backFace =
-    cropToBackFace && edgeWrapMode && flatEdgeWrapHasSideProfileStrip(view, mask, W, H)
-      ? flatBackFaceCropRectPx(view, mask, W, H)
-      : null;
+  const sideProfile =
+    cropToBackFace &&
+    edgeWrapMode &&
+    (flatEdgeWrapHasSideProfileStrip(view, mask, W, H, sizeId) ||
+      !!(sizeId && looksLikeSideProfilePhoneModel(sizeId)));
+  const backFace = sideProfile ? flatBackFaceCropRectPx(view, mask, W, H) : null;
   const outW = backFace?.width ?? W;
   const outH = backFace?.height ?? H;
 
