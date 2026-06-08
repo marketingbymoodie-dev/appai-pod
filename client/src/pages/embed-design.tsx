@@ -1185,6 +1185,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Computed zoom values based on product type (apparel uses 135%, others use 100%)
   const isApparel = productTypeConfig?.designerType === "apparel";
+  const flatEdgeWrapMode = !!(
+    productTypeConfig?.flatCalibration &&
+    productTypeConfig.designerType !== "apparel"
+  );
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
   const supportsPrintPlacementSelection = !!(
@@ -2003,7 +2007,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =
-      !productTypeConfig?.isAllOverPrint && productTypeConfig?.designerType === "apparel";
+      !productTypeConfig?.isAllOverPrint &&
+      productTypeConfig?.designerType === "apparel" &&
+      !productTypeConfig?.flatCalibration;
     if (shouldAutoRemoveBg && !bgRemovedLoadedDesignsRef.current.has(designId)) {
       bgRemovedLoadedDesignsRef.current.add(designId);
       void (async () => {
@@ -4670,6 +4676,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     },
     [generatedDesign?.imageUrl],
   );
+
+  const handleFlatAssetsFailed = useCallback((reason: string) => {
+    console.warn("[FlatPlacer] assets failed:", reason);
+    setFlatRenderFailed(true);
+  }, []);
 
   const handleShare = async () => {
     if (!generatedDesign) return;
@@ -7450,7 +7461,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   onChange={handleFlatPlacerChange}
                   onApply={handleFlatApply}
                   onApplyStatusChange={setFlatApplyStatus}
-                  onAssetsFailed={() => setFlatRenderFailed(true)}
+                  onAssetsFailed={handleFlatAssetsFailed}
+                  edgeWrapMode={flatEdgeWrapMode}
                   skipInitialAutoApply={!!flatPlacerState}
                 />
               </div>

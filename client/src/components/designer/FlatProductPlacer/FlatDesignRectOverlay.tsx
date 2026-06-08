@@ -5,7 +5,6 @@ const SNAP_SCREEN_PX = 5;
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   flatArtBox,
-  flatIsEdgeWrapView,
   flatVisibleRectPx,
   FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
@@ -32,6 +31,10 @@ export type FlatDesignRectOverlayProps = {
   view: FlatViewCalibration;
   artwork: HTMLImageElement;
   placement: ArtworkPlacement;
+  /** Phone cases / rigid edge-wrap products (not apparel). */
+  edgeWrapMode?: boolean;
+  /** Mask alpha bounding box in mockup px — outer print silhouette guide. */
+  maskBounds?: Rect | null;
   onChange: (next: ArtworkPlacement) => void;
   /** Fired on drag/resize so the canvas backdrop can ignore the trailing click. */
   onDragActivity?: () => void;
@@ -42,6 +45,8 @@ export default function FlatDesignRectOverlay({
   view,
   artwork,
   placement,
+  edgeWrapMode = false,
+  maskBounds = null,
   onChange,
   onDragActivity,
 }: FlatDesignRectOverlayProps) {
@@ -185,7 +190,7 @@ export default function FlatDesignRectOverlay({
   });
   const rectPct = pct(rect);
   const boxPct = pct(box);
-  const isEdgeWrap = flatIsEdgeWrapView(view);
+  const maskPct = maskBounds ? pct(maskBounds) : null;
 
   const handleSize = 14;
   const cornerStyle = (
@@ -208,10 +213,23 @@ export default function FlatDesignRectOverlay({
       className="pointer-events-none absolute inset-0"
       data-testid="flat-rect-overlay"
     >
-      {/* Visible back face (apparel: printable area; cases: extend artwork past this). */}
+      {/* Print silhouette (edge-wrap) or printable area (apparel). */}
+      {edgeWrapMode && maskPct && (
+        <div
+          className="pointer-events-none absolute border border-dashed border-white/70 mix-blend-difference"
+          style={{
+            left: `${maskPct.left}%`,
+            top: `${maskPct.top}%`,
+            width: `${maskPct.width}%`,
+            height: `${maskPct.height}%`,
+          }}
+          title="Print silhouette — extend artwork to cover this outline"
+        />
+      )}
+
       <div
         className={`pointer-events-none absolute border border-dashed mix-blend-difference ${
-          isEdgeWrap ? "border-amber-200/90" : "border-white/60"
+          edgeWrapMode ? "border-amber-200/90" : "border-white/60"
         }`}
         style={{
           left: `${rectPct.left}%`,
@@ -220,7 +238,7 @@ export default function FlatDesignRectOverlay({
           height: `${rectPct.height}%`,
         }}
         title={
-          isEdgeWrap
+          edgeWrapMode
             ? "Visible back face — extend artwork past this outline for full edge print"
             : "Printable area"
         }

@@ -20,9 +20,11 @@ import {
 } from "./lib/flatAssets";
 import {
   flatArtBox,
+  flatCovers,
+  flatImageAlphaBounds,
   flatInsufficientEdgeWrap,
-  flatIsEdgeWrapView,
   flatOverflows,
+  flatPrintBoundsPx,
   flatVisibleRectPx,
   renderFlatView,
   FLAT_SCALE_MAX,
@@ -94,6 +96,8 @@ export type FlatProductPlacerProps = {
   onAssetsFailed?: (reason: string) => void;
   /** Skip the first auto-apply when resuming an already-saved design. */
   skipInitialAutoApply?: boolean;
+  /** Phone cases / rigid edge-wrap products — not apparel with a shading map. */
+  edgeWrapMode?: boolean;
 };
 
 type LoadedAssets = {
@@ -149,6 +153,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       onApplyStatusChange,
       onAssetsFailed,
       skipInitialAutoApply = false,
+      edgeWrapMode = false,
     },
     ref,
   ) {
@@ -274,8 +279,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       }
       const displayOnly = await loadFlatImage(url, { cors: false });
       if (cancelled) return;
-      setArtworkCorsClean(false);
-      setArtworkImg(displayOnly);
+      if (displayOnly) {
+        setArtworkCorsClean(false);
+        setArtworkImg(displayOnly);
+      }
       setArtworkLoading(false);
     })();
     return () => {
@@ -469,21 +476,34 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
 
+  const mockupW =
+    viewAssets.blank?.naturalWidth || calib?.mockupDims?.width || 1;
+  const mockupH =
+    viewAssets.blank?.naturalHeight || calib?.mockupDims?.height || 1;
+  const maskBounds =
+    calib && viewAssets.mask
+      ? flatImageAlphaBounds(viewAssets.mask)
+      : null;
+
   // Coverage warnings differ by product: apparel trims overflow; phone cases need edge bleed.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled) {
-    const W = viewAssets.blank?.naturalWidth || calib.mockupDims?.width || 1;
-    const H = viewAssets.blank?.naturalHeight || calib.mockupDims?.height || 1;
-    const rect = flatVisibleRectPx(calib, W, H);
+    const rect = flatVisibleRectPx(calib, mockupW, mockupH);
+    const printBounds = flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
     const box = flatArtBox(
       rect,
       placement,
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
-    if (flatIsEdgeWrapView(calib)) {
-      if (flatInsufficientEdgeWrap(rect, box)) coverageWarning = "edge-gap";
+    if (edgeWrapMode) {
+      if (
+        flatInsufficientEdgeWrap(rect, box) ||
+        !flatCovers(printBounds, box)
+      ) {
+        coverageWarning = "edge-gap";
+      }
     } else if (flatOverflows(rect, box)) {
       coverageWarning = "trim";
     }
@@ -516,7 +536,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           <div className="relative max-h-full max-w-full">
             <canvas
               ref={canvasRef}
-              className="max-h-[50vh] max-w-full rounded object-contain lg:max-h-[78vh]"
+              className="block max-h-[50vh] max-w-full h-auto w-auto rounded lg:max-h-[78vh]"
               data-testid="flat-placer-canvas"
             />
             {showOverlay && calib && viewAssets.blank && artworkImg && (
@@ -525,6 +545,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 view={calib}
                 artwork={artworkImg}
                 placement={placement}
+                edgeWrapMode={edgeWrapMode}
+                maskBounds={maskBounds}
                 onChange={(next) => updatePlacement(state.view, next)}
                 onDragActivity={() => {
                   canvasDragRef.current = true;
@@ -627,10 +649,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               style={{ accentColor: "hsl(var(--primary))" }}
               aria-label="Artwork scale"
             />
-            {calib && flatIsEdgeWrapView(calib) && (
+            {edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Dashed outline = visible back face. Extend the artwork box past
-                it on all sides so the case edges receive print.
+                Inner dashed line = visible back face. Outer line = print
+                silhouette — extend the artwork box past both so case edges receive
+                print.
               </p>
             )}
           </div>
@@ -652,8 +675,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork doesn&apos;t reach the case edges — scale up or reposition
-              so the design extends past the dashed back-face guide for full edge
-              printing.
+              so the design covers the outer print silhouette and extends past the
+              inner back-face guide for full edge printing.
             </span>
           </div>
         )}

@@ -150,7 +150,64 @@ export function flatInsufficientEdgeWrap(rect: Rect, box: Rect): boolean {
   );
 }
 
-/** Rigid / edge-wrap surfaces use a shading map; apparel uses garment luminance. */
+/**
+ * Alpha bounding box of a mask / image (mockup px). Returns `null` when the
+ * image is empty or pixel reads fail (tainted canvas).
+ */
+export function flatImageAlphaBounds(
+  img: HTMLImageElement,
+  alphaThreshold = 10,
+): Rect | null {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (w <= 0 || h <= 0) return null;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(img, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    let minX = w;
+    let minY = h;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        if (data[i + 3] > alphaThreshold) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < minX) return null;
+    return {
+      x: minX,
+      y: minY,
+      width: maxX - minX + 1,
+      height: maxY - minY + 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Printable silhouette bounds — mask alpha bbox when available, else visible rect. */
+export function flatPrintBoundsPx(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): Rect {
+  const fromMask = mask ? flatImageAlphaBounds(mask) : null;
+  return fromMask ?? flatVisibleRectPx(view, canvasW, canvasH);
+}
+
+/** @deprecated Prefer `edgeWrapMode` prop — shading map alone mis-classifies apparel. */
 export function flatIsEdgeWrapView(view: FlatViewCalibration): boolean {
   return view.shadingMode === "map";
 }
