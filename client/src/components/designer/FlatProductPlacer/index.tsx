@@ -16,6 +16,7 @@ import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
   resolveFlatBlank,
+  resolveFlatViewCalibration,
   type FlatViewName,
 } from "./lib/flatAssets";
 import {
@@ -186,13 +187,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         back: EMPTY_ASSETS,
       };
       for (const v of availableViews) {
-        const calib = manifest.views[v]!;
+        const calib = resolveFlatViewCalibration(manifest, colorId, v);
         const blankUrl = blank[v];
-        if (!blankUrl) continue;
+        if (!calib || !blankUrl) continue;
         const [b, m, s] = await Promise.all([
           loadFlatImage(blankUrl),
           calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
-          calib.shadingMode === "map" && calib.shadingUrl
+          calib.shadingUrl &&
+          (calib.shadingMode === "map" || calib.printBoundsNormalized)
             ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
@@ -210,7 +212,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
-  }, [availableViews, manifest, blank, onAssetsFailed]);
+  }, [availableViews, manifest, blank, colorId, onAssetsFailed]);
 
   useEffect(() => {
     if (!assetsLoading && availableViews.length === 0) {
@@ -326,7 +328,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib: FlatViewCalibration | undefined = manifest.views[v];
+      const calib = resolveFlatViewCalibration(manifest, colorId, v);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       try {
@@ -340,6 +342,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           placement: state.placements[v],
           tier: manifest.tier,
           artworkCorsClean,
+          forceShadingMap: edgeWrapMode,
         });
         return true;
       } catch (e) {
@@ -348,7 +351,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, artworkImg, artworkCorsClean],
+    [state, assets, manifest, colorId, artworkImg, artworkCorsClean],
   );
 
   // ---------- Live canvas ----------
@@ -492,7 +495,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = manifest.views[state.view];
+  const calib = resolveFlatViewCalibration(manifest, colorId, state.view);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];

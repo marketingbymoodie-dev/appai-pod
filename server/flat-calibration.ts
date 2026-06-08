@@ -77,6 +77,24 @@ export type FlatCalibrationManifest = {
   views: Partial<Record<ViewName, FlatViewCalibration>>;
   /** colorOrModelId -> { view -> blank photo url } */
   blanks: Record<string, Partial<Record<ViewName, string>>>;
+  /** Per-model geometry overrides (phone cases — camera cutout differs per model). */
+  geometryByBlank?: Record<
+    string,
+    Partial<
+      Record<
+        ViewName,
+        Pick<
+          FlatViewCalibration,
+          | "visibleRectNormalized"
+          | "printBoundsNormalized"
+          | "mockupDims"
+          | "maskUrl"
+          | "shadingUrl"
+          | "shadingMode"
+        >
+      >
+    >
+  >;
   /** True if mask/shading were harvested from a single representative variant
    *  (apparel: geometry is color-independent). Phone-case per-model masks are a
    *  documented follow-up. */
@@ -827,6 +845,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     colors = colors.slice(0, Math.max(1, maxBlankColors));
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
     const firstBlankByView: Partial<Record<ViewName, Buffer>> = {};
+    const blankBufByColorView = new Map<string, Buffer>();
     for (const color of colors) {
       const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));
       const blank = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, placeholders);
@@ -839,10 +858,65 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         if (!match) continue;
         const buf = await downloadBuffer(match.url);
         if (!firstBlankByView[view]) firstBlankByView[view] = buf;
+        blankBufByColorView.set(`${color.id}:${view}`, buf);
         perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
       }
       if (Object.keys(perView).length > 0) {
         baseManifest.blanks[color.id] = perView;
+      }
+
+      // Phone cases: harvest mask + guides per model (camera cutout differs).
+      if (looksLikePhoneModelName(color.name || color.id)) {
+        const geo: NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string] = {};
+        for (const view of availableViews) {
+          const vc = baseManifest.views[view];
+          const blankBuf = blankBufByColorView.get(`${color.id}:${view}`);
+          if (!vc || !blankBuf || !perView[view]) continue;
+          const dims = placeholderDims.get(view)!;
+          try {
+            const magId = await uploadImage(
+              token,
+              `reg-${safe}-${view}.png`,
+              await magentaPng(dims.width, dims.height),
+            );
+            const reg = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, [
+              { position: view, images: [{ id: magId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] },
+            ]);
+            createdProductIds.push(reg.productId);
+            const regImages = await pollMockups(token, shopId, reg.productId, reg.images);
+            const regMatch = pickView(regImages, view);
+            if (!regMatch) continue;
+            const regBuf = await downloadBuffer(regMatch.url);
+            const a = await analyzeMagenta(regBuf);
+            let maskUrl: string | null = null;
+            if (a.found) {
+              maskUrl = await uploadToFlatCalibrationBucket(
+                `products/${productTypeId}/mask-${safe}-${view}.png`,
+                await rawToPng(a.maskRaw, a.width, a.height),
+                "image/png",
+              );
+            }
+            const face = await analyzeBlankVisibleFace(blankBuf);
+            geo[view] = {
+              printBoundsNormalized: a.normalized,
+              visibleRectNormalized: face?.normalized ?? a.normalized,
+              mockupDims: { width: a.width, height: a.height },
+              maskUrl,
+              shadingUrl: vc.shadingUrl,
+              shadingMode: vc.shadingMode,
+            };
+          } catch (e) {
+            console.warn(
+              `[flat-calibration] per-model geometry failed for ${name}/${color.id}/${view}:`,
+              (e as Error).message,
+            );
+          }
+        }
+        if (Object.keys(geo).length > 0) {
+          if (!baseManifest.geometryByBlank) baseManifest.geometryByBlank = {};
+          baseManifest.geometryByBlank[color.id] = geo;
+          baseManifest.representativeGeometry = false;
+        }
       }
     }
 

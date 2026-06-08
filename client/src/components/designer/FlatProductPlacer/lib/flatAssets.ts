@@ -1,5 +1,5 @@
 import { API_BASE } from "@/lib/urlBase";
-import type { FlatCalibrationManifest } from "@/pages/embed-design";
+import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
 
 export type FlatViewName = "front" | "back";
 
@@ -79,6 +79,46 @@ export function resolveFlatBlankColorId(
  * Empty `{}` entries (failed harvest for that colour) are skipped — treating
  * them as missing avoids blocking fallback and breaking the placer.
  */
+/** Per-model geometry overrides (phone cases — camera cutout differs per model). */
+export type FlatViewGeometryOverride = Pick<
+  FlatViewCalibration,
+  | "visibleRectNormalized"
+  | "printBoundsNormalized"
+  | "mockupDims"
+  | "maskUrl"
+  | "shadingUrl"
+  | "shadingMode"
+>;
+
+export type FlatCalibrationManifestWithGeometry = FlatCalibrationManifest & {
+  geometryByBlank?: Record<string, Partial<Record<FlatViewName, FlatViewGeometryOverride>>>;
+};
+
+/**
+ * Merge shared view calibration with optional per-blank-key overrides.
+ * Falls back to shared `manifest.views[view]` when no override exists.
+ */
+export function resolveFlatViewCalibration(
+  manifest: FlatCalibrationManifest,
+  colorId: string,
+  view: FlatViewName,
+): FlatViewCalibration | undefined {
+  const base = manifest.views[view];
+  if (!base) return undefined;
+  const blankKey = findBlankKey(manifest, colorId);
+  const override = blankKey ? manifest.geometryByBlank?.[blankKey]?.[view] : undefined;
+  if (!override) return base;
+  return {
+    ...base,
+    ...override,
+    printFileDims: base.printFileDims,
+    meshNodes: base.meshNodes,
+    meshGrid: base.meshGrid,
+    planarityScore: base.planarityScore,
+    coverage: base.coverage,
+  };
+}
+
 export function resolveFlatBlank(
   manifest: FlatCalibrationManifest,
   colorId: string,
@@ -125,13 +165,14 @@ export async function loadFlatViewAssets(
 ): Promise<FlatLoadedViewAssets | null> {
   const blank = resolveFlatBlank(manifest, colorId);
   const blankUrl = blank[view];
-  const calib = manifest.views[view];
+  const calib = resolveFlatViewCalibration(manifest, colorId, view);
   if (!blankUrl || !calib) return null;
 
   const [b, m, s] = await Promise.all([
     loadFlatImage(blankUrl),
     calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
-    calib.shadingMode === "map" && calib.shadingUrl
+    calib.shadingUrl &&
+    (calib.shadingMode === "map" || calib.printBoundsNormalized)
       ? loadFlatImage(calib.shadingUrl)
       : Promise.resolve(null),
   ]);

@@ -194,6 +194,14 @@ export default function FlatDesignRectOverlay({
   const rectPct = pct(rect);
   const boxPct = pct(box);
   const outerPct = outerGuideRect ? pct(outerGuideRect) : null;
+  const innerPct = pct(rect);
+  const guidesOverlap =
+    outerPct &&
+    Math.abs(innerPct.left - outerPct.left) < 0.5 &&
+    Math.abs(innerPct.top - outerPct.top) < 0.5 &&
+    Math.abs(innerPct.width - outerPct.width) < 0.5 &&
+    Math.abs(innerPct.height - outerPct.height) < 0.5;
+  const showOuterGuide = edgeWrapMode && outerPct && !guidesOverlap;
 
   const handleSize = 14;
   const cornerStyle = (
@@ -216,29 +224,33 @@ export default function FlatDesignRectOverlay({
       className="pointer-events-none absolute inset-0"
       data-testid="flat-rect-overlay"
     >
-      {/* Print silhouette (edge-wrap) or printable area (apparel). */}
-      {edgeWrapMode && outerPct && (
+      {/* Print silhouette (edge-wrap outer guide). */}
+      {showOuterGuide && (
         <div
-          className="pointer-events-none absolute border border-dashed border-white/70 mix-blend-difference"
+          className="pointer-events-none absolute border-2 border-dashed border-sky-400/95"
           style={{
-            left: `${outerPct.left}%`,
-            top: `${outerPct.top}%`,
-            width: `${outerPct.width}%`,
-            height: `${outerPct.height}%`,
+            left: `${outerPct!.left}%`,
+            top: `${outerPct!.top}%`,
+            width: `${outerPct!.width}%`,
+            height: `${outerPct!.height}%`,
+            boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
           }}
           title="Print silhouette — extend artwork to cover this outline"
         />
       )}
 
       <div
-        className={`pointer-events-none absolute border border-dashed mix-blend-difference ${
-          edgeWrapMode ? "border-amber-200/90" : "border-white/60"
+        className={`pointer-events-none absolute border-2 border-dashed ${
+          edgeWrapMode
+            ? "border-amber-300/95"
+            : "border-white/70 mix-blend-difference"
         }`}
         style={{
           left: `${rectPct.left}%`,
           top: `${rectPct.top}%`,
           width: `${rectPct.width}%`,
           height: `${rectPct.height}%`,
+          ...(edgeWrapMode ? { boxShadow: "0 0 0 1px rgba(0,0,0,0.35)" } : {}),
         }}
         title={
           edgeWrapMode

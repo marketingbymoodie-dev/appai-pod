@@ -63,6 +63,8 @@ export type FlatRenderInput = {
   tier: FlatTier;
   /** When false, skip pixel-read shading normalize (display-only cross-origin art). */
   artworkCorsClean?: boolean;
+  /** Phone cases / rigid products — use harvested gray shading map when present. */
+  forceShadingMap?: boolean;
 };
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
@@ -433,6 +435,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     placement,
     tier,
     artworkCorsClean = true,
+    forceShadingMap = false,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
@@ -496,8 +499,10 @@ export function renderFlatView(input: FlatRenderInput): void {
     actx.globalCompositeOperation = "source-over";
   }
 
-  // Shading multiply (normalized). Skip pixel reads when art is display-only (no CORS).
-  applyShading(art, actx, view.shadingMode, blank, shading, W, H, artworkCorsClean);
+  // Shading multiply (normalized). Prefer the harvested gray map when loaded.
+  const shadeMode: "blank" | "map" =
+    view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
+  applyShading(art, actx, shadeMode, blank, shading, W, H, artworkCorsClean);
 
   ctx.drawImage(art, 0, 0);
 }

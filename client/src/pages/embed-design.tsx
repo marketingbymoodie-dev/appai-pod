@@ -113,6 +113,11 @@ export interface FlatCalibrationManifest {
   tier: FlatTier;
   views: Partial<Record<"front" | "back", FlatViewCalibration>>;
   blanks: Record<string, Partial<Record<"front" | "back", string>>>;
+  /** Per blank-key geometry (phone cases — mask/shading/guides differ per model). */
+  geometryByBlank?: Record<
+    string,
+    Partial<Record<"front" | "back", Omit<FlatViewCalibration, "printFileDims" | "meshNodes" | "meshGrid" | "planarityScore" | "coverage">>>
+  >;
   representativeGeometry: boolean;
   generatedAt: string;
 }
@@ -3133,6 +3138,13 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Mark mockups as stale when transform changes and mockups already exist
   useEffect(() => {
+    if (
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    ) {
+      return;
+    }
     if (suppressMockupStaleRef.current) {
       // Transform changed during design load — mockups are already correct, don't mark stale
       suppressMockupStaleRef.current = false;
@@ -3354,7 +3366,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
     }
 
-    const mockupFullUrl = mockupsStale ? '' : getPreferredMockupUrl();
+    const flatOnTheFlyEligible = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      generatedDesign?.imageUrl &&
+      !flatRenderFailed
+    );
+    const mockupFullUrl =
+      mockupsStale && !flatOnTheFlyEligible ? "" : getPreferredMockupUrl();
     // Use `_mockup_url` only — Shopify hides underscore-prefixed line properties from
     // buyer-facing cart/checkout; a public `mockup_url` showed the full Supabase URL as text.
     if (mockupFullUrl) {
@@ -3372,21 +3392,22 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       flatPlacerEditOpen
     );
     const flatSaveBlocking = !!(flatPlacerOn && flatApplyStatus === "saving");
+    const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
     const shouldDisable =
-      waitingForMockups || isAddingToCart || mockupsStale || mockupLoading || flatSaveBlocking;
+      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || flatSaveBlocking;
     const label = flatSaveBlocking
       ? "Saving design\u2026"
       : waitingForMockups
         ? "Generating preview\u2026"
         : mockupLoading
           ? "Refreshing Mockups\u2026"
-        : mockupsStale
+        : mockupsStaleBlocksCart
           ? "Refresh Mockups to Continue"
           : "Add to Cart";
 
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStale && !mockupLoading && !flatSaveBlocking,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !flatSaveBlocking,
       disabled: shouldDisable,
       waitingForMockups,
       label,
@@ -4392,8 +4413,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     if (mockupsStale) {
-      setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
-      return;
+      const flatOnTheFly = !!(
+        (productTypeConfig?.onTheFlyTier === "flat" ||
+          productTypeConfig?.onTheFlyTier === "mesh") &&
+        productTypeConfig?.flatCalibration &&
+        generatedDesign?.imageUrl &&
+        !flatRenderFailed
+      );
+      if (!flatOnTheFly) {
+        setVariantError("Please refresh mockups before adding to cart — your frame color selection has changed.");
+        return;
+      }
     }
 
     const variantId = findVariantId();
@@ -4420,7 +4450,20 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // re-run handleAddToCart once mockups are ready via the atcWaitingForMockups path.
     const hasMockupProduct = !!(productTypeConfig?.hasPrintifyMockups);
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (hasMockupProduct && !hasMockups && generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+    const flatOnTheFlyCart = !!(
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration &&
+      !flatRenderFailed
+    );
+    if (
+      hasMockupProduct &&
+      !hasMockups &&
+      generatedDesign?.imageUrl &&
+      productTypeConfig &&
+      selectedSize &&
+      !flatOnTheFlyCart
+    ) {
       console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation before cart add');
       setMockupError(null);
       setMockupFailed(false);
@@ -4903,7 +4946,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupFailed(false);
       setMockupError(null);
       setMockupsStale(false);
-      currentMockupColorRef.current = selectedFrameColor;
+      currentMockupColorRef.current = flatBlankColorId;
 
       if (isStorefront && savedJobIdRef.current && shopDomain) {
         const jobId = savedJobIdRef.current;
@@ -4949,7 +4992,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupFailed(true);
       throw err;
     }
-  }, [isStorefront, shopDomain, selectedFrameColor]);
+  }, [isStorefront, shopDomain, selectedFrameColor, flatBlankColorId]);
 
   const handleFlatPlacerChange = useCallback(
     (s: FlatProductPlacerState) => {
@@ -5789,7 +5832,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   );
 
   useEffect(() => {
-    if (!flatPlacerEligible || flatPlacerEditOpen) return;
+    if (!flatPlacerEligible) return;
     if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
     if (!flatBlankColorId) return;
 
@@ -5846,13 +5889,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     };
   }, [
     flatPlacerEligible,
-    flatPlacerEditOpen,
     flatPlacerState,
     productTypeConfig?.flatCalibration,
     generatedDesign?.imageUrl,
     flatBlankColorId,
     printifyMockupImages.length,
   ]);
+
+  // Flat tier: model/colour swap uses local canvas — never gate on Printify refresh.
+  useEffect(() => {
+    if (!flatPlacerEligible) return;
+    setMockupsStale(false);
+  }, [flatPlacerEligible, flatBlankColorId]);
 
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
@@ -6099,6 +6147,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     mockupLoading &&
     atcMockupsReady
   );
+  const atcFlatOnTheFly = flatPlacerEligible;
+  const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
   const galleryMockupCount =
     printifyMockupImages.length > 0 ? printifyMockupImages.length : printifyMockups.length;
   const showingMockupAtArtworkSlot = !!(
@@ -6131,7 +6181,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           ) : (
             <Button
               onClick={() => {
-                if (mockupsStale) {
+                if (atcMockupsStaleBlocks) {
                   if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
                     if (generatedDesign?.imageUrl) {
                       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
@@ -6186,7 +6236,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                   <span className="shimmer-text-white">Refreshing Mockups…</span>
                 </>
-              ) : mockupsStale ? (
+              ) : atcMockupsStaleBlocks ? (
                 <>
                   <RefreshCcw className="w-5 h-5 mr-2" />
                   <span className="shimmer-text-white">Refresh Mockups to Continue</span>
@@ -7004,7 +7054,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     ) : (
                       <Button
                         onClick={() => {
-                          if (mockupsStale) {
+                          if (atcMockupsStaleBlocks) {
                             if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
                               if (generatedDesign?.imageUrl) {
                                 setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
@@ -7060,7 +7110,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                             <span className="shimmer-text-white">Refreshing Mockups…</span>
                           </>
-                        ) : mockupsStale ? (
+                        ) : atcMockupsStaleBlocks ? (
                           <>
                             <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
@@ -7301,7 +7351,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       selectedSize={selectedSize}
                       onSizeChange={(sizeId) => {
                         setSelectedSize(sizeId);
-                        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                        const flatOnTheFly = !!(
+                          (productTypeConfig?.onTheFlyTier === "flat" ||
+                            productTypeConfig?.onTheFlyTier === "mesh") &&
+                          productTypeConfig?.flatCalibration
+                        );
+                        if (!flatOnTheFly) {
+                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
+                        }
                       }}
                       prices={buildPriceMap()}
                     />
@@ -7923,7 +7980,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               })()}
 
               {/* Stale mockups overlay */}
-              {mockupsStale && !mockupLoading && generatedDesign?.imageUrl && (
+              {atcMockupsStaleBlocks && !mockupLoading && generatedDesign?.imageUrl && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
                   <span className="text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1 animate-pulse">
                     Refresh your Mockups
