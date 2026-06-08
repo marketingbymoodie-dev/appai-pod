@@ -163,6 +163,52 @@ export function flatEdgeWrapInnerRectPx(outer: Rect, insetFraction = 0.1): Rect 
   return flatEdgeWrapSafeZoneRectPx(outer, insetFraction);
 }
 
+/** Harvested mask bbox anchor before print-file aspect correction (edge-wrap). */
+export function flatEdgeWrapAnchorRectPx(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): Rect {
+  const fromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
+  const fromMask = mask ? flatImageAlphaBounds(mask) : null;
+  return fromManifest ?? fromMask ?? flatVisibleRectPx(view, canvasW, canvasH);
+}
+
+/**
+ * Edge-wrap phone mockups project the flat print template onto a 3D view, so the
+ * harvested mask bbox is often tall/narrow while `printFileDims` is the wide unwrap.
+ * Placement + print-file bake use the full print canvas — expand to print-file
+ * aspect (cover-fit around the anchor) so preview matches bake semantics.
+ */
+export function flatEdgeWrapPrintCanvasRectPx(
+  view: FlatViewCalibration,
+  anchor: Rect,
+): Rect {
+  const pfW = view.printFileDims?.width ?? 0;
+  const pfH = view.printFileDims?.height ?? 0;
+  if (pfW <= 0 || pfH <= 0 || anchor.width <= 0 || anchor.height <= 0) {
+    return anchor;
+  }
+  const aspect = pfW / pfH;
+  const anchorAspect = anchor.width / anchor.height;
+  let w: number;
+  let h: number;
+  if (aspect >= anchorAspect) {
+    h = anchor.height;
+    w = h * aspect;
+  } else {
+    w = anchor.width;
+    h = w / aspect;
+  }
+  return {
+    x: anchor.x + (anchor.width - w) / 2,
+    y: anchor.y + (anchor.height - h) / 2,
+    width: w,
+    height: h,
+  };
+}
+
 /**
  * Coordinate system for placement + print-file bake (mockup px).
  * Edge-wrap: full print unwrap bounds. Apparel: visible print rect.
@@ -189,15 +235,11 @@ export function flatEdgeWrapGuideRects(
   canvasW: number,
   canvasH: number,
 ): { inner: Rect; outer: Rect } {
-  const outerFromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
-  const outerFromMask = mask ? flatImageAlphaBounds(mask) : null;
-  const outer =
-    outerFromManifest ??
-    outerFromMask ??
-    flatVisibleRectPx(view, canvasW, canvasH);
+  const anchor = flatEdgeWrapAnchorRectPx(view, mask, canvasW, canvasH);
+  const outer = flatEdgeWrapPrintCanvasRectPx(view, anchor);
 
   let inner = flatVisibleRectPx(view, canvasW, canvasH);
-  if (rectsNearlyEqual(inner, outer)) {
+  if (rectsNearlyEqual(inner, outer) || rectsNearlyEqual(inner, anchor)) {
     inner = flatEdgeWrapSafeZoneRectPx(outer);
   }
   return { inner, outer };
@@ -319,10 +361,8 @@ export function flatPrintBoundsPx(
   canvasW: number,
   canvasH: number,
 ): Rect {
-  const fromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
-  if (fromManifest) return fromManifest;
-  const fromMask = mask ? flatImageAlphaBounds(mask) : null;
-  return fromMask ?? flatVisibleRectPx(view, canvasW, canvasH);
+  const anchor = flatEdgeWrapAnchorRectPx(view, mask, canvasW, canvasH);
+  return flatEdgeWrapPrintCanvasRectPx(view, anchor);
 }
 
 /** @deprecated Prefer `edgeWrapMode` prop — shading map alone mis-classifies apparel. */

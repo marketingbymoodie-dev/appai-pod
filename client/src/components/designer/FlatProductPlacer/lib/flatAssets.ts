@@ -26,50 +26,16 @@ export function flatBlankHasViews(
   return !!(entry?.front || entry?.back);
 }
 
-function blankKeyMatches(manifest: FlatCalibrationManifest, key: string): boolean {
-  return flatBlankHasViews(manifest.blanks?.[key]);
-}
+export { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "./flatBlankResolve";
 
 function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | null {
   if (!id) return null;
-  if (blankKeyMatches(manifest, id)) return id;
+  if (flatBlankHasViews(manifest.blanks?.[id])) return id;
   const norm = normalizeFlatColorKey(id);
   for (const k of Object.keys(manifest.blanks || {})) {
-    if (normalizeFlatColorKey(k) === norm && blankKeyMatches(manifest, k)) return k;
+    if (normalizeFlatColorKey(k) === norm && flatBlankHasViews(manifest.blanks?.[k])) return k;
   }
   return null;
-}
-
-/**
- * Phone cases store device models in `sizes`; apparel stores colours in
- * `frameColors`. Calibration blanks may be keyed by either — try size first
- * when a manifest entry exists, then frame colour, then combined keys.
- */
-export function resolveFlatBlankColorId(
-  manifest: FlatCalibrationManifest,
-  opts: { sizeId?: string; frameColorId?: string },
-): string {
-  const candidates: string[] = [];
-  if (opts.sizeId) candidates.push(opts.sizeId);
-  if (opts.frameColorId) candidates.push(opts.frameColorId);
-  if (opts.sizeId && opts.frameColorId) {
-    candidates.push(`${opts.sizeId}:${opts.frameColorId}`);
-    candidates.push(`${opts.frameColorId}:${opts.sizeId}`);
-  }
-
-  for (const id of candidates) {
-    const hit = findBlankKey(manifest, id);
-    if (hit) return hit;
-  }
-
-  const fallback = opts.frameColorId || opts.sizeId || "";
-  const resolved = findBlankKey(manifest, fallback);
-  if (resolved) return resolved;
-
-  for (const k of Object.keys(manifest.blanks || {})) {
-    if (blankKeyMatches(manifest, k)) return k;
-  }
-  return fallback;
 }
 
 /**

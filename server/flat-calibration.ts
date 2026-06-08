@@ -512,18 +512,19 @@ function normalizeBlankKey(id: string): string {
   return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 }
 
-/** Resolve which harvested blank set to use (mirrors client flatAssets). */
+/** Resolve which harvested blank set to use (mirrors client flatBlankResolve). */
 export function resolveFlatBlankColorId(
   manifest: FlatCalibrationManifest,
   opts: { sizeId?: string; frameColorId?: string },
 ): string {
   const candidates: string[] = [];
+
+  if (opts.sizeId && opts.frameColorId) {
+    candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
+  }
   if (opts.sizeId) candidates.push(opts.sizeId);
   if (opts.frameColorId) candidates.push(opts.frameColorId);
-  if (opts.sizeId && opts.frameColorId) {
-    candidates.push(`${opts.sizeId}:${opts.frameColorId}`);
-    candidates.push(`${opts.frameColorId}:${opts.sizeId}`);
-  }
+
   for (const id of candidates) {
     if (blankKeyMatchesManifest(manifest, id)) return id;
     const norm = normalizeBlankKey(id);
@@ -531,7 +532,30 @@ export function resolveFlatBlankColorId(
       if (normalizeBlankKey(k) === norm && blankKeyMatchesManifest(manifest, k)) return k;
     }
   }
-  const fallback = opts.frameColorId || opts.sizeId || "";
+
+  if (manifest.decorPerSize && opts.sizeId) {
+    const sizeNorm = normalizeBlankKey(opts.sizeId);
+    for (const k of Object.keys(manifest.blanks || {})) {
+      if (!blankKeyMatchesManifest(manifest, k)) continue;
+      const kn = normalizeBlankKey(k);
+      if (kn === sizeNorm || kn.startsWith(`${sizeNorm}:`) || kn.endsWith(`:${sizeNorm}`)) {
+        return k;
+      }
+    }
+  }
+
+  if (manifest.edgeWrap && opts.sizeId) {
+    const sizeNorm = normalizeBlankKey(opts.sizeId);
+    for (const k of Object.keys(manifest.blanks || {})) {
+      if (!blankKeyMatchesManifest(manifest, k)) continue;
+      if (normalizeBlankKey(k) === sizeNorm) return k;
+    }
+  }
+
+  const fallback =
+    opts.sizeId && opts.frameColorId
+      ? `${opts.sizeId}:${opts.frameColorId}`
+      : opts.frameColorId || opts.sizeId || "";
   for (const k of Object.keys(manifest.blanks || {})) {
     if (normalizeBlankKey(k) === normalizeBlankKey(fallback) && blankKeyMatchesManifest(manifest, k)) {
       return k;

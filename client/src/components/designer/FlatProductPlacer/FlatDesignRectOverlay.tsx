@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 
 /** Screen-pixel snap radius for centering artwork on the print-area axes. */
-const SNAP_SCREEN_PX = 5;
+const SNAP_SCREEN_PX = 10;
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   flatArtBox,

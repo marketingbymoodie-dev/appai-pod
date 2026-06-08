@@ -47,7 +47,7 @@ import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
-import { resolveFlatBlankColorId } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 
 declare global {
   interface Window {
@@ -1368,6 +1368,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration,
     selectedSize,
     selectedFrameColor,
+  ]);
+  const flatPlacerGeometryKey = useMemo(() => {
+    if (!productTypeConfig?.flatCalibration) return flatBlankColorId;
+    return resolveFlatPlacementGeometryKey(productTypeConfig.flatCalibration, {
+      sizeId: selectedSize || undefined,
+      frameColorId: selectedFrameColor || undefined,
+    });
+  }, [
+    productTypeConfig?.flatCalibration,
+    flatBlankColorId,
+    selectedSize,
+    selectedFrameColor,
+  ]);
+  const flatStaleCalibrationHint = useMemo(() => {
+    const cal = productTypeConfig?.flatCalibration;
+    if (!cal || cal.status !== "ready") return null;
+    const name = (productTypeConfig?.name || "").toLowerCase();
+    const isPhone = /phone|iphone|galaxy|pixel|case/.test(name);
+    if (isPhone && !cal.edgeWrap) {
+      return "Admin → Calibrate flat: re-run calibration for updated phone-case guides and per-model previews.";
+    }
+    if (
+      (productTypeConfig?.designerType === "framed-print" || name.includes("frame")) &&
+      (productTypeConfig?.sizes?.length ?? 0) > 1 &&
+      !cal.decorPerSize
+    ) {
+      return "Admin → Calibrate flat: re-run calibration so each frame size gets its own mockup and print area.";
+    }
+    return null;
+  }, [
+    productTypeConfig?.flatCalibration,
+    productTypeConfig?.designerType,
+    productTypeConfig?.name,
+    productTypeConfig?.sizes,
   ]);
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
@@ -5838,6 +5872,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}`;
+
   useEffect(() => {
     if (!flatPlacerEligible) return;
     if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
@@ -5864,7 +5900,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         };
         const views = flatViewsForColor(manifest, flatBlankColorId);
         if (
-          flatBlankColorId === currentMockupColorRef.current &&
+          flatMockupBlankKey === currentMockupColorRef.current &&
           printifyMockupImages.length >= views.length
         ) {
           return;
@@ -5886,7 +5922,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPrintifyMockups(images.map((i) => i.url));
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
-        currentMockupColorRef.current = flatBlankColorId;
+        currentMockupColorRef.current = flatMockupBlankKey;
       })();
     }, 200);
 
@@ -5900,14 +5936,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration,
     generatedDesign?.imageUrl,
     flatBlankColorId,
-    printifyMockupImages.length,
+    flatMockupBlankKey,
+    selectedSize,
   ]);
 
   // Flat tier: model/colour swap uses local canvas — never gate on Printify refresh.
   useEffect(() => {
     if (!flatPlacerEligible) return;
     setMockupsStale(false);
-  }, [flatPlacerEligible, flatBlankColorId]);
+  }, [flatPlacerEligible, flatBlankColorId, selectedSize]);
 
   // Build a price map from shopifyVariants, keyed by size id
   const buildPriceMap = useCallback((): Record<string, number> => {
@@ -7828,11 +7865,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     </Button>
                   </div>
                 )}
+                {flatStaleCalibrationHint && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    {flatStaleCalibrationHint}
+                  </div>
+                )}
                 <FlatProductPlacer
                   ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${flatBlankColorId}-${selectedSize}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
                   manifest={productTypeConfig.flatCalibration}
                   colorId={flatBlankColorId}
+                  placementGeometryKey={flatPlacerGeometryKey}
                   artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
                   initialState={{
                     ...(flatPlacerState ?? {}),

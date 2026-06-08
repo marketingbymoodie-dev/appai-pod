@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
 import {
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
@@ -87,6 +87,11 @@ export type FlatProductPlacerProps = {
   manifest: FlatCalibrationManifest;
   /** Currently selected colour/model id — picks the blank from `manifest.blanks`. */
   colorId: string;
+  /**
+   * When print geometry is unchanged but the blank photo swaps (e.g. decor frame
+   * colour), keep per-view placements. Defaults to `colorId`.
+   */
+  placementGeometryKey?: string;
   /** Authoritative artwork URL — always wins over saved `initialState.artworkUrl`. */
   artworkSourceUrl: string;
   initialState?: Partial<FlatProductPlacerState> | null;
@@ -111,6 +116,9 @@ type LoadedAssets = {
 };
 
 const EMPTY_ASSETS: LoadedAssets = { blank: null, mask: null, shading: null };
+
+/** Canvas nudge step in CSS pixels (converted to normalized placement offset). */
+const NUDGE_SCREEN_PX = 4;
 
 function outputSignature(s: FlatProductPlacerState): string {
   return JSON.stringify({
@@ -150,6 +158,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     {
       manifest,
       colorId,
+      placementGeometryKey,
       artworkSourceUrl,
       initialState,
       onApply,
@@ -162,6 +171,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     },
     ref,
   ) {
+  const geometryKey = placementGeometryKey ?? colorId;
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
 
   const availableViews = useMemo<ViewName[]>(() => {
@@ -228,7 +238,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const [state, setState] = useState<FlatProductPlacerState | null>(null);
   const lastAppliedSignatureRef = useRef<string | null>(null);
   const lastAppliedColorRef = useRef<string | null>(null);
-  const prevColorIdRef = useRef<string | null>(null);
+  const prevGeometryKeyRef = useRef<string | null>(null);
   const seededAsResumeRef = useRef(false);
   const resumeBaselineSeededRef = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -261,14 +271,14 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     if (state) onChangeRef.current?.(state);
   }, [state]);
 
-  // Reset placement when the blank model/colour changes — geometry differs per key.
+  // Reset placement when print geometry changes (size/model), not blank colour alone.
   useEffect(() => {
-    if (prevColorIdRef.current === null) {
-      prevColorIdRef.current = colorId;
+    if (prevGeometryKeyRef.current === null) {
+      prevGeometryKeyRef.current = geometryKey;
       return;
     }
-    if (prevColorIdRef.current === colorId) return;
-    prevColorIdRef.current = colorId;
+    if (prevGeometryKeyRef.current === geometryKey) return;
+    prevGeometryKeyRef.current = geometryKey;
     lastAppliedSignatureRef.current = null;
     resumeBaselineSeededRef.current = false;
     setState((prev) => {
@@ -279,7 +289,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       }
       return { ...prev, placements };
     });
-  }, [colorId, availableViews]);
+  }, [geometryKey, availableViews]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -482,6 +492,44 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }, []);
 
+  const nudgePlacement = useCallback(
+    (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        const cal = resolveFlatViewCalibration(manifest, colorId, view);
+        const va = assets[view];
+        const canvas = canvasRef.current;
+        if (!cal || !va.blank || !canvas) return prev;
+        const mW = va.blank.naturalWidth || cal.mockupDims?.width || 1;
+        const mH = va.blank.naturalHeight || cal.mockupDims?.height || 1;
+        const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
+          edgeWrapMode,
+          decorMode,
+        });
+        const cr = canvas.getBoundingClientRect();
+        const deltaMock =
+          axis === "x"
+            ? (NUDGE_SCREEN_PX / Math.max(1, cr.width)) * mW
+            : (NUDGE_SCREEN_PX / Math.max(1, cr.height)) * mH;
+        const dOff =
+          axis === "x"
+            ? deltaMock / Math.max(1, pRect.width)
+            : deltaMock / Math.max(1, pRect.height);
+        const cur = prev.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        const clamp = (v: number) => Math.max(-0.75, Math.min(0.75, v));
+        const next: ArtworkPlacement = {
+          ...cur,
+          offsetX:
+            axis === "x" ? clamp(cur.offsetX + direction * dOff) : cur.offsetX,
+          offsetY:
+            axis === "y" ? clamp(cur.offsetY + direction * dOff) : cur.offsetY,
+        };
+        return { ...prev, placements: { ...prev.placements, [view]: next } };
+      });
+    },
+    [manifest, colorId, assets, edgeWrapMode, decorMode],
+  );
+
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
 
   // ---------- Render guards ----------
@@ -569,12 +617,43 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
-          onClick={() => {
+          onClick={(e) => {
             if (canvasDragRef.current) {
               canvasDragRef.current = false;
               return;
             }
-            setOverlayVisible((v) => !v);
+            if (!viewEnabled || !artworkImg || !placementRect || !calib) {
+              setOverlayVisible((v) => !v);
+              return;
+            }
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const cr = canvas.getBoundingClientRect();
+            const mockupX = ((e.clientX - cr.left) / cr.width) * mockupW;
+            const box = flatArtBox(
+              placementRect,
+              placement,
+              artworkImg.naturalWidth,
+              artworkImg.naturalHeight,
+            );
+            const cx = box.x + box.width / 2;
+            nudgePlacement(state.view, "x", mockupX < cx ? -1 : 1);
+          }}
+          onContextMenu={(e) => {
+            if (!viewEnabled || !artworkImg || !placementRect || !calib) return;
+            e.preventDefault();
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const cr = canvas.getBoundingClientRect();
+            const mockupX = ((e.clientX - cr.left) / cr.width) * mockupW;
+            const box = flatArtBox(
+              placementRect,
+              placement,
+              artworkImg.naturalWidth,
+              artworkImg.naturalHeight,
+            );
+            const cx = box.x + box.width / 2;
+            nudgePlacement(state.view, "x", mockupX < cx ? 1 : -1);
           }}
           data-testid="flat-placer-canvas-area"
         >
@@ -710,6 +789,48 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 cover the blue outline and extend past the amber line.
               </p>
             )}
+            <div className="mt-2">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Fine position
+              </div>
+              <div className="flex flex-col items-center gap-1">
+                <NudgeButton
+                  label="Nudge up"
+                  direction={-1}
+                  onPress={(dir) => nudgePlacement(state.view, "y", dir)}
+                >
+                  <ChevronUp className="h-3.5 w-3.5" />
+                </NudgeButton>
+                <div className="flex items-center gap-1">
+                  <NudgeButton
+                    label="Nudge left"
+                    direction={-1}
+                    onPress={(dir) => nudgePlacement(state.view, "x", dir)}
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </NudgeButton>
+                  <NudgeButton
+                    label="Nudge right"
+                    direction={1}
+                    onPress={(dir) => nudgePlacement(state.view, "x", dir)}
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </NudgeButton>
+                </div>
+                <NudgeButton
+                  label="Nudge down"
+                  direction={1}
+                  onPress={(dir) => nudgePlacement(state.view, "y", dir)}
+                >
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </NudgeButton>
+              </div>
+              <p className="mt-1 text-[10px] text-muted-foreground leading-snug">
+                Tap canvas left/right to nudge horizontally; right-click for the
+                opposite direction. Drag the artwork box to move freely — it snaps
+                to center within 10px.
+              </p>
+            </div>
           </div>
         )}
 
@@ -802,6 +923,38 @@ function Toggle({
           checked ? "translate-x-4" : "translate-x-0.5"
         }`}
       />
+    </button>
+  );
+}
+
+function NudgeButton({
+  children,
+  label,
+  direction,
+  onPress,
+}: {
+  children: React.ReactNode;
+  label: string;
+  direction: 1 | -1;
+  onPress: (direction: 1 | -1) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={`${label} (right-click: opposite)`}
+      className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+      onClick={(e) => {
+        e.stopPropagation();
+        onPress(direction);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onPress((-direction) as 1 | -1);
+      }}
+    >
+      {children}
     </button>
   );
 }
