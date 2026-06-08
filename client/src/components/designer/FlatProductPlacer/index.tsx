@@ -21,7 +21,7 @@ import {
 import {
   flatArtBox,
   flatCovers,
-  flatImageAlphaBounds,
+  flatEdgeWrapGuideRects,
   flatInsufficientEdgeWrap,
   flatOverflows,
   flatPrintBoundsPx,
@@ -222,6 +222,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const [state, setState] = useState<FlatProductPlacerState | null>(null);
   const lastAppliedSignatureRef = useRef<string | null>(null);
   const lastAppliedColorRef = useRef<string | null>(null);
+  const prevColorIdRef = useRef<string | null>(null);
   const seededAsResumeRef = useRef(false);
   const resumeBaselineSeededRef = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -253,6 +254,26 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   useEffect(() => {
     if (state) onChangeRef.current?.(state);
   }, [state]);
+
+  // Reset placement when the blank model/colour changes — geometry differs per key.
+  useEffect(() => {
+    if (prevColorIdRef.current === null) {
+      prevColorIdRef.current = colorId;
+      return;
+    }
+    if (prevColorIdRef.current === colorId) return;
+    prevColorIdRef.current = colorId;
+    lastAppliedSignatureRef.current = null;
+    resumeBaselineSeededRef.current = false;
+    setState((prev) => {
+      if (!prev) return prev;
+      const placements = { ...prev.placements };
+      for (const v of availableViews) {
+        placements[v] = { ...DEFAULT_ARTWORK_PLACEMENT };
+      }
+      return { ...prev, placements };
+    });
+  }, [colorId, availableViews]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -480,17 +501,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     viewAssets.blank?.naturalWidth || calib?.mockupDims?.width || 1;
   const mockupH =
     viewAssets.blank?.naturalHeight || calib?.mockupDims?.height || 1;
-  const maskBounds =
-    calib && viewAssets.mask
-      ? flatImageAlphaBounds(viewAssets.mask)
+  const edgeGuides =
+    edgeWrapMode && calib
+      ? flatEdgeWrapGuideRects(calib, viewAssets.mask, mockupW, mockupH)
       : null;
 
   // Coverage warnings differ by product: apparel trims overflow; phone cases need edge bleed.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
   if (calib && artworkImg && viewEnabled) {
-    const rect = flatVisibleRectPx(calib, mockupW, mockupH);
-    const printBounds = flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
+    const rect = edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
+    const printBounds =
+      edgeGuides?.outer ??
+      flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
     const box = flatArtBox(
       rect,
       placement,
@@ -546,7 +569,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 artwork={artworkImg}
                 placement={placement}
                 edgeWrapMode={edgeWrapMode}
-                maskBounds={maskBounds}
+                innerGuideRect={edgeGuides?.inner ?? null}
+                outerGuideRect={edgeGuides?.outer ?? null}
                 onChange={(next) => updatePlacement(state.view, next)}
                 onDragActivity={() => {
                   canvasDragRef.current = true;

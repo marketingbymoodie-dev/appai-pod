@@ -33,8 +33,10 @@ export type FlatDesignRectOverlayProps = {
   placement: ArtworkPlacement;
   /** Phone cases / rigid edge-wrap products (not apparel). */
   edgeWrapMode?: boolean;
-  /** Mask alpha bounding box in mockup px — outer print silhouette guide. */
-  maskBounds?: Rect | null;
+  /** Visible back-face guide in mockup px (edge-wrap inner dashed line). */
+  innerGuideRect?: Rect | null;
+  /** Print silhouette guide in mockup px (edge-wrap outer dashed line). */
+  outerGuideRect?: Rect | null;
   onChange: (next: ArtworkPlacement) => void;
   /** Fired on drag/resize so the canvas backdrop can ignore the trailing click. */
   onDragActivity?: () => void;
@@ -46,7 +48,8 @@ export default function FlatDesignRectOverlay({
   artwork,
   placement,
   edgeWrapMode = false,
-  maskBounds = null,
+  innerGuideRect = null,
+  outerGuideRect = null,
   onChange,
   onDragActivity,
 }: FlatDesignRectOverlayProps) {
@@ -75,10 +78,10 @@ export default function FlatDesignRectOverlay({
   const artW = artwork.naturalWidth || artwork.width;
   const artH = artwork.naturalHeight || artwork.height;
 
-  const rect = useMemo(
-    () => flatVisibleRectPx(view, mockupW, mockupH),
-    [view, mockupW, mockupH],
-  );
+  const rect = useMemo(() => {
+    if (edgeWrapMode && innerGuideRect) return innerGuideRect;
+    return flatVisibleRectPx(view, mockupW, mockupH);
+  }, [edgeWrapMode, innerGuideRect, view, mockupW, mockupH]);
   const box = useMemo(
     () => flatArtBox(rect, placement, artW, artH),
     [rect, placement, artW, artH],
@@ -190,7 +193,7 @@ export default function FlatDesignRectOverlay({
   });
   const rectPct = pct(rect);
   const boxPct = pct(box);
-  const maskPct = maskBounds ? pct(maskBounds) : null;
+  const outerPct = outerGuideRect ? pct(outerGuideRect) : null;
 
   const handleSize = 14;
   const cornerStyle = (
@@ -214,14 +217,14 @@ export default function FlatDesignRectOverlay({
       data-testid="flat-rect-overlay"
     >
       {/* Print silhouette (edge-wrap) or printable area (apparel). */}
-      {edgeWrapMode && maskPct && (
+      {edgeWrapMode && outerPct && (
         <div
           className="pointer-events-none absolute border border-dashed border-white/70 mix-blend-difference"
           style={{
-            left: `${maskPct.left}%`,
-            top: `${maskPct.top}%`,
-            width: `${maskPct.width}%`,
-            height: `${maskPct.height}%`,
+            left: `${outerPct.left}%`,
+            top: `${outerPct.top}%`,
+            width: `${outerPct.width}%`,
+            height: `${outerPct.height}%`,
           }}
           title="Print silhouette — extend artwork to cover this outline"
         />

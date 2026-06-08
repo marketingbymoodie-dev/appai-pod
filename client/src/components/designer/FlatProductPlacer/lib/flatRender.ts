@@ -76,19 +76,88 @@ function imgDims(img: HTMLImageElement): { w: number; h: number } {
  * Visible print rect in mockup pixels. Falls back to the full canvas when the
  * server couldn't detect a silhouette (`visibleRectNormalized === null`).
  */
+function normalizedRectPx(
+  nr: { x: number; y: number; width: number; height: number } | null | undefined,
+  canvasW: number,
+  canvasH: number,
+): Rect | null {
+  if (!nr) return null;
+  return {
+    x: nr.x * canvasW,
+    y: nr.y * canvasH,
+    width: nr.width * canvasW,
+    height: nr.height * canvasH,
+  };
+}
+
 export function flatVisibleRectPx(
   view: FlatViewCalibration,
   canvasW: number,
   canvasH: number,
 ): Rect {
-  const vr = view.visibleRectNormalized;
-  if (!vr) return { x: 0, y: 0, width: canvasW, height: canvasH };
+  return (
+    normalizedRectPx(view.visibleRectNormalized, canvasW, canvasH) ?? {
+      x: 0,
+      y: 0,
+      width: canvasW,
+      height: canvasH,
+    }
+  );
+}
+
+/** Full print silhouette from manifest (harvested mask bbox). */
+export function flatPrintBoundsRectPx(
+  view: FlatViewCalibration,
+  canvasW: number,
+  canvasH: number,
+): Rect | null {
+  return normalizedRectPx(
+    view.printBoundsNormalized ?? view.visibleRectNormalized,
+    canvasW,
+    canvasH,
+  );
+}
+
+function rectsNearlyEqual(a: Rect, b: Rect, eps = 2): boolean {
+  return (
+    Math.abs(a.x - b.x) <= eps &&
+    Math.abs(a.y - b.y) <= eps &&
+    Math.abs(a.width - b.width) <= eps &&
+    Math.abs(a.height - b.height) <= eps
+  );
+}
+
+/** Approximate visible back-face guide when harvest stored only the outer bbox. */
+export function flatEdgeWrapInnerRectPx(outer: Rect, insetFraction = 0.1): Rect {
+  const mx = outer.width * insetFraction;
+  const my = outer.height * insetFraction;
   return {
-    x: vr.x * canvasW,
-    y: vr.y * canvasH,
-    width: vr.width * canvasW,
-    height: vr.height * canvasH,
+    x: outer.x + mx,
+    y: outer.y + my,
+    width: Math.max(1, outer.width - 2 * mx),
+    height: Math.max(1, outer.height - 2 * my),
   };
+}
+
+/**
+ * Edge-wrap overlay guides: inner = visible back face, outer = print silhouette.
+ * Falls back to an inset inner rect when only one bbox is available.
+ */
+export function flatEdgeWrapGuideRects(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): { inner: Rect; outer: Rect } {
+  const outerFromMask = mask ? flatImageAlphaBounds(mask) : null;
+  const outerFromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
+  const outer = outerFromMask ?? outerFromManifest ?? flatVisibleRectPx(view, canvasW, canvasH);
+
+  let inner = flatVisibleRectPx(view, canvasW, canvasH);
+  if (rectsNearlyEqual(inner, outer)) {
+    inner = flatEdgeWrapInnerRectPx(outer);
+  }
+  return { inner, outer };
 }
 
 /**

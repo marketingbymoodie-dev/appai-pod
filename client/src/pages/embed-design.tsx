@@ -47,6 +47,7 @@ import {
   flatViewsForColor,
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
+import { resolveFlatBlankColorId } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 
 declare global {
   interface Window {
@@ -91,6 +92,8 @@ export interface FlatMeshNode {
 export interface FlatViewCalibration {
   printFileDims: { width: number; height: number };
   visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
+  /** Full print silhouette bbox (mask); inner visible face may be tighter for edge-wrap. */
+  printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;
@@ -1343,6 +1346,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     productTypeConfig?.flatCalibration &&
     productTypeConfig.designerType !== "apparel"
   );
+  const flatBlankColorId = useMemo(() => {
+    if (!productTypeConfig?.flatCalibration) return selectedFrameColor || selectedSize || "";
+    return resolveFlatBlankColorId(productTypeConfig.flatCalibration, {
+      sizeId: selectedSize || undefined,
+      frameColorId: selectedFrameColor || undefined,
+    });
+  }, [
+    productTypeConfig?.flatCalibration,
+    selectedSize,
+    selectedFrameColor,
+  ]);
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
   const supportsPrintPlacementSelection = !!(
@@ -4952,10 +4966,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     setFlatRenderFailed(true);
   }, []);
 
-  // A failed colour swap must not permanently disable flat tier for other colours.
+  // A failed blank swap must not permanently disable flat tier for other models/colours.
   useEffect(() => {
     setFlatRenderFailed(false);
-  }, [selectedFrameColor]);
+  }, [selectedFrameColor, selectedSize]);
 
   const handleShare = async () => {
     if (!generatedDesign) return;
@@ -5777,7 +5791,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     if (!flatPlacerEligible || flatPlacerEditOpen) return;
     if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
-    if (!selectedFrameColor) return;
+    if (!flatBlankColorId) return;
 
     let cancelled = false;
     const t = window.setTimeout(() => {
@@ -5798,9 +5812,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           },
           artworkUrl,
         };
-        const views = flatViewsForColor(manifest, selectedFrameColor);
+        const views = flatViewsForColor(manifest, flatBlankColorId);
         if (
-          selectedFrameColor === currentMockupColorRef.current &&
+          flatBlankColorId === currentMockupColorRef.current &&
           printifyMockupImages.length >= views.length
         ) {
           return;
@@ -5809,7 +5823,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         for (const view of views) {
           const dataUrl = await renderFlatMockupDataUrl(
             manifest,
-            selectedFrameColor,
+            flatBlankColorId,
             stateForRender,
             view,
             artworkUrl,
@@ -5822,7 +5836,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPrintifyMockups(images.map((i) => i.url));
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
-        currentMockupColorRef.current = selectedFrameColor;
+        currentMockupColorRef.current = flatBlankColorId;
       })();
     }, 200);
 
@@ -5836,7 +5850,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerState,
     productTypeConfig?.flatCalibration,
     generatedDesign?.imageUrl,
-    selectedFrameColor,
+    flatBlankColorId,
     printifyMockupImages.length,
   ]);
 
@@ -7752,9 +7766,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 )}
                 <FlatProductPlacer
                   ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  key={`flat-${productTypeConfig?.id ?? 0}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
                   manifest={productTypeConfig.flatCalibration}
-                  colorId={selectedFrameColor}
+                  colorId={flatBlankColorId}
                   artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
                   initialState={{
                     ...(flatPlacerState ?? {}),

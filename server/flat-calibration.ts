@@ -52,8 +52,10 @@ export type MeshNode = { row: number; col: number; xn: number; yn: number; px: {
 
 export type FlatViewCalibration = {
   printFileDims: { width: number; height: number };
-  /** Detected visible print silhouette bounding box, normalized to the mockup. */
+  /** Visible back-face bbox (edge-wrap) or printable area (apparel), normalized. */
   visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
+  /** Full print silhouette bbox from the mask pass — outer edge-wrap guide. */
+  printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;
@@ -254,6 +256,52 @@ async function analyzeMagenta(buffer: Buffer): Promise<MagentaAnalysis> {
 
 function rawToPng(raw: Buffer, width: number, height: number): Promise<Buffer> {
   return sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+}
+
+/** Visible product face on a blank mockup (non-background pixels), normalized. */
+async function analyzeBlankVisibleFace(buffer: Buffer): Promise<{
+  width: number;
+  height: number;
+  normalized: { x: number; y: number; width: number; height: number } | null;
+} | null> {
+  try {
+    const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const { width, height, channels } = info;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * channels;
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        const a = channels > 3 ? data[i + 3] : 255;
+        if (a < 16) continue;
+        // Skip near-white studio backgrounds common on case mockups.
+        if (r > 245 && g > 245 && b > 245) continue;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX) return { width, height, normalized: null };
+    const px = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+    return {
+      width,
+      height,
+      normalized: {
+        x: +(px.x / width).toFixed(5),
+        y: +(px.y / height).toFixed(5),
+        width: +(px.width / width).toFixed(5),
+        height: +(px.height / height).toFixed(5),
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -512,11 +560,47 @@ function parseJsonRecord(raw: unknown): Record<string, any> {
   return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, any>) : {};
 }
 
+function looksLikePhoneModelName(name: string): boolean {
+  const lower = (name || "").toLowerCase().trim();
+  return (
+    /^iphone\s+(\d|x|xs|xr|se|pro|plus|max)/i.test(lower) ||
+    /^galaxy\s+(s\d|a\d|note|z\s*(fold|flip)|ultra)/i.test(lower) ||
+    /^pixel\s+(\d|fold|pro)/i.test(lower) ||
+    /^samsung\s+(galaxy|note)/i.test(lower) ||
+    /^oneplus\s+\d/i.test(lower) ||
+    /^for\s+(iphone|galaxy|pixel|samsung)/i.test(lower)
+  );
+}
+
+function variantIdForKey(variantMap: Record<string, any>, key: string): number | null {
+  const entry = variantMap[key];
+  return entry?.printifyVariantId ? Number(entry.printifyVariantId) : null;
+}
+
+function resolveVariantIdForHarvest(
+  variantMap: Record<string, any>,
+  sizeId: string,
+  colorId: string,
+): number | null {
+  let variantId = variantIdForKey(variantMap, `${sizeId}:${colorId}`);
+  if (variantId != null) return variantId;
+  variantId = variantIdForKey(variantMap, `${sizeId}:default`);
+  if (variantId != null) return variantId;
+  for (const [key, entry] of Object.entries(variantMap)) {
+    if (key.startsWith(`${sizeId}:`) && entry?.printifyVariantId) {
+      return Number(entry.printifyVariantId);
+    }
+  }
+  return null;
+}
+
 /**
  * Resolve harvest colours from the persisted product type (frameColors +
  * variantMap). This mirrors the import path's slug ids and is far more reliable
  * than `resolveColorsFromCatalog`, which often returns [] for apparel blueprints
  * whose Printify option metadata doesn't expose a classic "color" dimension.
+ *
+ * Phone cases store device models in `sizes` — harvest one blank per model id.
  */
 export function buildHarvestColorsFromProductType(productType: {
   frameColors?: unknown;
@@ -527,18 +611,44 @@ export function buildHarvestColorsFromProductType(productType: {
   const sizes = parseJsonArray(productType.sizes);
   const variantMap = parseJsonRecord(productType.variantMap);
   const colors: ColorEntry[] = [];
+  const seen = new Set<string>();
+
+  const pushColor = (entry: ColorEntry) => {
+    if (seen.has(entry.id)) return;
+    seen.add(entry.id);
+    colors.push(entry);
+  };
+
+  const phoneSizes = sizes.filter(
+    (s: any) => s?.id && looksLikePhoneModelName(String(s.name || s.id)),
+  );
+  if (phoneSizes.length > 0) {
+    const colorIds =
+      frameColors.length > 0
+        ? frameColors.map((fc: any) => String(fc.id))
+        : ["default"];
+    for (const size of phoneSizes) {
+      for (const colorId of colorIds) {
+        const variantId = resolveVariantIdForHarvest(variantMap, String(size.id), colorId);
+        if (variantId == null) continue;
+        pushColor({
+          id: String(size.id),
+          name: size.name || String(size.id),
+          hex: frameColors.find((fc: any) => String(fc.id) === colorId)?.hex,
+          variantId,
+        });
+        break;
+      }
+    }
+  }
 
   for (const fc of frameColors) {
     if (!fc?.id) continue;
     let variantId: number | null = null;
 
     for (const size of sizes) {
-      const key = `${size.id}:${fc.id}`;
-      const entry = variantMap[key];
-      if (entry?.printifyVariantId) {
-        variantId = Number(entry.printifyVariantId);
-        break;
-      }
+      variantId = resolveVariantIdForHarvest(variantMap, String(size.id), String(fc.id));
+      if (variantId != null) break;
     }
 
     if (variantId == null) {
@@ -551,13 +661,11 @@ export function buildHarvestColorsFromProductType(productType: {
     }
 
     if (variantId == null && sizes.length > 0) {
-      const key = `${sizes[0].id}:${fc.id}`;
-      const entry = variantMap[key];
-      if (entry?.printifyVariantId) variantId = Number(entry.printifyVariantId);
+      variantId = resolveVariantIdForHarvest(variantMap, String(sizes[0].id), String(fc.id));
     }
 
     if (variantId != null) {
-      colors.push({
+      pushColor({
         id: String(fc.id),
         name: fc.name || String(fc.id),
         hex: fc.hex,
@@ -674,6 +782,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       baseManifest.views[view] = {
         printFileDims: placeholderDims.get(view)!,
         visibleRectNormalized: a.normalized,
+        printBoundsNormalized: a.normalized,
         mockupDims: { width: a.width, height: a.height },
         maskUrl,
         shadingUrl: null,
@@ -717,6 +826,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
+    const firstBlankByView: Partial<Record<ViewName, Buffer>> = {};
     for (const color of colors) {
       const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));
       const blank = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, placeholders);
@@ -728,11 +838,21 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const match = pickView(blankImages, view);
         if (!match) continue;
         const buf = await downloadBuffer(match.url);
+        if (!firstBlankByView[view]) firstBlankByView[view] = buf;
         perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
       }
       if (Object.keys(perView).length > 0) {
         baseManifest.blanks[color.id] = perView;
       }
+    }
+
+    // Edge-wrap (phone case): inner visible-face guide from blank photo; outer stays mask bbox.
+    for (const view of availableViews) {
+      const vc = baseManifest.views[view];
+      const buf = firstBlankByView[view];
+      if (!vc || !buf || vc.shadingMode !== "map" || !vc.printBoundsNormalized) continue;
+      const face = await analyzeBlankVisibleFace(buf);
+      if (face?.normalized) vc.visibleRectNormalized = face.normalized;
     }
 
     if (!manifestHasBlanks(baseManifest)) {
