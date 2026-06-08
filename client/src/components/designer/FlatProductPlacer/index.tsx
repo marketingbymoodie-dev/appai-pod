@@ -15,6 +15,7 @@ import {
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
+  loadFlatImageRelaxed,
   resolveFlatBlank,
   type FlatViewName,
 } from "./lib/flatAssets";
@@ -81,6 +82,8 @@ export type FlatProductPlacerProps = {
   manifest: FlatCalibrationManifest;
   /** Currently selected colour/model id — picks the blank from `manifest.blanks`. */
   colorId: string;
+  /** Authoritative artwork URL — always wins over saved `initialState.artworkUrl`. */
+  artworkSourceUrl: string;
   initialState?: Partial<FlatProductPlacerState> | null;
   onApply?: (result: FlatProductPlacerApplyResult) => void | Promise<void>;
   onChange?: (state: FlatProductPlacerState) => void;
@@ -138,6 +141,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     {
       manifest,
       colorId,
+      artworkSourceUrl,
       initialState,
       onApply,
       onChange,
@@ -217,16 +221,25 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   useEffect(() => {
     setState((prev) => {
-      if (prev) return prev;
-      seededAsResumeRef.current = !!(
-        initialState &&
-        Object.keys(initialState).some((k) => k !== "artworkUrl")
-      );
-      return buildInitialState(availableViews, initialState);
+      const saved: Partial<FlatProductPlacerState> = {
+        ...(initialState ?? {}),
+        artworkUrl: artworkSourceUrl || initialState?.artworkUrl || null,
+      };
+      if (!prev) {
+        seededAsResumeRef.current = !!(
+          saved &&
+          Object.keys(saved).some((k) => k !== "artworkUrl")
+        );
+        return buildInitialState(availableViews, saved);
+      }
+      if (artworkSourceUrl && prev.artworkUrl !== artworkSourceUrl) {
+        return { ...prev, artworkUrl: artworkSourceUrl };
+      }
+      return prev;
     });
-    // initialState consumed once on first seed.
+    // initialState consumed on first seed; artworkSourceUrl kept in sync after.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableViews]);
+  }, [availableViews, artworkSourceUrl]);
 
   useEffect(() => {
     if (state) onChange?.(state);
@@ -236,14 +249,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
   const [artworkLoading, setArtworkLoading] = useState(false);
   useEffect(() => {
-    const url = state?.artworkUrl ?? null;
+    const url = artworkSourceUrl || state?.artworkUrl || null;
     if (!url) {
       setArtworkImg(null);
+      setArtworkLoading(false);
       return;
     }
     let cancelled = false;
     setArtworkLoading(true);
-    loadFlatImage(url).then((img) => {
+    loadFlatImageRelaxed(url).then((img) => {
       if (cancelled) return;
       setArtworkImg(img);
       setArtworkLoading(false);
@@ -251,7 +265,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     return () => {
       cancelled = true;
     };
-  }, [state?.artworkUrl]);
+  }, [artworkSourceUrl, state?.artworkUrl]);
 
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);

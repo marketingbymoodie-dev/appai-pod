@@ -40,14 +40,25 @@ export function resolveFlatBlank(
   return first ? blanks[first] : {};
 }
 
-export function loadFlatImage(url: string): Promise<HTMLImageElement | null> {
+export function loadFlatImage(
+  url: string,
+  opts?: { cors?: boolean },
+): Promise<HTMLImageElement | null> {
+  const cors = opts?.cors !== false;
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    if (cors) img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = toAbsFlatAssetUrl(url);
   });
+}
+
+/** Try CORS first (needed for canvas export); fall back to display-only load. */
+export async function loadFlatImageRelaxed(url: string): Promise<HTMLImageElement | null> {
+  const withCors = await loadFlatImage(url, { cors: true });
+  if (withCors) return withCors;
+  return loadFlatImage(url, { cors: false });
 }
 
 export async function loadFlatViewAssets(

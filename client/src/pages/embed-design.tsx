@@ -5470,14 +5470,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         const manifest = productTypeConfig.flatCalibration!;
         const artworkUrl = toAbsoluteImageUrl(generatedDesign.imageUrl);
         const stateForRender: FlatProductPlacerState = {
-          view: "front",
+          ...(flatPlacerState ?? {}),
+          view: flatPlacerState?.view ?? "front",
           placements: {
             front: { scale: 1, offsetX: 0, offsetY: 0 },
             back: { scale: 1, offsetX: 0, offsetY: 0 },
+            ...(flatPlacerState?.placements ?? {}),
           },
-          enabled: { front: true, back: false },
+          enabled: {
+            front: flatPlacerState?.enabled?.front ?? true,
+            back: flatPlacerState?.enabled?.back ?? false,
+          },
           artworkUrl,
-          ...(flatPlacerState ?? {}),
         };
         const views = flatViewsForColor(manifest, selectedFrameColor);
         if (
@@ -7428,6 +7432,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   key={`flat-${productTypeConfig?.id ?? 0}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
                   manifest={productTypeConfig.flatCalibration}
                   colorId={selectedFrameColor}
+                  artworkSourceUrl={toAbsoluteImageUrl(generatedDesign!.imageUrl)}
                   initialState={{
                     ...(flatPlacerState ?? {}),
                     artworkUrl: toAbsoluteImageUrl(generatedDesign!.imageUrl),

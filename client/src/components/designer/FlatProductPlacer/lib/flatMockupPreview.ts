@@ -1,7 +1,7 @@
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 import type { FlatProductPlacerState } from "../index";
-import { loadFlatImage, loadFlatViewAssets, resolveFlatBlank, type FlatViewName } from "./flatAssets";
+import { loadFlatImageRelaxed, loadFlatViewAssets, resolveFlatBlank, type FlatViewName } from "./flatAssets";
 import { renderFlatView } from "./flatRender";
 
 /**
@@ -21,7 +21,7 @@ export async function renderFlatMockupDataUrl(
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =
-    includeArtwork && artworkUrl ? await loadFlatImage(artworkUrl) : null;
+    includeArtwork && artworkUrl ? await loadFlatImageRelaxed(artworkUrl) : null;
   if (includeArtwork && !artwork) return null;
 
   const canvas = document.createElement("canvas");
