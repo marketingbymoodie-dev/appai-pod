@@ -50,6 +50,7 @@ export type FlatViewGeometryOverride = Pick<
   FlatViewCalibration,
   | "visibleRectNormalized"
   | "printBoundsNormalized"
+  | "backFaceCropNormalized"
   | "printFileDims"
   | "mockupDims"
   | "maskUrl"

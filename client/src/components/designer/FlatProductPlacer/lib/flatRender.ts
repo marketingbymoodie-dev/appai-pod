@@ -82,6 +82,8 @@ export type FlatRenderInput = {
   edgeWrapMode?: boolean;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
   decorMode?: boolean;
+  /** Crop rendered output to back face (hides 3D side strip on phone mockups). */
+  cropToBackFace?: boolean;
 };
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
@@ -354,6 +356,135 @@ export function flatImageAlphaBounds(
   }
 }
 
+type NormRect = { x: number; y: number; width: number; height: number };
+
+/**
+ * Detect the flat back panel on phone mockups that include a perspective side
+ * strip (mirrors server `analyzeEdgeWrapGeometryFromMask` back-panel logic).
+ */
+export function detectEdgeWrapBackFaceFromMask(mask: HTMLImageElement): Rect | null {
+  const w = mask.naturalWidth || mask.width;
+  const h = mask.naturalHeight || mask.height;
+  if (w <= 0 || h <= 0) return null;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  let data: Uint8ClampedArray;
+  try {
+    ctx.drawImage(mask, 0, 0, w, h);
+    data = ctx.getImageData(0, 0, w, h).data;
+  } catch {
+    return null;
+  }
+
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (data[(y * w + x) * 4 + 3] > 10) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX) return null;
+
+  const bbox = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  const rowLeft: number[] = [];
+  const rowRight: number[] = [];
+  const rowY: number[] = [];
+  for (let y = minY; y <= maxY; y++) {
+    let lx = -1;
+    let rx = -1;
+    for (let x = minX; x <= maxX; x++) {
+      if (data[(y * w + x) * 4 + 3] > 10) {
+        if (lx < 0) lx = x;
+        rx = x;
+      }
+    }
+    if (lx >= 0) {
+      rowLeft.push(lx);
+      rowRight.push(rx);
+      rowY.push(y);
+    }
+  }
+  if (rowLeft.length === 0) return null;
+
+  let maxRowWidth = 0;
+  for (let i = 0; i < rowLeft.length; i++) {
+    maxRowWidth = Math.max(maxRowWidth, rowRight[i] - rowLeft[i] + 1);
+  }
+
+  const backLefts: number[] = [];
+  const backRights: number[] = [];
+  const backRows: number[] = [];
+  for (let i = 0; i < rowLeft.length; i++) {
+    const rw = rowRight[i] - rowLeft[i] + 1;
+    if (rw >= maxRowWidth * 0.72) {
+      backLefts.push(rowLeft[i]);
+      backRights.push(rowRight[i]);
+      backRows.push(rowY[i]);
+    }
+  }
+
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+
+  if (backLefts.length >= Math.max(3, rowLeft.length * 0.35)) {
+    return {
+      x: median(backLefts),
+      y: Math.min(...backRows),
+      width: median(backRights) - median(backLefts) + 1,
+      height: Math.max(...backRows) - Math.min(...backRows) + 1,
+    };
+  }
+  return bbox;
+}
+
+/** Back-face crop rect in mockup px (excludes side-profile strip when present). */
+export function flatBackFaceCropRectPx(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): Rect | null {
+  const stored = normalizedRectPx(view.backFaceCropNormalized as NormRect | null | undefined, canvasW, canvasH);
+  if (stored) return stored;
+  if (mask) return detectEdgeWrapBackFaceFromMask(mask);
+  return null;
+}
+
+export function offsetRectByCrop(rect: Rect, crop: Rect): Rect {
+  return {
+    x: rect.x - crop.x,
+    y: rect.y - crop.y,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+/** Crop a rendered mockup canvas to a sub-rect (used for phone back-face previews). */
+export function cropCanvasToRect(source: HTMLCanvasElement, crop: Rect): void {
+  const w = Math.max(1, Math.round(crop.width));
+  const h = Math.max(1, Math.round(crop.height));
+  const sx = Math.max(0, Math.round(crop.x));
+  const sy = Math.max(0, Math.round(crop.y));
+  const ctx = source.getContext("2d");
+  if (!ctx || source.width <= 0 || source.height <= 0) return;
+  const imageData = ctx.getImageData(sx, sy, w, h);
+  source.width = w;
+  source.height = h;
+  ctx.putImageData(imageData, 0, 0);
+}
+
 /** Full printable unwrap bounds — prefer manifest over live mask bbox. */
 export function flatPrintBoundsPx(
   view: FlatViewCalibration,
@@ -525,6 +656,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     forceShadingMap = false,
     edgeWrapMode = false,
     decorMode = false,
+    cropToBackFace = false,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
@@ -594,4 +726,11 @@ export function renderFlatView(input: FlatRenderInput): void {
   applyShading(art, actx, shadeMode, blank, shading, W, H, artworkCorsClean);
 
   ctx.drawImage(art, 0, 0);
+
+  if (cropToBackFace && edgeWrapMode) {
+    const crop = flatBackFaceCropRectPx(view, mask, W, H);
+    if (crop && crop.width > 0 && crop.height > 0) {
+      cropCanvasToRect(target, crop);
+    }
+  }
 }

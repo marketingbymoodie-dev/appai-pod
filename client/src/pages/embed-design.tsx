@@ -94,6 +94,8 @@ export interface FlatViewCalibration {
   visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
   /** Full print canvas bbox (mask); safe visible back face is in visibleRectNormalized for edge-wrap. */
   printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Back-face only — excludes perspective side strip on phone mockups (preview crop). */
+  backFaceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;

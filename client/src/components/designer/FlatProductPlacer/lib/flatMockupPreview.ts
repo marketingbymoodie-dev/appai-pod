@@ -37,6 +37,7 @@ export async function renderFlatMockupDataUrl(
     forceShadingMap: !!manifest.edgeWrap,
     edgeWrapMode: !!manifest.edgeWrap,
     decorMode: !!manifest.decorPerSize,
+    cropToBackFace: !!manifest.edgeWrap,
   });
 
   try {

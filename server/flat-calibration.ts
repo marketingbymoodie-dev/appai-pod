@@ -56,6 +56,8 @@ export type FlatViewCalibration = {
   visibleRectNormalized: { x: number; y: number; width: number; height: number } | null;
   /** Full print silhouette bbox from the mask pass — outer edge-wrap guide. */
   printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Back-face only — excludes perspective side strip on phone mockups (preview crop). */
+  backFaceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;
@@ -87,6 +89,7 @@ export type FlatCalibrationManifest = {
           FlatViewCalibration,
           | "visibleRectNormalized"
           | "printBoundsNormalized"
+          | "backFaceCropNormalized"
           | "printFileDims"
           | "mockupDims"
           | "maskUrl"
@@ -719,7 +722,7 @@ export function analyzeEdgeWrapGeometryFromMask(
   width: number,
   height: number,
   safeInsetFraction = 0.08,
-): { printBounds: NormRect; safeZone: NormRect } | null {
+): { printBounds: NormRect; safeZone: NormRect; backFaceCrop: NormRect } | null {
   if (!maskRaw || width <= 0 || height <= 0) return null;
 
   let minX = width;
@@ -803,26 +806,40 @@ export function analyzeEdgeWrapGeometryFromMask(
   return {
     printBounds: pxRectToNormalized(bbox, width, height),
     safeZone: pxRectToNormalized(safePanel, width, height),
+    backFaceCrop: pxRectToNormalized(backPanel, width, height),
   };
 }
 
 function geometryFromMagentaAnalysis(
   a: MagentaAnalysis,
   edgeWrap: boolean,
-): { visibleRectNormalized: NormRect | null; printBoundsNormalized: NormRect | null } {
+): {
+  visibleRectNormalized: NormRect | null;
+  printBoundsNormalized: NormRect | null;
+  backFaceCropNormalized: NormRect | null;
+} {
   if (!a.found || !a.normalized) {
-    return { visibleRectNormalized: null, printBoundsNormalized: null };
+    return { visibleRectNormalized: null, printBoundsNormalized: null, backFaceCropNormalized: null };
   }
   if (!edgeWrap) {
-    return { visibleRectNormalized: a.normalized, printBoundsNormalized: a.normalized };
+    return {
+      visibleRectNormalized: a.normalized,
+      printBoundsNormalized: a.normalized,
+      backFaceCropNormalized: null,
+    };
   }
   const derived = analyzeEdgeWrapGeometryFromMask(a.maskRaw, a.width, a.height);
   if (!derived) {
-    return { visibleRectNormalized: a.normalized, printBoundsNormalized: a.normalized };
+    return {
+      visibleRectNormalized: a.normalized,
+      printBoundsNormalized: a.normalized,
+      backFaceCropNormalized: null,
+    };
   }
   return {
     visibleRectNormalized: derived.safeZone,
     printBoundsNormalized: derived.printBounds,
+    backFaceCropNormalized: derived.backFaceCrop,
   };
 }
 
@@ -1018,6 +1035,7 @@ async function harvestPerBlankGeometry(args: {
       geo[view] = {
         printBoundsNormalized: geoDerived.printBoundsNormalized,
         visibleRectNormalized: geoDerived.visibleRectNormalized,
+        backFaceCropNormalized: geoDerived.backFaceCropNormalized,
         printFileDims: { width: dims.width, height: dims.height },
         mockupDims: { width: a.width, height: a.height },
         maskUrl,
@@ -1144,6 +1162,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         printFileDims: placeholderDims.get(view)!,
         visibleRectNormalized: geo.visibleRectNormalized,
         printBoundsNormalized: geo.printBoundsNormalized,
+        backFaceCropNormalized: geo.backFaceCropNormalized,
         mockupDims: { width: a.width, height: a.height },
         maskUrl,
         shadingUrl: null,

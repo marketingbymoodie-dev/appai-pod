@@ -27,10 +27,13 @@ import {
   flatOverflows,
   flatPlacementRectPx,
   flatPlacementScaleMax,
+  flatBackFaceCropRectPx,
+  offsetRectByCrop,
   flatPrintBoundsPx,
   flatVisibleRectPx,
   renderFlatView,
   FLAT_SCALE_MIN,
+  type Rect,
 } from "./lib/flatRender";
 import type {
   FlatCalibrationManifest,
@@ -361,6 +364,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           decorMode,
+          cropToBackFace: edgeWrapMode,
         });
         return true;
       } catch (e) {
@@ -560,28 +564,40 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     viewAssets.blank?.naturalWidth || calib?.mockupDims?.width || 1;
   const mockupH =
     viewAssets.blank?.naturalHeight || calib?.mockupDims?.height || 1;
+  const backFaceCrop =
+    edgeWrapMode && calib
+      ? flatBackFaceCropRectPx(calib, viewAssets.mask, mockupW, mockupH)
+      : null;
+  const offsetForCrop = (r: Rect): Rect =>
+    backFaceCrop ? offsetRectByCrop(r, backFaceCrop) : r;
+  const displayMockupW = backFaceCrop?.width ?? mockupW;
+  const displayMockupH = backFaceCrop?.height ?? mockupH;
   const edgeGuides =
     edgeWrapMode && calib
       ? flatEdgeWrapGuideRects(calib, viewAssets.mask, mockupW, mockupH)
       : null;
-  const placementRect =
+  const placementRectRaw =
     calib
       ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
           edgeWrapMode,
           decorMode,
         })
       : null;
+  const placementRect = placementRectRaw ? offsetForCrop(placementRectRaw) : null;
+  const displayEdgeGuides = edgeGuides
+    ? { inner: offsetForCrop(edgeGuides.inner), outer: offsetForCrop(edgeGuides.outer) }
+    : null;
 
   // Coverage warnings differ by product type.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
-  if (calib && artworkImg && viewEnabled && placementRect) {
+  if (calib && artworkImg && viewEnabled && placementRectRaw) {
     const printBounds =
       edgeGuides?.outer ??
       flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
     const safeZone = edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
     const box = flatArtBox(
-      placementRect,
+      placementRectRaw,
       placement,
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
@@ -629,7 +645,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             const canvas = canvasRef.current;
             if (!canvas) return;
             const cr = canvas.getBoundingClientRect();
-            const mockupX = ((e.clientX - cr.left) / cr.width) * mockupW;
+            const mockupX = ((e.clientX - cr.left) / cr.width) * displayMockupW;
             const box = flatArtBox(
               placementRect,
               placement,
@@ -645,7 +661,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             const canvas = canvasRef.current;
             if (!canvas) return;
             const cr = canvas.getBoundingClientRect();
-            const mockupX = ((e.clientX - cr.left) / cr.width) * mockupW;
+            const mockupX = ((e.clientX - cr.left) / cr.width) * displayMockupW;
             const box = flatArtBox(
               placementRect,
               placement,
@@ -670,8 +686,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 artwork={artworkImg}
                 placement={placement}
                 edgeWrapMode={edgeWrapMode}
-                innerGuideRect={edgeGuides?.inner ?? null}
-                outerGuideRect={edgeGuides?.outer ?? null}
+                innerGuideRect={displayEdgeGuides?.inner ?? null}
+                outerGuideRect={displayEdgeGuides?.outer ?? null}
                 placementRect={placementRect}
                 scaleMax={scaleMax}
                 onChange={(next) => updatePlacement(state.view, next)}
