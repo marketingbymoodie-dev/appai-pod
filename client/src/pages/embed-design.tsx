@@ -3382,7 +3382,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -4120,9 +4120,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
     console.log('[Design Studio] Fetching variants from:', fetchUrl);
     safeFetch(fetchUrl)
-      .then(res => {
+      .then(async (res) => {
         if (!res.ok) {
-          console.log('[Design Studio] Variant fetch failed with status:', res.status);
+          const errBody = await res.text().catch(() => "");
+          console.log('[Design Studio] Variant fetch failed with status:', res.status, errBody.substring(0, 200));
           return { variants: [] };
         }
         return res.json();
@@ -4130,7 +4131,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       .then(data => {
         if (data.variants && Array.isArray(data.variants) && data.variants.length > 0) {
           const mapped = mapServerVariantsToCatalog(data.variants);
-          console.log('[Design Studio] Fetched variants from server:', mapped.length);
+          console.log('[Design Studio] Fetched variants from server:', mapped.length, data.source ? `(source: ${data.source})` : '');
           setVariants(mapped);
           setShopifyVariants(mapped);
           if (variantCatalogIsUsable(mapped, needsColorOptions)) {
@@ -4144,6 +4145,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }
         } else {
           variantsLoadedKeyRef.current = "";
+          console.warn(
+            '[Design Studio] Variant fetch returned empty catalog',
+            'productTypeId:', productTypeId, 'handle:', productHandle,
+          );
         }
       })
       .catch(err => {

@@ -4812,6 +4812,51 @@ ${textEdgeRestrictions}
     return fallbackVariants;
   }
 
+  /** Keep size×color catalog rows; drop per-design shadow rows on option3. */
+  function selectBaseCatalogVariants(rawVariants: any[]): any[] {
+    if (!rawVariants.length) return [];
+
+    const withoutDesignThird = rawVariants.filter(
+      (v) => v.option3 == null || v.option3 === "" || v.option3 === "base",
+    );
+    if (withoutDesignThird.length > 0) return withoutDesignThird;
+
+    // Some apparel catalogs use option3 for a real dimension (e.g. material).
+    const seen = new Set<string>();
+    const deduped: any[] = [];
+    for (const v of rawVariants) {
+      const key = `${v.option1 ?? ""}:${v.option2 ?? ""}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(v);
+      }
+    }
+    return deduped;
+  }
+
+  function mapVariantsForCatalogResponse(
+    variants: any[],
+    defaultAvailable = true,
+  ): Array<{
+    id: number | string;
+    title: string;
+    option1: string | null;
+    option2: string | null;
+    option3: string | null;
+    price: string;
+    available: boolean;
+  }> {
+    return variants.map((v: any) => ({
+      id: v.id,
+      title: v.title,
+      option1: v.option1 ?? null,
+      option2: v.option2 ?? null,
+      option3: v.option3 ?? null,
+      price: v.price ?? "0.00",
+      available: v.available !== undefined ? !!v.available : defaultAvailable,
+    }));
+  }
+
   app.get("/api/shopify/product-variants", async (req: Request, res: Response) => {
     try {
       const { shop, handle, productTypeId } = req.query;
@@ -4957,20 +5002,25 @@ ${textEdgeRestrictions}
           const variants = data.product?.variants || [];
           
           console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
-          
-          // Filter out design variants (those with option3 set — the 'Design' option)
-          // to prevent base variant infiltration in the storefront customizer.
-          const baseVariants = variants.filter((v: any) => !v.option3 || v.option3 === 'base');
+
+          const baseVariants = selectBaseCatalogVariants(variants);
+          if (baseVariants.length === 0) {
+            const fallbackVariants = buildFallbackVariantsFromProductType(productType);
+            if (fallbackVariants.length > 0) {
+              console.log(
+                `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
+              );
+              return res.json({ variants: fallbackVariants, source: "fallback" });
+            }
+            if (variants.length > 0) {
+              console.warn(
+                `[Product Variants] All ${variants.length} Admin variants filtered out; sample option3:`,
+                variants[0]?.option3,
+              );
+            }
+          }
           return res.json({
-            variants: baseVariants.map((v: any) => ({
-              id: v.id,
-              title: v.title,
-              option1: v.option1,
-              option2: v.option2,
-              option3: v.option3,
-              price: v.price,
-              available: true // Admin API doesn't include available field
-            }))
+            variants: mapVariantsForCatalogResponse(baseVariants),
           });
         }
       } else {
@@ -4995,19 +5045,9 @@ ${textEdgeRestrictions}
       
       console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
       
-      // Return just the essential variant data
-      // Filter out design variants (those with option3 set — the 'Design' option)
-      const baseVariants = variants.filter((v: any) => !v.option3 || v.option3 === 'base');
+      const baseVariants = selectBaseCatalogVariants(variants);
       res.json({
-        variants: baseVariants.map((v: any) => ({
-          id: v.id,
-          title: v.title,
-          option1: v.option1,
-          option2: v.option2,
-          option3: v.option3,
-          price: v.price,
-          available: v.available
-        }))
+        variants: mapVariantsForCatalogResponse(baseVariants, false),
       });
     } catch (error) {
       console.error("Error fetching Shopify product variants:", error);
@@ -16061,11 +16101,19 @@ ${textEdgeRestrictions}
             `products/${page.baseProductId}.json?fields=id,status,published_at,variants`
           );
           const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
-          // Match /api/shopify/product-variants: include options for size/color
-          // matching in the embed, and drop per-design shadow variants (option3).
-          const baseVariants = rawVariants.filter(
-            (v: any) => !v.option3 || v.option3 === "base",
-          );
+          let baseVariants = selectBaseCatalogVariants(rawVariants);
+          if (baseVariants.length === 0 && page.productTypeId) {
+            const pt = await storage.getProductType(page.productTypeId);
+            if (pt) {
+              const fallback = buildFallbackVariantsFromProductType(pt);
+              if (fallback.length > 0) {
+                console.log(
+                  `[proxy/customizer-page] Product ${page.baseProductId} had ${rawVariants.length} Shopify variants but catalog empty; using DB fallback (${fallback.length})`,
+                );
+                baseVariants = fallback;
+              }
+            }
+          }
           variants = baseVariants.map((v: any) => ({
             id: String(v.id),
             title: v.title || "",
