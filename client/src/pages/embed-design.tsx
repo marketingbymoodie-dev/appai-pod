@@ -418,6 +418,79 @@ function normalizeVariantId(raw: string | number): string {
   return s;
 }
 
+type VariantCatalogEntry = {
+  id: string;
+  title?: string;
+  option1?: string;
+  option2?: string;
+};
+
+/** Match a Shopify variant from a catalog by human-readable size + color names. */
+function matchVariantBySizeColor(
+  catalog: VariantCatalogEntry[],
+  sizeName: string,
+  frameName: string,
+  hasColors: boolean,
+): string | null {
+  if (catalog.length === 0) return null;
+
+  const sizeLower = sizeName.toLowerCase();
+  const frameLower = frameName.toLowerCase();
+
+  const titleMatch = (v: VariantCatalogEntry) => {
+    const t = (v.title || "").toLowerCase();
+    if (!t) return false;
+    const hasSize = !sizeName || t.includes(sizeLower) || sizeLower.includes(t);
+    const hasFrame =
+      !frameName || !hasColors || t.includes(frameLower) || frameLower.includes(t);
+    return hasSize && hasFrame;
+  };
+
+  const optionMatch = (v: VariantCatalogEntry) => {
+    const options = [v.option1, v.option2]
+      .filter(Boolean)
+      .map((o) => String(o).toLowerCase());
+    if (options.length === 0) return false;
+    let sizeMatch = !sizeName;
+    let colorMatch = !frameName || !hasColors;
+    if (sizeName) {
+      sizeMatch = options.some(
+        (opt) => opt.includes(sizeLower) || sizeLower.includes(opt),
+      );
+    }
+    if (frameName && hasColors) {
+      colorMatch = options.some(
+        (opt) => opt.includes(frameLower) || frameLower.includes(opt),
+      );
+    }
+    return sizeMatch && colorMatch;
+  };
+
+  let match = catalog.find(titleMatch);
+  if (!match && sizeName) {
+    match = catalog.find((v) => (v.title || "").toLowerCase().includes(sizeLower));
+  }
+  if (!match) {
+    match = catalog.find(optionMatch);
+  }
+  if (!match && catalog.length === 1) {
+    match = catalog[0];
+  }
+  return match ? String(match.id) : null;
+}
+
+function mapServerVariantsToCatalog(
+  raw: any[],
+): Array<{ id: string; title: string; price: string; option1?: string; option2?: string }> {
+  return raw.map((v: any) => ({
+    id: String(v.id),
+    title: v.title || "",
+    price: v.price != null ? String(v.price) : "0.00",
+    option1: v.option1,
+    option2: v.option2,
+  }));
+}
+
 /**
  * Safe fetch that bypasses Shopify App Bridge's monkey-patched window.fetch.
  *
@@ -1168,6 +1241,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Always-current base variant ID for shadow product pre-creation.
   // Updated by a useEffect so fetchPrintifyMockups (which has limited deps) can read it.
   const baseVariantForShadowRef = useRef<string>('');
+  const variantsLoadedKeyRef = useRef("");
+  const variantsFetchingKeyRef = useRef("");
   // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
@@ -2084,13 +2159,48 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const baseVariant = config.baseVariantId ? String(config.baseVariantId) : "";
-    const targetVariants = Array.isArray(config.variants) ? config.variants : [];
+    let targetVariants = Array.isArray(config.variants)
+      ? mapServerVariantsToCatalog(config.variants)
+      : [];
+
+    // customizer-page may return an empty variants array; fetch from Admin API as fallback.
+    if (targetVariants.length === 0) {
+      const myShopifyDomain = getMyShopifyDomain();
+      const resolvedProductTypeId = config.productTypeId ? String(config.productTypeId) : "";
+      const resolvedHandle = config.baseProductHandle || pageHandle;
+      if (myShopifyDomain && (resolvedHandle || resolvedProductTypeId)) {
+        const variantQuery = resolvedHandle
+          ? `handle=${encodeURIComponent(resolvedHandle)}`
+          : `productTypeId=${encodeURIComponent(resolvedProductTypeId)}`;
+        try {
+          const variantRes = await safeFetch(
+            `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&${variantQuery}`,
+          );
+          if (variantRes.ok) {
+            const variantData = await variantRes.json();
+            if (Array.isArray(variantData.variants) && variantData.variants.length > 0) {
+              targetVariants = mapServerVariantsToCatalog(variantData.variants);
+              console.log('[SavedDesigns] Fetched', targetVariants.length, 'variants after product switch');
+            }
+          }
+        } catch (e) {
+          console.warn('[SavedDesigns] Variant fallback fetch failed:', e);
+        }
+      }
+    }
+
+    const variantCatalogKey = `${config.productTypeId ? String(config.productTypeId) : "0"}|${config.baseProductHandle || pageHandle}`;
+    variantsLoadedKeyRef.current = variantCatalogKey;
+    variantsFetchingKeyRef.current = "";
+
     setVariants(targetVariants);
     setVariantsFetched(true);
     setShopifyVariants(targetVariants);
-    setShopifyVariantId(baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null));
-    setOverrideVariantId(baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null));
-    baseVariantForShadowRef.current = baseVariant ? normalizeVariantId(baseVariant) : "";
+    const initialVariantId =
+      baseVariant || (targetVariants[0]?.id ? String(targetVariants[0].id) : null);
+    setShopifyVariantId(initialVariantId);
+    setOverrideVariantId(initialVariantId);
+    baseVariantForShadowRef.current = initialVariantId ? normalizeVariantId(initialVariantId) : "";
 
     setActiveProductContext({
       productTypeId: config.productTypeId ? String(config.productTypeId) : "0",
@@ -2129,8 +2239,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (mockupAbsForUrl) params.set("loadMockup", mockupAbsForUrl);
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
 
+    applyDesignerConfig(config.designerConfig, "SWITCH SAVED DESIGN");
+    if (Array.isArray(config.stylePresets)) {
+      setStylePresets(config.stylePresets);
+    }
+    setConfigLoading(false);
+
+    try {
+      window.parent.postMessage({
+        type: "AI_ART_STUDIO_PRODUCT_CONTEXT",
+        productTypeId: config.productTypeId ? String(config.productTypeId) : null,
+        productId: config.baseProductId ? String(config.baseProductId) : null,
+        productHandle: config.baseProductHandle || pageHandle,
+        selectedVariant: initialVariantId,
+        variants: targetVariants,
+      }, "*");
+    } catch {
+      // Parent may be unavailable in local/dev embeds.
+    }
+
     setBridgeLoadDesignId(designId);
-  }, []);
+  }, [applyDesignerConfig]);
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
@@ -3838,33 +3967,38 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, []);
 
-  // Fetch variants from server if not provided in URL (works for all themes)
+  // Fetch variants from server when product identity changes (works for all themes).
+  // Always load the full catalog — selectedVariantParam alone is not enough after
+  // in-app product switches because size/color matching needs every variant.
   useEffect(() => {
-    if (variantsFetched || (!isShopify && !isStorefront)) return;
-    if (selectedVariantParam) {
-      // If we have a selected variant, we don't need to fetch all variants
-      setVariantsFetched(true);
+    if (!isShopify && !isStorefront) return;
+
+    const fetchKey = `${productTypeId}|${productHandle}`;
+    if (variantsLoadedKeyRef.current === fetchKey || variantsFetchingKeyRef.current === fetchKey) {
       return;
     }
-    
-    // Use the myshopify.com domain specifically for variant API calls
+    variantsFetchingKeyRef.current = fetchKey;
+
     const myShopifyDomain = getMyShopifyDomain();
     if (!myShopifyDomain) {
       console.log('[Design Studio] Could not determine myshopify.com domain, skipping variant fetch');
+      variantsLoadedKeyRef.current = fetchKey;
+      variantsFetchingKeyRef.current = "";
       setVariantsFetched(true);
       return;
     }
-    
-    // Build the fetch URL - prefer productHandle but fall back to productTypeId
-    let fetchUrl: string;
+
+    let fetchUrl: string | null = null;
     if (productHandle) {
       console.log('[Design Studio] Fetching variants using productHandle:', productHandle);
       fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&handle=${encodeURIComponent(productHandle)}`;
-    } else if (productTypeId) {
+    } else if (productTypeId && productTypeId !== "0") {
       console.log('[Design Studio] Fetching variants using productTypeId:', productTypeId);
       fetchUrl = `${API_BASE}/api/shopify/product-variants?shop=${encodeURIComponent(myShopifyDomain)}&productTypeId=${encodeURIComponent(productTypeId)}`;
     } else {
       console.log('[Design Studio] No productHandle or productTypeId available, skipping variant fetch');
+      variantsLoadedKeyRef.current = fetchKey;
+      variantsFetchingKeyRef.current = "";
       setVariantsFetched(true);
       return;
     }
@@ -3880,80 +4014,81 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       })
       .then(data => {
         if (data.variants && Array.isArray(data.variants)) {
-          console.log('[Design Studio] Fetched variants from server:', data.variants.length);
-          setVariants(data.variants);
+          const mapped = mapServerVariantsToCatalog(data.variants);
+          console.log('[Design Studio] Fetched variants from server:', mapped.length);
+          setVariants(mapped);
+          setShopifyVariants(mapped);
         }
-        setVariantsFetched(true);
       })
       .catch(err => {
         console.error('[Design Studio] Failed to fetch variants:', err);
+      })
+      .finally(() => {
+        variantsLoadedKeyRef.current = fetchKey;
+        variantsFetchingKeyRef.current = "";
         setVariantsFetched(true);
       });
-  }, [isShopify, isStorefront, productHandle, productTypeId, selectedVariantParam, variantsFetched]);
+  }, [isShopify, isStorefront, productHandle, productTypeId]);
 
   const findVariantId = (): string | null => {
     if (!isShopify && !isStorefront) return null;
 
-    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
-                'variants:', variants.length, 'selectedSize:', selectedSize, 
-                'selectedFrameColor:', selectedFrameColor, 'hasColors:', frameColorObjects.length > 0);
+    const hasColors = frameColorObjects.length > 0;
+    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
+    const frameName =
+      frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
 
-    // Highest priority: variant chosen by storefront dropdown via postMessage
-    if (overrideVariantId) {
+    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam,
+                'variants:', variants.length, 'shopifyVariants:', shopifyVariants.length,
+                'selectedSize:', selectedSize, 'selectedFrameColor:', selectedFrameColor,
+                'hasColors:', hasColors);
+
+    // Highest priority: match current size + color against the live variant catalog.
+    // This must beat overrideVariantId/selectedVariantParam, which can be stale after
+    // in-app product switches (e.g. pillow → sweatshirt).
+    const fromShopify = shopifyVariants.length > 0
+      ? matchVariantBySizeColor(shopifyVariants, sizeName, frameName, hasColors)
+      : null;
+    if (fromShopify) {
+      console.log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
+      return fromShopify;
+    }
+
+    const fromVariants = variants.length > 0
+      ? matchVariantBySizeColor(
+          variants.map((v: any) => ({
+            id: String(v.id),
+            title: v.title,
+            option1: v.option1,
+            option2: v.option2,
+          })),
+          sizeName,
+          frameName,
+          hasColors,
+        )
+      : null;
+    if (fromVariants) {
+      console.log('[Design Studio] Matched variant from variants:', fromVariants);
+      return fromVariants;
+    }
+
+    const catalogIds = new Set([
+      ...shopifyVariants.map(v => String(v.id)),
+      ...variants.map((v: any) => String(v.id)),
+    ]);
+
+    // Only trust parent-provided IDs when they belong to the current product catalog.
+    if (overrideVariantId && (catalogIds.size === 0 || catalogIds.has(String(overrideVariantId)))) {
       console.log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
       return overrideVariantId;
     }
 
-    // Second priority: use selectedVariantParam if provided (most reliable from theme)
-    if (selectedVariantParam) {
+    if (selectedVariantParam && (catalogIds.size === 0 || catalogIds.has(selectedVariantParam))) {
       console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
       return selectedVariantParam;
     }
 
-    // Second: try to match using variant options from Shopify
-    if (variants.length > 0 && (selectedSize || selectedFrameColor)) {
-      const matchedVariant = variants.find((v: any) => {
-        // Only use option1 and option2 for matching — option3 is the 'Design' option
-        // and including it would cause design variants to be selected accidentally.
-        const options = [v.option1, v.option2].filter(Boolean);
-
-        let sizeMatch = true;
-        let colorMatch = true;
-
-        if (selectedSize) {
-          sizeMatch = options.some(
-            (opt) =>
-              opt?.toLowerCase().includes(selectedSize.toLowerCase()) ||
-              selectedSize.toLowerCase().includes(opt?.toLowerCase())
-          );
-        }
-
-        // Only check color if the product has frame colors
-        if (selectedFrameColor && frameColorObjects.length > 0) {
-          colorMatch = options.some(
-            (opt) =>
-              opt?.toLowerCase().includes(selectedFrameColor.toLowerCase()) ||
-              selectedFrameColor.toLowerCase().includes(opt?.toLowerCase())
-          );
-        }
-
-        return sizeMatch && colorMatch;
-      });
-
-      if (matchedVariant) {
-        console.log('[Design Studio] Matched variant from options:', matchedVariant.id);
-        return matchedVariant.id?.toString() || null;
-      }
-    }
-
-    // Third: for single-variant products, use the first variant
-    if (variants.length === 1) {
-      console.log('[Design Studio] Using single variant:', variants[0].id);
-      return variants[0].id?.toString() || null;
-    }
-
-    // Fourth: fall back to shopifyVariantId received via postMessage from the parent page
-    if (shopifyVariantId) {
+    if (shopifyVariantId && (catalogIds.size === 0 || catalogIds.has(String(shopifyVariantId)))) {
       console.log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
       return shopifyVariantId;
     }
@@ -3965,13 +4100,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Keep baseVariantForShadowRef current so fetchPrintifyMockups (with limited deps) can
   // read the latest resolved variant for shadow-product pre-creation without closure staleness.
   useEffect(() => {
-    const vid = selectedVariantParam || overrideVariantId || null;
-    if (vid) {
-      baseVariantForShadowRef.current = normalizeVariantId(vid);
-    } else {
-      const matched = findVariantId();
-      baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : '';
-    }
+    const matched = findVariantId();
+    baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
   /**
@@ -4845,15 +4975,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       // Shopify variants with prices pushed by parent after bridge handshake
       if (type === "AI_ART_STUDIO_SHOPIFY_VARIANTS" && Array.isArray(event.data.variants)) {
-        console.log('[Design Studio] SHOPIFY_VARIANTS received:', event.data.variants.length, 'variants');
-        setShopifyVariants(event.data.variants);
+        const msgProductTypeId =
+          event.data.productTypeId != null ? String(event.data.productTypeId) : null;
+        const currentProductTypeId = productTypeId ? String(productTypeId) : null;
+        if (
+          msgProductTypeId &&
+          currentProductTypeId &&
+          msgProductTypeId !== currentProductTypeId &&
+          shopifyVariants.length > 0
+        ) {
+          console.log(
+            '[Design Studio] Ignoring stale SHOPIFY_VARIANTS for productTypeId',
+            msgProductTypeId,
+            'current:',
+            currentProductTypeId,
+          );
+          return;
+        }
+        const mapped = mapServerVariantsToCatalog(event.data.variants);
+        console.log('[Design Studio] SHOPIFY_VARIANTS received:', mapped.length, 'variants');
+        setShopifyVariants(mapped);
+        setVariants(mapped);
         const base = event.data.baseVariantId ? String(event.data.baseVariantId) : null;
         if (base) {
           setShopifyVariantId(base);
           setOverrideVariantId(base);
-        } else if (event.data.variants.length > 0) {
-          setShopifyVariantId(String(event.data.variants[0].id));
-          setOverrideVariantId(String(event.data.variants[0].id));
+        } else if (mapped.length > 0) {
+          setShopifyVariantId(String(mapped[0].id));
+          setOverrideVariantId(String(mapped[0].id));
         }
       }
 
@@ -5069,7 +5218,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct]);
+  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, productTypeId, shopifyVariants]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -5588,31 +5737,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   useEffect(() => {
     if (!isStorefront || shopifyVariants.length === 0) return;
 
-    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? '';
-    const frameName = frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? '';
+    const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
+    const frameName =
+      frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
+    const matchedId = matchVariantBySizeColor(
+      shopifyVariants,
+      sizeName,
+      frameName,
+      frameColorObjects.length > 0,
+    );
 
-    // 1. Try to match variant title containing both size name and frame name
-    let match = shopifyVariants.find(v => {
-      const t = v.title.toLowerCase();
-      const hasSize = !sizeName || t.includes(sizeName.toLowerCase());
-      const hasFrame = !frameName || frameColorObjects.length === 0
-        || t.includes(frameName.toLowerCase());
-      return hasSize && hasFrame;
-    });
-
-    // 2. Fallback: match size only (frame color may not be a variant axis in Shopify)
-    if (!match && sizeName) {
-      match = shopifyVariants.find(v =>
-        v.title.toLowerCase().includes(sizeName.toLowerCase())
-      );
-    }
-
-    // 3. Fallback: first variant
-    if (!match) match = shopifyVariants[0];
-
-    if (match) {
-      setShopifyVariantId(match.id);
-      setOverrideVariantId(match.id);
+    if (matchedId) {
+      setShopifyVariantId(matchedId);
+      setOverrideVariantId(matchedId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);

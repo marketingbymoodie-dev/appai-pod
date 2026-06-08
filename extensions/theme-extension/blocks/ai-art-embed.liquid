@@ -1074,6 +1074,7 @@
               type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
               variants: config.shopifyVariants,
               baseVariantId: config.selectedVariant || null,
+              productTypeId: config.productTypeId || null,
             }, iframeOrigin || '*');
             console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
           } catch(e) {
@@ -1324,6 +1325,17 @@
           flingV *= 0.95; // friction: decays to ~0 in ~55 rAF frames (~0.9 s)
           requestAnimationFrame(step);
         })();
+        return;
+      }
+
+      // ===== PRODUCT CONTEXT (in-app cross-product switch) =====
+      if (data.type === 'AI_ART_STUDIO_PRODUCT_CONTEXT') {
+        if (data.productTypeId) config.productTypeId = String(data.productTypeId);
+        if (data.productId) config.productId = String(data.productId);
+        if (data.productHandle) config.productHandle = String(data.productHandle);
+        if (data.selectedVariant) config.selectedVariant = String(data.selectedVariant);
+        if (Array.isArray(data.variants)) config.shopifyVariants = data.variants;
+        console.log(B, 'Updated parent product context after in-app switch — productTypeId:', config.productTypeId, 'productId:', config.productId);
         return;
       }
 
