@@ -22,15 +22,11 @@ import {
 import {
   flatArtBox,
   flatCovers,
-  flatEdgeWrapGuideRects,
-  flatInsufficientSafeZoneCoverage,
   flatOverflows,
   flatPlacementRectPx,
   flatPlacementScaleMax,
-  flatEdgeWrapHasSideProfileStrip,
-  flatEdgeWrapViewportLayout,
-  flatPrintBoundsPx,
-  flatVisibleRectPx,
+  flatPrintCanvasLayout,
+  flatPrintCanvasPreviewDims,
   renderFlatView,
   FLAT_SCALE_MIN,
   type Rect,
@@ -364,7 +360,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
           decorMode,
-          cropToBackFace: edgeWrapMode,
+          cropToBackFace: false,
           sizeId: colorId,
         });
         return true;
@@ -505,8 +501,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
-        const mW = va.blank.naturalWidth || cal.mockupDims?.width || 1;
-        const mH = va.blank.naturalHeight || cal.mockupDims?.height || 1;
+        const mW = edgeWrapMode
+          ? flatPrintCanvasPreviewDims(cal).width
+          : va.blank.naturalWidth || cal.mockupDims?.width || 1;
+        const mH = edgeWrapMode
+          ? flatPrintCanvasPreviewDims(cal).height
+          : va.blank.naturalHeight || cal.mockupDims?.height || 1;
         const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
           edgeWrapMode,
           decorMode,
@@ -565,63 +565,47 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     viewAssets.blank?.naturalWidth || calib?.mockupDims?.width || 1;
   const mockupH =
     viewAssets.blank?.naturalHeight || calib?.mockupDims?.height || 1;
-  const hasSideProfile =
-    edgeWrapMode &&
-    !!calib &&
-    flatEdgeWrapHasSideProfileStrip(calib, viewAssets.mask, mockupW, mockupH, colorId);
-  const viewportLayout =
-    hasSideProfile && calib
-      ? flatEdgeWrapViewportLayout(calib, viewAssets.mask, mockupW, mockupH)
-      : null;
-  const backFaceCrop = viewportLayout?.backFace ?? null;
-  const displayMockupW = backFaceCrop?.width ?? mockupW;
-  const displayMockupH = backFaceCrop?.height ?? mockupH;
-  const edgeGuides =
-    edgeWrapMode && calib && !viewportLayout
-      ? flatEdgeWrapGuideRects(calib, viewAssets.mask, mockupW, mockupH)
-      : null;
-  const placementRectRaw =
-    calib && !viewportLayout
-      ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
-          edgeWrapMode,
-          decorMode,
-        })
-      : null;
-  const placementRect = viewportLayout?.placementRect ?? placementRectRaw ?? null;
+
+  const printCanvasLayout =
+    edgeWrapMode && calib ? flatPrintCanvasLayout(calib) : null;
+  const displayMockupW = printCanvasLayout?.previewW ?? mockupW;
+  const displayMockupH = printCanvasLayout?.previewH ?? mockupH;
+
+  const placementRect =
+    edgeWrapMode && calib
+      ? printCanvasLayout!.printCanvas
+      : calib
+        ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
+            edgeWrapMode,
+            decorMode,
+          })
+        : null;
+
   const displayEdgeGuides =
-    viewportLayout?.guides ??
-    (edgeGuides ? { inner: edgeGuides.inner, outer: edgeGuides.outer } : null);
+    edgeWrapMode && calib
+      ? { inner: printCanvasLayout!.safeZone, outer: printCanvasLayout!.printCanvas }
+      : null;
 
   // Coverage warnings differ by product type.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
-  if (calib && artworkImg && viewEnabled) {
-    const printBounds = viewportLayout?.guides.outer ?? edgeGuides?.outer ?? flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
-    const safeZone = viewportLayout?.guides.inner ?? edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
-    const placementForBox = viewportLayout?.placementRect ?? placementRectRaw;
-    if (!placementForBox) {
-      coverageWarning = "none";
-    } else {
+  if (calib && artworkImg && viewEnabled && placementRect) {
     const box = flatArtBox(
-      placementForBox,
+      placementRect,
       placement,
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
     );
     if (edgeWrapMode) {
-      if (
-        !flatCovers(printBounds, box) ||
-        flatInsufficientSafeZoneCoverage(safeZone, box)
-      ) {
+      if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
     } else if (decorMode) {
-      if (!flatCovers(placementRect!, box)) {
+      if (!flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (placementRect && flatOverflows(placementRect, box)) {
+    } else if (flatOverflows(placementRect, box)) {
       coverageWarning = "trim";
-    }
     }
   }
 
@@ -807,9 +791,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
             {edgeWrapMode && (
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Amber dashed line = safe visible back face. Blue outer line = full
-                print canvas (includes edge bleed and side wrap). Scale artwork to
-                cover the blue outline and extend past the amber line.
+                Blue dashed line = full print canvas (Printify grey box). Amber
+                line = safe visible back face. Scale artwork to cover the blue
+                outline on all four sides.
               </p>
             )}
             <div className="mt-2">
@@ -882,9 +866,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Artwork doesn&apos;t fully cover the print area — scale up or
-              reposition so the design covers the blue outline and extends past
-              the amber safe-zone line for edge printing.
+              Artwork doesn&apos;t fully cover the print canvas — scale up or
+              reposition so the design reaches all four edges of the blue
+              outline. Uncovered edges may not print.
             </span>
           </div>
         )}

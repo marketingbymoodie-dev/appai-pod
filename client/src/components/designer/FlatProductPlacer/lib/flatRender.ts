@@ -149,6 +149,9 @@ function rectsNearlyEqual(a: Rect, b: Rect, eps = 2): boolean {
   );
 }
 
+/** Preview canvas width — height follows printFileDims aspect. */
+export const FLAT_PRINT_PREVIEW_BASE_PX = 900;
+
 /** Approximate safe back-face guide when harvest stored only one bbox (legacy manifests). */
 export function flatEdgeWrapSafeZoneRectPx(outer: Rect, insetFraction = 0.08): Rect {
   const mx = outer.width * insetFraction;
@@ -161,60 +164,63 @@ export function flatEdgeWrapSafeZoneRectPx(outer: Rect, insetFraction = 0.08): R
   };
 }
 
-/** @deprecated Use flatEdgeWrapSafeZoneRectPx */
-export function flatEdgeWrapInnerRectPx(outer: Rect, insetFraction = 0.1): Rect {
-  return flatEdgeWrapSafeZoneRectPx(outer, insetFraction);
+export function flatPrintCanvasPreviewDims(view: FlatViewCalibration): { width: number; height: number } {
+  const pfW = view.printFileDims?.width ?? 1;
+  const pfH = view.printFileDims?.height ?? 1;
+  const w = FLAT_PRINT_PREVIEW_BASE_PX;
+  return { width: w, height: Math.max(1, Math.round(w * (pfH / pfW))) };
 }
 
-/** Harvested mask bbox anchor before print-file aspect correction (edge-wrap). */
-export function flatEdgeWrapAnchorRectPx(
-  view: FlatViewCalibration,
-  mask: HTMLImageElement | null,
-  canvasW: number,
-  canvasH: number,
-): Rect {
-  const fromManifest = flatPrintBoundsRectPx(view, canvasW, canvasH);
-  const fromMask = mask ? flatImageAlphaBounds(mask) : null;
-  return fromManifest ?? fromMask ?? flatVisibleRectPx(view, canvasW, canvasH);
+function normRectToPx(nr: NormRect, canvasW: number, canvasH: number): Rect {
+  return {
+    x: nr.x * canvasW,
+    y: nr.y * canvasH,
+    width: nr.width * canvasW,
+    height: nr.height * canvasH,
+  };
 }
+
+export type FlatPrintCanvasLayout = {
+  previewW: number;
+  previewH: number;
+  /** Full print canvas (grey box) — placement + outer guide. */
+  printCanvas: Rect;
+  /** Phone back draw region (blank + mask). */
+  phoneBack: Rect;
+  /** Safe zone (amber dashed guide). */
+  safeZone: Rect;
+};
 
 /**
- * Edge-wrap phone mockups project the flat print template onto a 3D view, so the
- * harvested mask bbox is often tall/narrow while `printFileDims` is the wide unwrap.
- * Placement + print-file bake use the full print canvas — expand to print-file
- * aspect (cover-fit around the anchor) so preview matches bake semantics.
+ * Print-canvas-centric layout for edge-wrap phone cases.
+ * Coordinates match printFileDims space (Printify grey box), not raw mockup pixels.
  */
-export function flatEdgeWrapPrintCanvasRectPx(
-  view: FlatViewCalibration,
-  anchor: Rect,
-): Rect {
-  const pfW = view.printFileDims?.width ?? 0;
-  const pfH = view.printFileDims?.height ?? 0;
-  if (pfW <= 0 || pfH <= 0 || anchor.width <= 0 || anchor.height <= 0) {
-    return anchor;
+export function flatPrintCanvasLayout(view: FlatViewCalibration): FlatPrintCanvasLayout {
+  const { width: previewW, height: previewH } = flatPrintCanvasPreviewDims(view);
+  const printCanvas: Rect = { x: 0, y: 0, width: previewW, height: previewH };
+
+  let phoneBackNorm = view.phoneBackNormalized as NormRect | null | undefined;
+  let safeZoneNorm = view.safeZoneNormalized as NormRect | null | undefined;
+
+  if (!phoneBackNorm || !safeZoneNorm) {
+    phoneBackNorm = { x: 0, y: 0, width: 1, height: 1 };
+    safeZoneNorm = view.visibleRectNormalized
+      ? (view.visibleRectNormalized as NormRect)
+      : { x: 0.08, y: 0.08, width: 0.84, height: 0.84 };
   }
-  const aspect = pfW / pfH;
-  const anchorAspect = anchor.width / anchor.height;
-  let w: number;
-  let h: number;
-  if (aspect >= anchorAspect) {
-    h = anchor.height;
-    w = h * aspect;
-  } else {
-    w = anchor.width;
-    h = w / aspect;
-  }
+
   return {
-    x: anchor.x + (anchor.width - w) / 2,
-    y: anchor.y + (anchor.height - h) / 2,
-    width: w,
-    height: h,
+    previewW,
+    previewH,
+    printCanvas,
+    phoneBack: normRectToPx(phoneBackNorm, previewW, previewH),
+    safeZone: normRectToPx(safeZoneNorm, previewW, previewH),
   };
 }
 
 /**
- * Coordinate system for placement + print-file bake (mockup px).
- * Edge-wrap: full print unwrap bounds. Apparel: visible print rect.
+ * Coordinate system for placement + print-file bake.
+ * Edge-wrap: full print canvas. Apparel: visible print rect on mockup.
  */
 export function flatPlacementRectPx(
   view: FlatViewCalibration,
@@ -224,89 +230,37 @@ export function flatPlacementRectPx(
   opts: { edgeWrapMode?: boolean; decorMode?: boolean },
 ): Rect {
   if (opts.edgeWrapMode) {
-    return flatPrintBoundsPx(view, mask, canvasW, canvasH);
+    return flatPrintCanvasLayout(view).printCanvas;
   }
   return flatVisibleRectPx(view, canvasW, canvasH);
 }
 
-/**
- * Edge-wrap overlay guides: inner = safe visible back face, outer = full print canvas.
- */
-export function flatEdgeWrapGuideRects(
-  view: FlatViewCalibration,
-  mask: HTMLImageElement | null,
-  canvasW: number,
-  canvasH: number,
-): { inner: Rect; outer: Rect } {
-  const anchor = flatEdgeWrapAnchorRectPx(view, mask, canvasW, canvasH);
-  const outer = flatEdgeWrapPrintCanvasRectPx(view, anchor);
-
-  let inner = flatVisibleRectPx(view, canvasW, canvasH);
-  if (rectsNearlyEqual(inner, outer) || rectsNearlyEqual(inner, anchor)) {
-    inner = flatEdgeWrapSafeZoneRectPx(outer);
-  }
-  return { inner, outer };
+/** Edge-wrap overlay guides: outer = print canvas, inner = safe zone. */
+export function flatEdgeWrapGuideRects(view: FlatViewCalibration): { inner: Rect; outer: Rect } {
+  const layout = flatPrintCanvasLayout(view);
+  return { inner: layout.safeZone, outer: layout.printCanvas };
 }
 
-function intersectRect(a: Rect, b: Rect): Rect {
-  const x = Math.max(a.x, b.x);
-  const y = Math.max(a.y, b.y);
-  const r = Math.min(a.x + a.width, b.x + b.width);
-  const btm = Math.min(a.y + a.height, b.y + b.height);
-  return { x, y, width: Math.max(0, r - x), height: Math.max(0, btm - y) };
-}
-
-/** Fit print-file aspect into a bounding box (letterbox). */
-function fitAspectRectInBox(boxW: number, boxH: number, aspect: number): Rect {
-  let w = boxH * aspect;
-  let h = boxH;
-  if (w > boxW) {
-    w = boxW;
-    h = boxW / aspect;
-  }
-  return { x: (boxW - w) / 2, y: (boxH - h) / 2, width: w, height: h };
-}
-
+/** @deprecated Legacy viewport crop — use flatPrintCanvasLayout. */
 export type FlatEdgeWrapViewportLayout = {
   backFace: Rect;
-  /** Rects in viewport space (0,0 = cropped canvas top-left). */
   placementRect: Rect;
   guides: { inner: Rect; outer: Rect };
 };
 
-/**
- * Side-profile phone mockups: crop to back face and align guides/placement in
- * viewport coordinates. Print-file aspect is letterboxed on the back face so
- * normalized placement matches order-time bake (full print canvas).
- */
+/** @deprecated Use flatPrintCanvasLayout — kept for legacy manifest fallback. */
 export function flatEdgeWrapViewportLayout(
   view: FlatViewCalibration,
-  mask: HTMLImageElement | null,
-  canvasW: number,
-  canvasH: number,
+  _mask: HTMLImageElement | null,
+  _canvasW: number,
+  _canvasH: number,
 ): FlatEdgeWrapViewportLayout | null {
-  const backFace = flatBackFaceCropRectPx(view, mask, canvasW, canvasH);
-  if (!backFace) return null;
-
-  const pfW = view.printFileDims?.width ?? backFace.width;
-  const pfH = view.printFileDims?.height ?? backFace.height;
-  const aspect = pfW > 0 && pfH > 0 ? pfW / pfH : backFace.width / backFace.height;
-  const outer = fitAspectRectInBox(backFace.width, backFace.height, aspect);
-
-  const visibleOnMockup = flatVisibleRectPx(view, canvasW, canvasH);
-  const visibleOnBackFace = intersectRect(visibleOnMockup, backFace);
-  let inner = offsetRectByCrop(visibleOnBackFace, backFace);
-  // Legacy harvests stored the full mask bbox as visible — fall back to inset on print canvas.
-  if (
-    inner.width < 4 ||
-    inner.height < 4 ||
-    inner.width > outer.width * 0.92 ||
-    inner.height > outer.height * 0.92
-  ) {
-    inner = flatEdgeWrapSafeZoneRectPx(outer);
-  }
-
-  return { backFace, placementRect: outer, guides: { inner, outer } };
+  const layout = flatPrintCanvasLayout(view);
+  return {
+    backFace: layout.phoneBack,
+    placementRect: layout.printCanvas,
+    guides: { inner: layout.safeZone, outer: layout.printCanvas },
+  };
 }
 
 /**
@@ -604,15 +558,9 @@ function regionToCanvas(
   return c;
 }
 
-/** Full printable unwrap bounds — prefer manifest over live mask bbox. */
-export function flatPrintBoundsPx(
-  view: FlatViewCalibration,
-  mask: HTMLImageElement | null,
-  canvasW: number,
-  canvasH: number,
-): Rect {
-  const anchor = flatEdgeWrapAnchorRectPx(view, mask, canvasW, canvasH);
-  return flatEdgeWrapPrintCanvasRectPx(view, anchor);
+/** Full printable unwrap bounds in print-canvas preview space. */
+export function flatPrintBoundsPx(view: FlatViewCalibration): Rect {
+  return flatPrintCanvasLayout(view).printCanvas;
 }
 
 /** @deprecated Prefer `edgeWrapMode` prop — shading map alone mis-classifies apparel. */
@@ -775,52 +723,103 @@ export function renderFlatView(input: FlatRenderInput): void {
     forceShadingMap = false,
     edgeWrapMode = false,
     decorMode = false,
-    cropToBackFace = false,
-    sizeId,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
 
-  const sideProfile =
-    cropToBackFace &&
-    edgeWrapMode &&
-    (flatEdgeWrapHasSideProfileStrip(view, mask, W, H, sizeId) ||
-      !!(sizeId && looksLikeSideProfilePhoneModel(sizeId)));
-  const backFace = sideProfile ? flatBackFaceCropRectPx(view, mask, W, H) : null;
-  const viewportLayout =
-    backFace ? flatEdgeWrapViewportLayout(view, mask, W, H) : null;
-  const outW = backFace?.width ?? W;
-  const outH = backFace?.height ?? H;
+  if (edgeWrapMode) {
+    const layout = flatPrintCanvasLayout(view);
+    const outW = layout.previewW;
+    const outH = layout.previewH;
+    const phoneBack = layout.phoneBack;
 
-  target.width = outW;
-  target.height = outH;
+    target.width = outW;
+    target.height = outH;
+    const ctx = target.getContext("2d");
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, outW, outH);
+    ctx.drawImage(blank, 0, 0, W, H, phoneBack.x, phoneBack.y, phoneBack.width, phoneBack.height);
+
+    if (!artwork) return;
+    const { w: artW, h: artH } = imgDims(artwork);
+    if (artW <= 0 || artH <= 0) return;
+
+    const rect = layout.printCanvas;
+    const art = document.createElement("canvas");
+    art.width = outW;
+    art.height = outH;
+    const actx = art.getContext("2d");
+    if (!actx) return;
+
+    const box = flatArtBox(rect, placement, artW, artH);
+    actx.drawImage(artwork, box.x, box.y, box.width, box.height);
+
+    if (mask) {
+      actx.globalCompositeOperation = "destination-in";
+      actx.drawImage(mask, 0, 0, W, H, phoneBack.x, phoneBack.y, phoneBack.width, phoneBack.height);
+      actx.globalCompositeOperation = "source-over";
+    }
+
+    const shadeMode: "blank" | "map" =
+      view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
+
+    const shadeBlankCanvas = document.createElement("canvas");
+    shadeBlankCanvas.width = outW;
+    shadeBlankCanvas.height = outH;
+    const sbCtx = shadeBlankCanvas.getContext("2d");
+    if (sbCtx) {
+      sbCtx.drawImage(blank, 0, 0, W, H, phoneBack.x, phoneBack.y, phoneBack.width, phoneBack.height);
+    }
+    let shadeMapImg: HTMLImageElement | HTMLCanvasElement | null = shading;
+    if (shading) {
+      const sc = document.createElement("canvas");
+      sc.width = outW;
+      sc.height = outH;
+      const scx = sc.getContext("2d");
+      if (scx) {
+        scx.drawImage(shading, 0, 0, W, H, phoneBack.x, phoneBack.y, phoneBack.width, phoneBack.height);
+        shadeMapImg = sc;
+      }
+    }
+
+    applyShading(
+      art,
+      actx,
+      shadeMode,
+      shadeBlankCanvas as unknown as HTMLImageElement,
+      shadeMapImg as HTMLImageElement | null,
+      outW,
+      outH,
+      artworkCorsClean,
+    );
+
+    ctx.drawImage(art, 0, 0);
+    return;
+  }
+
+  target.width = W;
+  target.height = H;
   const ctx = target.getContext("2d");
   if (!ctx) return;
 
-  ctx.clearRect(0, 0, outW, outH);
-  if (backFace) {
-    drawImageRegion(ctx, blank, backFace, outW, outH);
-  } else {
-    ctx.drawImage(blank, 0, 0, W, H);
-  }
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(blank, 0, 0, W, H);
   if (!artwork) return;
 
   const { w: artW, h: artH } = imgDims(artwork);
   if (artW <= 0 || artH <= 0) return;
 
-  const offset = (r: Rect): Rect => (backFace ? offsetRectByCrop(r, backFace) : r);
-  const rect =
-    viewportLayout?.placementRect ??
-    offset(flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }));
+  const rect = flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode });
 
   const art = document.createElement("canvas");
-  art.width = outW;
-  art.height = outH;
+  art.width = W;
+  art.height = H;
   const actx = art.getContext("2d");
   if (!actx) return;
 
   let drewMesh = false;
-  if (tier === "mesh" && view.meshNodes && view.meshNodes.length > 0 && !backFace) {
+  if (tier === "mesh" && view.meshNodes && view.meshNodes.length > 0) {
     const md = view.mockupDims;
     const scaleX = md && md.width > 0 ? W / md.width : 1;
     const scaleY = md && md.height > 0 ? H / md.height : 1;
@@ -848,29 +847,20 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   if (mask) {
     actx.globalCompositeOperation = "destination-in";
-    if (backFace) {
-      drawImageRegion(actx, mask, backFace, outW, outH);
-    } else {
-      actx.drawImage(mask, 0, 0, W, H);
-    }
+    actx.drawImage(mask, 0, 0, W, H);
     actx.globalCompositeOperation = "source-over";
   }
 
   const shadeMode: "blank" | "map" =
     view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
-  const shadeBlank: HTMLImageElement | HTMLCanvasElement = backFace
-    ? regionToCanvas(blank, backFace, outW, outH)
-    : blank;
-  const shadeMap: HTMLImageElement | HTMLCanvasElement | null =
-    backFace && shading ? regionToCanvas(shading, backFace, outW, outH) : shading;
   applyShading(
     art,
     actx,
     shadeMode,
-    shadeBlank as HTMLImageElement,
-    shadeMap as HTMLImageElement | null,
-    outW,
-    outH,
+    blank,
+    shading,
+    W,
+    H,
     artworkCorsClean,
   );
 

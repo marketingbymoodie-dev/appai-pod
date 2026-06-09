@@ -2,7 +2,7 @@ import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/a
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
 import type { FlatProductPlacerState } from "../index";
 import { loadFlatImageRelaxed, loadFlatViewAssets, resolveFlatBlank, resolveFlatViewCalibration, type FlatViewName } from "./flatAssets";
-import { flatEdgeWrapHasSideProfileStrip, renderFlatView } from "./flatRender";
+import { renderFlatView } from "./flatRender";
 
 /**
  * Client-side flat mockup raster for a single view — no upload. Used when the
@@ -18,9 +18,6 @@ export async function renderFlatMockupDataUrl(
   const assets = await loadFlatViewAssets(manifest, colorId, view);
   const calib = resolveFlatViewCalibration(manifest, colorId, view);
   if (!assets?.blank || !calib) return null;
-
-  const mW = assets.blank.naturalWidth || calib.mockupDims?.width || 1;
-  const mH = assets.blank.naturalHeight || calib.mockupDims?.height || 1;
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =
@@ -40,8 +37,6 @@ export async function renderFlatMockupDataUrl(
     forceShadingMap: !!manifest.edgeWrap,
     edgeWrapMode: !!manifest.edgeWrap,
     decorMode: !!manifest.decorPerSize,
-    cropToBackFace: !!manifest.edgeWrap,
-    sizeId: colorId,
   });
 
   try {

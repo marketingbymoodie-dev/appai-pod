@@ -96,6 +96,12 @@ export interface FlatViewCalibration {
   printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
   /** Back-face only — excludes perspective side strip on phone mockups (preview crop). */
   backFaceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Phone back silhouette within print canvas (0–1, printFileDims space). */
+  phoneBackNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Safe print zone within print canvas (0–1, printFileDims space). */
+  safeZoneNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Side-profile blank/mask were pre-cropped at harvest. */
+  sideProfileCropped?: boolean;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;
@@ -5874,7 +5880,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::bf5`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc1`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;

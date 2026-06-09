@@ -6,7 +6,6 @@ import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/a
 import {
   flatArtBox,
   flatPlacementRectPx,
-  flatPrintBoundsPx,
   flatVisibleRectPx,
   FLAT_SCALE_MIN,
   type Rect,

@@ -58,6 +58,12 @@ export type FlatViewCalibration = {
   printBoundsNormalized?: { x: number; y: number; width: number; height: number } | null;
   /** Back-face only — excludes perspective side strip on phone mockups (preview crop). */
   backFaceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Phone back silhouette within print canvas (0–1, printFileDims space). */
+  phoneBackNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Safe print zone within print canvas (0–1, printFileDims space). */
+  safeZoneNormalized?: { x: number; y: number; width: number; height: number } | null;
+  /** Side-profile blank/mask were pre-cropped at harvest (no runtime crop). */
+  sideProfileCropped?: boolean;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;
@@ -90,6 +96,9 @@ export type FlatCalibrationManifest = {
           | "visibleRectNormalized"
           | "printBoundsNormalized"
           | "backFaceCropNormalized"
+          | "phoneBackNormalized"
+          | "safeZoneNormalized"
+          | "sideProfileCropped"
           | "printFileDims"
           | "mockupDims"
           | "maskUrl"
@@ -712,6 +721,144 @@ function pxRectToNormalized(
   };
 }
 
+function normalizedRectToPx(nr: NormRect, canvasW: number, canvasH: number): NormRect {
+  return {
+    x: Math.round(nr.x * canvasW),
+    y: Math.round(nr.y * canvasH),
+    width: Math.max(1, Math.round(nr.width * canvasW)),
+    height: Math.max(1, Math.round(nr.height * canvasH)),
+  };
+}
+
+/** Crop an RGBA raw buffer in-place dimensions. */
+function cropRawRgba(
+  raw: Buffer,
+  srcW: number,
+  srcH: number,
+  crop: { x: number; y: number; width: number; height: number },
+): { raw: Buffer; width: number; height: number } {
+  const w = Math.max(1, Math.round(crop.width));
+  const h = Math.max(1, Math.round(crop.height));
+  const left = Math.max(0, Math.round(crop.x));
+  const top = Math.max(0, Math.round(crop.y));
+  const out = Buffer.alloc(w * h * 4, 0);
+  for (let y = 0; y < h; y++) {
+    const sy = top + y;
+    if (sy >= srcH) break;
+    for (let x = 0; x < w; x++) {
+      const sx = left + x;
+      if (sx >= srcW) continue;
+      const si = (sy * srcW + sx) * 4;
+      const oi = (y * w + x) * 4;
+      out[oi] = raw[si];
+      out[oi + 1] = raw[si + 1];
+      out[oi + 2] = raw[si + 2];
+      out[oi + 3] = raw[si + 3];
+    }
+  }
+  return { raw: out, width: w, height: h };
+}
+
+async function cropImageBuffer(
+  buffer: Buffer,
+  crop: { x: number; y: number; width: number; height: number },
+): Promise<{ buffer: Buffer; width: number; height: number }> {
+  const w = Math.max(1, Math.round(crop.width));
+  const h = Math.max(1, Math.round(crop.height));
+  const left = Math.max(0, Math.round(crop.x));
+  const top = Math.max(0, Math.round(crop.y));
+  const cropped = await sharp(buffer).extract({ left, top, width: w, height: h }).toBuffer();
+  const meta = await sharp(cropped).metadata();
+  return { buffer: cropped, width: meta.width ?? w, height: meta.height ?? h };
+}
+
+/**
+ * Map harvested mockup mask geometry into print-canvas normalized coords.
+ * Print canvas = Printify grey box (printFileDims). Phone back is centered;
+ * safe zone is the inset dashed guide inside the back face.
+ */
+export function computePrintCanvasGeometry(
+  derived: { printBounds: NormRect; safeZone: NormRect; backFaceCrop: NormRect },
+): { phoneBackNormalized: NormRect; safeZoneNormalized: NormRect } {
+  const { printBounds: full, safeZone: safe, backFaceCrop: back } = derived;
+  const backWFrac = back.width / Math.max(full.width, 1e-6);
+  const backHFrac = back.height / Math.max(full.height, 1e-6);
+
+  const phoneBackNormalized: NormRect = {
+    x: +((1 - backWFrac) / 2).toFixed(5),
+    y: +((1 - backHFrac) / 2).toFixed(5),
+    width: +backWFrac.toFixed(5),
+    height: +backHFrac.toFixed(5),
+  };
+
+  const relSafeX = (safe.x - back.x) / Math.max(back.width, 1e-6);
+  const relSafeY = (safe.y - back.y) / Math.max(back.height, 1e-6);
+  const relSafeW = safe.width / Math.max(back.width, 1e-6);
+  const relSafeH = safe.height / Math.max(back.height, 1e-6);
+
+  const safeZoneNormalized: NormRect = {
+    x: +(phoneBackNormalized.x + relSafeX * phoneBackNormalized.width).toFixed(5),
+    y: +(phoneBackNormalized.y + relSafeY * phoneBackNormalized.height).toFixed(5),
+    width: +(relSafeW * phoneBackNormalized.width).toFixed(5),
+    height: +(relSafeH * phoneBackNormalized.height).toFixed(5),
+  };
+
+  return { phoneBackNormalized, safeZoneNormalized };
+}
+
+function sideProfileStripDetected(derived: { printBounds: NormRect; backFaceCrop: NormRect }): boolean {
+  return derived.backFaceCrop.width < derived.printBounds.width * 0.92;
+}
+
+type EdgeWrapViewGeometry = {
+  visibleRectNormalized: NormRect | null;
+  printBoundsNormalized: NormRect | null;
+  backFaceCropNormalized: NormRect | null;
+  phoneBackNormalized: NormRect | null;
+  safeZoneNormalized: NormRect | null;
+  sideProfileCropped: boolean;
+  mockupW: number;
+  mockupH: number;
+  maskRaw: Buffer;
+};
+
+/** Edge-wrap geometry + optional side-profile crop of mask raw buffer. */
+function edgeWrapViewGeometryFromMask(
+  maskRaw: Buffer,
+  width: number,
+  height: number,
+): EdgeWrapViewGeometry | null {
+  const derived = analyzeEdgeWrapGeometryFromMask(maskRaw, width, height);
+  if (!derived) return null;
+
+  const canvasGeo = computePrintCanvasGeometry(derived);
+  let outRaw = maskRaw;
+  let outW = width;
+  let outH = height;
+  let sideProfileCropped = false;
+
+  if (sideProfileStripDetected(derived)) {
+    const cropPx = normalizedRectToPx(derived.backFaceCrop, width, height);
+    const cropped = cropRawRgba(maskRaw, width, height, cropPx);
+    outRaw = cropped.raw;
+    outW = cropped.width;
+    outH = cropped.height;
+    sideProfileCropped = true;
+  }
+
+  return {
+    visibleRectNormalized: derived.safeZone,
+    printBoundsNormalized: derived.printBounds,
+    backFaceCropNormalized: derived.backFaceCrop,
+    phoneBackNormalized: canvasGeo.phoneBackNormalized,
+    safeZoneNormalized: canvasGeo.safeZoneNormalized,
+    sideProfileCropped,
+    mockupW: outW,
+    mockupH: outH,
+    maskRaw: outRaw,
+  };
+}
+
 /**
  * Derive full-print bounds + safe back-face zone from a registration mask.
  * Handles flat back-only unwraps and back+side composite mockups (side strip on
@@ -828,29 +975,63 @@ function geometryFromMagentaAnalysis(
   visibleRectNormalized: NormRect | null;
   printBoundsNormalized: NormRect | null;
   backFaceCropNormalized: NormRect | null;
+  phoneBackNormalized: NormRect | null;
+  safeZoneNormalized: NormRect | null;
+  sideProfileCropped: boolean;
+  maskRaw: Buffer;
+  mockupW: number;
+  mockupH: number;
 } {
   if (!a.found || !a.normalized) {
-    return { visibleRectNormalized: null, printBoundsNormalized: null, backFaceCropNormalized: null };
+    return {
+      visibleRectNormalized: null,
+      printBoundsNormalized: null,
+      backFaceCropNormalized: null,
+      phoneBackNormalized: null,
+      safeZoneNormalized: null,
+      sideProfileCropped: false,
+      maskRaw: a.maskRaw,
+      mockupW: a.width,
+      mockupH: a.height,
+    };
   }
   if (!edgeWrap) {
     return {
       visibleRectNormalized: a.normalized,
       printBoundsNormalized: a.normalized,
       backFaceCropNormalized: null,
+      phoneBackNormalized: null,
+      safeZoneNormalized: null,
+      sideProfileCropped: false,
+      maskRaw: a.maskRaw,
+      mockupW: a.width,
+      mockupH: a.height,
     };
   }
-  const derived = analyzeEdgeWrapGeometryFromMask(a.maskRaw, a.width, a.height);
+  const derived = edgeWrapViewGeometryFromMask(a.maskRaw, a.width, a.height);
   if (!derived) {
     return {
       visibleRectNormalized: a.normalized,
       printBoundsNormalized: a.normalized,
       backFaceCropNormalized: null,
+      phoneBackNormalized: null,
+      safeZoneNormalized: null,
+      sideProfileCropped: false,
+      maskRaw: a.maskRaw,
+      mockupW: a.width,
+      mockupH: a.height,
     };
   }
   return {
-    visibleRectNormalized: derived.safeZone,
-    printBoundsNormalized: derived.printBounds,
-    backFaceCropNormalized: derived.backFaceCrop,
+    visibleRectNormalized: derived.visibleRectNormalized,
+    printBoundsNormalized: derived.printBoundsNormalized,
+    backFaceCropNormalized: derived.backFaceCropNormalized,
+    phoneBackNormalized: derived.phoneBackNormalized,
+    safeZoneNormalized: derived.safeZoneNormalized,
+    sideProfileCropped: derived.sideProfileCropped,
+    maskRaw: derived.maskRaw,
+    mockupW: derived.mockupW,
+    mockupH: derived.mockupH,
   };
 }
 
@@ -1034,21 +1215,24 @@ async function harvestPerBlankGeometry(args: {
       if (!regMatch) continue;
       const regBuf = await downloadBuffer(regMatch.url);
       const a = await analyzeMagenta(regBuf);
+      const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap);
       let maskUrl: string | null = null;
       if (a.found) {
         maskUrl = await uploadToFlatCalibrationBucket(
           `products/${productTypeId}/mask-${safe}-${view}.png`,
-          await rawToPng(a.maskRaw, a.width, a.height),
+          await rawToPng(geoDerived.maskRaw, geoDerived.mockupW, geoDerived.mockupH),
           "image/png",
         );
       }
-      const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap);
       geo[view] = {
         printBoundsNormalized: geoDerived.printBoundsNormalized,
         visibleRectNormalized: geoDerived.visibleRectNormalized,
         backFaceCropNormalized: geoDerived.backFaceCropNormalized,
+        phoneBackNormalized: geoDerived.phoneBackNormalized,
+        safeZoneNormalized: geoDerived.safeZoneNormalized,
+        sideProfileCropped: geoDerived.sideProfileCropped,
         printFileDims: { width: dims.width, height: dims.height },
-        mockupDims: { width: a.width, height: a.height },
+        mockupDims: { width: geoDerived.mockupW, height: geoDerived.mockupH },
         maskUrl,
         shadingUrl: vc.shadingUrl,
         shadingMode: vc.shadingMode,
@@ -1163,18 +1347,21 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       const buf = await downloadBuffer(match.url);
       const a = await analyzeMagenta(buf);
       maskByView[view] = a;
+      const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct);
       let maskUrl: string | null = null;
       if (a.found) {
-        const maskPng = await rawToPng(a.maskRaw, a.width, a.height);
+        const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);
         maskUrl = await uploadToFlatCalibrationBucket(`products/${productTypeId}/mask-${view}.png`, maskPng, "image/png");
       }
-      const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct);
       baseManifest.views[view] = {
         printFileDims: placeholderDims.get(view)!,
         visibleRectNormalized: geo.visibleRectNormalized,
         printBoundsNormalized: geo.printBoundsNormalized,
         backFaceCropNormalized: geo.backFaceCropNormalized,
-        mockupDims: { width: a.width, height: a.height },
+        phoneBackNormalized: geo.phoneBackNormalized,
+        safeZoneNormalized: geo.safeZoneNormalized,
+        sideProfileCropped: geo.sideProfileCropped,
+        mockupDims: { width: geo.mockupW, height: geo.mockupH },
         maskUrl,
         shadingUrl: null,
         shadingMode: "blank",
@@ -1199,8 +1386,12 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       const vc = baseManifest.views[view];
       const match = pickView(grayImages, view);
       if (!vc || !match) continue;
-      const buf = await downloadBuffer(match.url);
+      let buf = await downloadBuffer(match.url);
       const mask = maskByView[view];
+      if (vc.sideProfileCropped && vc.backFaceCropNormalized && mask) {
+        const cropPx = normalizedRectToPx(vc.backFaceCropNormalized, mask.width, mask.height);
+        ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
+      }
       vc.shadingUrl = await uploadToFlatCalibrationBucket(`products/${productTypeId}/shading-${view}.png`, buf, "image/jpeg");
       vc.shadingMode = mask ? await shadingModeFromGray(buf, mask) : "blank";
     }
@@ -1225,24 +1416,15 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       createdProductIds.push(blank.productId);
       const blankImages = await pollMockups(token, shopId, blank.productId, blank.images);
       const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-      const perView: Partial<Record<ViewName, string>> = {};
-      for (const view of availableViews) {
-        const match = pickView(blankImages, view);
-        if (!match) continue;
-        const buf = await downloadBuffer(match.url);
-        perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
-      }
-      if (Object.keys(perView).length > 0) {
-        baseManifest.blanks[color.id] = perView;
-      }
 
       const variant = variants.find((v) => v.id === color.variantId);
       const variantDims = placeholderDimsForVariant(variant);
+      let perBlankGeo: Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null = null;
       if (
         needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize) &&
         variantDims.size > 0
       ) {
-        const geo = await harvestPerBlankGeometry({
+        perBlankGeo = await harvestPerBlankGeometry({
           token,
           shopId,
           blueprintId,
@@ -1256,11 +1438,35 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           edgeWrap: edgeWrapProduct,
           createdProductIds,
         });
-        if (geo && Object.keys(geo).length > 0) {
+        if (perBlankGeo && Object.keys(perBlankGeo).length > 0) {
           if (!baseManifest.geometryByBlank) baseManifest.geometryByBlank = {};
-          baseManifest.geometryByBlank[color.id] = geo;
+          baseManifest.geometryByBlank[color.id] = perBlankGeo;
           baseManifest.representativeGeometry = false;
         }
+      }
+
+      const perView: Partial<Record<ViewName, string>> = {};
+      for (const view of availableViews) {
+        const match = pickView(blankImages, view);
+        if (!match) continue;
+        let buf = await downloadBuffer(match.url);
+        const geoView = perBlankGeo?.[view] ?? baseManifest.views[view];
+        const maskMeta = maskByView[view];
+        const origW = maskMeta?.width ?? geoView?.mockupDims?.width;
+        const origH = maskMeta?.height ?? geoView?.mockupDims?.height;
+        if (
+          geoView?.sideProfileCropped &&
+          geoView.backFaceCropNormalized &&
+          origW &&
+          origH
+        ) {
+          const cropPx = normalizedRectToPx(geoView.backFaceCropNormalized, origW, origH);
+          ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
+        }
+        perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
+      }
+      if (Object.keys(perView).length > 0) {
+        baseManifest.blanks[color.id] = perView;
       }
     }
 
