@@ -248,6 +248,67 @@ export function flatEdgeWrapGuideRects(
   return { inner, outer };
 }
 
+function intersectRect(a: Rect, b: Rect): Rect {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const r = Math.min(a.x + a.width, b.x + b.width);
+  const btm = Math.min(a.y + a.height, b.y + b.height);
+  return { x, y, width: Math.max(0, r - x), height: Math.max(0, btm - y) };
+}
+
+/** Fit print-file aspect into a bounding box (letterbox). */
+function fitAspectRectInBox(boxW: number, boxH: number, aspect: number): Rect {
+  let w = boxH * aspect;
+  let h = boxH;
+  if (w > boxW) {
+    w = boxW;
+    h = boxW / aspect;
+  }
+  return { x: (boxW - w) / 2, y: (boxH - h) / 2, width: w, height: h };
+}
+
+export type FlatEdgeWrapViewportLayout = {
+  backFace: Rect;
+  /** Rects in viewport space (0,0 = cropped canvas top-left). */
+  placementRect: Rect;
+  guides: { inner: Rect; outer: Rect };
+};
+
+/**
+ * Side-profile phone mockups: crop to back face and align guides/placement in
+ * viewport coordinates. Print-file aspect is letterboxed on the back face so
+ * normalized placement matches order-time bake (full print canvas).
+ */
+export function flatEdgeWrapViewportLayout(
+  view: FlatViewCalibration,
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): FlatEdgeWrapViewportLayout | null {
+  const backFace = flatBackFaceCropRectPx(view, mask, canvasW, canvasH);
+  if (!backFace) return null;
+
+  const pfW = view.printFileDims?.width ?? backFace.width;
+  const pfH = view.printFileDims?.height ?? backFace.height;
+  const aspect = pfW > 0 && pfH > 0 ? pfW / pfH : backFace.width / backFace.height;
+  const outer = fitAspectRectInBox(backFace.width, backFace.height, aspect);
+
+  const visibleOnMockup = flatVisibleRectPx(view, canvasW, canvasH);
+  const visibleOnBackFace = intersectRect(visibleOnMockup, backFace);
+  let inner = offsetRectByCrop(visibleOnBackFace, backFace);
+  // Legacy harvests stored the full mask bbox as visible — fall back to inset on print canvas.
+  if (
+    inner.width < 4 ||
+    inner.height < 4 ||
+    inner.width > outer.width * 0.92 ||
+    inner.height > outer.height * 0.92
+  ) {
+    inner = flatEdgeWrapSafeZoneRectPx(outer);
+  }
+
+  return { backFace, placementRect: outer, guides: { inner, outer } };
+}
+
 /**
  * Artwork bounding box (mockup px) for a given placement. Baseline (scale=1)
  * = the smallest uniform scale that fully COVERS the rect, so reducing scale
@@ -385,39 +446,33 @@ function backFaceRectFromMaskAlpha(
   }
   const maxFill = Math.max(...colFill, 1);
 
+  // Side strip lives in the right ~25% — scan there for a column-density valley.
+  const scanStart = Math.floor(bw * 0.72);
   let splitCol: number | null = null;
   let minVal = Infinity;
-  const scanStart = Math.floor(bw * 0.52);
-  for (let i = scanStart; i < bw - 3; i++) {
+  for (let i = scanStart; i < bw - 2; i++) {
     const v = colFill[i];
-    if (v < minVal && v <= maxFill * 0.5) {
+    if (v < minVal) {
       minVal = v;
       splitCol = i;
     }
   }
 
-  let backRightIdx = bw - 1;
-  if (splitCol !== null) {
-    let stripFill = 0;
-    for (let i = splitCol; i < bw; i++) stripFill += colFill[i];
-    if (stripFill >= maxFill * 3) {
-      backRightIdx = Math.max(scanStart, splitCol - 1);
-    }
-  }
-
-  if (splitCol === null || backRightIdx >= bw - 3) {
-    for (let i = bw - 1; i >= 0; i--) {
-      if (colFill[i] >= maxFill * 0.4) {
-        backRightIdx = i;
-        break;
-      }
+  let backWidth = bw;
+  if (splitCol !== null && splitCol > scanStart) {
+    let before = 0;
+    let after = 0;
+    for (let i = 0; i < splitCol; i++) before += colFill[i];
+    for (let i = splitCol; i < bw; i++) after += colFill[i];
+    if (after >= maxFill * 2 && before > after * 1.15) {
+      backWidth = splitCol;
     }
   }
 
   return {
     x: minX,
     y: minY,
-    width: Math.max(1, backRightIdx + 1),
+    width: Math.max(1, backWidth),
     height: maxY - minY + 1,
   };
 }
@@ -475,10 +530,8 @@ export function flatBackFaceCropRectPx(
     canvasW,
     canvasH,
   );
-  if (fromMask && stored) {
-    return fromMask.width < stored.width * 0.97 ? fromMask : stored;
-  }
-  return fromMask ?? stored;
+  if (fromMask) return fromMask;
+  return stored;
 }
 
 export function offsetRectByCrop(rect: Rect, crop: Rect): Rect {
@@ -734,6 +787,8 @@ export function renderFlatView(input: FlatRenderInput): void {
     (flatEdgeWrapHasSideProfileStrip(view, mask, W, H, sizeId) ||
       !!(sizeId && looksLikeSideProfilePhoneModel(sizeId)));
   const backFace = sideProfile ? flatBackFaceCropRectPx(view, mask, W, H) : null;
+  const viewportLayout =
+    backFace ? flatEdgeWrapViewportLayout(view, mask, W, H) : null;
   const outW = backFace?.width ?? W;
   const outH = backFace?.height ?? H;
 
@@ -754,7 +809,9 @@ export function renderFlatView(input: FlatRenderInput): void {
   if (artW <= 0 || artH <= 0) return;
 
   const offset = (r: Rect): Rect => (backFace ? offsetRectByCrop(r, backFace) : r);
-  const rect = offset(flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }));
+  const rect =
+    viewportLayout?.placementRect ??
+    offset(flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode }));
 
   const art = document.createElement("canvas");
   art.width = outW;

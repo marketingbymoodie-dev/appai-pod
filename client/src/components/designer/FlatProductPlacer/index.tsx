@@ -27,9 +27,8 @@ import {
   flatOverflows,
   flatPlacementRectPx,
   flatPlacementScaleMax,
-  flatBackFaceCropRectPx,
   flatEdgeWrapHasSideProfileStrip,
-  offsetRectByCrop,
+  flatEdgeWrapViewportLayout,
   flatPrintBoundsPx,
   flatVisibleRectPx,
   renderFlatView,
@@ -570,40 +569,41 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode &&
     !!calib &&
     flatEdgeWrapHasSideProfileStrip(calib, viewAssets.mask, mockupW, mockupH, colorId);
-  const backFaceCrop =
-    hasSideProfile
-      ? flatBackFaceCropRectPx(calib, viewAssets.mask, mockupW, mockupH)
+  const viewportLayout =
+    hasSideProfile && calib
+      ? flatEdgeWrapViewportLayout(calib, viewAssets.mask, mockupW, mockupH)
       : null;
-  const offsetForCrop = (r: Rect): Rect =>
-    backFaceCrop ? offsetRectByCrop(r, backFaceCrop) : r;
+  const backFaceCrop = viewportLayout?.backFace ?? null;
   const displayMockupW = backFaceCrop?.width ?? mockupW;
   const displayMockupH = backFaceCrop?.height ?? mockupH;
   const edgeGuides =
-    edgeWrapMode && calib
+    edgeWrapMode && calib && !viewportLayout
       ? flatEdgeWrapGuideRects(calib, viewAssets.mask, mockupW, mockupH)
       : null;
   const placementRectRaw =
-    calib
+    calib && !viewportLayout
       ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
           edgeWrapMode,
           decorMode,
         })
       : null;
-  const placementRect = placementRectRaw ? offsetForCrop(placementRectRaw) : null;
-  const displayEdgeGuides = edgeGuides
-    ? { inner: offsetForCrop(edgeGuides.inner), outer: offsetForCrop(edgeGuides.outer) }
-    : null;
+  const placementRect = viewportLayout?.placementRect ?? placementRectRaw ?? null;
+  const displayEdgeGuides =
+    viewportLayout?.guides ??
+    (edgeGuides ? { inner: edgeGuides.inner, outer: edgeGuides.outer } : null);
 
   // Coverage warnings differ by product type.
   type CoverageWarning = "none" | "trim" | "edge-gap";
   let coverageWarning: CoverageWarning = "none";
-  if (calib && artworkImg && viewEnabled && placementRectRaw) {
-    const printBounds =
-      edgeGuides?.outer ??
-      flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
-    const safeZone = edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
+  if (calib && artworkImg && viewEnabled) {
+    const printBounds = viewportLayout?.guides.outer ?? edgeGuides?.outer ?? flatPrintBoundsPx(calib, viewAssets.mask, mockupW, mockupH);
+    const safeZone = viewportLayout?.guides.inner ?? edgeGuides?.inner ?? flatVisibleRectPx(calib, mockupW, mockupH);
+    const placementForBox = viewportLayout?.placementRect ?? placementRectRaw;
+    if (!placementForBox) {
+      coverageWarning = "none";
+    } else {
     const box = flatArtBox(
-      placementRectRaw,
+      placementForBox,
       placement,
       artworkImg.naturalWidth,
       artworkImg.naturalHeight,
@@ -616,11 +616,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         coverageWarning = "edge-gap";
       }
     } else if (decorMode) {
-      if (!flatCovers(placementRect, box)) {
+      if (!flatCovers(placementRect!, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatOverflows(placementRect, box)) {
+    } else if (placementRect && flatOverflows(placementRect, box)) {
       coverageWarning = "trim";
+    }
     }
   }
 

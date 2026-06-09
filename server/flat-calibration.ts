@@ -778,26 +778,30 @@ export function analyzeEdgeWrapGeometryFromMask(
       }
     }
     const maxFill = Math.max(...colFill, 1);
+    const scanStart = Math.floor(bw * 0.72);
     let splitCol: number | null = null;
     let minVal = Infinity;
-    const scanStart = Math.floor(bw * 0.52);
-    for (let i = scanStart; i < bw - 3; i++) {
+    for (let i = scanStart; i < bw - 2; i++) {
       const v = colFill[i];
-      if (v < minVal && v <= maxFill * 0.5) {
+      if (v < minVal) {
         minVal = v;
         splitCol = i;
       }
     }
-    let backRightIdx = bw - 1;
-    if (splitCol !== null) {
-      let stripFill = 0;
-      for (let i = splitCol; i < bw; i++) stripFill += colFill[i];
-      if (stripFill >= maxFill * 3) backRightIdx = Math.max(scanStart, splitCol - 1);
+    let backWidth = bw;
+    if (splitCol !== null && splitCol > scanStart) {
+      let before = 0;
+      let after = 0;
+      for (let i = 0; i < splitCol; i++) before += colFill[i];
+      for (let i = splitCol; i < bw; i++) after += colFill[i];
+      if (after >= maxFill * 2 && before > after * 1.15) {
+        backWidth = splitCol;
+      }
     }
     backPanel = {
       x: bbox.x,
       y: bbox.y,
-      width: Math.max(1, backRightIdx + 1),
+      width: Math.max(1, backWidth),
       height: bbox.height,
     };
   }
