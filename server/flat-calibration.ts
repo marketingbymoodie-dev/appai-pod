@@ -772,24 +772,40 @@ async function cropImageBuffer(
   return { buffer: cropped, width: meta.width ?? w, height: meta.height ?? h };
 }
 
+/** Center-fit content aspect inside print-canvas aspect (Printify grey box). */
+function fitAspectCenteredInCanvas(contentAspect: number, canvasAspect: number): NormRect {
+  let w: number;
+  let h: number;
+  if (contentAspect >= canvasAspect) {
+    w = 1;
+    h = canvasAspect / contentAspect;
+  } else {
+    h = 1;
+    w = contentAspect / canvasAspect;
+  }
+  return {
+    x: +((1 - w) / 2).toFixed(5),
+    y: +((1 - h) / 2).toFixed(5),
+    width: +w.toFixed(5),
+    height: +h.toFixed(5),
+  };
+}
+
 /**
- * Map harvested mockup mask geometry into print-canvas normalized coords.
- * Print canvas = Printify grey box (printFileDims). Phone back is centered;
- * safe zone is the inset dashed guide inside the back face.
+ * Map harvested back-face geometry into print-canvas normalized coords.
+ * Print canvas = Printify grey box (printFileDims). Phone back is aspect-fit
+ * and centered; safe zone maps from harvested inset inside the back panel.
  */
 export function computePrintCanvasGeometry(
-  derived: { printBounds: NormRect; safeZone: NormRect; backFaceCrop: NormRect },
+  derived: { safeZone: NormRect; backFaceCrop: NormRect },
+  printFileDims: { width: number; height: number },
+  croppedMockupW: number,
+  croppedMockupH: number,
 ): { phoneBackNormalized: NormRect; safeZoneNormalized: NormRect } {
-  const { printBounds: full, safeZone: safe, backFaceCrop: back } = derived;
-  const backWFrac = back.width / Math.max(full.width, 1e-6);
-  const backHFrac = back.height / Math.max(full.height, 1e-6);
-
-  const phoneBackNormalized: NormRect = {
-    x: +((1 - backWFrac) / 2).toFixed(5),
-    y: +((1 - backHFrac) / 2).toFixed(5),
-    width: +backWFrac.toFixed(5),
-    height: +backHFrac.toFixed(5),
-  };
+  const { safeZone: safe, backFaceCrop: back } = derived;
+  const contentAspect = croppedMockupW / Math.max(croppedMockupH, 1);
+  const canvasAspect = printFileDims.width / Math.max(printFileDims.height, 1);
+  const phoneBackNormalized = fitAspectCenteredInCanvas(contentAspect, canvasAspect);
 
   const relSafeX = (safe.x - back.x) / Math.max(back.width, 1e-6);
   const relSafeY = (safe.y - back.y) / Math.max(back.height, 1e-6);
@@ -827,11 +843,11 @@ function edgeWrapViewGeometryFromMask(
   maskRaw: Buffer,
   width: number,
   height: number,
+  printFileDims?: { width: number; height: number },
 ): EdgeWrapViewGeometry | null {
   const derived = analyzeEdgeWrapGeometryFromMask(maskRaw, width, height);
   if (!derived) return null;
 
-  const canvasGeo = computePrintCanvasGeometry(derived);
   let outRaw = maskRaw;
   let outW = width;
   let outH = height;
@@ -845,6 +861,13 @@ function edgeWrapViewGeometryFromMask(
     outH = cropped.height;
     sideProfileCropped = true;
   }
+
+  const canvasGeo = computePrintCanvasGeometry(
+    derived,
+    printFileDims ?? { width: outW, height: outH },
+    outW,
+    outH,
+  );
 
   return {
     visibleRectNormalized: derived.safeZone,
@@ -971,6 +994,7 @@ export function analyzeEdgeWrapGeometryFromMask(
 function geometryFromMagentaAnalysis(
   a: MagentaAnalysis,
   edgeWrap: boolean,
+  printFileDims?: { width: number; height: number },
 ): {
   visibleRectNormalized: NormRect | null;
   printBoundsNormalized: NormRect | null;
@@ -1008,7 +1032,7 @@ function geometryFromMagentaAnalysis(
       mockupH: a.height,
     };
   }
-  const derived = edgeWrapViewGeometryFromMask(a.maskRaw, a.width, a.height);
+  const derived = edgeWrapViewGeometryFromMask(a.maskRaw, a.width, a.height, printFileDims);
   if (!derived) {
     return {
       visibleRectNormalized: a.normalized,
@@ -1215,7 +1239,7 @@ async function harvestPerBlankGeometry(args: {
       if (!regMatch) continue;
       const regBuf = await downloadBuffer(regMatch.url);
       const a = await analyzeMagenta(regBuf);
-      const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap);
+      const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap, dims);
       let maskUrl: string | null = null;
       if (a.found) {
         maskUrl = await uploadToFlatCalibrationBucket(
@@ -1347,7 +1371,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       const buf = await downloadBuffer(match.url);
       const a = await analyzeMagenta(buf);
       maskByView[view] = a;
-      const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct);
+      const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct, placeholderDims.get(view));
       let maskUrl: string | null = null;
       if (a.found) {
         const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);

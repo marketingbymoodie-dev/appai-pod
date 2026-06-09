@@ -567,7 +567,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     viewAssets.blank?.naturalHeight || calib?.mockupDims?.height || 1;
 
   const printCanvasLayout =
-    edgeWrapMode && calib ? flatPrintCanvasLayout(calib) : null;
+    edgeWrapMode && calib
+      ? flatPrintCanvasLayout(calib, { mask: viewAssets.mask, blank: viewAssets.blank })
+      : null;
   const displayMockupW = printCanvasLayout?.previewW ?? mockupW;
   const displayMockupH = printCanvasLayout?.previewH ?? mockupH;
 
