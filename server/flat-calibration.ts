@@ -823,7 +823,28 @@ export function computePrintCanvasGeometry(
 }
 
 function sideProfileStripDetected(derived: { printBounds: NormRect; backFaceCrop: NormRect }): boolean {
-  return derived.backFaceCrop.width < derived.printBounds.width * 0.92;
+  return derived.backFaceCrop.width < derived.printBounds.width * 0.97;
+}
+
+/** Crop rect on full-size Printify mockup when side strip was removed at harvest. */
+function sideProfileCropPx(
+  geo: {
+    sideProfileCropped?: boolean;
+    backFaceCropNormalized?: NormRect | null;
+    mockupDims?: { width: number; height: number } | null;
+  } | null | undefined,
+  origW: number,
+  origH: number,
+): { x: number; y: number; width: number; height: number } | null {
+  if (!geo?.sideProfileCropped || origW <= 0 || origH <= 0) return null;
+  const bf = geo.backFaceCropNormalized;
+  if (bf && bf.width > 0 && bf.width < 0.98) {
+    return normalizedRectToPx(bf, origW, origH);
+  }
+  if (geo.mockupDims?.width && geo.mockupDims?.height) {
+    return { x: 0, y: 0, width: geo.mockupDims.width, height: geo.mockupDims.height };
+  }
+  return null;
 }
 
 type EdgeWrapViewGeometry = {
@@ -869,10 +890,31 @@ function edgeWrapViewGeometryFromMask(
     outH,
   );
 
+  let visibleRectNormalized = derived.safeZone;
+  let printBoundsNormalized = derived.printBounds;
+  let backFaceCropNormalized = derived.backFaceCrop;
+
+  if (sideProfileCropped) {
+    const cropPx = normalizedRectToPx(derived.backFaceCrop, width, height);
+    const safePx = normalizedRectToPx(derived.safeZone, width, height);
+    visibleRectNormalized = pxRectToNormalized(
+      {
+        x: safePx.x - cropPx.x,
+        y: safePx.y - cropPx.y,
+        width: safePx.width,
+        height: safePx.height,
+      },
+      outW,
+      outH,
+    );
+    backFaceCropNormalized = { x: 0, y: 0, width: 1, height: 1 };
+    printBoundsNormalized = { x: 0, y: 0, width: 1, height: 1 };
+  }
+
   return {
-    visibleRectNormalized: derived.safeZone,
-    printBoundsNormalized: derived.printBounds,
-    backFaceCropNormalized: derived.backFaceCrop,
+    visibleRectNormalized,
+    printBoundsNormalized,
+    backFaceCropNormalized,
     phoneBackNormalized: canvasGeo.phoneBackNormalized,
     safeZoneNormalized: canvasGeo.safeZoneNormalized,
     sideProfileCropped,
@@ -1412,9 +1454,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       if (!vc || !match) continue;
       let buf = await downloadBuffer(match.url);
       const mask = maskByView[view];
-      if (vc.sideProfileCropped && vc.backFaceCropNormalized && mask) {
-        const cropPx = normalizedRectToPx(vc.backFaceCropNormalized, mask.width, mask.height);
-        ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
+      if (vc.sideProfileCropped && mask) {
+        const cropPx = sideProfileCropPx(vc, mask.width, mask.height);
+        if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
       }
       vc.shadingUrl = await uploadToFlatCalibrationBucket(`products/${productTypeId}/shading-${view}.png`, buf, "image/jpeg");
       vc.shadingMode = mask ? await shadingModeFromGray(buf, mask) : "blank";
@@ -1478,14 +1520,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const maskMeta = maskByView[view];
         const origW = maskMeta?.width ?? geoView?.mockupDims?.width;
         const origH = maskMeta?.height ?? geoView?.mockupDims?.height;
-        if (
-          geoView?.sideProfileCropped &&
-          geoView.backFaceCropNormalized &&
-          origW &&
-          origH
-        ) {
-          const cropPx = normalizedRectToPx(geoView.backFaceCropNormalized, origW, origH);
-          ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
+        if (geoView?.sideProfileCropped && origW && origH) {
+          const cropPx = sideProfileCropPx(geoView, origW, origH);
+          if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
         }
         perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
       }

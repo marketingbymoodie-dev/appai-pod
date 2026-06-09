@@ -5899,7 +5899,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc2`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc3`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;

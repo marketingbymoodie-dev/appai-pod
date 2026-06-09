@@ -185,10 +185,12 @@ export type FlatPrintCanvasLayout = {
   previewH: number;
   /** Full print canvas (grey box) — placement + outer guide. */
   printCanvas: Rect;
-  /** Phone back draw region (blank + mask). */
+  /** Visible phone silhouette region (mask alpha bounds, centered in print canvas). */
   phoneBack: Rect;
-  /** Safe zone (amber dashed guide). */
+  /** Safe zone (amber dashed guide) — inset inside phoneBack. */
   safeZone: Rect;
+  /** Where to draw blank/mask/shading so phoneBack aligns with the silhouette. */
+  imageDraw: Rect;
   /** Source crop on uncropped blank/mask assets (side-profile mockups). */
   sourceCrop: Rect | null;
 };
@@ -216,9 +218,80 @@ export type FlatPrintCanvasLayoutAssets = {
   blank?: HTMLImageElement | null;
 };
 
+/** Printify editor grey — bleed area around the phone silhouette. */
+const PRINT_CANVAS_GREY = "#d4d4d4";
+
+function resolveEdgeWrapSourceCrop(
+  view: FlatViewCalibration,
+  img: HTMLImageElement | null,
+): Rect | null {
+  if (!img) return null;
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (iw <= 0 || ih <= 0) return null;
+
+  const mw = view.mockupDims?.width ?? iw;
+  const mh = view.mockupDims?.height ?? ih;
+  if (view.sideProfileCropped && Math.abs(iw - mw) <= 3 && Math.abs(ih - mh) <= 3) {
+    return null;
+  }
+
+  if (view.backFaceCropNormalized) {
+    const crop = normalizedRectPx(view.backFaceCropNormalized as NormRect, iw, ih);
+    if (crop && crop.width < iw * 0.97) return crop;
+  }
+
+  const detected = detectEdgeWrapBackFaceFromMask(img);
+  if (detected && detected.width < iw * 0.97) return detected;
+  return null;
+}
+
+/** Map mask alpha bounds into print-canvas preview space (Printify grey-box model). */
+function layoutPhoneFromMaskBounds(
+  view: FlatViewCalibration,
+  bounds: Rect,
+  srcW: number,
+  srcH: number,
+  previewW: number,
+  previewH: number,
+): { phoneBack: Rect; imageDraw: Rect; safeZone: Rect } {
+  const pfW = view.printFileDims?.width ?? previewW;
+  const pfH = view.printFileDims?.height ?? previewH;
+  const canvasAspect = pfW / Math.max(pfH, 1);
+  const boundsAspect = bounds.width / Math.max(bounds.height, 1);
+
+  const phoneBack = normRectToPx(
+    fitAspectCenteredInCanvas(boundsAspect, canvasAspect),
+    previewW,
+    previewH,
+  );
+
+  const relX = bounds.x / Math.max(srcW, 1);
+  const relY = bounds.y / Math.max(srcH, 1);
+  const relW = bounds.width / Math.max(srcW, 1);
+  const relH = bounds.height / Math.max(srcH, 1);
+
+  const imageDraw: Rect = {
+    x: phoneBack.x - (relX / Math.max(relW, 1e-6)) * phoneBack.width,
+    y: phoneBack.y - (relY / Math.max(relH, 1e-6)) * phoneBack.height,
+    width: phoneBack.width / Math.max(relW, 1e-6),
+    height: phoneBack.height / Math.max(relH, 1e-6),
+  };
+
+  const storedSafe = view.safeZoneNormalized as NormRect | null | undefined;
+  let safeZone: Rect;
+  if (storedSafe && storedSafe.width > 0 && storedSafe.height > 0) {
+    safeZone = normRectToPx(storedSafe, previewW, previewH);
+  } else {
+    safeZone = flatEdgeWrapSafeZoneRectPx(phoneBack);
+  }
+
+  return { phoneBack, imageDraw, safeZone };
+}
+
 /**
  * Print-canvas-centric layout for edge-wrap phone cases.
- * Phone back is aspect-fit and centered inside printFileDims (Printify grey box).
+ * Centers the mask silhouette (not the PNG rectangle) inside printFileDims.
  */
 export function flatPrintCanvasLayout(
   view: FlatViewCalibration,
@@ -227,56 +300,53 @@ export function flatPrintCanvasLayout(
   const { width: previewW, height: previewH } = flatPrintCanvasPreviewDims(view);
   const printCanvas: Rect = { x: 0, y: 0, width: previewW, height: previewH };
 
-  const pfW = view.printFileDims?.width ?? previewW;
-  const pfH = view.printFileDims?.height ?? previewH;
-  const canvasAspect = pfW / Math.max(pfH, 1);
+  const mask = assets?.mask ?? null;
+  const blank = assets?.blank ?? null;
+  const refImg = mask ?? blank;
 
-  const maskW = assets?.mask?.naturalWidth || view.mockupDims?.width || previewW;
-  const maskH = assets?.mask?.naturalHeight || view.mockupDims?.height || previewH;
+  if (refImg) {
+    const iw = refImg.naturalWidth || refImg.width;
+    const ih = refImg.naturalHeight || refImg.height;
+    const sourceCrop = resolveEdgeWrapSourceCrop(view, refImg);
+    const srcW = sourceCrop?.width ?? iw;
+    const srcH = sourceCrop?.height ?? ih;
 
-  let sourceCrop: Rect | null = null;
-  let contentW = maskW;
-  let contentH = maskH;
-
-  if (assets?.mask) {
-    const back = detectEdgeWrapBackFaceFromMask(assets.mask);
-    if (back && back.width < maskW * 0.92) {
-      sourceCrop = back;
-      contentW = back.width;
-      contentH = back.height;
-    } else if (view.sideProfileCropped) {
-      contentW = maskW;
-      contentH = maskH;
+    let bounds = flatImageAlphaBounds(refImg);
+    if (bounds && sourceCrop) {
+      const x = Math.max(sourceCrop.x, bounds.x);
+      const y = Math.max(sourceCrop.y, bounds.y);
+      const r = Math.min(sourceCrop.x + sourceCrop.width, bounds.x + bounds.width);
+      const b = Math.min(sourceCrop.y + sourceCrop.height, bounds.y + bounds.height);
+      bounds = {
+        x: x - sourceCrop.x,
+        y: y - sourceCrop.y,
+        width: Math.max(1, r - x),
+        height: Math.max(1, b - y),
+      };
     }
-  } else if (view.sideProfileCropped && view.backFaceCropNormalized) {
-    sourceCrop = normalizedRectPx(view.backFaceCropNormalized as NormRect, maskW, maskH);
-    if (sourceCrop) {
-      contentW = sourceCrop.width;
-      contentH = sourceCrop.height;
+
+    if (bounds && bounds.width > 4 && bounds.height > 4) {
+      const laid = layoutPhoneFromMaskBounds(view, bounds, srcW, srcH, previewW, previewH);
+      return {
+        previewW,
+        previewH,
+        printCanvas,
+        phoneBack: laid.phoneBack,
+        safeZone: laid.safeZone,
+        imageDraw: laid.imageDraw,
+        sourceCrop,
+      };
     }
   }
 
-  const contentAspect = contentW / Math.max(contentH, 1);
-  const phoneBackNorm = fitAspectCenteredInCanvas(contentAspect, canvasAspect);
-  const phoneBack = normRectToPx(phoneBackNorm, previewW, previewH);
-
-  const backNorm = view.backFaceCropNormalized as NormRect | null | undefined;
-  const safeNorm = view.visibleRectNormalized as NormRect | null | undefined;
-  let safeZone: Rect;
-  if (backNorm && safeNorm && backNorm.width > 0 && backNorm.height > 0) {
-    const relX = (safeNorm.x - backNorm.x) / backNorm.width;
-    const relY = (safeNorm.y - backNorm.y) / backNorm.height;
-    const relW = safeNorm.width / backNorm.width;
-    const relH = safeNorm.height / backNorm.height;
-    safeZone = {
-      x: phoneBack.x + relX * phoneBack.width,
-      y: phoneBack.y + relY * phoneBack.height,
-      width: relW * phoneBack.width,
-      height: relH * phoneBack.height,
-    };
-  } else {
-    safeZone = flatEdgeWrapSafeZoneRectPx(phoneBack);
-  }
+  const storedPhone = view.phoneBackNormalized as NormRect | null | undefined;
+  const storedSafe = view.safeZoneNormalized as NormRect | null | undefined;
+  const phoneBack = storedPhone
+    ? normRectToPx(storedPhone, previewW, previewH)
+    : printCanvas;
+  const safeZone = storedSafe
+    ? normRectToPx(storedSafe, previewW, previewH)
+    : flatEdgeWrapSafeZoneRectPx(phoneBack);
 
   return {
     previewW,
@@ -284,9 +354,12 @@ export function flatPrintCanvasLayout(
     printCanvas,
     phoneBack,
     safeZone,
-    sourceCrop,
+    imageDraw: phoneBack,
+    sourceCrop: null,
   };
 }
+
+export { PRINT_CANVAS_GREY };
 
 /**
  * Coordinate system for placement + print-file bake.
@@ -801,15 +874,10 @@ export function renderFlatView(input: FlatRenderInput): void {
     const layout = flatPrintCanvasLayout(view, { mask, blank });
     const outW = layout.previewW;
     const outH = layout.previewH;
-    const phoneBack = layout.phoneBack;
     const crop = layout.sourceCrop;
+    const draw = layout.imageDraw;
 
-    const drawAsset = (
-      ctx: CanvasRenderingContext2D,
-      img: HTMLImageElement,
-      iw: number,
-      ih: number,
-    ) => {
+    const drawAsset = (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
       if (crop) {
         ctx.drawImage(
           img,
@@ -817,13 +885,13 @@ export function renderFlatView(input: FlatRenderInput): void {
           crop.y,
           crop.width,
           crop.height,
-          phoneBack.x,
-          phoneBack.y,
-          phoneBack.width,
-          phoneBack.height,
+          draw.x,
+          draw.y,
+          draw.width,
+          draw.height,
         );
       } else {
-        ctx.drawImage(img, 0, 0, iw, ih, phoneBack.x, phoneBack.y, phoneBack.width, phoneBack.height);
+        ctx.drawImage(img, 0, 0, W, H, draw.x, draw.y, draw.width, draw.height);
       }
     };
 
@@ -833,7 +901,9 @@ export function renderFlatView(input: FlatRenderInput): void {
     if (!ctx) return;
 
     ctx.clearRect(0, 0, outW, outH);
-    drawAsset(ctx, blank, W, H);
+    ctx.fillStyle = PRINT_CANVAS_GREY;
+    ctx.fillRect(0, 0, outW, outH);
+    drawAsset(ctx, blank);
 
     if (!artwork) return;
     const { w: artW, h: artH } = imgDims(artwork);
@@ -850,10 +920,8 @@ export function renderFlatView(input: FlatRenderInput): void {
     actx.drawImage(artwork, box.x, box.y, box.width, box.height);
 
     if (mask) {
-      const mw = mask.naturalWidth || mask.width;
-      const mh = mask.naturalHeight || mask.height;
       actx.globalCompositeOperation = "destination-in";
-      drawAsset(actx, mask, mw, mh);
+      drawAsset(actx, mask);
       actx.globalCompositeOperation = "source-over";
     }
 
@@ -864,18 +932,16 @@ export function renderFlatView(input: FlatRenderInput): void {
     shadeBlankCanvas.width = outW;
     shadeBlankCanvas.height = outH;
     const sbCtx = shadeBlankCanvas.getContext("2d");
-    if (sbCtx) drawAsset(sbCtx, blank, W, H);
+    if (sbCtx) drawAsset(sbCtx, blank);
 
     let shadeMapImg: HTMLImageElement | HTMLCanvasElement | null = shading;
     if (shading) {
-      const sw = shading.naturalWidth || shading.width;
-      const sh = shading.naturalHeight || shading.height;
       const sc = document.createElement("canvas");
       sc.width = outW;
       sc.height = outH;
       const scx = sc.getContext("2d");
       if (scx) {
-        drawAsset(scx, shading, sw, sh);
+        drawAsset(scx, shading);
         shadeMapImg = sc;
       }
     }
