@@ -54,6 +54,7 @@ import {
   type FlatPlacement,
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
+import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -307,13 +308,9 @@ export function resolvePrintifyTarget(
   sizeId: string,
   colorId: string,
 ): PrintifyTarget | null {
-  const variantMap = parseJson<Record<string, any>>(productType.variantMap, {});
-  const variantData =
-    variantMap[`${sizeId}:${colorId}`] ||
-    variantMap[`${sizeId}:default`] ||
-    variantMap[`default:${colorId}`] ||
-    variantMap["default:default"] ||
-    Object.values(variantMap)[0];
+  const variantMap = parseJson<VariantMap>(productType.variantMap, {});
+  const resolved = resolveVariantFromMap(variantMap, sizeId, colorId);
+  const variantData = resolved?.entry;
   if (!variantData || variantData.printifyVariantId == null) return null;
   const blueprintId = Number(productType.printifyBlueprintId);
   const providerId = Number(variantData.providerId ?? productType.printifyProviderId ?? 1);

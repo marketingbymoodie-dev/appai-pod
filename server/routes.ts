@@ -15,6 +15,7 @@ import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
+import { hasExactVariantMapping, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
@@ -5788,6 +5789,9 @@ ${textEdgeRestrictions}
         id: c.id,
         name: c.name,
         hex: c.hex,
+        variantAvailable: sizes.some((s: any) =>
+          hasExactVariantMapping(variantMap as VariantMap, s.id, c.id),
+        ),
       })),
       // Determine the label for the color/option selector
       colorLabel: getColorOptionName(frameColors, productTypeToUse.colorOptionName),
@@ -7817,16 +7821,11 @@ ${textEdgeRestrictions}
       }
 
       // ========== RESOLVE VARIANT ==========
-      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
-      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
+      const variantKey = `${sizeId || "default"}:${colorId || "default"}`;
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId);
 
-      const variantData = variantMapData[variantKey] ||
-                          variantMapData[`${sizeId || 'default'}:default`] ||
-                          variantMapData[`default:${colorId || 'default'}`] ||
-                          variantMapData['default:default'] ||
-                          Object.values(variantMapData)[0];
-
-      if (!variantData || !variantData.printifyVariantId) {
+      if (!resolvedVariant?.entry.printifyVariantId) {
         return res.status(400).json({
           error: "Could not resolve Printify variant for mockup",
           debug: {
@@ -7837,6 +7836,7 @@ ${textEdgeRestrictions}
         });
       }
 
+      const variantData = resolvedVariant.entry;
       const blueprintId = productType.printifyBlueprintId;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
@@ -14566,24 +14566,17 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Look up the correct variant from the variantMap using server-side data only
-      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
-      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
-      
-      // Try exact match first, then fallback to partial matches, then any available variant
-      const variantData = variantMapData[variantKey] || 
-                          variantMapData[`${sizeId || 'default'}:default`] ||
-                          variantMapData[`default:${colorId || 'default'}`] ||
-                          variantMapData['default:default'] ||
-                          Object.values(variantMapData)[0];
-      
-      if (!variantData || !variantData.printifyVariantId) {
-        return res.status(400).json({ 
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId);
+
+      if (!resolvedVariant?.entry.printifyVariantId) {
+        return res.status(400).json({
           error: "Could not resolve product variant for the selected options",
-          availableKeys: Object.keys(variantMapData)
+          availableKeys: Object.keys(variantMapData),
         });
       }
-      
+
+      const variantData = resolvedVariant.entry;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 
@@ -14716,23 +14709,17 @@ ${textEdgeRestrictions}
         });
       }
 
-      // Look up the correct variant from the variantMap
-      const variantMapData = JSON.parse(productType.variantMap as string || "{}");
-      const variantKey = `${sizeId || 'default'}:${colorId || 'default'}`;
-      
-      const variantData = variantMapData[variantKey] || 
-                          variantMapData[`${sizeId || 'default'}:default`] ||
-                          variantMapData[`default:${colorId || 'default'}`] ||
-                          variantMapData['default:default'] ||
-                          Object.values(variantMapData)[0];
-      
-      if (!variantData || !variantData.printifyVariantId) {
-        return res.status(400).json({ 
+      const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId);
+
+      if (!resolvedVariant?.entry.printifyVariantId) {
+        return res.status(400).json({
           error: "Could not resolve product variant",
-          availableKeys: Object.keys(variantMapData)
+          availableKeys: Object.keys(variantMapData),
         });
       }
-      
+
+      const variantData = resolvedVariant.entry;
       const providerId = variantData.providerId || productType.printifyProviderId || 1;
       const targetVariantId = variantData.printifyVariantId;
 

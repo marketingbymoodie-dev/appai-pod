@@ -48,6 +48,7 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
+import { hasExactVariantMapping } from "@shared/variantMapResolve";
 
 declare global {
   interface Window {
@@ -143,7 +144,8 @@ interface ProductTypeConfig {
   printShape?: PrintShape;
   canvasConfig?: CanvasConfig;
   sizes: Array<{ id: string; name: string; width: number; height: number }>;
-  frameColors: Array<{ id: string; name: string; hex: string }>;
+  frameColors: Array<{ id: string; name: string; hex: string; variantAvailable?: boolean }>;
+  variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
   hasPrintifyMockups?: boolean;
   baseMockupImages?: Record<string, any>;
   doubleSidedPrint?: boolean;
@@ -1898,6 +1900,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             canvasConfig: designerConfig.canvasConfig,
             sizes: designerConfig.sizes || [],
             frameColors: designerConfig.frameColors || [],
+            variantMap: designerConfig.variantMap || {},
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
@@ -1918,7 +1921,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             setSizeChartLoading(false);
           }
           if (designerConfig.frameColors?.length > 0) {
-            setSelectedFrameColor(designerConfig.frameColors[0].id);
+            const vm = designerConfig.variantMap || {};
+            const defaultSize = designerConfig.sizes?.[0]?.id;
+            const firstAvailable = designerConfig.frameColors.find((c: { id: string }) =>
+              hasExactVariantMapping(vm, defaultSize, c.id),
+            );
+            setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
           }
           setProductTypeError(null);
         } else {
@@ -3205,6 +3213,17 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
+
+  // Keep frame colour aligned with a variantMap entry for the active size.
+  useEffect(() => {
+    const colors = productTypeConfig?.frameColors || [];
+    if (!productTypeConfig?.variantMap || !selectedSize || colors.length === 0) return;
+    if (hasExactVariantMapping(productTypeConfig.variantMap, selectedSize, selectedFrameColor)) return;
+    const fallback = colors.find((c) =>
+      hasExactVariantMapping(productTypeConfig.variantMap, selectedSize, c.id),
+    );
+    if (fallback) setSelectedFrameColor(fallback.id);
+  }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedSize, selectedFrameColor]);
 
   // When frame color changes, swap mockups from the per-color cache or mark stale
   useEffect(() => {
@@ -7429,6 +7448,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           selectedFrameColor={selectedFrameColor}
                           onFrameColorChange={setSelectedFrameColor}
                           colorLabel={productTypeConfig?.colorLabel || "Color"}
+                          variantMap={productTypeConfig?.variantMap}
+                          selectedSize={selectedSize}
                         />
                       )}
                       {supportsPrintPlacementSelection && (
