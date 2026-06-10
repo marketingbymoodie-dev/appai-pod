@@ -544,7 +544,7 @@ function backFaceRectFromMaskAlpha(
   const maxFill = Math.max(...colFill, 1);
 
   // Side strip lives in the right ~25% — scan there for a column-density valley.
-  const scanStart = Math.floor(bw * 0.72);
+  const scanStart = Math.floor(bw * 0.55);
   let splitCol: number | null = null;
   let minVal = Infinity;
   for (let i = scanStart; i < bw - 2; i++) {
@@ -561,7 +561,7 @@ function backFaceRectFromMaskAlpha(
     let after = 0;
     for (let i = 0; i < splitCol; i++) before += colFill[i];
     for (let i = splitCol; i < bw; i++) after += colFill[i];
-    if (after >= maxFill * 2 && before > after * 1.15) {
+    if (after >= maxFill * 2 && before > after * 1.15 && splitCol < Math.floor(bw * 0.93)) {
       backWidth = splitCol;
     }
   }

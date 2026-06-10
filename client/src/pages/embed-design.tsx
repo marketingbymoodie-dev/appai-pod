@@ -1393,7 +1393,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   ]);
   const flatStaleCalibrationHint = useMemo(() => {
     const cal = productTypeConfig?.flatCalibration;
-    if (!cal || cal.status !== "ready") return null;
+    const tier = productTypeConfig?.onTheFlyTier;
+    if (!cal || (tier !== "flat" && tier !== "mesh")) return null;
     const name = (productTypeConfig?.name || "").toLowerCase();
     const isPhone = /phone|iphone|galaxy|pixel|case/.test(name);
     if (isPhone && !cal.edgeWrap) {
@@ -1409,6 +1410,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return null;
   }, [
     productTypeConfig?.flatCalibration,
+    productTypeConfig?.onTheFlyTier,
     productTypeConfig?.designerType,
     productTypeConfig?.name,
     productTypeConfig?.sizes,
