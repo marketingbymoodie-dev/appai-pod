@@ -1513,8 +1513,16 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       const blankImages = await pollMockups(token, shopId, blank.productId, blank.images);
       const safe = color.id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 
+      // Try to find the catalog variant by ID.  Note: color.variantId is a
+      // PRODUCT variant ID (from the merchant's Printify product), while
+      // `variants` contains CATALOG variant IDs — they are different number
+      // spaces and will never match.  Fall back to placeholderDims (derived from
+      // variants[0]) which is correct for per-model geometry: all phone-case
+      // models share the same print-area dimensions within a blueprint.
       const variant = variants.find((v) => v.id === color.variantId);
-      const variantDims = placeholderDimsForVariant(variant);
+      const variantDims = placeholderDimsForVariant(variant).size > 0
+        ? placeholderDimsForVariant(variant)
+        : placeholderDims;
       let perBlankGeo: Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null = null;
       if (
         needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize) &&
