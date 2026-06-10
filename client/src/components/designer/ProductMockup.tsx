@@ -37,6 +37,10 @@ interface ProductMockupProps {
    *  instead of the grey skeleton shimmer. Supplied by the gallery (which
    *  already knows the thumbnail) so re-opening a design shows it instantly. */
   initialPreviewUrl?: string | null;
+  /** How composite mockup images fit in their container (default "cover").
+   *  Use "contain" for edge-wrap phone-case previews so the full grey bleed
+   *  area is visible instead of being cropped to the container aspect. */
+  mockupFit?: "cover" | "contain";
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -319,6 +323,7 @@ export function ProductMockup({
   aspectRatio,
   isAop = false,
   initialPreviewUrl,
+  mockupFit = "cover",
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -431,13 +436,14 @@ export function ProductMockup({
       return <SkeletonLoader />;
     }
 
-    // Composite mockup (Printify) — full-bleed product photo
+    // Composite mockup (Printify / flat on-the-fly) — use object-contain for
+    // edge-wrap previews so the full grey print canvas is visible (not cropped).
     if (mockupUrl) {
       return (
         <img
           src={mockupUrl}
           alt="Product mockup"
-          className="absolute inset-0 w-full h-full object-cover"
+          className={`absolute inset-0 w-full h-full ${mockupFit === "contain" ? "object-contain bg-[#d4d4d4]" : "object-cover"}`}
           style={{ pointerEvents: "none" }}
           draggable={false}
           data-testid="img-mockup"

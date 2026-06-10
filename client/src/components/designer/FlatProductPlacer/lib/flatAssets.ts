@@ -82,7 +82,11 @@ export function resolveFlatViewCalibration(
   return {
     ...base,
     ...override,
+    // Null-coalesce fields that should always fall back to the shared base
+    // rather than being silently clobbered by a missing per-model override.
     printFileDims: override.printFileDims ?? base.printFileDims,
+    maskUrl: override.maskUrl ?? base.maskUrl,
+    shadingUrl: override.shadingUrl ?? base.shadingUrl,
     meshNodes: base.meshNodes,
     meshGrid: base.meshGrid,
     planarityScore: base.planarityScore,

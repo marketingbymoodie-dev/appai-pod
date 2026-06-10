@@ -7,7 +7,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { resolveStoredColorHex } from "@shared/printifyColorResolver";
-import { hasExactVariantMapping, type VariantMap } from "@shared/variantMapResolve";
+import { hasVariantMappingForColor, type VariantMap } from "@shared/variantMapResolve";
 import type { FrameColor } from "./types";
 
 interface FrameColorSelectorProps {
@@ -28,11 +28,12 @@ function getDisplayHex(color: FrameColor): string {
 function colorSelectable(
   color: FrameColor,
   variantMap: VariantMap | null | undefined,
-  selectedSize: string | undefined,
 ): boolean {
   if (color.variantAvailable === false) return false;
-  if (!variantMap || !selectedSize) return true;
-  return hasExactVariantMapping(variantMap, selectedSize, color.id);
+  if (!variantMap) return true;
+  // Check across all sizes so XL/2XL selection doesn't grey out colors that
+  // exist for S/M/L — the mockup server falls back to any matching-color variant.
+  return hasVariantMappingForColor(variantMap, color.id);
 }
 
 export function FrameColorSelector({
@@ -68,7 +69,7 @@ export function FrameColorSelector({
         </SelectTrigger>
         <SelectContent position="popper" sideOffset={4} className="z-[200]">
           {frameColors.map((color) => {
-            const selectable = colorSelectable(color, variantMap, selectedSize);
+            const selectable = colorSelectable(color, variantMap);
             return (
               <SelectItem
                 key={color.id}

@@ -124,6 +124,8 @@ export type HarvestResult = {
   status: FlatCalibrationStatus;
   manifest: FlatCalibrationManifest;
   error?: string;
+  /** Models/colors that failed per-blank geometry harvest — visible in Admin calibration log. */
+  warnings?: string[];
 };
 
 // ── Printify REST helpers (self-contained; mirrors the proven script) ─────────
@@ -960,7 +962,7 @@ export function analyzeEdgeWrapGeometryFromMask(
   maskRaw: Buffer,
   width: number,
   height: number,
-  safeInsetFraction = 0.08,
+  safeInsetFraction = 0.04,
 ): { printBounds: NormRect; safeZone: NormRect; backFaceCrop: NormRect } | null {
   if (!maskRaw || width <= 0 || height <= 0) return null;
 
@@ -1502,6 +1504,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     colors = colors.slice(0, Math.max(1, maxBlankColors));
     const decorPerSize = !edgeWrapProduct && colors.some((c) => c.id.includes(":"));
     baseManifest.decorPerSize = decorPerSize;
+    const harvestWarnings: string[] = [];
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
     for (const color of colors) {
       const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));
@@ -1535,6 +1538,15 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           if (!baseManifest.geometryByBlank) baseManifest.geometryByBlank = {};
           baseManifest.geometryByBlank[color.id] = perBlankGeo;
           baseManifest.representativeGeometry = false;
+          // Warn about views that were expected but returned no mask
+          for (const view of availableViews) {
+            const g = perBlankGeo[view];
+            if (g && !g.maskUrl) {
+              harvestWarnings.push(`${color.id}/${view}: geometry harvested but no mask (magenta not detected)`);
+            }
+          }
+        } else if (needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize) && variantDims.size > 0) {
+          harvestWarnings.push(`${color.id}: per-model geometry harvest returned nothing (all views failed)`);
         }
       }
 
@@ -1564,10 +1576,16 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         status: "failed",
         manifest: baseManifest,
         error: "blank garment photos could not be harvested (no colours resolved or Printify mockups missing)",
+        warnings: harvestWarnings,
       };
     }
 
-    return { tier: productTier, status: "ready", manifest: baseManifest };
+    return {
+      tier: productTier,
+      status: "ready",
+      manifest: baseManifest,
+      warnings: harvestWarnings.length > 0 ? harvestWarnings : undefined,
+    };
   } finally {
     for (const id of createdProductIds) await deleteTempProduct(token, shopId, id);
     console.log(`[flat-calibration] ${name} (pt ${productTypeId}): cleaned up ${createdProductIds.length} temp product(s).`);

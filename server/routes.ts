@@ -97,6 +97,10 @@ function kickoffFlatCalibration(args: {
         flatCalibration: JSON.stringify(result.manifest),
       });
       console.log(`[flat-calibration] ${name} (pt ${productTypeId}) -> tier=${result.tier} status=${result.status}${result.error ? ` (${result.error})` : ""}`);
+      if (result.warnings && result.warnings.length > 0) {
+        console.warn(`[flat-calibration] ${name} (pt ${productTypeId}) harvest warnings (${result.warnings.length}):`);
+        for (const w of result.warnings) console.warn(`  • ${w}`);
+      }
     } catch (err) {
       console.error(`[flat-calibration] harvest failed for pt ${productTypeId}:`, err);
       await storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
@@ -7823,7 +7827,9 @@ ${textEdgeRestrictions}
       // ========== RESOLVE VARIANT ==========
       const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
       const variantKey = `${sizeId || "default"}:${colorId || "default"}`;
-      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId);
+      // allowSizeFallbackForColor: garment mockup photos are identical across sizes,
+      // so if xl:red is missing but s:red exists we can safely use it for display.
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
 
       if (!resolvedVariant?.entry.printifyVariantId) {
         return res.status(400).json({
@@ -14710,7 +14716,8 @@ ${textEdgeRestrictions}
       }
 
       const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
-      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId);
+      // allowSizeFallbackForColor: garment mockup photos are identical across sizes.
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, { allowSizeFallbackForColor: true });
 
       if (!resolvedVariant?.entry.printifyVariantId) {
         return res.status(400).json({

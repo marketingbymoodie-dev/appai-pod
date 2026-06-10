@@ -48,7 +48,7 @@ import {
   renderFlatMockupDataUrl,
 } from "@/components/designer/FlatProductPlacer/lib/flatMockupPreview";
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
-import { hasExactVariantMapping } from "@shared/variantMapResolve";
+import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
 declare global {
   interface Window {
@@ -1924,9 +1924,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           }
           if (designerConfig.frameColors?.length > 0) {
             const vm = designerConfig.variantMap || {};
-            const defaultSize = designerConfig.sizes?.[0]?.id;
+            // Pick first color that has ANY variant mapping (across all sizes).
+            // This avoids defaulting to grey just because defaultSize+color has no entry.
             const firstAvailable = designerConfig.frameColors.find((c: { id: string }) =>
-              hasExactVariantMapping(vm, defaultSize, c.id),
+              hasVariantMappingForColor(vm, c.id),
             );
             setSelectedFrameColor((firstAvailable ?? designerConfig.frameColors[0]).id);
           }
@@ -3092,6 +3093,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       console.error("Failed to generate Printify mockups:", error);
       setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
       setMockupFailed(true);
+      // Keep mockupsStale so the UI surfaces an error rather than silently
+      // showing a stale mockup from a previous size/color combination.
+      setMockupsStale(true);
     } finally {
       if (activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
@@ -3216,16 +3220,19 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transform.scale, transform.x, transform.y]);
 
-  // Keep frame colour aligned with a variantMap entry for the active size.
+  // Keep frame colour aligned with the variant map. We only auto-switch when
+  // the selected color has NO mapping at any size — not just the current size.
+  // This prevents force-switching to grey when the user picks XL but xl:red is
+  // absent while s:red exists (the mockup server resolves it via size fallback).
   useEffect(() => {
     const colors = productTypeConfig?.frameColors || [];
-    if (!productTypeConfig?.variantMap || !selectedSize || colors.length === 0) return;
-    if (hasExactVariantMapping(productTypeConfig.variantMap, selectedSize, selectedFrameColor)) return;
+    if (!productTypeConfig?.variantMap || colors.length === 0) return;
+    if (hasVariantMappingForColor(productTypeConfig.variantMap, selectedFrameColor)) return;
     const fallback = colors.find((c) =>
-      hasExactVariantMapping(productTypeConfig.variantMap, selectedSize, c.id),
+      hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
     );
     if (fallback) setSelectedFrameColor(fallback.id);
-  }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedSize, selectedFrameColor]);
+  }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
   // When frame color changes, swap mockups from the per-color cache or mark stale
   useEffect(() => {
@@ -5901,7 +5908,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc4`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc5`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
@@ -8027,6 +8034,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         null
                       }
                       aspectRatio={productTypeConfig?.aspectRatio}
+                      mockupFit={flatEdgeWrapMode ? "contain" : "cover"}
                     />
                   );
                 })()}

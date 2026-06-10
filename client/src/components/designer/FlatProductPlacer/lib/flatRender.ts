@@ -153,7 +153,7 @@ function rectsNearlyEqual(a: Rect, b: Rect, eps = 2): boolean {
 export const FLAT_PRINT_PREVIEW_BASE_PX = 900;
 
 /** Approximate safe back-face guide when harvest stored only one bbox (legacy manifests). */
-export function flatEdgeWrapSafeZoneRectPx(outer: Rect, insetFraction = 0.08): Rect {
+export function flatEdgeWrapSafeZoneRectPx(outer: Rect, insetFraction = 0.04): Rect {
   const mx = outer.width * insetFraction;
   const my = outer.height * insetFraction;
   return {
@@ -354,7 +354,9 @@ export function flatPrintCanvasLayout(
     const srcW = sourceCrop?.width ?? iw;
     const srcH = sourceCrop?.height ?? ih;
 
-    let bounds = flatImageAlphaBounds(refImg);
+    // Only read alpha bounds from the mask (transparent PNG); blank is a JPEG
+    // whose alpha bounds span the full image → phone misplaced / zoomed.
+    let bounds = mask ? flatImageAlphaBounds(refImg) : null;
     if (bounds && sourceCrop) {
       const x = Math.max(sourceCrop.x, bounds.x);
       const y = Math.max(sourceCrop.y, bounds.y);
@@ -920,21 +922,34 @@ export function renderFlatView(input: FlatRenderInput): void {
     const crop = layout.sourceCrop;
     const draw = layout.imageDraw;
 
-    const drawAsset = (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
+    // Reference dimensions: the image flatPrintCanvasLayout used to compute
+    // sourceCrop and imageDraw (mask if available, else blank).
+    const refW = mask ? (mask.naturalWidth || mask.width) : W;
+    const refH = mask ? (mask.naturalHeight || mask.height) : H;
+
+    // Draw any asset into `draw` rect, scaling its source crop proportionally to
+    // its own natural dimensions so mask/blank/shading always align even when
+    // they were harvested at different sizes or one was pre-cropped and the other was not.
+    const drawAssetScaled = (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
+      const iw = img.naturalWidth || img.width;
+      const ih = img.naturalHeight || img.height;
+      if (iw <= 0 || ih <= 0) return;
+      const sx = refW > 0 ? iw / refW : 1;
+      const sy = refH > 0 ? ih / refH : 1;
       if (crop) {
         ctx.drawImage(
           img,
-          crop.x,
-          crop.y,
-          crop.width,
-          crop.height,
+          crop.x * sx,
+          crop.y * sy,
+          crop.width * sx,
+          crop.height * sy,
           draw.x,
           draw.y,
           draw.width,
           draw.height,
         );
       } else {
-        ctx.drawImage(img, 0, 0, W, H, draw.x, draw.y, draw.width, draw.height);
+        ctx.drawImage(img, 0, 0, iw, ih, draw.x, draw.y, draw.width, draw.height);
       }
     };
 
@@ -943,10 +958,26 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
+    // Step 1: Grey print-canvas fill (the "Printify grey box" bleed area).
     ctx.clearRect(0, 0, outW, outH);
     ctx.fillStyle = PRINT_CANVAS_GREY;
     ctx.fillRect(0, 0, outW, outH);
-    drawAsset(ctx, blank);
+
+    // Step 2: Blank phone photo, clipped to the phone silhouette so the JPEG
+    // white background never bleeds over the grey margins.
+    const blankLayer = document.createElement("canvas");
+    blankLayer.width = outW;
+    blankLayer.height = outH;
+    const blCtx = blankLayer.getContext("2d");
+    if (blCtx) {
+      drawAssetScaled(blCtx, blank);
+      if (mask) {
+        blCtx.globalCompositeOperation = "destination-in";
+        drawAssetScaled(blCtx, mask);
+        blCtx.globalCompositeOperation = "source-over";
+      }
+    }
+    ctx.drawImage(blankLayer, 0, 0);
 
     if (!artwork) return;
     const { w: artW, h: artH } = imgDims(artwork);
@@ -964,18 +995,27 @@ export function renderFlatView(input: FlatRenderInput): void {
 
     if (mask) {
       actx.globalCompositeOperation = "destination-in";
-      drawAsset(actx, mask);
+      drawAssetScaled(actx, mask);
       actx.globalCompositeOperation = "source-over";
     }
 
     const shadeMode: "blank" | "map" =
       view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
 
+    // Shading blank: same position as the clipped blank layer so luminance
+    // normalization samples the correct phone surface, not white margins.
     const shadeBlankCanvas = document.createElement("canvas");
     shadeBlankCanvas.width = outW;
     shadeBlankCanvas.height = outH;
     const sbCtx = shadeBlankCanvas.getContext("2d");
-    if (sbCtx) drawAsset(sbCtx, blank);
+    if (sbCtx) {
+      drawAssetScaled(sbCtx, blank);
+      if (mask) {
+        sbCtx.globalCompositeOperation = "destination-in";
+        drawAssetScaled(sbCtx, mask);
+        sbCtx.globalCompositeOperation = "source-over";
+      }
+    }
 
     let shadeMapImg: HTMLImageElement | HTMLCanvasElement | null = shading;
     if (shading) {
@@ -984,7 +1024,7 @@ export function renderFlatView(input: FlatRenderInput): void {
       sc.height = outH;
       const scx = sc.getContext("2d");
       if (scx) {
-        drawAsset(scx, shading);
+        drawAssetScaled(scx, shading);
         shadeMapImg = sc;
       }
     }
