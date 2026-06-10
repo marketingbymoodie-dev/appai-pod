@@ -213,6 +213,28 @@ function fitAspectCenteredInCanvas(contentAspect: number, canvasAspect: number):
   };
 }
 
+/**
+ * Printify bleed model: print file = phone back + EQUAL margin on all 4 sides.
+ * Solve the unique phone size whose horizontal and vertical margins match:
+ *   w + 2m = W,  h + 2m = H,  w/h = aspect  →  h = (H - W) / (1 - aspect)
+ * Returns null when no sane solution exists (caller falls back to aspect-fit).
+ */
+function fitEqualMarginInCanvas(
+  contentAspect: number,
+  canvasW: number,
+  canvasH: number,
+): Rect | null {
+  if (!(contentAspect > 0) || canvasW <= 0 || canvasH <= 0) return null;
+  if (Math.abs(1 - contentAspect) < 1e-4) return null;
+  const h = (canvasH - canvasW) / (1 - contentAspect);
+  const w = contentAspect * h;
+  if (!(w > 0) || !(h > 0) || w > canvasW + 0.5 || h > canvasH + 0.5) return null;
+  const m = (canvasW - w) / 2;
+  // Reject degenerate solutions (negative bleed or phone under half the box).
+  if (m < 0 || w < canvasW * 0.5 || h < canvasH * 0.5) return null;
+  return { x: m, y: (canvasH - h) / 2, width: w, height: h };
+}
+
 export type FlatPrintCanvasLayoutAssets = {
   mask?: HTMLImageElement | null;
   blank?: HTMLImageElement | null;
@@ -260,11 +282,15 @@ function layoutPhoneFromMaskBounds(
   const canvasAspect = pfW / Math.max(pfH, 1);
   const boundsAspect = bounds.width / Math.max(bounds.height, 1);
 
-  const phoneBack = normRectToPx(
-    fitAspectCenteredInCanvas(boundsAspect, canvasAspect),
-    previewW,
-    previewH,
-  );
+  // Equal bleed margin on all 4 sides (Printify grey-box model); aspect-fit
+  // only as a fallback when the mask aspect makes that unsolvable.
+  const phoneBack =
+    fitEqualMarginInCanvas(boundsAspect, previewW, previewH) ??
+    normRectToPx(
+      fitAspectCenteredInCanvas(boundsAspect, canvasAspect),
+      previewW,
+      previewH,
+    );
 
   const relX = bounds.x / Math.max(srcW, 1);
   const relY = bounds.y / Math.max(srcH, 1);
@@ -278,9 +304,26 @@ function layoutPhoneFromMaskBounds(
     height: phoneBack.height / Math.max(relH, 1e-6),
   };
 
+  // Stored safe zone is relative to the harvested phoneBack — remap it onto the
+  // live phoneBack so the amber guide always tracks the rendered silhouette.
   const storedSafe = view.safeZoneNormalized as NormRect | null | undefined;
+  const storedPhone = view.phoneBackNormalized as NormRect | null | undefined;
   let safeZone: Rect;
-  if (storedSafe && storedSafe.width > 0 && storedSafe.height > 0) {
+  if (
+    storedSafe && storedSafe.width > 0 && storedSafe.height > 0 &&
+    storedPhone && storedPhone.width > 0 && storedPhone.height > 0
+  ) {
+    const relX = (storedSafe.x - storedPhone.x) / storedPhone.width;
+    const relY = (storedSafe.y - storedPhone.y) / storedPhone.height;
+    const relW = storedSafe.width / storedPhone.width;
+    const relH = storedSafe.height / storedPhone.height;
+    safeZone = {
+      x: phoneBack.x + relX * phoneBack.width,
+      y: phoneBack.y + relY * phoneBack.height,
+      width: relW * phoneBack.width,
+      height: relH * phoneBack.height,
+    };
+  } else if (storedSafe && storedSafe.width > 0 && storedSafe.height > 0) {
     safeZone = normRectToPx(storedSafe, previewW, previewH);
   } else {
     safeZone = flatEdgeWrapSafeZoneRectPx(phoneBack);

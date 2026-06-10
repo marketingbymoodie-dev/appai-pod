@@ -792,9 +792,34 @@ function fitAspectCenteredInCanvas(contentAspect: number, canvasAspect: number):
 }
 
 /**
+ * Printify bleed model: print file = phone back + EQUAL margin on all 4 sides.
+ * Unique solution of  w + 2m = W,  h + 2m = H,  w/h = aspect.
+ * Returns null when unsolvable (caller falls back to aspect-fit).
+ */
+function fitEqualMarginInCanvasNorm(
+  contentAspect: number,
+  canvasW: number,
+  canvasH: number,
+): NormRect | null {
+  if (!(contentAspect > 0) || canvasW <= 0 || canvasH <= 0) return null;
+  if (Math.abs(1 - contentAspect) < 1e-4) return null;
+  const h = (canvasH - canvasW) / (1 - contentAspect);
+  const w = contentAspect * h;
+  if (!(w > 0) || !(h > 0) || w > canvasW + 0.5 || h > canvasH + 0.5) return null;
+  const m = (canvasW - w) / 2;
+  if (m < 0 || w < canvasW * 0.5 || h < canvasH * 0.5) return null;
+  return {
+    x: +(m / canvasW).toFixed(5),
+    y: +((canvasH - h) / 2 / canvasH).toFixed(5),
+    width: +(w / canvasW).toFixed(5),
+    height: +(h / canvasH).toFixed(5),
+  };
+}
+
+/**
  * Map harvested back-face geometry into print-canvas normalized coords.
- * Print canvas = Printify grey box (printFileDims). Phone back is aspect-fit
- * and centered; safe zone maps from harvested inset inside the back panel.
+ * Print canvas = Printify grey box (printFileDims). Phone back sits with an
+ * equal bleed margin on all 4 sides; safe zone maps from the harvested inset.
  */
 export function computePrintCanvasGeometry(
   derived: { safeZone: NormRect; backFaceCrop: NormRect },
@@ -805,7 +830,9 @@ export function computePrintCanvasGeometry(
   const { safeZone: safe, backFaceCrop: back } = derived;
   const contentAspect = croppedMockupW / Math.max(croppedMockupH, 1);
   const canvasAspect = printFileDims.width / Math.max(printFileDims.height, 1);
-  const phoneBackNormalized = fitAspectCenteredInCanvas(contentAspect, canvasAspect);
+  const phoneBackNormalized =
+    fitEqualMarginInCanvasNorm(contentAspect, printFileDims.width, printFileDims.height) ??
+    fitAspectCenteredInCanvas(contentAspect, canvasAspect);
 
   const relSafeX = (safe.x - back.x) / Math.max(back.width, 1e-6);
   const relSafeY = (safe.y - back.y) / Math.max(back.height, 1e-6);
