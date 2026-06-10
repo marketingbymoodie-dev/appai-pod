@@ -13659,7 +13659,17 @@ ${textEdgeRestrictions}
         selectedColorIds: JSON.stringify(finalColorIds),
       });
 
+      const allMapKeys = Object.keys(variantMap);
+      // Group keys by color to show which sizes are available per color
+      const keysByColor: Record<string, string[]> = {};
+      for (const k of allMapKeys) {
+        const [sz, co] = k.split(":");
+        if (!keysByColor[co]) keysByColor[co] = [];
+        keysByColor[co].push(sz);
+      }
       console.log(`[Refresh Variants] Final result: ${sizes.length} sizes, ${frameColors.length} colors from ${variants.length} variants`);
+      console.log(`[Refresh Variants] variantMap keys (${allMapKeys.length} total):`, allMapKeys);
+      console.log(`[Refresh Variants] Sizes per color:`, keysByColor);
 
       res.json({
         success: true,
@@ -13667,7 +13677,8 @@ ${textEdgeRestrictions}
         variantCount: variants.length,
         sizes,
         frameColors,
-        variantMapKeys: Object.keys(variantMap).slice(0, 10),
+        variantMapKeys: allMapKeys,
+        sizesPerColor: keysByColor,
         productType: updated
       });
     } catch (error) {

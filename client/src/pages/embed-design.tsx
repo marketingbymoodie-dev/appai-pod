@@ -3234,7 +3234,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (fallback) setSelectedFrameColor(fallback.id);
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
-  // When frame color changes, swap mockups from the per-color cache or mark stale
+  // When frame color changes, swap mockups from the per-color cache or auto-refetch
   useEffect(() => {
     if (
       (productTypeConfig?.onTheFlyTier === "flat" ||
@@ -3253,9 +3253,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setPrintifyMockups(cached.urls);
       setPrintifyMockupImages(cached.images);
       currentMockupColorRef.current = selectedFrameColor;
-      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev); // Keep mockup view when swapping colors
+      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
       setMockupsStale(false);
       console.log('[Mockups] Swapped to cached mockups for color', selectedFrameColor);
+    } else if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
+      // No cache for this color — auto-refetch instead of waiting for user to click "Refresh Mockups"
+      console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
+      setMockupError(null);
+      setMockupFailed(false);
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
+      setMockupsStale(false);
+      mockupColorCacheRef.current = {};
+      currentMockupColorRef.current = '';
+      fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor,
+        transform.scale,
+        transform.x,
+        transform.y
+      );
     } else {
       setMockupsStale(true);
     }
