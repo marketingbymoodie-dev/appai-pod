@@ -8814,23 +8814,31 @@ ${textEdgeRestrictions}
       if (coupon.expiresAt && new Date() > coupon.expiresAt) {
         return res.status(400).json({ error: "Coupon has expired" });
       }
-      if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
+      if (coupon.maxUses != null && coupon.usedCount >= coupon.maxUses) {
         return res.status(400).json({ error: "Coupon has reached maximum uses" });
       }
-      const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
-      if (redemption) {
-        const balance = await storage.ensureCustomerBalance(customer.id);
-        return res.json({ ok: true, creditsAdded: 0, newBalance: balance.credits, alreadyRedeemed: true });
+      // maxUses null = unlimited total redemptions; same customer may redeem again.
+      const unlimitedUses = coupon.maxUses == null;
+      if (!unlimitedUses) {
+        const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
+        if (redemption) {
+          return res.status(400).json({ error: "You have already redeemed this coupon" });
+        }
       }
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
         deltaEntitlementCents: 0,
         reason: "coupon",
-        idempotencyKey: `coupon:${coupon.id}:${customer.id}`,
+        idempotencyKey: unlimitedUses
+          ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
+          : `coupon:${coupon.id}:${customer.id}`,
         externalRef: String(coupon.id),
         metadata: { code: coupon.code },
       });
+      if (!ledgerResult.inserted) {
+        return res.status(409).json({ error: "Coupon could not be applied. Please try again." });
+      }
       await storage.createCouponRedemption({
         couponId: coupon.id,
         customerId: customer.id,
@@ -8846,7 +8854,7 @@ ${textEdgeRestrictions}
       });
       res.json({
         ok: true,
-        creditsAdded: ledgerResult.inserted ? coupon.creditAmount : 0,
+        creditsAdded: coupon.creditAmount,
         newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
       });
     } catch (error: any) {
@@ -10835,27 +10843,42 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Coupon has expired" });
       }
 
-      if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
+      if (coupon.maxUses != null && coupon.usedCount >= coupon.maxUses) {
         return res.status(400).json({ error: "Coupon has reached maximum uses" });
       }
 
-      // Add credits to customer
-      await storage.updateCustomer(customer.id, {
-        credits: customer.credits + coupon.creditAmount,
-      });
+      const unlimitedUses = coupon.maxUses == null;
+      if (!unlimitedUses) {
+        const redemption = await storage.getCouponRedemption(coupon.id, customer.id);
+        if (redemption) {
+          return res.status(400).json({ error: "You have already redeemed this coupon" });
+        }
+      }
 
-      // Record redemption
+      const ledgerResult = await storage.applyCreditLedgerEntry({
+        customerId: customer.id,
+        deltaCredits: coupon.creditAmount,
+        deltaEntitlementCents: 0,
+        reason: "coupon",
+        idempotencyKey: unlimitedUses
+          ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
+          : `coupon:${coupon.id}:${customer.id}`,
+        externalRef: String(coupon.id),
+        metadata: { code: coupon.code },
+      });
+      if (!ledgerResult.inserted) {
+        return res.status(409).json({ error: "Coupon could not be applied. Please try again." });
+      }
+
       await storage.createCouponRedemption({
         couponId: coupon.id,
         customerId: customer.id,
       });
 
-      // Update coupon usage count
       await storage.updateCoupon(coupon.id, {
         usedCount: coupon.usedCount + 1,
       });
 
-      // Log credit transaction
       await storage.createCreditTransaction({
         customerId: customer.id,
         type: "coupon",
@@ -10866,7 +10889,7 @@ ${textEdgeRestrictions}
       res.json({
         success: true,
         creditsAdded: coupon.creditAmount,
-        newBalance: customer.credits + coupon.creditAmount,
+        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
       });
     } catch (error) {
       console.error("Error redeeming coupon:", error);

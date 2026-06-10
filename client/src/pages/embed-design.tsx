@@ -7093,7 +7093,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               })
                                 .then(r => r.json())
                                 .then(data => {
-                                  if (data.ok) {
+                                  if (data.ok && data.creditsAdded > 0) {
                                     setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
                                     setCustomer(prev => prev ? { ...prev, credits: data.newBalance } : prev);
                                     setCouponCode('');
