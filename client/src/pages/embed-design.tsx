@@ -1147,6 +1147,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [sizeChart, setSizeChart] = useState<NormalizedSizeChart | null>(null);
   const [sizeChartLoading, setSizeChartLoading] = useState(false);
 
+  // Derived early — cart-state sync and load-design helpers reference these before JSX.
+  const printSizes: PrintSize[] = useMemo(
+    () =>
+      (productTypeConfig?.sizes || []).map((s) => ({
+        id: s.id,
+        name: s.name,
+        width: s.width,
+        height: s.height,
+        aspectRatio: productTypeConfig?.aspectRatio || "3:4",
+      })),
+    [productTypeConfig],
+  );
+
+  const frameColorObjects: FrameColor[] = useMemo(
+    () =>
+      (productTypeConfig?.frameColors || []).map((c) => ({
+        id: c.id,
+        name: c.name,
+        hex: c.hex,
+      })),
+    [productTypeConfig],
+  );
+
   // Resolve shop domain - try URL param first, then try to extract from referrer
   // This handles cases where the theme extension hasn't been redeployed with the latest changes
   const resolveShopDomain = (): string => {
@@ -6006,20 +6029,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     
     return () => clearTimeout(timer);
   }, [transform, generatedDesign?.id, isSharedDesign]);
-
-  const printSizes: PrintSize[] = (productTypeConfig?.sizes || []).map((s) => ({
-    id: s.id,
-    name: s.name,
-    width: s.width,
-    height: s.height,
-    aspectRatio: productTypeConfig?.aspectRatio || "3:4",
-  }));
-
-  const frameColorObjects: FrameColor[] = (productTypeConfig?.frameColors || []).map((c) => ({
-    id: c.id,
-    name: c.name,
-    hex: c.hex,
-  }));
 
   const selectedSizeConfig = printSizes.find((s) => s.id === selectedSize) || null;
   const selectedFrameColorConfig = frameColorObjects.find((f) => f.id === selectedFrameColor) || null;
