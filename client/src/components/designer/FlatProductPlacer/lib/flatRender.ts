@@ -274,6 +274,12 @@ function resolveEdgeWrapSourceCrop(
     return null;
   }
 
+  const sideSrc = view.sideProfileSourceCropNormalized as NormRect | null | undefined;
+  if (sideSrc && sideSrc.width > 0 && sideSrc.width < 0.98) {
+    const crop = normalizedRectPx(sideSrc, iw, ih);
+    if (crop) return crop;
+  }
+
   if (view.backFaceCropNormalized) {
     const crop = normalizedRectPx(view.backFaceCropNormalized as NormRect, iw, ih);
     if (crop && crop.width < iw * 0.97) return crop;

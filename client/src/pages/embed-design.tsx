@@ -108,6 +108,8 @@ export interface FlatViewCalibration {
   safeZoneNormalized?: { x: number; y: number; width: number; height: number } | null;
   /** Side-profile blank/mask were pre-cropped at harvest. */
   sideProfileCropped?: boolean;
+  /** Original back-face crop on full Printify mockup (before mask pre-crop). */
+  sideProfileSourceCropNormalized?: { x: number; y: number; width: number; height: number } | null;
   mockupDims: { width: number; height: number } | null;
   maskUrl: string | null;
   shadingUrl: string | null;
@@ -1442,30 +1444,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedSize,
     selectedFrameColor,
     isApparel,
-  ]);
-  const flatStaleCalibrationHint = useMemo(() => {
-    const cal = productTypeConfig?.flatCalibration;
-    const tier = productTypeConfig?.onTheFlyTier;
-    if (!cal || (tier !== "flat" && tier !== "mesh")) return null;
-    const name = (productTypeConfig?.name || "").toLowerCase();
-    const isPhone = /phone|iphone|galaxy|pixel|case/.test(name);
-    if (isPhone && !cal.edgeWrap) {
-      return "Admin → Calibrate flat: re-run calibration for updated phone-case guides and per-model previews.";
-    }
-    if (
-      (productTypeConfig?.designerType === "framed-print" || name.includes("frame")) &&
-      (productTypeConfig?.sizes?.length ?? 0) > 1 &&
-      !cal.decorPerSize
-    ) {
-      return "Admin → Calibrate flat: re-run calibration so each frame size gets its own mockup and print area.";
-    }
-    return null;
-  }, [
-    productTypeConfig?.flatCalibration,
-    productTypeConfig?.onTheFlyTier,
-    productTypeConfig?.designerType,
-    productTypeConfig?.name,
-    productTypeConfig?.sizes,
   ]);
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
@@ -6046,7 +6024,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc9`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc10`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
@@ -8065,11 +8043,6 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       )}
                       <span className="text-xs truncate">Share</span>
                     </Button>
-                  </div>
-                )}
-                {flatStaleCalibrationHint && (
-                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                    {flatStaleCalibrationHint}
                   </div>
                 )}
                 <FlatProductPlacer

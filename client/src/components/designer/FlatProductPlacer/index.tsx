@@ -200,7 +200,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         back: EMPTY_ASSETS,
       };
       for (const v of availableViews) {
-        const calib = resolveFlatViewCalibration(manifest, colorId, v);
+        const calib = resolveFlatViewCalibration(manifest, geometryKey, v);
         const blankUrl = blank[v];
         if (!calib || !blankUrl) continue;
         const [b, m, s] = await Promise.all([
@@ -345,7 +345,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, colorId, v);
+      const calib = resolveFlatViewCalibration(manifest, geometryKey, v);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
       try {
@@ -499,7 +499,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, colorId, view);
+        const cal = resolveFlatViewCalibration(manifest, geometryKey, view);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -558,7 +558,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, colorId, state.view);
+  const calib = resolveFlatViewCalibration(manifest, geometryKey, state.view);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];

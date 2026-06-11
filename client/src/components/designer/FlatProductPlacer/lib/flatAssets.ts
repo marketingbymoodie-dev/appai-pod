@@ -54,6 +54,7 @@ export type FlatViewGeometryOverride = Pick<
   | "phoneBackNormalized"
   | "safeZoneNormalized"
   | "sideProfileCropped"
+  | "sideProfileSourceCropNormalized"
   | "printFileDims"
   | "mockupDims"
   | "maskUrl"
@@ -90,6 +91,8 @@ export function resolveFlatViewCalibration(
     phoneBackNormalized: override.phoneBackNormalized ?? base.phoneBackNormalized,
     safeZoneNormalized: override.safeZoneNormalized ?? base.safeZoneNormalized,
     sideProfileCropped: override.sideProfileCropped ?? base.sideProfileCropped,
+    sideProfileSourceCropNormalized:
+      override.sideProfileSourceCropNormalized ?? base.sideProfileSourceCropNormalized,
     mockupDims: override.mockupDims ?? base.mockupDims,
     printFileDims: override.printFileDims ?? base.printFileDims,
     maskUrl: override.maskUrl ?? base.maskUrl,
