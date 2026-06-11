@@ -13,9 +13,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
-import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical } from "lucide-react";
+import { Package, Plus, Trash2, Edit2, Download, Search, Loader2, ExternalLink, RefreshCw, Settings, Info, Palette, Upload, FlaskConical, DollarSign } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AdminLayout from "@/components/admin-layout";
+import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import SizeChartTable from "@/components/SizeChartTable";
 import { getSizeChartByBlueprintId } from "@/lib/printifySizeCharts";
 import type { ProductType, Merchant } from "@shared/schema";
@@ -107,6 +108,7 @@ export default function AdminProducts() {
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
   const [calibrateMutatingId, setCalibrateMutatingId] = useState<number | null>(null);
+  const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
 
   const { data: merchant } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
@@ -832,6 +834,17 @@ export default function AdminProducts() {
                           </>
                         )}
                       </Button>
+                      {pt.shopifyProductId && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setResyncPricesTarget(pt)}
+                          data-testid={`button-resync-prices-${pt.id}`}
+                        >
+                          <DollarSign className="h-3 w-3 mr-1" />
+                          Resync Prices
+                        </Button>
+                      )}
                       {/* On-the-fly calibration: shown for non-AOP products that
                           don't yet have a final tier and weren't ruled out
                           (unsupported). New imports auto-calibrate to a tier, so
@@ -1453,6 +1466,13 @@ export default function AdminProducts() {
             </div>
           </DialogContent>
         </Dialog>
+
+        <ResyncPricesDialog
+          open={!!resyncPricesTarget}
+          onOpenChange={(v) => { if (!v) setResyncPricesTarget(null); }}
+          title={resyncPricesTarget?.name ?? ""}
+          productTypeId={resyncPricesTarget?.id ?? 0}
+        />
       </div>
     </AdminLayout>
   );

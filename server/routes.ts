@@ -471,6 +471,68 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
   return sharpInstance.png().toBuffer();
 }
 
+/** Extra matting guidance appended to apparel chroma-key generation prompts. */
+const APPAREL_CHROMA_MATTING_LINE =
+  "10. MATTING EDGES: Use hard vector-like edges with no outer glow, drop shadow, or gradient halos. Leave a clean band of solid #FF00FF background between the artwork and the canvas edge so chroma-key removal can eliminate fringe color.";
+
+function buildApparelChromaSizingRequirements(designColors: string): string {
+  return `
+MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
+1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
+2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
+3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
+4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
+5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
+6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
+7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
+8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
+9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
+${APPAREL_CHROMA_MATTING_LINE}
+`;
+}
+
+/**
+ * Shrink the opaque alpha mask inward to discard chroma fringe on anti-aliased edges.
+ */
+async function erodeAlphaChannel(buffer: Buffer, radiusPx: number = 2): Promise<Buffer> {
+  if (radiusPx <= 0) return buffer;
+  const { data, info } = await sharp(buffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const src = new Uint8Array(data);
+  const dst = new Uint8Array(src);
+  const alphaThreshold = 8;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * channels;
+      if (src[idx + 3] <= alphaThreshold) continue;
+
+      let keep = true;
+      for (let dy = -radiusPx; dy <= radiusPx && keep; dy++) {
+        for (let dx = -radiusPx; dx <= radiusPx; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+            keep = false;
+            break;
+          }
+          const nidx = (ny * width + nx) * channels;
+          if (src[nidx + 3] <= alphaThreshold) {
+            keep = false;
+            break;
+          }
+        }
+      }
+      if (!keep) dst[idx + 3] = 0;
+    }
+  }
+
+  return sharp(Buffer.from(dst), { raw: { width, height, channels } }).png().toBuffer();
+}
+
 /**
  * Chroma key background removal with smart fallback.
  *
@@ -863,6 +925,12 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       buffer = await despillMagenta(buffer);
     } catch (despillErr) {
       console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
+    }
+
+    try {
+      buffer = await erodeAlphaChannel(buffer, 2);
+    } catch (erodeErr) {
+      console.warn("[saveImageToStorage] alpha erosion skipped:", (erodeErr as Error).message);
     }
 
     buffer = await trimTransparentBounds(buffer);
@@ -2434,19 +2502,9 @@ export async function registerRoutes(
       let sizingRequirements: string;
       
       if (isApparel) {
-        // All apparel (AOP and standard) now uses white background for Picsart removebg
-        sizingRequirements = `
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID FLAT WHITE BACKGROUND: The ENTIRE background MUST be a flat, solid, uniform pure white (#FFFFFF) color. Every pixel that is not part of the design must be exactly #FFFFFF. DO NOT create scenic backgrounds, gradients, or detailed environments.
-3. DESIGN COLORS: Use VIBRANT, BOLD colors. The design MUST NOT contain any pure white pixels in the main subject — white is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean white space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the white background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid white background.
-7. PRINT-READY: This is for apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        sizingRequirements = buildApparelChromaSizingRequirements(
+          "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.",
+        );
       } else {
         // Wall art needs full-bleed edge-to-edge designs
         // Build shape-specific safe zone instructions
@@ -2776,19 +2834,7 @@ console.log("[api/shopify/generate] saved image", result);
         ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
         : "VIBRANT colors. AVOID white, light colors, and hot pink/magenta in the design.";
       
-      fullPrompt += `
-
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+      fullPrompt += buildApparelChromaSizingRequirements(designColors);
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
@@ -7104,19 +7150,7 @@ MANDATORY IMAGE REQUIREMENTS FOR ALL-OVER PRINT (AOP) - FOLLOW EXACTLY:
           }
         }
 
-        sizingRequirements = `
-
-MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
-1. ISOLATED DESIGN: Create a SINGLE, centered graphic design that is ISOLATED from any background scenery.
-2. SOLID HOT PINK (#FF00FF) BACKGROUND: The ENTIRE background MUST be a flat, uniform hot pink (#FF00FF) color. Every pixel that is not part of the design must be exactly #FF00FF. DO NOT create scenic backgrounds, landscapes, or detailed environments.
-3. DESIGN COLORS: Use ${designColors} The design MUST NOT contain any hot pink or magenta (#FF00FF) pixels — this color is reserved exclusively for the background.
-4. CENTERED COMPOSITION: The main design subject should be centered and take up approximately 60-70% of the canvas, leaving clean #FF00FF space around it.
-5. CLEAN EDGES: The design must have crisp, clean edges against the hot pink background. No fuzzy, gradient, or semi-transparent edges.
-6. NO RECTANGULAR FRAMES: Do NOT put the design inside a rectangular box, border, or frame. The design should stand alone on the solid hot pink background.
-7. PRINT-READY: This is for t-shirt/apparel printing — create an isolated graphic that can be printed on fabric.
-8. COMPOSITION FORMAT: Fill the canvas matching the requested aspect ratio with the design centered.
-9. STRICT PROMPT ADHERENCE: ONLY depict exactly what the user described. Do NOT add text, slogans, words, brand names, themed scenarios, or additional story elements unless the user explicitly asked for them.
-`;
+        sizingRequirements = buildApparelChromaSizingRequirements(designColors);
       } else {
         // Decor: full-bleed edge-to-edge designs
         const printShape = productType?.printShape || "rectangle";
@@ -15683,51 +15717,35 @@ ${textEdgeRestrictions}
     return res.json({ success: true });
   }));
 
-  /** POST /api/appai/customizer-pages/:id/sync-prices — update Shopify variant prices for an existing page */
-  app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
-    const resolved = await resolveShopInstallation(req);
-    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+  /** Shared Shopify variant price sync used by customizer pages and Products admin. */
+  async function applyShopifyVariantPrices(args: {
+    shop: string;
+    accessToken: string;
+    baseProductId: string | number;
+    productType: any;
+    variantPrices: Record<string, string>;
+    onBaseVariantUpdated?: (price: string, variantNum: number) => Promise<void>;
+  }): Promise<{
+    updated: Array<{ variantId: number; price: string; success: boolean; error?: string }>;
+    successCount: number;
+    totalCount: number;
+  }> {
+    const { shop, accessToken, baseProductId, productType, variantPrices, onBaseVariantUpdated } = args;
 
-    const { installation } = resolved;
-    const shop: string = installation.shopDomain;
-
-    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
-    if (!dbPage) return res.status(404).json({ error: "Page not found" });
-
-    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
-    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
-      return res.status(400).json({ error: "variantPrices is required" });
-    }
-
-    // Validate all prices
-    for (const [vid, price] of Object.entries(variantPrices)) {
-      const num = parseFloat(String(price));
-      if (isNaN(num) || num <= 0) {
-        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
-      }
-    }
-
-    // Find the product type for this page
-    const productTypes = await storage.getActiveProductTypes();
-    const matchedType = productTypes.find(
-      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
-    );
-
-    // Build printifyVariantId → shopifyVariantId mapping
     const printifyToShopifyVariantId: Record<string, number> = {};
-    if (matchedType?.variantMap) {
-      const storedVm = typeof matchedType.variantMap === "string"
-        ? JSON.parse(matchedType.variantMap || "{}")
-        : (matchedType.variantMap || {});
-      const svIds = (typeof matchedType.shopifyVariantIds === "string"
-        ? JSON.parse(matchedType.shopifyVariantIds || "{}")
-        : (matchedType.shopifyVariantIds || {})) as Record<string, number>;
-      const ptSizes = (typeof (matchedType as any).sizes === "string"
-        ? JSON.parse((matchedType as any).sizes || "[]")
-        : ((matchedType as any).sizes || [])) as Array<{id: string; name: string}>;
-      const ptColors = (typeof (matchedType as any).frameColors === "string"
-        ? JSON.parse((matchedType as any).frameColors || "[]")
-        : ((matchedType as any).frameColors || [])) as Array<{id: string; name: string}>;
+    if (productType?.variantMap) {
+      const storedVm = typeof productType.variantMap === "string"
+        ? JSON.parse(productType.variantMap || "{}")
+        : (productType.variantMap || {});
+      const svIds = (typeof productType.shopifyVariantIds === "string"
+        ? JSON.parse(productType.shopifyVariantIds || "{}")
+        : (productType.shopifyVariantIds || {})) as Record<string, number>;
+      const ptSizes = (typeof productType.sizes === "string"
+        ? JSON.parse(productType.sizes || "[]")
+        : (productType.sizes || [])) as Array<{ id: string; name: string }>;
+      const ptColors = (typeof productType.frameColors === "string"
+        ? JSON.parse(productType.frameColors || "[]")
+        : (productType.frameColors || [])) as Array<{ id: string; name: string }>;
 
       const nameToShopifyId: Record<string, number> = {};
       for (const [mapKey, shopifyVid] of Object.entries(svIds)) {
@@ -15761,11 +15779,10 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Fallback: match by title from live Shopify variants
       if (Object.keys(printifyToShopifyVariantId).length === 0) {
         const allVariantsResult = await shopifyApiCall(
-          shop, installation.accessToken,
-          `products/${dbPage.baseProductId}.json?fields=id,variants`,
+          shop, accessToken,
+          `products/${baseProductId}.json?fields=id,variants`,
         );
         const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
         const titleToShopifyId: Record<string, number> = {};
@@ -15791,13 +15808,6 @@ ${textEdgeRestrictions}
 
     console.log(`[sync-prices] printifyToShopifyVariantId: ${JSON.stringify(printifyToShopifyVariantId)}`);
 
-    // Also fetch live Shopify variants for direct ID matching
-    const allVariantsResult = await shopifyApiCall(
-      shop, installation.accessToken,
-      `products/${dbPage.baseProductId}.json?fields=id,variants`,
-    );
-    const allShopifyVariants: any[] = allVariantsResult.data?.product?.variants ?? [];
-
     const updated: Array<{ variantId: number; price: string; success: boolean; error?: string }> = [];
 
     for (const [vid, price] of Object.entries(variantPrices)) {
@@ -15813,15 +15823,14 @@ ${textEdgeRestrictions}
         continue;
       }
       const formatted = parseFloat(String(price)).toFixed(2);
-      const priceResult = await shopifyApiCall(shop, installation.accessToken, `variants/${variantNum}.json`, {
+      const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
         method: "PUT",
         body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
       });
       if (priceResult.ok) {
         updated.push({ variantId: variantNum, price: formatted, success: true });
-        // Update baseProductPrice if this is the base variant
-        if (String(variantNum) === String(dbPage.baseVariantId)) {
-          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
+        if (onBaseVariantUpdated) {
+          await onBaseVariantUpdated(formatted, variantNum);
         }
       } else {
         updated.push({ variantId: variantNum, price: formatted, success: false, error: priceResult.error });
@@ -15829,8 +15838,101 @@ ${textEdgeRestrictions}
       }
     }
 
-    const successCount = updated.filter(u => u.success).length;
-    return res.json({ success: true, updated, successCount, totalCount: updated.length });
+    const successCount = updated.filter((u) => u.success).length;
+    return { updated, successCount, totalCount: updated.length };
+  }
+
+  app.post("/api/appai/customizer-pages/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
+
+    const { installation } = resolved;
+    const shop: string = installation.shopDomain;
+
+    const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
+    if (!dbPage) return res.status(404).json({ error: "Page not found" });
+
+    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+      return res.status(400).json({ error: "variantPrices is required" });
+    }
+
+    // Validate all prices
+    for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (isNaN(num) || num <= 0) {
+        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+      }
+    }
+
+    const productTypes = await storage.getActiveProductTypes();
+    const matchedType = productTypes.find(
+      (pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId)
+    );
+
+    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+      shop,
+      accessToken: installation.accessToken!,
+      baseProductId: dbPage.baseProductId,
+      productType: matchedType,
+      variantPrices,
+      onBaseVariantUpdated: async (formatted, variantNum) => {
+        if (String(variantNum) === String(dbPage.baseVariantId)) {
+          await storage.updateCustomizerPage(dbPage.id, { baseProductPrice: formatted });
+        }
+      },
+    });
+
+    return res.json({ success: true, updated, successCount, totalCount });
+  }));
+
+  /** POST /api/admin/product-types/:id/sync-prices — resync Shopify variant prices from Products admin */
+  app.post("/api/admin/product-types/:id/sync-prices", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const userId = req.user.claims.sub;
+    const merchant = await storage.getMerchantByUserId(userId);
+    if (!merchant) return res.status(404).json({ error: "Merchant not found" });
+
+    const productTypeId = parseInt(req.params.id, 10);
+    const productType = await storage.getProductType(productTypeId);
+    if (!productType || productType.merchantId !== merchant.id) {
+      return res.status(404).json({ error: "Product type not found" });
+    }
+    if (!productType.shopifyProductId) {
+      return res.status(400).json({ error: "Product is not on Shopify yet. Send to store first." });
+    }
+
+    const shop = normalizeMyshopifyShopDomain(String(productType.shopifyShopDomain || ""));
+    if (!shop) {
+      return res.status(400).json({ error: "No Shopify shop linked to this product." });
+    }
+    const installation = await getAuthorizedInstallation(shop);
+    if (!installation?.accessToken) {
+      return res.status(403).json({
+        error: "Shop not authorized",
+        reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+      });
+    }
+
+    const { variantPrices } = req.body as { variantPrices?: Record<string, string> };
+    if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
+      return res.status(400).json({ error: "variantPrices is required" });
+    }
+    for (const [vid, price] of Object.entries(variantPrices)) {
+      const num = parseFloat(String(price));
+      if (isNaN(num) || num <= 0) {
+        return res.status(400).json({ error: `Invalid price for variant ${vid}: "${price}". Must be a positive number.` });
+      }
+    }
+
+    const { successCount, totalCount, updated } = await applyShopifyVariantPrices({
+      shop,
+      accessToken: installation.accessToken,
+      baseProductId: productType.shopifyProductId,
+      productType,
+      variantPrices,
+    });
+
+    return res.json({ success: true, updated, successCount, totalCount });
   }));
 
   /** GET /api/appai/blanks (admin-auth'd, uses offline session) */

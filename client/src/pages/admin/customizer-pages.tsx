@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
+import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
 import PlanPicker from "./plan-picker";
 
 interface CustomizerPage {
@@ -135,9 +136,6 @@ export default function AdminCustomizerPages() {
   const [deleteTarget, setDeleteTarget] = useState<CustomizerPage | null>(null);
   const [syncPricesTarget, setSyncPricesTarget] = useState<CustomizerPage | null>(null);
   const [editTarget, setEditTarget] = useState<CustomizerPage | null>(null);
-  const [syncPricesMap, setSyncPricesMap] = useState<Record<string, string>>({});
-  const [syncPricesLoading, setSyncPricesLoading] = useState(false);
-  const [syncMarkupPercent, setSyncMarkupPercent] = useState(60);
   const [editDescription, setEditDescription] = useState("");
   const [editPrimaryPlaceholder, setEditPrimaryPlaceholder] = useState("");
   const [editGalleryPlaceholders, setEditGalleryPlaceholders] = useState<Set<string>>(new Set());
@@ -208,17 +206,8 @@ export default function AdminCustomizerPages() {
 
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
-    enabled: createOpen || !!syncPricesTarget || !!editTarget,
+    enabled: createOpen || !!editTarget,
   });
-
-  // Costs query for the Sync Prices dialog — uses the page's productTypeId
-  const syncBlank = useMemo(() => {
-    if (!syncPricesTarget || !blanksData?.blanks) return null;
-    return blanksData.blanks.find(
-      (b) => b.productTypeId === syncPricesTarget.productTypeId ||
-             b.productId === syncPricesTarget.baseProductId
-    ) ?? null;
-  }, [syncPricesTarget, blanksData]);
 
   const editBlank = useMemo(() => {
     if (!editTarget || !blanksData?.blanks) return null;
@@ -236,85 +225,6 @@ export default function AdminCustomizerPages() {
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, 3)));
     setEditCustomPlaceholder("");
   }, [editTarget?.id, editBlank?.productTypeId]);
-
-  const { data: syncCostsData, isLoading: syncCostsLoading } = useQuery<{
-    costs: Record<string, number>;
-    shopifyVariantCosts: Record<string, number>;
-    printifyVariantLabels: Record<string, string>;
-    cached: boolean;
-  }>({
-    queryKey: ["/api/admin/printify/costs", syncBlank?.productTypeId],
-    queryFn: async () => {
-      const res = await apiRequest("GET", `/api/admin/printify/costs/${syncBlank!.productTypeId}`);
-      return res.json();
-    },
-    enabled: !!syncPricesTarget && !!syncBlank?.productTypeId && !!syncBlank?.printifyBlueprintId,
-  });
-
-  // Deduplicated variants for the sync dialog — uses full label so material variants
-  // like Polyester/Microfiber each get their own row
-  const syncVariants: BlankVariant[] = useMemo(() => {
-    const raw = syncBlank?.variants ?? [];
-    const seen = new Set<string>();
-    const deduped: BlankVariant[] = [];
-    for (const v of raw) {
-      if (!seen.has(v.title)) {
-        seen.add(v.title);
-        deduped.push(v);
-      }
-    }
-    return deduped;
-  }, [syncBlank?.variants]);
-
-  // Recommended prices for the sync dialog
-  const syncRecommendedPrices = useMemo(() => {
-    if (!syncCostsData?.costs || syncVariants.length === 0) return {};
-    const result: Record<string, string> = {};
-    const labelToCost: Record<string, number> = {};
-    if (syncCostsData.printifyVariantLabels && syncCostsData.costs) {
-      for (const [printifyVid, label] of Object.entries(syncCostsData.printifyVariantLabels)) {
-        const costCents = syncCostsData.costs[printifyVid];
-        if (costCents != null) labelToCost[label.toLowerCase().trim()] = costCents;
-      }
-    }
-    for (const v of syncVariants) {
-      let costCents: number | undefined = syncCostsData.shopifyVariantCosts?.[v.id];
-      if (costCents == null) costCents = syncCostsData.costs?.[v.id];
-      if (costCents == null && v.title) {
-        const normTitle = v.title.toLowerCase().trim();
-        costCents = labelToCost[normTitle];
-        if (costCents == null) {
-          for (const [label, cost] of Object.entries(labelToCost)) {
-            if (normTitle.includes(label) || label.includes(normTitle)) {
-              costCents = cost;
-              break;
-            }
-          }
-        }
-      }
-      if (costCents == null) continue;
-      const raw = (costCents / 100) * (1 + syncMarkupPercent / 100);
-      result[v.id] = (Math.ceil(raw) - 0.05).toFixed(2);
-    }
-    return result;
-  }, [syncCostsData, syncVariants, syncMarkupPercent]);
-
-  // Auto-fill sync prices when recommended prices load or markup changes
-  useEffect(() => {
-    if (!syncPricesTarget) return;
-    if (Object.keys(syncRecommendedPrices).length === 0) return;
-    setSyncPricesMap((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const [id, price] of Object.entries(syncRecommendedPrices)) {
-        if (!next[id] || next[id] === "" || next[id] === "0" || next[id] === "0.00") {
-          next[id] = price;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [syncRecommendedPrices, syncPricesTarget]);
 
   const shopDomain = pagesData?.pages?.[0]?.shop ?? "";
 
@@ -390,34 +300,6 @@ export default function AdminCustomizerPages() {
       toast({ title: "Delete failed", description: msg, variant: "destructive" });
     },
   });
-
-  async function handleSyncPrices() {
-    if (!syncPricesTarget) return;
-    const prices = Object.fromEntries(
-      Object.entries(syncPricesMap).filter(([, v]) => v && parseFloat(v) > 0)
-    );
-    if (Object.keys(prices).length === 0) {
-      toast({ title: "No prices entered", description: "Please enter at least one price.", variant: "destructive" });
-      return;
-    }
-    setSyncPricesLoading(true);
-    try {
-      const res = await apiRequest("POST", `/api/appai/customizer-pages/${syncPricesTarget.id}/sync-prices`, { variantPrices: prices });
-      const data = await res.json();
-      if (data.success) {
-        queryClient.invalidateQueries({ queryKey: ["/api/appai/customizer-pages"] });
-        toast({ title: "Prices updated", description: `Updated ${data.successCount} of ${data.totalCount} variants on Shopify.` });
-        setSyncPricesTarget(null);
-        setSyncPricesMap({});
-      } else {
-        toast({ title: "Sync failed", description: data.error ?? "Unknown error", variant: "destructive" });
-      }
-    } catch (err: any) {
-      toast({ title: "Sync failed", description: err.message ?? "Unknown error", variant: "destructive" });
-    } finally {
-      setSyncPricesLoading(false);
-    }
-  }
 
   function toggleEditGalleryPlaceholder(url: string) {
     setEditGalleryPlaceholders((prev) => {
@@ -1490,11 +1372,8 @@ export default function AdminCustomizerPages() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            title="Sync prices to Shopify"
-                            onClick={() => {
-                              setSyncPricesTarget(page);
-                              setSyncPricesMap({});
-                            }}
+                            title="Resync prices to Shopify"
+                            onClick={() => setSyncPricesTarget(page)}
                           >
                             <DollarSign className="h-4 w-4" />
                           </Button>
@@ -1682,112 +1561,13 @@ export default function AdminCustomizerPages() {
         </DialogContent>
       </Dialog>
 
-      {/* Sync Prices dialog */}
-      <Dialog open={!!syncPricesTarget} onOpenChange={(v) => { if (!v) { setSyncPricesTarget(null); setSyncPricesMap({}); } }}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <DollarSign className="h-5 w-5" />
-              Sync Prices — {syncPricesTarget?.title}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 pt-2">
-            <p className="text-sm text-muted-foreground">
-              Prices are auto-calculated from Printify production costs. Adjust the markup and apply, or edit individually.
-            </p>
-
-            {/* Markup + Apply All row */}
-            <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg border">
-              <div className="flex-1">
-                <Label htmlFor="sync-markup" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Markup</Label>
-                <div className="flex items-center gap-2 mt-1">
-                  <Input
-                    id="sync-markup"
-                    type="number"
-                    className="w-20"
-                    value={syncMarkupPercent}
-                    onChange={(e) => setSyncMarkupPercent(Number(e.target.value))}
-                  />
-                  <span className="text-sm font-medium">%</span>
-                </div>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="h-10"
-                disabled={Object.keys(syncRecommendedPrices).length === 0}
-                onClick={() => {
-                  const next: Record<string, string> = {};
-                  for (const [id, price] of Object.entries(syncRecommendedPrices)) {
-                    next[id] = price;
-                  }
-                  setSyncPricesMap(next);
-                }}
-              >
-                Apply All Suggested
-              </Button>
-            </div>
-
-            {/* Variant price inputs */}
-            {(blanksLoading || syncCostsLoading) ? (
-              <Skeleton className="h-40 w-full" />
-            ) : syncVariants.length === 0 ? (
-              <p className="text-sm text-amber-600">
-                No variant data available. Make sure the product is imported.
-              </p>
-            ) : (
-              <div className="space-y-2 overflow-y-auto pr-1" style={{maxHeight: '240px'}}>
-                {syncVariants.map((v) => (
-                  <div key={v.id} className="space-y-1">
-                    <div className="flex justify-between items-end">
-                      <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{v.title}</Label>
-                      {syncCostsLoading ? (
-                        <div className="flex items-center gap-1">
-                          <Loader2 className="h-2.5 w-2.5 animate-spin text-muted-foreground" />
-                          <span className="text-[10px] text-muted-foreground italic">Calculating...</span>
-                        </div>
-                      ) : syncRecommendedPrices[v.id] ? (
-                        <span className="text-[10px] text-muted-foreground">Suggested: ${syncRecommendedPrices[v.id]}</span>
-                      ) : null}
-                    </div>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                      <Input
-                        className="pl-7 text-sm"
-                        placeholder="0.00"
-                        value={syncPricesMap[v.id] ?? ""}
-                        onChange={(e) => setSyncPricesMap({ ...syncPricesMap, [v.id]: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="flex gap-2 pt-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => { setSyncPricesTarget(null); setSyncPricesMap({}); }}
-                disabled={syncPricesLoading}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="flex-1"
-                onClick={handleSyncPrices}
-                disabled={syncPricesLoading}
-              >
-                {syncPricesLoading ? (
-                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Syncing…</>
-                ) : (
-                  <><RefreshCw className="h-4 w-4 mr-2" /> Sync Prices</>
-                )}
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ResyncPricesDialog
+        open={!!syncPricesTarget}
+        onOpenChange={(v) => { if (!v) setSyncPricesTarget(null); }}
+        title={syncPricesTarget?.title ?? ""}
+        productTypeId={syncPricesTarget?.productTypeId ?? 0}
+        customizerPageId={syncPricesTarget?.id}
+      />
 
       {/* Confirm delete dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>
