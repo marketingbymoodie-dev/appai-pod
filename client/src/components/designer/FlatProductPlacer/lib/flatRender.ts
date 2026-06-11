@@ -94,6 +94,22 @@ function imgDims(img: HTMLImageElement): { w: number; h: number } {
   };
 }
 
+/** True when blank and mask share the same pixel coordinate space (±8%). */
+function maskAlignsWithBlank(
+  blank: HTMLImageElement,
+  mask: HTMLImageElement | null,
+  tolerance = 0.08,
+): boolean {
+  if (!mask) return false;
+  const { w: bw, h: bh } = imgDims(blank);
+  const { w: mw, h: mh } = imgDims(mask);
+  if (bw <= 0 || bh <= 0 || mw <= 0 || mh <= 0) return false;
+  return (
+    Math.abs(bw - mw) / Math.max(bw, mw) <= tolerance &&
+    Math.abs(bh - mh) / Math.max(bh, mh) <= tolerance
+  );
+}
+
 /**
  * Visible print rect in mockup pixels. Falls back to the full canvas when the
  * server couldn't detect a silhouette (`visibleRectNormalized === null`).
@@ -968,10 +984,13 @@ export function renderFlatView(input: FlatRenderInput): void {
     const blankLayer = document.createElement("canvas");
     blankLayer.width = outW;
     blankLayer.height = outH;
+    const maskAligned = maskAlignsWithBlank(blank, mask);
     const blCtx = blankLayer.getContext("2d");
     if (blCtx) {
       drawAssetScaled(blCtx, blank);
-      if (mask) {
+      // Only clip blank to mask when assets share coordinates — a cropped
+      // per-model blank + representative mask wipes the blank to transparency.
+      if (mask && maskAligned) {
         blCtx.globalCompositeOperation = "destination-in";
         drawAssetScaled(blCtx, mask);
         blCtx.globalCompositeOperation = "source-over";
@@ -993,9 +1012,15 @@ export function renderFlatView(input: FlatRenderInput): void {
     const box = flatArtBox(rect, placement, artW, artH);
     actx.drawImage(artwork, box.x, box.y, box.width, box.height);
 
-    if (mask) {
+    if (mask && maskAligned) {
       actx.globalCompositeOperation = "destination-in";
       drawAssetScaled(actx, mask);
+      actx.globalCompositeOperation = "source-over";
+    } else {
+      const pb = layout.phoneBack;
+      actx.globalCompositeOperation = "destination-in";
+      actx.fillStyle = "#fff";
+      actx.fillRect(pb.x, pb.y, pb.width, pb.height);
       actx.globalCompositeOperation = "source-over";
     }
 
@@ -1010,7 +1035,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     const sbCtx = shadeBlankCanvas.getContext("2d");
     if (sbCtx) {
       drawAssetScaled(sbCtx, blank);
-      if (mask) {
+      if (mask && maskAligned) {
         sbCtx.globalCompositeOperation = "destination-in";
         drawAssetScaled(sbCtx, mask);
         sbCtx.globalCompositeOperation = "source-over";

@@ -5,15 +5,45 @@ export type VariantMapEntry = {
 
 export type VariantMap = Record<string, VariantMapEntry>;
 
-/** Normalize a size or color id for case-insensitive map lookups. */
+/** Normalize a color id for case-insensitive map lookups. */
 function normalizeId(id: string | undefined | null): string {
   if (!id || id === "default") return "default";
   return id.toLowerCase().trim();
 }
 
+function normalizeSizeId(id: string | undefined | null): string {
+  if (!id || id === "default") return "default";
+  return normalizeApparelSizeId(id);
+}
+
+/** Canonical apparel size slug — keeps variantMap keys consistent across import paths. */
+export function normalizeApparelSizeId(id: string): string {
+  let s = id.toLowerCase().trim().replace(/\s+/g, "_");
+  const aliases: Record<string, string> = {
+    extra_large: "xl",
+    "x-large": "xl",
+    x_large: "xl",
+    "xx-large": "2xl",
+    xx_large: "2xl",
+    xxlarge: "2xl",
+    "xxx-large": "3xl",
+    xxx_large: "3xl",
+    "2_xl": "2xl",
+    "3_xl": "3xl",
+    "4_xl": "4xl",
+    "5_xl": "5xl",
+    xxl: "2xl",
+    xxxl: "3xl",
+    small: "s",
+    medium: "m",
+    large: "l",
+  };
+  return aliases[s] ?? s;
+}
+
 /** Build the canonical `{sizeId}:{colorId}` lookup key (case-insensitive). */
 export function variantMapKey(sizeId: string | undefined | null, colorId: string | undefined | null): string {
-  return `${normalizeId(sizeId)}:${normalizeId(colorId)}`;
+  return `${normalizeSizeId(sizeId)}:${normalizeId(colorId)}`;
 }
 
 /** True when an exact size+color Printify variant exists in the map. */
@@ -66,7 +96,7 @@ export function resolveVariantFromMap(
   opts?: ResolveVariantOptions,
 ): { entry: VariantMapEntry; key: string } | null {
   if (!variantMap) return null;
-  const size = normalizeId(sizeId);
+  const size = normalizeSizeId(sizeId);
   const color = normalizeId(colorId);
 
   const exact = variantMap[variantMapKey(size, color)];

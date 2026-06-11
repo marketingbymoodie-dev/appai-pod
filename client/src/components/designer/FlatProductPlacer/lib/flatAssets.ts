@@ -82,11 +82,19 @@ export function resolveFlatViewCalibration(
   return {
     ...base,
     ...override,
-    // Null-coalesce fields that should always fall back to the shared base
-    // rather than being silently clobbered by a missing per-model override.
+    // Null-coalesce geometry fields — partial per-model harvest must not
+    // clobber shared base values with null (breaks layout, shading, mask clip).
+    visibleRectNormalized: override.visibleRectNormalized ?? base.visibleRectNormalized,
+    printBoundsNormalized: override.printBoundsNormalized ?? base.printBoundsNormalized,
+    backFaceCropNormalized: override.backFaceCropNormalized ?? base.backFaceCropNormalized,
+    phoneBackNormalized: override.phoneBackNormalized ?? base.phoneBackNormalized,
+    safeZoneNormalized: override.safeZoneNormalized ?? base.safeZoneNormalized,
+    sideProfileCropped: override.sideProfileCropped ?? base.sideProfileCropped,
+    mockupDims: override.mockupDims ?? base.mockupDims,
     printFileDims: override.printFileDims ?? base.printFileDims,
     maskUrl: override.maskUrl ?? base.maskUrl,
     shadingUrl: override.shadingUrl ?? base.shadingUrl,
+    shadingMode: override.shadingMode ?? base.shadingMode,
     meshNodes: base.meshNodes,
     meshGrid: base.meshGrid,
     planarityScore: base.planarityScore,
@@ -143,13 +151,16 @@ export async function loadFlatViewAssets(
   const calib = resolveFlatViewCalibration(manifest, colorId, view);
   if (!blankUrl || !calib) return null;
 
+  const shouldLoadShading =
+    !!calib.shadingUrl &&
+    (!!manifest.edgeWrap ||
+      calib.shadingMode === "map" ||
+      !!calib.printBoundsNormalized);
+
   const [b, m, s] = await Promise.all([
     loadFlatImage(blankUrl),
     calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
-    calib.shadingUrl &&
-    (calib.shadingMode === "map" || calib.printBoundsNormalized)
-      ? loadFlatImage(calib.shadingUrl)
-      : Promise.resolve(null),
+    shouldLoadShading ? loadFlatImage(calib.shadingUrl!) : Promise.resolve(null),
   ]);
   if (!b) return null;
   return { blank: b, mask: m, shading: s };

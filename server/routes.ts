@@ -15,7 +15,13 @@ import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
-import { hasExactVariantMapping, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import {
+  hasExactVariantMapping,
+  normalizeApparelSizeId,
+  resolveVariantFromMap,
+  variantMapKey,
+  type VariantMap,
+} from "@shared/variantMapResolve";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
@@ -11770,7 +11776,7 @@ ${textEdgeRestrictions}
         // Check options for size
         if (!extractedSizeId && (options.size || options.Size)) {
           const sizeVal = options.size || options.Size;
-          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          extractedSizeId = normalizeApparelSizeId(sizeVal);
           if (!sizesMap.has(extractedSizeId)) {
             sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
@@ -11794,7 +11800,7 @@ ${textEdgeRestrictions}
               break;
             }
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase();
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -11802,7 +11808,7 @@ ${textEdgeRestrictions}
             }
             // Named sizes (Small, Medium, Large, King, Queen, One Size, etc.)
             if (namedSizes.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -12465,7 +12471,7 @@ ${textEdgeRestrictions}
         // 2. Check options for size (normalize various key names)
         if (!extractedSizeId && (options.size || options.Size)) {
           const sizeVal = options.size || options.Size;
-          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          extractedSizeId = normalizeApparelSizeId(sizeVal);
           if (!sizesMap.has(extractedSizeId)) {
             sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
@@ -12496,7 +12502,7 @@ ${textEdgeRestrictions}
             
             // Check apparel sizes (S, M, L, XL, 2XL, etc.)
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase();
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -12505,7 +12511,7 @@ ${textEdgeRestrictions}
             
             // Check named sizes (Small, Medium, Large, King, Queen)
             if (namedSizes.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -12683,7 +12689,7 @@ ${textEdgeRestrictions}
         // Use the extractedSizeId and extractedColorId captured during this iteration
         // Only add to variantMap if we have at least a size or color - no fallback keys
         if (extractedSizeId || extractedColorId) {
-          const mapKey = `${extractedSizeId || 'default'}:${extractedColorId || 'default'}`;
+          const mapKey = variantMapKey(extractedSizeId || "default", extractedColorId || "default");
           variantMap[mapKey] = { printifyVariantId: variant.id, providerId };
         } else {
           // Neither size nor color could be extracted - skip this variant for mockup generation
@@ -13514,7 +13520,7 @@ ${textEdgeRestrictions}
         // Check options for size
         if (!extractedSizeId && (options.size || options.Size)) {
           const sizeVal = options.size || options.Size;
-          extractedSizeId = sizeVal.toLowerCase().replace(/\s+/g, '_');
+          extractedSizeId = normalizeApparelSizeId(sizeVal);
           if (!sizesMap.has(extractedSizeId)) {
             sizesMap.set(extractedSizeId, { id: extractedSizeId, name: sizeVal, width: 0, height: 0 });
           }
@@ -13539,7 +13545,7 @@ ${textEdgeRestrictions}
               break;
             }
             if (apparelSizesLower.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase();
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -13547,7 +13553,7 @@ ${textEdgeRestrictions}
             }
             // Named sizes (Small, Medium, Large, King, Queen, One Size, etc.)
             if (namedSizes.includes(part.toLowerCase())) {
-              extractedSizeId = part.toLowerCase().replace(/\s+/g, '_');
+              extractedSizeId = normalizeApparelSizeId(part);
               if (!sizesMap.has(extractedSizeId)) {
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
@@ -13565,6 +13571,18 @@ ${textEdgeRestrictions}
                 sizesMap.set(extractedSizeId, { id: extractedSizeId, name: part, width: 0, height: 0 });
               }
               break;
+            }
+          }
+        }
+
+        // Fallback: first non-color title part when size still unknown (parity with import)
+        if (!extractedSizeId && title && title.includes("/")) {
+          const parts = title.split("/").map((p: string) => p.trim());
+          const firstPart = parts[0];
+          if (firstPart && !firstPart.match(/^(black|white|red|blue|green|yellow|pink|purple|orange|gray|grey|navy|brown|beige|cream|tan)/i)) {
+            extractedSizeId = normalizeApparelSizeId(firstPart);
+            if (!sizesMap.has(extractedSizeId)) {
+              sizesMap.set(extractedSizeId, { id: extractedSizeId, name: firstPart, width: 0, height: 0 });
             }
           }
         }
@@ -13612,7 +13630,7 @@ ${textEdgeRestrictions}
 
         // Add to variantMap
         if (extractedSizeId || extractedColorId) {
-          const mapKey = `${extractedSizeId || 'default'}:${extractedColorId || 'default'}`;
+          const mapKey = variantMapKey(extractedSizeId || "default", extractedColorId || "default");
           variantMap[mapKey] = { printifyVariantId: variant.id, providerId };
         }
       }
@@ -14607,7 +14625,9 @@ ${textEdgeRestrictions}
       }
 
       const variantMapData = JSON.parse(productType.variantMap as string || "{}") as VariantMap;
-      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId);
+      const resolvedVariant = resolveVariantFromMap(variantMapData, sizeId, colorId, {
+        allowSizeFallbackForColor: true,
+      });
 
       if (!resolvedVariant?.entry.printifyVariantId) {
         return res.status(400).json({

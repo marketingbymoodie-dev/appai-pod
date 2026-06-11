@@ -43,14 +43,13 @@ export function resolveFlatBlankColorId(
     if (hit) return hit;
   }
 
-  if (manifest.decorPerSize && opts.sizeId) {
-    const sizeNorm = normalizeFlatColorKey(opts.sizeId);
+  // Same garment colour at any size — never return the first size:* match (wrong colour).
+  if (manifest.decorPerSize && opts.frameColorId) {
+    const colorNorm = normalizeFlatColorKey(opts.frameColorId);
     for (const k of Object.keys(manifest.blanks || {})) {
       if (!blankKeyMatches(manifest, k)) continue;
       const kn = normalizeFlatColorKey(k);
-      if (kn === sizeNorm || kn.startsWith(`${sizeNorm}:`) || kn.endsWith(`:${sizeNorm}`)) {
-        return k;
-      }
+      if (kn === colorNorm || kn.endsWith(`:${colorNorm}`)) return k;
     }
   }
 

@@ -19,6 +19,7 @@
  * live mockup flow uses). Never leaves temp products behind.
  */
 import sharp from "sharp";
+import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
@@ -547,14 +548,12 @@ export function resolveFlatBlankColorId(
     }
   }
 
-  if (manifest.decorPerSize && opts.sizeId) {
-    const sizeNorm = normalizeBlankKey(opts.sizeId);
+  if (manifest.decorPerSize && opts.frameColorId) {
+    const colorNorm = normalizeBlankKey(opts.frameColorId);
     for (const k of Object.keys(manifest.blanks || {})) {
       if (!blankKeyMatchesManifest(manifest, k)) continue;
       const kn = normalizeBlankKey(k);
-      if (kn === sizeNorm || kn.startsWith(`${sizeNorm}:`) || kn.endsWith(`:${sizeNorm}`)) {
-        return k;
-      }
+      if (kn === colorNorm || kn.endsWith(`:${colorNorm}`)) return k;
     }
   }
 
@@ -1139,17 +1138,42 @@ function resolveVariantIdForHarvest(
   variantMap: Record<string, any>,
   sizeId: string,
   colorId: string,
+  opts?: { allowSizeFallbackForColor?: boolean },
 ): number | null {
-  let variantId = variantIdForKey(variantMap, `${sizeId}:${colorId}`);
-  if (variantId != null) return variantId;
-  variantId = variantIdForKey(variantMap, `${sizeId}:default`);
-  if (variantId != null) return variantId;
+  const resolved = resolveVariantFromMap(variantMap as VariantMap, sizeId, colorId, {
+    allowSizeFallbackForColor: opts?.allowSizeFallbackForColor ?? false,
+  });
+  const id = resolved?.entry.printifyVariantId;
+  return id != null && id !== "" ? Number(id) : null;
+}
+
+/** Any Printify variant for this phone model (colour does not affect case blank). */
+function resolveVariantIdForPhoneModel(
+  variantMap: Record<string, any>,
+  sizeId: string,
+): number | null {
+  const normSize = sizeId.toLowerCase().trim();
   for (const [key, entry] of Object.entries(variantMap)) {
-    if (key.startsWith(`${sizeId}:`) && entry?.printifyVariantId) {
-      return Number(entry.printifyVariantId);
-    }
+    if (!entry?.printifyVariantId) continue;
+    const [sz] = key.split(":");
+    if (sz === normSize) return Number(entry.printifyVariantId);
   }
   return null;
+}
+
+const APPAREL_SIZE_IDS = new Set([
+  "xxs", "xs", "s", "m", "l", "xl", "2xl", "3xl", "4xl", "5xl", "xxl", "xxxl",
+  "small", "medium", "large", "extra_large",
+]);
+
+function isApparelSizeId(sizeId: string): boolean {
+  const s = sizeId.toLowerCase().trim().replace(/\s+/g, "_");
+  return APPAREL_SIZE_IDS.has(s);
+}
+
+function isDimensionalDecorSize(sizeId: string, sizeName?: string): boolean {
+  const combined = `${sizeId} ${sizeName || ""}`.toLowerCase();
+  return /\d+\s*["']?\s*[xX×]\s*\d+/.test(combined) || /\d+\s*oz\b/.test(combined);
 }
 
 /**
@@ -1186,23 +1210,28 @@ export function buildHarvestColorsFromProductType(productType: {
         ? frameColors.map((fc: any) => String(fc.id))
         : ["default"];
     for (const size of phoneSizes) {
-      for (const colorId of colorIds) {
-        const variantId = resolveVariantIdForHarvest(variantMap, String(size.id), colorId);
-        if (variantId == null) continue;
-        pushColor({
-          id: String(size.id),
-          name: size.name || String(size.id),
-          hex: frameColors.find((fc: any) => String(fc.id) === colorId)?.hex,
-          variantId,
-        });
-        break;
-      }
+      const variantId = resolveVariantIdForPhoneModel(variantMap, String(size.id));
+      if (variantId == null) continue;
+      pushColor({
+        id: String(size.id),
+        name: size.name || String(size.id),
+        hex: frameColors.find((fc: any) => colorIds.includes(String(fc.id)))?.hex,
+        variantId,
+      });
     }
     return colors;
   }
 
-  // Framed / decor: harvest one blank + geometry per size × frame colour.
-  if (sizes.length > 1 && frameColors.length > 0) {
+  // Framed / decor only: harvest one blank + geometry per size × frame colour.
+  // Apparel (S/M/L/XL sweaters, etc.) uses the colour-only path below — garment
+  // colour is size-independent and size×colour harvest hits the 64-blank cap.
+  const decorBySizeAndColor =
+    sizes.length > 1 &&
+    frameColors.length > 0 &&
+    sizes.some((s: any) => isDimensionalDecorSize(String(s.id), String(s.name || ""))) &&
+    !sizes.every((s: any) => isApparelSizeId(String(s.id)));
+
+  if (decorBySizeAndColor) {
     for (const size of sizes) {
       for (const fc of frameColors) {
         const variantId = resolveVariantIdForHarvest(variantMap, String(size.id), String(fc.id));
@@ -1223,7 +1252,9 @@ export function buildHarvestColorsFromProductType(productType: {
     let variantId: number | null = null;
 
     for (const size of sizes) {
-      variantId = resolveVariantIdForHarvest(variantMap, String(size.id), String(fc.id));
+      variantId = resolveVariantIdForHarvest(variantMap, String(size.id), String(fc.id), {
+        allowSizeFallbackForColor: true,
+      });
       if (variantId != null) break;
     }
 
@@ -1237,7 +1268,9 @@ export function buildHarvestColorsFromProductType(productType: {
     }
 
     if (variantId == null && sizes.length > 0) {
-      variantId = resolveVariantIdForHarvest(variantMap, String(sizes[0].id), String(fc.id));
+      variantId = resolveVariantIdForHarvest(variantMap, String(sizes[0].id), String(fc.id), {
+        allowSizeFallbackForColor: true,
+      });
     }
 
     if (variantId != null) {
@@ -1567,7 +1600,11 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const maskMeta = maskByView[view];
         const origW = maskMeta?.width ?? geoView?.mockupDims?.width;
         const origH = maskMeta?.height ?? geoView?.mockupDims?.height;
-        if (geoView?.sideProfileCropped && origW && origH) {
+        // Only crop blank when THIS model has its own mask — cropping against
+        // shared representative geometry misaligns blank vs mask at render time.
+        const perModelCropped = perBlankGeo?.[view]?.sideProfileCropped === true;
+        const perModelMask = !!perBlankGeo?.[view]?.maskUrl;
+        if (perModelCropped && perModelMask && geoView?.sideProfileCropped && origW && origH) {
           const cropPx = sideProfileCropPx(geoView, origW, origH);
           if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
         }

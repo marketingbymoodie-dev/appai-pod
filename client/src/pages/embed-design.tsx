@@ -50,6 +50,11 @@ import {
 import { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { hasExactVariantMapping, hasVariantMappingForColor } from "@shared/variantMapResolve";
 
+/** Printify mockup cache key — size affects variant resolution for apparel. */
+function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
+  return `${sizeId || "default"}:${colorId || "default"}`;
+}
+
 declare global {
   interface Window {
     __APPAI_ASSET_BASE__?: string;
@@ -2972,9 +2977,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setPrintifyMockupImages(absImages);
         setSelectedMockupIndex(1); // Auto-show first mockup (not raw artwork)
         sendMockupsToParent(absUrls);
-        currentMockupColorRef.current = colorId;
-        mockupColorCacheRef.current[colorId] = { urls: absUrls, images: absImages };
-        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for color', colorId);
+        const cacheKey = mockupCacheKey(sizeId, colorId);
+        currentMockupColorRef.current = cacheKey;
+        mockupColorCacheRef.current[cacheKey] = { urls: absUrls, images: absImages };
+        console.log('[Mockups] Stored', absUrls.length, 'mockup URLs for', cacheKey);
         // Persist mockup URLs on the job record so saved designs can be re-loaded with mockups.
         // Also pass base product/variant info so the server can pre-create the shadow product
         // in the background — enabling instant Add to Cart.
@@ -3245,17 +3251,18 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
 
     const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (!hasMockups || !selectedFrameColor || mockupLoading) return;
-    if (selectedFrameColor === currentMockupColorRef.current) return;
+    if (!hasMockups || !selectedFrameColor || !selectedSize || mockupLoading) return;
+    const cacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
+    if (cacheKey === currentMockupColorRef.current) return;
 
-    const cached = mockupColorCacheRef.current[selectedFrameColor];
+    const cached = mockupColorCacheRef.current[cacheKey];
     if (cached && cached.images.length > 0) {
       setPrintifyMockups(cached.urls);
       setPrintifyMockupImages(cached.images);
-      currentMockupColorRef.current = selectedFrameColor;
+      currentMockupColorRef.current = cacheKey;
       setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
       setMockupsStale(false);
-      console.log('[Mockups] Swapped to cached mockups for color', selectedFrameColor);
+      console.log('[Mockups] Swapped to cached mockups for', cacheKey);
     } else if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
       // No cache for this color — auto-refetch instead of waiting for user to click "Refresh Mockups"
       console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
@@ -3282,6 +3289,53 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFrameColor]);
 
+  // When size changes, swap mockups from size+color cache or mark stale / refetch
+  useEffect(() => {
+    if (
+      (productTypeConfig?.onTheFlyTier === "flat" ||
+        productTypeConfig?.onTheFlyTier === "mesh") &&
+      productTypeConfig?.flatCalibration
+    ) {
+      return;
+    }
+
+    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
+    if (!hasMockups || !selectedFrameColor || !selectedSize || mockupLoading) return;
+    const cacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
+    if (cacheKey === currentMockupColorRef.current) return;
+
+    const cached = mockupColorCacheRef.current[cacheKey];
+    if (cached && cached.images.length > 0) {
+      setPrintifyMockups(cached.urls);
+      setPrintifyMockupImages(cached.images);
+      currentMockupColorRef.current = cacheKey;
+      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
+      setMockupsStale(false);
+      console.log('[Mockups] Swapped to cached mockups for size change', cacheKey);
+    } else if (generatedDesign?.imageUrl && productTypeConfig && selectedFrameColor) {
+      console.log('[Mockups] No cache for size', selectedSize, '— auto-refetching');
+      setMockupError(null);
+      setMockupFailed(false);
+      setPrintifyMockups([]);
+      setPrintifyMockupImages([]);
+      setSelectedMockupIndex(0);
+      setMockupsStale(false);
+      currentMockupColorRef.current = '';
+      fetchPrintifyMockups(
+        toAbsoluteImageUrl(generatedDesign.imageUrl),
+        productTypeConfig.id,
+        selectedSize,
+        selectedFrameColor,
+        transform.scale,
+        transform.x,
+        transform.y
+      );
+    } else {
+      setMockupsStale(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSize]);
+
   // Background prefetch: after primary mockups load, fetch other frame colors silently.
   // AOP products require per-panel data — skip prefetch unless we have saved panel refs.
   useEffect(() => {
@@ -3302,9 +3356,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    const otherColors = productTypeConfig.frameColors.filter(
-      (c: { id: string }) => c.id !== currentMockupColorRef.current && !mockupColorCacheRef.current[c.id]
-    );
+    const activeCacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
+    const otherColors = productTypeConfig.frameColors.filter((c: { id: string }) => {
+      const key = mockupCacheKey(selectedSize, c.id);
+      return key !== activeCacheKey && !mockupColorCacheRef.current[key];
+    });
     if (otherColors.length === 0) return;
 
     console.log('[Mockups] Background prefetch queued for colors:', otherColors.map((c: { id: string }) => c.id));
@@ -3325,7 +3381,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
       for (const color of otherColors) {
         if (controller.signal.aborted) break;
-        if (mockupColorCacheRef.current[color.id]) continue;
+        const prefetchKey = mockupCacheKey(selectedSize, color.id);
+        if (mockupColorCacheRef.current[prefetchKey]) continue;
 
         try {
           const aopPanels = productTypeConfig?.isAllOverPrint
@@ -3360,8 +3417,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               ...img,
               url: toAbsoluteImageUrl(img.url),
             }));
-            mockupColorCacheRef.current[color.id] = { urls: absUrls, images: absImages };
-            console.log('[Mockups] Background cached color', color.id, '—', absUrls.length, 'mockups');
+            mockupColorCacheRef.current[prefetchKey] = { urls: absUrls, images: absImages };
+            console.log('[Mockups] Background cached', prefetchKey, '—', absUrls.length, 'mockups');
           }
         } catch {
           // Silently fail for background prefetch
@@ -5928,7 +5985,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc5`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc6`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
@@ -5973,7 +6030,14 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           if (cancelled || !dataUrl) continue;
           images.push({ url: dataUrl, label: view });
         }
-        if (cancelled || images.length === 0) return;
+        if (cancelled) return;
+        if (images.length === 0) {
+          console.warn('[Mockups] Flat mockup raster failed for', flatBlankColorId);
+          setFlatRenderFailed(true);
+          setMockupsStale(true);
+          return;
+        }
+        setFlatRenderFailed(false);
         setPrintifyMockupImages(images);
         setPrintifyMockups(images.map((i) => i.url));
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
