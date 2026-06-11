@@ -830,7 +830,15 @@
     function addToCart(variantId, quantity, properties) {
       if (!variantId) return Promise.reject(new Error('Missing variantId'));
 
-      var body = { items: [{ id: Number(variantId), quantity: quantity || 1, properties: properties || {} }] };
+      var safeProps = properties || {};
+      if (safeProps['_mockup_url'] && String(safeProps['_mockup_url']).indexOf('data:') === 0) {
+        console.warn(B, 'Stripping data: _mockup_url — too large for Shopify cart payload');
+        safeProps = Object.assign({}, safeProps);
+        delete safeProps['_mockup_url'];
+        delete safeProps['mockup_url'];
+      }
+
+      var body = { items: [{ id: Number(variantId), quantity: quantity || 1, properties: safeProps }] };
       console.log(B, '_mockup_url being sent:', properties && properties['_mockup_url'] ? properties['_mockup_url'] : '(none)');
       console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
 
@@ -1188,6 +1196,10 @@
         }
 
         var atcMockupUrl = (data.properties && (data.properties['_mockup_url'] || data.properties['mockup_url'])) || '';
+        if (atcMockupUrl && atcMockupUrl.indexOf('data:') === 0) {
+          console.warn(B, 'Ignoring data: mockup for shadow-SKU resolve');
+          atcMockupUrl = '';
+        }
         var atcDesignId = (data.properties && data.properties['_design_id']) || '';
         // Use baseVariantId (the original base product variant) for resolveDesignSku so the
         // server can look it up on the base product and create a fresh shadow product if needed.

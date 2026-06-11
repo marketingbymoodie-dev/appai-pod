@@ -4826,6 +4826,39 @@ ${textEdgeRestrictions}
     return fallbackVariants;
   }
 
+  /** Merge real Shopify prices onto DB fallback rows (fallback hardcodes price: 0.00). */
+  function enrichVariantsWithShopifyPrices<T extends {
+    id: number | string;
+    title: string;
+    option1?: string | null;
+    option2?: string | null;
+    price: string;
+  }>(variants: T[], rawVariants: any[]): T[] {
+    if (!variants.length || !rawVariants.length) return variants;
+
+    const priceById = new Map<string, string>();
+    const priceByOptions = new Map<string, string>();
+    for (const rv of rawVariants) {
+      if (rv?.id != null && rv.price != null && parseFloat(String(rv.price)) > 0) {
+        priceById.set(String(rv.id), String(rv.price));
+      }
+      const optKey = `${String(rv.option1 ?? "").trim()}|${String(rv.option2 ?? "").trim()}`.toLowerCase();
+      if (rv.price != null && parseFloat(String(rv.price)) > 0) {
+        priceByOptions.set(optKey, String(rv.price));
+      }
+    }
+
+    return variants.map((v) => {
+      if (parseFloat(v.price) > 0) return v;
+      const byId = priceById.get(String(v.id));
+      if (byId) return { ...v, price: byId };
+      const optKey = `${String(v.option1 ?? "").trim()}|${String(v.option2 ?? "").trim()}`.toLowerCase();
+      const byOpt = priceByOptions.get(optKey);
+      if (byOpt) return { ...v, price: byOpt };
+      return v;
+    });
+  }
+
   /** Keep size×color catalog rows; drop per-design shadow rows on option3. */
   function selectBaseCatalogVariants(rawVariants: any[]): any[] {
     if (!rawVariants.length) return [];
@@ -5004,7 +5037,10 @@ ${textEdgeRestrictions}
           
           // Fallback 2: Use product type's own variant data from our database
           // This allows add-to-cart to work even when Shopify API has auth issues
-          const fallbackVariants = buildFallbackVariantsFromProductType(productType);
+          const fallbackVariants = enrichVariantsWithShopifyPrices(
+            buildFallbackVariantsFromProductType(productType),
+            [],
+          );
           if (fallbackVariants.length > 0) {
             console.log(`[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`);
             return res.json({ variants: fallbackVariants, source: "fallback" });
@@ -5019,7 +5055,10 @@ ${textEdgeRestrictions}
 
           const baseVariants = selectBaseCatalogVariants(variants);
           if (baseVariants.length === 0) {
-            const fallbackVariants = buildFallbackVariantsFromProductType(productType);
+            const fallbackVariants = enrichVariantsWithShopifyPrices(
+              buildFallbackVariantsFromProductType(productType),
+              variants,
+            );
             if (fallbackVariants.length > 0) {
               console.log(
                 `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
@@ -16158,7 +16197,10 @@ ${textEdgeRestrictions}
           if (baseVariants.length === 0 && page.productTypeId) {
             const pt = await storage.getProductType(page.productTypeId);
             if (pt) {
-              const fallback = buildFallbackVariantsFromProductType(pt);
+              const fallback = enrichVariantsWithShopifyPrices(
+                buildFallbackVariantsFromProductType(pt),
+                rawVariants,
+              );
               if (fallback.length > 0) {
                 console.log(
                   `[proxy/customizer-page] Product ${page.baseProductId} had ${rawVariants.length} Shopify variants but catalog empty; using DB fallback (${fallback.length})`,

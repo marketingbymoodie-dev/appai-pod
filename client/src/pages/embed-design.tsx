@@ -392,6 +392,26 @@ function dataUrlToBlob(dataUrl: string): Blob {
  * If the input is a relative path, resolves it to an absolute URL.
  * If the input is already an https URL, passes through.
  */
+/** True when a mockup URL is safe for Shopify cart properties and shadow-SKU resolution. */
+function isHttpsMockupUrl(url: string): boolean {
+  return !!url && (url.startsWith("https://") || url.startsWith("http://"));
+}
+
+/** Upload data-URL flat mockups before cart — Shopify rejects multi-MB base64 payloads. */
+async function ensureCartMockupUrl(url: string): Promise<string> {
+  if (!url) return "";
+  const abs = toAbsoluteImageUrl(url);
+  if (isHttpsMockupUrl(abs)) return abs;
+  if (!isDataUrl(abs)) return "";
+  try {
+    const hosted = await ensureHostedUrl(abs);
+    return isHttpsMockupUrl(hosted) ? hosted : "";
+  } catch (e) {
+    console.warn("[Design Studio] ensureCartMockupUrl failed:", e);
+    return "";
+  }
+}
+
 async function ensureHostedUrl(url: string): Promise<string> {
   if (!url) throw new Error("No image URL provided");
 
@@ -1589,6 +1609,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
     if (dc.frameColors?.length > 0) {
       setSelectedFrameColor(dc.frameColors[0].id);
+    } else {
+      setSelectedFrameColor("");
     }
     setProductTypeError(null);
   }, []);
@@ -3454,12 +3476,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
 
-  const getPreferredMockupUrl = useCallback((): string => {
+  const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
+    const pick = (url: string | undefined): string => {
+      if (!url) return "";
+      const abs = toAbsoluteImageUrl(url);
+      if (opts?.cartSafeOnly && !isHttpsMockupUrl(abs)) return "";
+      return abs;
+    };
     const frontImage = printifyMockupImages.find(img => img.label === 'front');
-    if (frontImage?.url) return toAbsoluteImageUrl(frontImage.url);
-    if (printifyMockups.length > 0) return toAbsoluteImageUrl(printifyMockups[0]);
+    const fromFront = pick(frontImage?.url);
+    if (fromFront) return fromFront;
+    if (printifyMockups.length > 0) {
+      const u = pick(printifyMockups[0]);
+      if (u) return u;
+    }
     if (printifyMockupImages.length > 0 && printifyMockupImages[0]?.url) {
-      return toAbsoluteImageUrl(printifyMockupImages[0].url);
+      const u = pick(printifyMockupImages[0].url);
+      if (u) return u;
     }
     return '';
   }, [printifyMockups, printifyMockupImages]);
@@ -3532,14 +3565,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !flatRenderFailed
     );
     const mockupFullUrl =
-      mockupsStale && !flatOnTheFlyEligible ? "" : getPreferredMockupUrl();
+      mockupsStale && !flatOnTheFlyEligible ? "" : getPreferredMockupUrl({ cartSafeOnly: true });
     // Use `_mockup_url` only — Shopify hides underscore-prefixed line properties from
     // buyer-facing cart/checkout; a public `mockup_url` showed the full Supabase URL as text.
     if (mockupFullUrl) {
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+    if (frameColorObjects.length > 0 && selectedFrameColor) {
+      properties['Color'] = selectedFrameColor;
+    }
 
     const flatPlacerOn = !!(
       (productTypeConfig?.onTheFlyTier === "flat" ||
@@ -3575,7 +3610,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         properties,
       },
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatRenderFailed, flatPlacerEditOpen]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -4673,13 +4708,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // stripping _mockup_url from cart entirely while mockups were still on-screen.
     // Wrong-color risk is bounded: mockupsStale already blocks add when transforms
     // are stale, and color-change triggers refresh or cache swap elsewhere.
-    const mockupFullUrl = getPreferredMockupUrl();
+    let mockupFullUrl = await ensureCartMockupUrl(getPreferredMockupUrl());
     if (!mockupFullUrl) {
-      console.warn('[Design Studio] No mockup URL available for cart.',
+      console.warn('[Design Studio] No hosted mockup URL available for cart.',
         'currentColor:', currentMockupColorRef.current, 'selected:', selectedFrameColor,
         'printifyMockups:', printifyMockups.length, 'printifyMockupImages:', printifyMockupImages.length);
     } else {
       console.log('[Design Studio] Mockup URL for cart:', mockupFullUrl.substring(0, 120));
+      // Pin hosted URL in state so shadow-SKU pre-create and cart-state sync reuse it.
+      const frontIdx = printifyMockupImages.findIndex((img) => img.label === "front");
+      if (frontIdx >= 0 && printifyMockupImages[frontIdx].url !== mockupFullUrl) {
+        const nextImages = printifyMockupImages.map((img, i) =>
+          i === frontIdx ? { ...img, url: mockupFullUrl } : img,
+        );
+        setPrintifyMockupImages(nextImages);
+        setPrintifyMockups(nextImages.map((i) => i.url));
+      } else if (printifyMockupImages.length === 0 && printifyMockups.length > 0) {
+        setPrintifyMockups([mockupFullUrl, ...printifyMockups.slice(1)]);
+      }
     }
 
     // Build line item properties for Printify fulfillment
@@ -4707,7 +4753,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       properties['_mockup_url'] = mockupFullUrl;
     }
     if (selectedSize) properties['Size'] = selectedSize;
-    if (selectedFrameColor) properties['Color'] = selectedFrameColor;
+    if (frameColorObjects.length > 0 && selectedFrameColor) {
+      properties['Color'] = selectedFrameColor;
+    }
 
     // Resolve the unique design variant before adding to cart.
     // Fast path: use pre-created shadow variant if available (created in background after mockups).
@@ -5989,7 +6037,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc8`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc9`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;
@@ -6032,7 +6080,15 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             artworkUrl,
           );
           if (cancelled || !dataUrl) continue;
-          images.push({ url: dataUrl, label: view });
+          let hostedUrl = dataUrl;
+          try {
+            hostedUrl = await ensureHostedUrl(dataUrl);
+          } catch (e) {
+            console.warn("[Mockups] Flat mockup upload failed for", view, e);
+            continue;
+          }
+          if (cancelled || !isHttpsMockupUrl(hostedUrl)) continue;
+          images.push({ url: hostedUrl, label: view });
         }
         if (cancelled) return;
         if (images.length === 0) {
@@ -6074,32 +6130,43 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const buildPriceMap = useCallback((): Record<string, number> => {
     const priceMap: Record<string, number> = {};
     if (!shopifyVariants || shopifyVariants.length === 0) return priceMap;
-    
-    console.log('[buildPriceMap] shopifyVariants:', shopifyVariants);
-    console.log('[buildPriceMap] printSizes:', printSizes);
-    
-    // For each size, find a matching variant and get its price
+
+    const hasColors = frameColorObjects.length > 0;
+    const frameName =
+      frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
+      selectedFrameColor ??
+      "";
+
     for (const size of printSizes) {
-      const matchedVariant = shopifyVariants.find((v: any) => {
-        const options = [v.title].filter(Boolean);
-        return options.some(
-          (opt) =>
-            opt?.toLowerCase().includes(size.name.toLowerCase()) ||
-            size.name.toLowerCase().includes(opt?.toLowerCase())
-        );
-      });
-      
-      if (matchedVariant && matchedVariant.price) {
-        // Convert price string to cents (multiply by 100)
-        const priceInCents = Math.round(parseFloat(matchedVariant.price) * 100);
-        priceMap[size.id] = priceInCents;
-        console.log(`[buildPriceMap] Matched ${size.name} (${size.id}) to variant ${matchedVariant.title}: $${matchedVariant.price}`);
+      let matchedVariant: (typeof shopifyVariants)[number] | undefined;
+      const matchedId = matchVariantBySizeColor(
+        shopifyVariants,
+        size.name,
+        frameName,
+        hasColors,
+        selectedFrameColor || undefined,
+      );
+      if (matchedId) {
+        matchedVariant = shopifyVariants.find((v) => String(v.id) === matchedId);
+      }
+      if (!matchedVariant) {
+        matchedVariant = shopifyVariants.find((v) => {
+          const t = (v.title || "").toLowerCase();
+          const sn = size.name.toLowerCase();
+          return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
+        });
+      }
+
+      if (matchedVariant?.price) {
+        const priceNum = parseFloat(matchedVariant.price);
+        if (priceNum > 0) {
+          priceMap[size.id] = Math.round(priceNum * 100);
+        }
       }
     }
-    
-    console.log('[buildPriceMap] Final priceMap:', priceMap);
+
     return priceMap;
-  }, [shopifyVariants, printSizes])
+  }, [shopifyVariants, printSizes, frameColorObjects, selectedFrameColor])
 
   // Auto-resolve the Shopify variant that matches the currently selected size + frame color.
   // Runs whenever size, frame color, or the variants list changes.
