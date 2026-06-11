@@ -1184,6 +1184,17 @@ function isDimensionalDecorSize(sizeId: string, sizeName?: string): boolean {
  *
  * Phone cases store device models in `sizes` — harvest one blank per model id.
  */
+function isApparelHarvestProduct(
+  designerType: string | null | undefined,
+  sizes: any[],
+): boolean {
+  if ((designerType || "").toLowerCase() === "apparel") return true;
+  return (
+    sizes.length > 0 &&
+    sizes.every((s: any) => s?.id && isApparelSizeId(String(s.id)))
+  );
+}
+
 export function buildHarvestColorsFromProductType(productType: {
   designerType?: string | null;
   frameColors?: unknown;
@@ -1227,7 +1238,9 @@ export function buildHarvestColorsFromProductType(productType: {
   // Apparel (S/M/L/XL sweaters, etc.) uses the colour-only path below — garment
   // colour is size-independent and size×colour harvest hits the 64-blank cap.
   const designerType = (productType.designerType || "").toLowerCase();
+  const apparelProduct = isApparelHarvestProduct(productType.designerType, sizes);
   const decorBySizeAndColor =
+    !apparelProduct &&
     (designerType === "framed-print" || designerType === "pillow") &&
     sizes.length > 1 &&
     frameColors.length > 0 &&
@@ -1392,6 +1405,7 @@ export type HarvestOptions = {
   token: string;
   shopId: string;
   designerType?: string | null;
+  sizes?: unknown;
   /** Optional explicit color list (e.g. from product frameColors+variantMap). Falls back to catalog. */
   colors?: ColorEntry[];
   maxBlankColors?: number;
@@ -1538,11 +1552,17 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       );
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
-    const apparelProduct = (opts.designerType || "").toLowerCase() === "apparel";
+    const harvestWarnings: string[] = [];
+    const harvestSizes = parseJsonArray(opts.sizes);
+    const apparelProduct = isApparelHarvestProduct(opts.designerType, harvestSizes);
     const decorPerSize =
       !edgeWrapProduct && !apparelProduct && colors.some((c) => c.id.includes(":"));
     baseManifest.decorPerSize = decorPerSize;
-    const harvestWarnings: string[] = [];
+    if (apparelProduct && colors.some((c) => c.id.includes(":"))) {
+      harvestWarnings.push(
+        "apparel product had size:colour harvest keys — re-run will store colour-only blanks",
+      );
+    }
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
     for (const color of colors) {
       const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));

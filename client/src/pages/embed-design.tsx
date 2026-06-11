@@ -1378,23 +1378,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     return resolveFlatBlankColorId(productTypeConfig.flatCalibration, {
       sizeId: selectedSize || undefined,
       frameColorId: selectedFrameColor || undefined,
+      isApparel,
     });
   }, [
     productTypeConfig?.flatCalibration,
     selectedSize,
     selectedFrameColor,
+    isApparel,
   ]);
   const flatPlacerGeometryKey = useMemo(() => {
     if (!productTypeConfig?.flatCalibration) return flatBlankColorId;
     return resolveFlatPlacementGeometryKey(productTypeConfig.flatCalibration, {
       sizeId: selectedSize || undefined,
       frameColorId: selectedFrameColor || undefined,
+      isApparel,
     });
   }, [
     productTypeConfig?.flatCalibration,
     flatBlankColorId,
     selectedSize,
     selectedFrameColor,
+    isApparel,
   ]);
   const flatStaleCalibrationHint = useMemo(() => {
     const cal = productTypeConfig?.flatCalibration;
@@ -5985,7 +5989,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatPlacerActive && flatApplyStatus === "saving"
   );
 
-  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc7`;
+  const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc8`;
 
   useEffect(() => {
     if (!flatPlacerEligible) return;

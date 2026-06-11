@@ -19,6 +19,28 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
   return null;
 }
 
+/** True when every blank key is `{apparelSize}:{color}` (legacy mis-harvested sweaters). */
+function blanksLookLikeApparelSizeColor(manifest: FlatCalibrationManifest): boolean {
+  const keys = Object.keys(manifest.blanks || {}).filter((k) => blankKeyMatches(manifest, k));
+  if (keys.length === 0) return false;
+  return keys.every((k) => /^[a-z0-9]+:[a-z0-9_]+$/i.test(k));
+}
+
+/** Match harvested blank keys by frame colour when size×colour keys omit the current size. */
+function findBlankKeyForColor(
+  manifest: FlatCalibrationManifest,
+  frameColorId: string,
+): string | null {
+  const colorNorm = normalizeFlatColorKey(frameColorId);
+  for (const k of Object.keys(manifest.blanks || {})) {
+    if (!blankKeyMatches(manifest, k)) continue;
+    const kn = normalizeFlatColorKey(k);
+    // normalizeFlatColorKey turns `s:light_pink` into `s-light-pink` — match suffix, not `:color`.
+    if (kn === colorNorm || kn.endsWith(`-${colorNorm}`)) return k;
+  }
+  return null;
+}
+
 /**
  * Resolve which harvested blank set to use for the current size / frame colour.
  *
@@ -28,14 +50,17 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
  */
 export function resolveFlatBlankColorId(
   manifest: FlatCalibrationManifest,
-  opts: { sizeId?: string; frameColorId?: string },
+  opts: { sizeId?: string; frameColorId?: string; isApparel?: boolean },
 ): string {
+  const apparelColorOnly =
+    !!opts.isApparel ||
+    (manifest.decorPerSize && blanksLookLikeApparelSizeColor(manifest));
   const candidates: string[] = [];
 
-  if (opts.sizeId && opts.frameColorId) {
+  if (!apparelColorOnly && opts.sizeId && opts.frameColorId) {
     candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
   }
-  if (opts.sizeId) candidates.push(opts.sizeId);
+  if (!apparelColorOnly && opts.sizeId) candidates.push(opts.sizeId);
   if (opts.frameColorId) candidates.push(opts.frameColorId);
 
   for (const id of candidates) {
@@ -43,14 +68,10 @@ export function resolveFlatBlankColorId(
     if (hit) return hit;
   }
 
-  // Same garment colour at any size — never return the first size:* match (wrong colour).
-  if (manifest.decorPerSize && opts.frameColorId) {
-    const colorNorm = normalizeFlatColorKey(opts.frameColorId);
-    for (const k of Object.keys(manifest.blanks || {})) {
-      if (!blankKeyMatches(manifest, k)) continue;
-      const kn = normalizeFlatColorKey(k);
-      if (kn === colorNorm || kn.endsWith(`:${colorNorm}`)) return k;
-    }
+  // Apparel + legacy size×colour harvest: garment colour is size-independent.
+  if ((manifest.decorPerSize || apparelColorOnly) && opts.frameColorId) {
+    const colorHit = findBlankKeyForColor(manifest, opts.frameColorId);
+    if (colorHit) return colorHit;
   }
 
   if (manifest.edgeWrap && opts.sizeId) {
@@ -80,9 +101,12 @@ export function resolveFlatBlankColorId(
  */
 export function resolveFlatPlacementGeometryKey(
   manifest: FlatCalibrationManifest,
-  opts: { sizeId?: string; frameColorId?: string },
+  opts: { sizeId?: string; frameColorId?: string; isApparel?: boolean },
 ): string {
-  if ((manifest.decorPerSize || manifest.edgeWrap) && opts.sizeId) {
+  const apparelColorOnly =
+    !!opts.isApparel ||
+    (manifest.decorPerSize && blanksLookLikeApparelSizeColor(manifest));
+  if (!apparelColorOnly && (manifest.decorPerSize || manifest.edgeWrap) && opts.sizeId) {
     return opts.sizeId;
   }
   return resolveFlatBlankColorId(manifest, opts);

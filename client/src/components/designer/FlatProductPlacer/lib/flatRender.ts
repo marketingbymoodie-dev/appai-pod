@@ -409,14 +409,31 @@ export function flatPrintCanvasLayout(
     ? normRectToPx(storedSafe, previewW, previewH)
     : flatEdgeWrapSafeZoneRectPx(phoneBack);
 
+  const sourceCrop = resolveEdgeWrapSourceCrop(view, blank ?? mask);
+  let imageDraw = phoneBack;
+  if (blank && sourceCrop) {
+    const iw = blank.naturalWidth || blank.width;
+    const ih = blank.naturalHeight || blank.height;
+    const relX = sourceCrop.x / Math.max(iw, 1);
+    const relY = sourceCrop.y / Math.max(ih, 1);
+    const relW = sourceCrop.width / Math.max(iw, 1);
+    const relH = sourceCrop.height / Math.max(ih, 1);
+    imageDraw = {
+      x: phoneBack.x - (relX / Math.max(relW, 1e-6)) * phoneBack.width,
+      y: phoneBack.y - (relY / Math.max(relH, 1e-6)) * phoneBack.height,
+      width: phoneBack.width / Math.max(relW, 1e-6),
+      height: phoneBack.height / Math.max(relH, 1e-6),
+    };
+  }
+
   return {
     previewW,
     previewH,
     printCanvas,
     phoneBack,
     safeZone,
-    imageDraw: phoneBack,
-    sourceCrop: null,
+    imageDraw,
+    sourceCrop,
   };
 }
 
@@ -992,11 +1009,33 @@ export function renderFlatView(input: FlatRenderInput): void {
       drawAssetScaled(blCtx, blank, {
         refW: maskAligned ? maskRefW : W,
         refH: maskAligned ? maskRefH : H,
-        useCrop: maskAligned,
+        useCrop: !!crop,
       });
-      if (mask && maskAligned) {
+      if (mask) {
         blCtx.globalCompositeOperation = "destination-in";
-        drawAssetScaled(blCtx, mask, { useCrop: true });
+        if (maskAligned) {
+          drawAssetScaled(blCtx, mask, { useCrop: true });
+        } else {
+          const mw = mask.naturalWidth || mask.width;
+          const mh = mask.naturalHeight || mask.height;
+          const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
+          const d = layout.imageDraw;
+          if (maskCrop && mw > 0 && mh > 0) {
+            blCtx.drawImage(
+              mask,
+              maskCrop.x,
+              maskCrop.y,
+              maskCrop.width,
+              maskCrop.height,
+              d.x,
+              d.y,
+              d.width,
+              d.height,
+            );
+          } else if (mw > 0 && mh > 0) {
+            blCtx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
+          }
+        }
         blCtx.globalCompositeOperation = "source-over";
       }
     }
@@ -1016,9 +1055,31 @@ export function renderFlatView(input: FlatRenderInput): void {
     const box = flatArtBox(rect, placement, artW, artH);
     actx.drawImage(artwork, box.x, box.y, box.width, box.height);
 
-    if (mask && maskAligned) {
+    if (mask) {
       actx.globalCompositeOperation = "destination-in";
-      drawAssetScaled(actx, mask, { useCrop: true });
+      if (maskAligned) {
+        drawAssetScaled(actx, mask, { useCrop: true });
+      } else {
+        const mw = mask.naturalWidth || mask.width;
+        const mh = mask.naturalHeight || mask.height;
+        const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
+        const d = layout.imageDraw;
+        if (maskCrop && mw > 0 && mh > 0) {
+          actx.drawImage(
+            mask,
+            maskCrop.x,
+            maskCrop.y,
+            maskCrop.width,
+            maskCrop.height,
+            d.x,
+            d.y,
+            d.width,
+            d.height,
+          );
+        } else if (mw > 0 && mh > 0) {
+          actx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
+        }
+      }
       actx.globalCompositeOperation = "source-over";
     } else {
       const pb = layout.phoneBack;
@@ -1045,11 +1106,33 @@ export function renderFlatView(input: FlatRenderInput): void {
       drawAssetScaled(sbCtx, blank, {
         refW: maskAligned ? maskRefW : W,
         refH: maskAligned ? maskRefH : H,
-        useCrop: maskAligned,
+        useCrop: !!crop,
       });
-      if (mask && maskAligned) {
+      if (mask) {
         sbCtx.globalCompositeOperation = "destination-in";
-        drawAssetScaled(sbCtx, mask, { useCrop: true });
+        if (maskAligned) {
+          drawAssetScaled(sbCtx, mask, { useCrop: true });
+        } else {
+          const mw = mask.naturalWidth || mask.width;
+          const mh = mask.naturalHeight || mask.height;
+          const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
+          const d = layout.imageDraw;
+          if (maskCrop && mw > 0 && mh > 0) {
+            sbCtx.drawImage(
+              mask,
+              maskCrop.x,
+              maskCrop.y,
+              maskCrop.width,
+              maskCrop.height,
+              d.x,
+              d.y,
+              d.width,
+              d.height,
+            );
+          } else if (mw > 0 && mh > 0) {
+            sbCtx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
+          }
+        }
         sbCtx.globalCompositeOperation = "source-over";
       }
     }
@@ -1064,8 +1147,35 @@ export function renderFlatView(input: FlatRenderInput): void {
         drawAssetScaled(scx, shading, {
           refW: maskAligned ? maskRefW : W,
           refH: maskAligned ? maskRefH : H,
-          useCrop: maskAligned,
+          useCrop: !!crop,
         });
+        if (mask) {
+          scx.globalCompositeOperation = "destination-in";
+          if (maskAligned) {
+            drawAssetScaled(scx, mask, { useCrop: true });
+          } else {
+            const mw = mask.naturalWidth || mask.width;
+            const mh = mask.naturalHeight || mask.height;
+            const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
+            const d = layout.imageDraw;
+            if (maskCrop && mw > 0 && mh > 0) {
+              scx.drawImage(
+                mask,
+                maskCrop.x,
+                maskCrop.y,
+                maskCrop.width,
+                maskCrop.height,
+                d.x,
+                d.y,
+                d.width,
+                d.height,
+              );
+            } else if (mw > 0 && mh > 0) {
+              scx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
+            }
+          }
+          scx.globalCompositeOperation = "source-over";
+        }
         shadeMapImg = sc;
       }
     }

@@ -96,6 +96,7 @@ function kickoffFlatCalibration(args: {
         token,
         shopId,
         designerType,
+        sizes,
         colors: colors.length > 0 ? colors : undefined,
       };
       const result = await harvestFlatCalibration(opts);
