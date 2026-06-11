@@ -19,7 +19,7 @@
  * live mockup flow uses). Never leaves temp products behind.
  */
 import sharp from "sharp";
-import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
@@ -1167,7 +1167,7 @@ const APPAREL_SIZE_IDS = new Set([
 ]);
 
 function isApparelSizeId(sizeId: string): boolean {
-  const s = sizeId.toLowerCase().trim().replace(/\s+/g, "_");
+  const s = normalizeApparelSizeId(sizeId);
   return APPAREL_SIZE_IDS.has(s);
 }
 
@@ -1185,6 +1185,7 @@ function isDimensionalDecorSize(sizeId: string, sizeName?: string): boolean {
  * Phone cases store device models in `sizes` — harvest one blank per model id.
  */
 export function buildHarvestColorsFromProductType(productType: {
+  designerType?: string | null;
   frameColors?: unknown;
   sizes?: unknown;
   variantMap?: unknown;
@@ -1222,14 +1223,15 @@ export function buildHarvestColorsFromProductType(productType: {
     return colors;
   }
 
-  // Framed / decor only: harvest one blank + geometry per size × frame colour.
+  // Framed / pillow decor only: harvest one blank + geometry per size × frame colour.
   // Apparel (S/M/L/XL sweaters, etc.) uses the colour-only path below — garment
   // colour is size-independent and size×colour harvest hits the 64-blank cap.
+  const designerType = (productType.designerType || "").toLowerCase();
   const decorBySizeAndColor =
+    (designerType === "framed-print" || designerType === "pillow") &&
     sizes.length > 1 &&
     frameColors.length > 0 &&
-    sizes.some((s: any) => isDimensionalDecorSize(String(s.id), String(s.name || ""))) &&
-    !sizes.every((s: any) => isApparelSizeId(String(s.id)));
+    sizes.some((s: any) => isDimensionalDecorSize(String(s.id), String(s.name || "")));
 
   if (decorBySizeAndColor) {
     for (const size of sizes) {
@@ -1389,6 +1391,7 @@ export type HarvestOptions = {
   providerId: number;
   token: string;
   shopId: string;
+  designerType?: string | null;
   /** Optional explicit color list (e.g. from product frameColors+variantMap). Falls back to catalog. */
   colors?: ColorEntry[];
   maxBlankColors?: number;
@@ -1535,7 +1538,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       );
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
-    const decorPerSize = !edgeWrapProduct && colors.some((c) => c.id.includes(":"));
+    const apparelProduct = (opts.designerType || "").toLowerCase() === "apparel";
+    const decorPerSize =
+      !edgeWrapProduct && !apparelProduct && colors.some((c) => c.id.includes(":"));
     baseManifest.decorPerSize = decorPerSize;
     const harvestWarnings: string[] = [];
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());

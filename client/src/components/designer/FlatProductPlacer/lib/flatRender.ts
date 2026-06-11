@@ -361,18 +361,18 @@ export function flatPrintCanvasLayout(
 
   const mask = assets?.mask ?? null;
   const blank = assets?.blank ?? null;
-  const refImg = mask ?? blank;
+  const maskAligned = mask && blank ? maskAlignsWithBlank(blank, mask) : false;
 
-  if (refImg) {
-    const iw = refImg.naturalWidth || refImg.width;
-    const ih = refImg.naturalHeight || refImg.height;
-    const sourceCrop = resolveEdgeWrapSourceCrop(view, refImg);
+  // Live mask layout only when mask + blank share coordinates. Per-model cropped
+  // blanks use stored phoneBack/safeZone from geometryByBlank instead.
+  if (mask && maskAligned) {
+    const iw = mask.naturalWidth || mask.width;
+    const ih = mask.naturalHeight || mask.height;
+    const sourceCrop = resolveEdgeWrapSourceCrop(view, mask);
     const srcW = sourceCrop?.width ?? iw;
     const srcH = sourceCrop?.height ?? ih;
 
-    // Only read alpha bounds from the mask (transparent PNG); blank is a JPEG
-    // whose alpha bounds span the full image → phone misplaced / zoomed.
-    let bounds = mask ? flatImageAlphaBounds(refImg) : null;
+    let bounds = flatImageAlphaBounds(mask);
     if (bounds && sourceCrop) {
       const x = Math.max(sourceCrop.x, bounds.x);
       const y = Math.max(sourceCrop.y, bounds.y);
@@ -937,22 +937,25 @@ export function renderFlatView(input: FlatRenderInput): void {
     const outH = layout.previewH;
     const crop = layout.sourceCrop;
     const draw = layout.imageDraw;
+    const maskAligned = maskAlignsWithBlank(blank, mask);
 
-    // Reference dimensions: the image flatPrintCanvasLayout used to compute
-    // sourceCrop and imageDraw (mask if available, else blank).
-    const refW = mask ? (mask.naturalWidth || mask.width) : W;
-    const refH = mask ? (mask.naturalHeight || mask.height) : H;
+    const maskRefW = mask ? (mask.naturalWidth || mask.width) : W;
+    const maskRefH = mask ? (mask.naturalHeight || mask.height) : H;
 
-    // Draw any asset into `draw` rect, scaling its source crop proportionally to
-    // its own natural dimensions so mask/blank/shading always align even when
-    // they were harvested at different sizes or one was pre-cropped and the other was not.
-    const drawAssetScaled = (ctx: CanvasRenderingContext2D, img: HTMLImageElement) => {
+    const drawAssetScaled = (
+      ctx: CanvasRenderingContext2D,
+      img: HTMLImageElement,
+      opts?: { refW?: number; refH?: number; useCrop?: boolean },
+    ) => {
       const iw = img.naturalWidth || img.width;
       const ih = img.naturalHeight || img.height;
       if (iw <= 0 || ih <= 0) return;
+      const refW = opts?.refW ?? maskRefW;
+      const refH = opts?.refH ?? maskRefH;
+      const useCrop = opts?.useCrop ?? !!crop;
       const sx = refW > 0 ? iw / refW : 1;
       const sy = refH > 0 ? ih / refH : 1;
-      if (crop) {
+      if (useCrop && crop) {
         ctx.drawImage(
           img,
           crop.x * sx,
@@ -984,15 +987,16 @@ export function renderFlatView(input: FlatRenderInput): void {
     const blankLayer = document.createElement("canvas");
     blankLayer.width = outW;
     blankLayer.height = outH;
-    const maskAligned = maskAlignsWithBlank(blank, mask);
     const blCtx = blankLayer.getContext("2d");
     if (blCtx) {
-      drawAssetScaled(blCtx, blank);
-      // Only clip blank to mask when assets share coordinates — a cropped
-      // per-model blank + representative mask wipes the blank to transparency.
+      drawAssetScaled(blCtx, blank, {
+        refW: maskAligned ? maskRefW : W,
+        refH: maskAligned ? maskRefH : H,
+        useCrop: maskAligned,
+      });
       if (mask && maskAligned) {
         blCtx.globalCompositeOperation = "destination-in";
-        drawAssetScaled(blCtx, mask);
+        drawAssetScaled(blCtx, mask, { useCrop: true });
         blCtx.globalCompositeOperation = "source-over";
       }
     }
@@ -1014,14 +1018,18 @@ export function renderFlatView(input: FlatRenderInput): void {
 
     if (mask && maskAligned) {
       actx.globalCompositeOperation = "destination-in";
-      drawAssetScaled(actx, mask);
+      drawAssetScaled(actx, mask, { useCrop: true });
       actx.globalCompositeOperation = "source-over";
     } else {
       const pb = layout.phoneBack;
+      actx.save();
+      actx.beginPath();
+      actx.rect(pb.x, pb.y, pb.width, pb.height);
+      actx.clip();
       actx.globalCompositeOperation = "destination-in";
       actx.fillStyle = "#fff";
       actx.fillRect(pb.x, pb.y, pb.width, pb.height);
-      actx.globalCompositeOperation = "source-over";
+      actx.restore();
     }
 
     const shadeMode: "blank" | "map" =
@@ -1034,10 +1042,14 @@ export function renderFlatView(input: FlatRenderInput): void {
     shadeBlankCanvas.height = outH;
     const sbCtx = shadeBlankCanvas.getContext("2d");
     if (sbCtx) {
-      drawAssetScaled(sbCtx, blank);
+      drawAssetScaled(sbCtx, blank, {
+        refW: maskAligned ? maskRefW : W,
+        refH: maskAligned ? maskRefH : H,
+        useCrop: maskAligned,
+      });
       if (mask && maskAligned) {
         sbCtx.globalCompositeOperation = "destination-in";
-        drawAssetScaled(sbCtx, mask);
+        drawAssetScaled(sbCtx, mask, { useCrop: true });
         sbCtx.globalCompositeOperation = "source-over";
       }
     }
@@ -1049,7 +1061,11 @@ export function renderFlatView(input: FlatRenderInput): void {
       sc.height = outH;
       const scx = sc.getContext("2d");
       if (scx) {
-        drawAssetScaled(scx, shading);
+        drawAssetScaled(scx, shading, {
+          refW: maskAligned ? maskRefW : W,
+          refH: maskAligned ? maskRefH : H,
+          useCrop: maskAligned,
+        });
         shadeMapImg = sc;
       }
     }

@@ -68,12 +68,13 @@ function kickoffFlatCalibration(args: {
   token: string | null | undefined;
   shopId: string | null | undefined;
   isAllOverPrint: boolean;
+  designerType?: string | null;
   /** Persisted import data — used to harvest per-colour blank photos reliably. */
   frameColors?: unknown;
   sizes?: unknown;
   variantMap?: unknown;
 }): void {
-  const { productTypeId, name, blueprintId, providerId, token, shopId, isAllOverPrint, frameColors, sizes, variantMap } = args;
+  const { productTypeId, name, blueprintId, providerId, token, shopId, isAllOverPrint, designerType, frameColors, sizes, variantMap } = args;
   if (isAllOverPrint) {
     // AOP products use the hoodie/pattern mesh pipeline, not on-the-fly flat mockups.
     void storage.updateProductType(productTypeId, { flatCalibrationStatus: "unsupported" }).catch(() => {});
@@ -86,7 +87,7 @@ function kickoffFlatCalibration(args: {
   void (async () => {
     try {
       await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
-      const colors = buildHarvestColorsFromProductType({ frameColors, sizes, variantMap });
+      const colors = buildHarvestColorsFromProductType({ designerType, frameColors, sizes, variantMap });
       const opts: HarvestOptions = {
         productTypeId,
         name,
@@ -94,6 +95,7 @@ function kickoffFlatCalibration(args: {
         providerId,
         token,
         shopId,
+        designerType,
         colors: colors.length > 0 ? colors : undefined,
       };
       const result = await harvestFlatCalibration(opts);
@@ -13034,6 +13036,7 @@ ${textEdgeRestrictions}
         token: merchant.printifyApiToken,
         shopId: merchant.printifyShopId,
         isAllOverPrint,
+        designerType: productType.designerType,
         frameColors,
         sizes,
         variantMap,
@@ -13065,6 +13068,7 @@ ${textEdgeRestrictions}
         token: merchant.printifyApiToken,
         shopId: merchant.printifyShopId,
         isAllOverPrint: productType.isAllOverPrint,
+        designerType: productType.designerType,
         frameColors: productType.frameColors,
         sizes: productType.sizes,
         variantMap: productType.variantMap,

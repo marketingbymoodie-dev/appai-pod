@@ -207,7 +207,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           loadFlatImage(blankUrl),
           calib.maskUrl ? loadFlatImage(calib.maskUrl) : Promise.resolve(null),
           calib.shadingUrl &&
-          (calib.shadingMode === "map" || calib.printBoundsNormalized)
+          (edgeWrapMode ||
+            calib.shadingMode === "map" ||
+            !!calib.printBoundsNormalized)
             ? loadFlatImage(calib.shadingUrl)
             : Promise.resolve(null),
         ]);
@@ -225,7 +227,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
-  }, [availableViews, manifest, blank, colorId, onAssetsFailed]);
+  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed]);
 
   useEffect(() => {
     if (!assetsLoading && availableViews.length === 0) {
