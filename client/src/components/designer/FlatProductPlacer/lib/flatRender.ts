@@ -972,6 +972,113 @@ function applyShading(
   artCtx.restore();
 }
 
+function scaleRectAroundCenter(rect: Rect, scale: number): Rect {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const w = rect.width * scale;
+  const h = rect.height * scale;
+  return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
+}
+
+type DrawAssetScaledFn = (
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  dest: Rect,
+  opts?: { refW?: number; refH?: number; useCrop?: boolean },
+) => void;
+
+/** Draw harvested mask into output space (same mapping as clipMaskToDest). */
+function drawEdgeWrapMaskAt(
+  ctx: CanvasRenderingContext2D,
+  mask: HTMLImageElement,
+  dest: Rect,
+  view: FlatViewCalibration,
+  maskAligned: boolean,
+  crop: Rect | null | undefined,
+  drawAssetScaled: DrawAssetScaledFn,
+): void {
+  if (maskAligned) {
+    drawAssetScaled(ctx, mask, dest, { useCrop: true });
+  } else {
+    const mw = mask.naturalWidth || mask.width;
+    const mh = mask.naturalHeight || mask.height;
+    const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
+    if (maskCrop && mw > 0 && mh > 0) {
+      ctx.drawImage(
+        mask,
+        maskCrop.x,
+        maskCrop.y,
+        maskCrop.width,
+        maskCrop.height,
+        dest.x,
+        dest.y,
+        dest.width,
+        dest.height,
+      );
+    } else if (mw > 0 && mh > 0) {
+      ctx.drawImage(mask, 0, 0, mw, mh, dest.x, dest.y, dest.width, dest.height);
+    }
+  }
+}
+
+/**
+ * Redraw blank on top of art for camera cutouts and the outer case lip.
+ * Printable mask regions stay art-only; holes + rim show the blank photo again.
+ */
+function compositeBlankHardwareOnTop(
+  ctx: CanvasRenderingContext2D,
+  layout: FlatPrintCanvasLayout,
+  blank: HTMLImageElement,
+  mask: HTMLImageElement,
+  blankDraw: Rect,
+  maskDraw: Rect,
+  view: FlatViewCalibration,
+  maskAligned: boolean,
+  crop: Rect | null | undefined,
+  maskRefW: number,
+  maskRefH: number,
+  blankRefW: number,
+  blankRefH: number,
+  drawAssetScaled: DrawAssetScaledFn,
+): void {
+  const outW = layout.previewW;
+  const outH = layout.previewH;
+
+  const punchMask = document.createElement("canvas");
+  punchMask.width = outW;
+  punchMask.height = outH;
+  const pmCtx = punchMask.getContext("2d");
+  if (!pmCtx) return;
+
+  const pb = layout.phoneBack;
+  pmCtx.fillStyle = "#ffffff";
+  pmCtx.fillRect(pb.x, pb.y, pb.width, pb.height);
+  pmCtx.globalCompositeOperation = "destination-out";
+  drawEdgeWrapMaskAt(pmCtx, mask, maskDraw, view, maskAligned, crop, drawAssetScaled);
+
+  // Thin outer rim — case bevel / edge visible over artwork.
+  const outerDraw = scaleRectAroundCenter(maskDraw, 1.014);
+  pmCtx.globalCompositeOperation = "source-over";
+  pmCtx.fillStyle = "#ffffff";
+  drawEdgeWrapMaskAt(pmCtx, mask, outerDraw, view, maskAligned, crop, drawAssetScaled);
+  pmCtx.globalCompositeOperation = "destination-out";
+  drawEdgeWrapMaskAt(pmCtx, mask, maskDraw, view, maskAligned, crop, drawAssetScaled);
+
+  const hwLayer = document.createElement("canvas");
+  hwLayer.width = outW;
+  hwLayer.height = outH;
+  const hwCtx = hwLayer.getContext("2d");
+  if (!hwCtx) return;
+  drawAssetScaled(hwCtx, blank, blankDraw, {
+    refW: maskAligned ? maskRefW : blankRefW,
+    refH: maskAligned ? maskRefH : blankRefH,
+    useCrop: !!crop,
+  });
+  hwCtx.globalCompositeOperation = "destination-in";
+  hwCtx.drawImage(punchMask, 0, 0);
+  ctx.drawImage(hwLayer, 0, 0);
+}
+
 /**
  * Composite `input` onto `input.target`. Always paints the blank base; if
  * artwork is present, draws it (flat blit or mesh warp), clips to the mask,
@@ -1103,7 +1210,30 @@ export function renderFlatView(input: FlatRenderInput): void {
       ctx.drawImage(blankLayer, 0, 0);
     }
 
-    if (!showArtLayer || !artwork) return;
+    const punchBlankHardware = () => {
+      if (!showBlankLayer || !mask) return;
+      compositeBlankHardwareOnTop(
+        ctx,
+        layout,
+        blank,
+        mask,
+        blankDraw,
+        maskDraw,
+        view,
+        maskAligned,
+        crop,
+        maskRefW,
+        maskRefH,
+        W,
+        H,
+        drawAssetScaled,
+      );
+    };
+
+    if (!showArtLayer || !artwork) {
+      punchBlankHardware();
+      return;
+    }
     const { w: artW, h: artH } = imgDims(artwork);
     if (artW <= 0 || artH <= 0) return;
 
@@ -1180,6 +1310,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     }
 
     ctx.drawImage(art, 0, 0);
+    punchBlankHardware();
     return;
   }
 

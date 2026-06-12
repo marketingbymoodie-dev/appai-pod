@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
+import FlatDesignRectOverlay from "@/components/designer/FlatProductPlacer/FlatDesignRectOverlay";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -14,6 +15,8 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import {
   adjustCalibratorDrawRect,
+  flatArtBox,
+  flatCovers,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   renderFlatView,
@@ -21,6 +24,7 @@ import {
 } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import type { FlatViewCalibration } from "@/pages/embed-design";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -174,6 +178,7 @@ export default function FlatCalibrationMapperPage() {
   const [showShading, setShowShading] = useState(true);
   const [showMask, setShowMask] = useState(false);
   const [testArtUrl, setTestArtUrl] = useState<string | null>(null);
+  const [testArtImg, setTestArtImg] = useState<HTMLImageElement | null>(null);
   const [artPlacement, setArtPlacement] = useState<ArtworkPlacement>({
     ...DEFAULT_ARTWORK_PLACEMENT,
   });
@@ -199,6 +204,41 @@ export default function FlatCalibrationMapperPage() {
   useEffect(() => {
     if (selectedModel?.geometry) setGeometry(structuredClone(selectedModel.geometry));
   }, [selectedModel?.modelId, selectedModel?.geometry]);
+
+  useEffect(() => {
+    if (!testArtUrl) {
+      setTestArtImg(null);
+      return;
+    }
+    let cancelled = false;
+    void loadImage(testArtUrl).then((img) => {
+      if (!cancelled) setTestArtImg(img);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [testArtUrl]);
+
+  const calibratorView = useMemo(
+    () => (selectedModel ? buildCalibratorView(selectedModel.baseView, selectedModel.assets) : null),
+    [selectedModel],
+  );
+
+  const printLayout = useMemo(
+    () => (calibratorView ? flatPrintCanvasLayout(calibratorView) : null),
+    [calibratorView],
+  );
+
+  const artCoversPrintCanvas = useMemo(() => {
+    if (!testArtImg || !printLayout) return true;
+    const box = flatArtBox(
+      printLayout.printCanvas,
+      artPlacement,
+      testArtImg.naturalWidth || testArtImg.width,
+      testArtImg.naturalHeight || testArtImg.height,
+    );
+    return flatCovers(printLayout.printCanvas, box);
+  }, [testArtImg, printLayout, artPlacement]);
 
   const layerAdjust = useCallback(
     (layer: LayerId | "stack"): CalibratorLayerAdjust => {
@@ -319,12 +359,6 @@ export default function FlatCalibrationMapperPage() {
         if (showMask && maskImg && activeLayer !== "mask") {
           drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask);
         }
-
-        ctx.strokeStyle = "#2563eb";
-        ctx.setLineDash([6, 4]);
-        ctx.lineWidth = 2;
-        ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
-        ctx.setLineDash([]);
       }
     }
   }, [
@@ -618,14 +652,39 @@ export default function FlatCalibrationMapperPage() {
                     </Button>
                   </>
                 )}
+                {testArtUrl && !artCoversPrintCanvas && (
+                  <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      Art doesn&apos;t fully cover the print canvas — scale up or reposition so the
+                      design reaches all four edges of the blue outline.
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border bg-zinc-100 p-4">
-              <canvas ref={canvasRef} className="max-h-full max-w-full rounded shadow" />
+              <div className="relative flex max-h-full max-w-full items-center justify-center">
+                <canvas ref={canvasRef} className="max-h-[70vh] max-w-full rounded shadow" />
+                {testArtImg && calibratorView && printLayout && (
+                  <FlatDesignRectOverlay
+                    canvasRef={canvasRef}
+                    view={calibratorView}
+                    artwork={testArtImg}
+                    placement={artPlacement}
+                    edgeWrapMode
+                    innerGuideRect={printLayout.safeZone}
+                    outerGuideRect={printLayout.printCanvas}
+                    placementRect={printLayout.printCanvas}
+                    scaleMax={artScaleMax}
+                    onChange={setArtPlacement}
+                  />
+                )}
+              </div>
               <p className="mt-2 max-w-md text-center text-[11px] text-muted-foreground">
-                Preview uses the same compositor as the storefront: blank and art are mask-clipped (rounded
-                corners + camera cutout), shading applies after art. Blue dashed = print canvas.
+                Blue dashed = full print canvas; amber = safe back face. Drag artwork handles or use
+                sidebar controls. Blank redraws cameras and case edge on top of art when enabled.
               </p>
               {selectedModel && !selectedModel.assets.blank && (
                 <p className="mt-1 text-xs text-amber-700">
