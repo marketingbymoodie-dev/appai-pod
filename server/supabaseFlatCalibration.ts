@@ -92,3 +92,58 @@ export function publicFlatCalibrationUrl(filename: string): string | null {
   const { data } = c.storage.from(FLAT_CALIBRATION_BUCKET).getPublicUrl(filename);
   return data.publicUrl;
 }
+
+/** List all file paths under a prefix (recursive). */
+export async function listFlatCalibrationFiles(prefix: string): Promise<string[]> {
+  const c = client();
+  if (!c) throw new Error("Supabase is not configured");
+  const paths: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    let offset = 0;
+    const limit = 100;
+    for (;;) {
+      const { data, error } = await c!.storage.from(FLAT_CALIBRATION_BUCKET).list(dir, {
+        limit,
+        offset,
+        sortBy: { column: "name", order: "asc" },
+      });
+      if (error) throw new Error(`list(${dir}) failed: ${error.message}`);
+      if (!data?.length) break;
+      for (const entry of data) {
+        const child = dir ? `${dir}/${entry.name}` : entry.name;
+        if (entry.metadata) paths.push(child);
+        else await walk(child);
+      }
+      if (data.length < limit) break;
+      offset += limit;
+    }
+  }
+
+  await walk(prefix);
+  return paths;
+}
+
+/** Delete every object under `products/{productTypeId}/`. Returns count removed. */
+export async function deleteFlatCalibrationProductAssets(productTypeId: number): Promise<number> {
+  const c = client();
+  if (!c) throw new Error("Supabase is not configured");
+  const prefix = `products/${productTypeId}`;
+  const files = await listFlatCalibrationFiles(prefix);
+  if (files.length === 0) return 0;
+  const batchSize = 100;
+  for (let i = 0; i < files.length; i += batchSize) {
+    const batch = files.slice(i, i + batchSize);
+    const { error } = await c.storage.from(FLAT_CALIBRATION_BUCKET).remove(batch);
+    if (error) throw new Error(`remove(${prefix}) failed: ${error.message}`);
+  }
+  return files.length;
+}
+
+export async function downloadFlatCalibrationFile(filename: string): Promise<Buffer | null> {
+  const c = client();
+  if (!c) return null;
+  const { data, error } = await c.storage.from(FLAT_CALIBRATION_BUCKET).download(filename);
+  if (error || !data) return null;
+  return Buffer.from(await data.arrayBuffer());
+}

@@ -24,6 +24,7 @@ import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
   isSupabaseFlatCalibrationConfigured,
+  deleteFlatCalibrationProductAssets,
 } from "./supabaseFlatCalibration";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -121,6 +122,8 @@ export type FlatCalibrationManifest = {
   edgeWrap?: boolean;
   /** Framed posters / multi-size decor — blanks keyed by size:color with per-size print dims. */
   decorPerSize?: boolean;
+  /** Manual layer alignment from the flat calibrator admin tool. */
+  calibratorGeometry?: FlatCalibratorGeometry;
   generatedAt: string;
 };
 
@@ -131,7 +134,56 @@ export type HarvestResult = {
   error?: string;
   /** Models/colors that failed per-blank geometry harvest — visible in Admin calibration log. */
   warnings?: string[];
+  calibratorGeometryUrl?: string;
 };
+
+/** Per-layer nudge in normalized print-canvas space (flat calibrator tool). */
+export type CalibratorLayerAdjust = {
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+};
+
+export type CalibratorModelEntry = {
+  blank: CalibratorLayerAdjust;
+  mask: CalibratorLayerAdjust;
+  shading: CalibratorLayerAdjust;
+  sourceCrop?: { x: number; y: number; width: number; height: number } | null;
+};
+
+export type FlatCalibratorGeometry = {
+  productTypeId: number;
+  models: Record<string, Partial<Record<ViewName, CalibratorModelEntry>>>;
+  updatedAt: string;
+};
+
+export function calibratorLayerPaths(productTypeId: number, safe: string, view: ViewName) {
+  const base = `products/${productTypeId}/calibrator/${safe}`;
+  const suffix = view === "front" ? "" : `-${view}`;
+  return {
+    pink: `${base}-pink${suffix}.jpg`,
+    blank: `${base}-blank${suffix}.jpg`,
+    mask: `${base}-mask${suffix}.png`,
+    shading: `${base}-shading${suffix}.jpg`,
+  };
+}
+
+export function calibratorGeometryPath(productTypeId: number): string {
+  return `products/${productTypeId}/calibrator/geometry.json`;
+}
+
+export function defaultCalibratorLayerAdjust(): CalibratorLayerAdjust {
+  return { offsetX: 0, offsetY: 0, scale: 1 };
+}
+
+export function defaultCalibratorModelEntry(): CalibratorModelEntry {
+  return {
+    blank: defaultCalibratorLayerAdjust(),
+    mask: defaultCalibratorLayerAdjust(),
+    shading: defaultCalibratorLayerAdjust(),
+    sourceCrop: null,
+  };
+}
 
 // ── Printify REST helpers (self-contained; mirrors the proven script) ─────────
 async function pf<T = any>(pathname: string, token: string, init?: RequestInit): Promise<T> {
@@ -1348,6 +1400,7 @@ async function harvestPerBlankGeometry(args: {
   variantPlaceholderDims: Map<ViewName, { width: number; height: number }>;
   sharedViewCalib: Partial<Record<ViewName, FlatViewCalibration>>;
   edgeWrap: boolean;
+  calibratorMode?: boolean;
   createdProductIds: string[];
 }): Promise<Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null> {
   const {
@@ -1362,6 +1415,7 @@ async function harvestPerBlankGeometry(args: {
     variantPlaceholderDims,
     sharedViewCalib,
     edgeWrap,
+    calibratorMode,
     createdProductIds,
   } = args;
   const geo: NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string] = {};
@@ -1387,13 +1441,19 @@ async function harvestPerBlankGeometry(args: {
       const regBuf = await downloadBuffer(regMatch.url);
       const a = await analyzeMagenta(regBuf);
       const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap, dims);
+      const calPaths = calibratorMode ? calibratorLayerPaths(productTypeId, safe, view) : null;
+
+      if (calPaths) {
+        await uploadToFlatCalibrationBucket(calPaths.pink, regBuf, "image/jpeg");
+      }
+
       let maskUrl: string | null = null;
       if (a.found) {
-        maskUrl = await uploadToFlatCalibrationBucket(
-          `products/${productTypeId}/mask-${safe}-${view}.png`,
-          await rawToPng(geoDerived.maskRaw, geoDerived.mockupW, geoDerived.mockupH),
-          "image/png",
-        );
+        const maskPng = await rawToPng(geoDerived.maskRaw, geoDerived.mockupW, geoDerived.mockupH);
+        const maskPath = calPaths
+          ? calPaths.mask
+          : `products/${productTypeId}/mask-${safe}-${view}.png`;
+        maskUrl = await uploadToFlatCalibrationBucket(maskPath, maskPng, "image/png");
       }
 
       let shadingUrl: string | null = vc.shadingUrl;
@@ -1420,11 +1480,10 @@ async function harvestPerBlankGeometry(args: {
           };
           const cropPx = sideProfileCropPx(cropGeo, geoDerived.sourceMockupW, geoDerived.sourceMockupH);
           if (cropPx) ({ buffer: grayBuf } = await cropImageBuffer(grayBuf, cropPx));
-          shadingUrl = await uploadToFlatCalibrationBucket(
-            `products/${productTypeId}/shading-${safe}-${view}.jpg`,
-            grayBuf,
-            "image/jpeg",
-          );
+          const shadingPath = calPaths
+            ? calPaths.shading
+            : `products/${productTypeId}/shading-${safe}-${view}.jpg`;
+          shadingUrl = await uploadToFlatCalibrationBucket(shadingPath, grayBuf, "image/jpeg");
           shadingMode = a.found ? await shadingModeFromGray(grayBuf, a) : "blank";
         }
       } catch (e) {
@@ -1478,6 +1537,10 @@ export type HarvestOptions = {
   /** Optional explicit color list (e.g. from product frameColors+variantMap). Falls back to catalog. */
   colors?: ColorEntry[];
   maxBlankColors?: number;
+  /** Save assets under products/{id}/calibrator/{model}-pink|blank|mask|shading. */
+  calibratorMode?: boolean;
+  /** Delete all products/{id}/ assets before harvest. */
+  wipeExisting?: boolean;
 };
 
 /**
@@ -1488,6 +1551,7 @@ export type HarvestOptions = {
 export async function harvestFlatCalibration(opts: HarvestOptions): Promise<HarvestResult> {
   const { productTypeId, name, blueprintId, providerId, token, shopId } = opts;
   const maxBlankColors = opts.maxBlankColors ?? DEFAULT_MAX_BLANK_COLORS;
+  const calibratorMode = !!opts.calibratorMode;
 
   const baseManifest: FlatCalibrationManifest = {
     productTypeId,
@@ -1524,9 +1588,14 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
 
   try {
     await ensureFlatCalibrationBucket();
+    if (opts.wipeExisting) {
+      const removed = await deleteFlatCalibrationProductAssets(productTypeId);
+      console.log(`[flat-calibration] wiped ${removed} asset(s) for pt ${productTypeId}`);
+    }
 
-    // ── 0. PROBE each view -> per-view tier + mesh nodes ──────────────────────
+    const calibratorModels: FlatCalibratorGeometry["models"] = {};
     const probes: Partial<Record<ViewName, ProbeResult>> = {};
+    // ── 0. PROBE each view -> per-view tier + mesh nodes ──────────────────────
     for (const view of availableViews) {
       try {
         probes[view] = await probeView(token, shopId, blueprintId, providerId, representativeVariantId, placeholderDims.get(view)!, view, createdProductIds);
@@ -1668,6 +1737,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           variantPlaceholderDims: variantDims,
           sharedViewCalib: baseManifest.views,
           edgeWrap: edgeWrapProduct,
+          calibratorMode,
           createdProductIds,
         });
         if (perBlankGeo && Object.keys(perBlankGeo).length > 0) {
@@ -1707,10 +1777,19 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           const cropPx = sideProfileCropPx(geoView, origW, origH);
           if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
         }
-        perView[view] = await uploadToFlatCalibrationBucket(`products/${productTypeId}/blank-${safe}-${view}.jpg`, buf, "image/jpeg");
+        const blankPath = calibratorMode
+          ? calibratorLayerPaths(productTypeId, safe, view).blank
+          : `products/${productTypeId}/blank-${safe}-${view}.jpg`;
+        perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
       }
       if (Object.keys(perView).length > 0) {
         baseManifest.blanks[color.id] = perView;
+      }
+      if (calibratorMode) {
+        if (!calibratorModels[color.id]) calibratorModels[color.id] = {};
+        for (const view of availableViews) {
+          calibratorModels[color.id]![view] = defaultCalibratorModelEntry();
+        }
       }
     }
 
@@ -1724,11 +1803,27 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       };
     }
 
+    let calibratorGeometryUrl: string | undefined;
+    if (calibratorMode) {
+      const calibratorGeometry: FlatCalibratorGeometry = {
+        productTypeId,
+        models: calibratorModels,
+        updatedAt: new Date().toISOString(),
+      };
+      baseManifest.calibratorGeometry = calibratorGeometry;
+      calibratorGeometryUrl = await uploadToFlatCalibrationBucket(
+        calibratorGeometryPath(productTypeId),
+        Buffer.from(JSON.stringify(calibratorGeometry, null, 2), "utf-8"),
+        "application/json",
+      );
+    }
+
     return {
       tier: productTier,
       status: "ready",
       manifest: baseManifest,
       warnings: harvestWarnings.length > 0 ? harvestWarnings : undefined,
+      calibratorGeometryUrl,
     };
   } finally {
     for (const id of createdProductIds) await deleteTempProduct(token, shopId, id);

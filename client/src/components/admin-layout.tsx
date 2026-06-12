@@ -52,6 +52,7 @@ const menuItems = [
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
+  { title: "Flat Calibrator", url: "/admin/flat-calibration-mapper", icon: Crosshair },
   { title: "Settings", url: "/admin/settings", icon: Settings },
 ];
 
@@ -60,6 +61,7 @@ const menuItems = [
 const devMenuItems = [
   { title: "AOP Calibration Mapper", url: "/admin/aop-calibration-mapper", icon: Crosshair },
   { title: "Hoodie Template Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
+  { title: "Flat Calibration Mapper", url: "/admin/flat-calibration-mapper", icon: Crosshair },
 ];
 
 const customerLinks = [

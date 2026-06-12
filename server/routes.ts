@@ -17093,6 +17093,8 @@ ${textEdgeRestrictions}
 
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
+  const { registerFlatCalibrationMapperRoutes } = await import("./routes/flat-calibration-mapper");
+  registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);
