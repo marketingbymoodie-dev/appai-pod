@@ -487,7 +487,7 @@ export default function FlatCalibrationMapperPage() {
             <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading calibrator…
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+          <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row lg:overflow-hidden">
             <div className="w-full shrink-0 space-y-3 overflow-y-auto lg:w-72 lg:max-h-full">
               <div>
                 <Label className="text-xs">Phone model</Label>
@@ -671,27 +671,32 @@ export default function FlatCalibrationMapperPage() {
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border bg-zinc-100 p-4">
-              <div className="relative inline-block max-h-[70vh] max-w-full leading-none">
-                <canvas ref={canvasRef} className="block max-h-[70vh] max-w-full rounded shadow" />
-                {testArtImg && calibratorView && printLayout && (
-                  <FlatDesignRectOverlay
-                    canvasRef={canvasRef}
-                    view={calibratorView}
-                    artwork={testArtImg}
-                    placement={artPlacement}
-                    edgeWrapMode
-                    showInnerGuide={false}
-                    showOuterGuide
-                    innerGuideRect={null}
-                    outerGuideRect={printLayout.printCanvas}
-                    placementRect={printLayout.printCanvas}
-                    scaleMax={artScaleMax}
-                    onChange={setArtPlacement}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-zinc-100 p-3">
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
+                <div className="relative inline-block max-h-[min(58vh,calc(100vh-18rem))] max-w-full overflow-hidden rounded shadow leading-none">
+                  <canvas
+                    ref={canvasRef}
+                    className="block h-auto max-h-[min(58vh,calc(100vh-18rem))] w-auto max-w-full"
                   />
-                )}
+                  {testArtImg && calibratorView && printLayout && (
+                    <FlatDesignRectOverlay
+                      canvasRef={canvasRef}
+                      view={calibratorView}
+                      artwork={testArtImg}
+                      placement={artPlacement}
+                      edgeWrapMode
+                      showInnerGuide={false}
+                      showOuterGuide
+                      innerGuideRect={null}
+                      outerGuideRect={printLayout.printCanvas}
+                      placementRect={printLayout.printCanvas}
+                      scaleMax={artScaleMax}
+                      onChange={setArtPlacement}
+                    />
+                  )}
+                </div>
               </div>
-              <p className="mt-2 max-w-md text-center text-[11px] text-muted-foreground">
+              <p className="mt-2 shrink-0 max-w-md self-center text-center text-[11px] text-muted-foreground">
                 Blue dashed = print canvas — scale artwork until it covers all four edges. Drag handles
                 or use sidebar nudge. Blank redraws cameras and rounded case lip on top of art.
               </p>

@@ -914,6 +914,79 @@ function normalizeShadeInPlace(
 }
 
 /**
+ * Phone-case grey-map shading: overlay for overall form plus a specular pass so
+ * bright areas in the Printify grey pass read as plastic sheen (multiply
+ * normalize clamps highlights away).
+ */
+function applyPhoneCaseMapShading(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  shading: HTMLImageElement | HTMLCanvasElement,
+  w: number,
+  h: number,
+): void {
+  const shade = document.createElement("canvas");
+  shade.width = w;
+  shade.height = h;
+  const sctx = shade.getContext("2d");
+  if (!sctx) return;
+
+  sctx.drawImage(shading, 0, 0, w, h);
+  sctx.globalCompositeOperation = "destination-in";
+  sctx.drawImage(artCanvas, 0, 0);
+  sctx.globalCompositeOperation = "source-over";
+
+  artCtx.save();
+  artCtx.globalCompositeOperation = "overlay";
+  artCtx.globalAlpha = 0.88;
+  artCtx.drawImage(shade, 0, 0);
+
+  try {
+    const data = sctx.getImageData(0, 0, w, h);
+    const spec = document.createElement("canvas");
+    spec.width = w;
+    spec.height = h;
+    const spCtx = spec.getContext("2d");
+    if (spCtx) {
+      const out = spCtx.createImageData(w, h);
+      let sum = 0;
+      let n = 0;
+      const lumAt = (i: number) =>
+        0.299 * data.data[i] + 0.587 * data.data[i + 1] + 0.114 * data.data[i + 2];
+      for (let i = 0; i < data.data.length; i += 4) {
+        if (data.data[i + 3] > 10) {
+          sum += lumAt(i);
+          n += 1;
+        }
+      }
+      const mean = n > 0 ? sum / n : 140;
+      const threshold = mean + 14;
+      for (let i = 0; i < data.data.length; i += 4) {
+        if (data.data[i + 3] < 10) continue;
+        const l = lumAt(i);
+        if (l > threshold) {
+          const t = Math.min(1, (l - threshold) / Math.max(1, 255 - threshold));
+          const v = Math.round(200 + t * 55);
+          out.data[i] = v;
+          out.data[i + 1] = v;
+          out.data[i + 2] = v;
+          out.data[i + 3] = Math.round(t * 160);
+        }
+      }
+      spCtx.putImageData(out, 0, 0);
+      artCtx.globalCompositeOperation = "screen";
+      artCtx.globalAlpha = 1;
+      artCtx.drawImage(spec, 0, 0);
+    }
+  } catch {
+    artCtx.globalCompositeOperation = "soft-light";
+    artCtx.globalAlpha = 0.35;
+    artCtx.drawImage(shade, 0, 0);
+  }
+  artCtx.restore();
+}
+
+/**
  * Multiply a normalized shading layer over the artwork layer, restricted to
  * the artwork's own alpha so transparent (garment) pixels stay untouched.
  */
@@ -926,7 +999,13 @@ function applyShading(
   w: number,
   h: number,
   artworkCorsClean: boolean,
+  opts?: { phoneCaseMap?: boolean },
 ): void {
+  if (mode === "map" && shading && opts?.phoneCaseMap) {
+    applyPhoneCaseMapShading(artCanvas, artCtx, shading, w, h);
+    return;
+  }
+
   const shade = document.createElement("canvas");
   shade.width = w;
   shade.height = h;
@@ -1383,6 +1462,7 @@ export function renderFlatView(input: FlatRenderInput): void {
         outW,
         outH,
         artworkCorsClean,
+        { phoneCaseMap: shadeMode === "map" && !!shadeMapImg },
       );
     }
 
