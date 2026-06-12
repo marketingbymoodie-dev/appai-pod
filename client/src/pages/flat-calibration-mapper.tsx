@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,18 @@ import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import {
+  DEFAULT_ARTWORK_PLACEMENT,
+  type ArtworkPlacement,
+} from "@/components/hoodie-template-mapper/lib/aopPreview";
+import {
+  adjustCalibratorDrawRect,
+  flatPlacementScaleMax,
+  flatPrintCanvasLayout,
+  renderFlatView,
+  type CalibratorLayerAdjust,
+} from "@/components/designer/FlatProductPlacer/lib/flatRender";
+import type { FlatViewCalibration } from "@/pages/embed-design";
 import {
   ArrowDown,
   ArrowLeft,
@@ -20,12 +32,6 @@ import {
 } from "lucide-react";
 
 type LayerId = "blank" | "mask" | "shading" | "pink";
-
-type CalibratorLayerAdjust = {
-  offsetX: number;
-  offsetY: number;
-  scale: number;
-};
 
 type CalibratorModelEntry = {
   blank: CalibratorLayerAdjust;
@@ -44,17 +50,19 @@ type ModelAssets = {
     shading: string | null;
   };
   geometry: CalibratorModelEntry;
+  baseView: FlatViewCalibration | null;
 };
 
 type CalibratorState = {
   productTypeId: number;
   name: string;
   flatCalibrationStatus: string | null;
+  onTheFlyTier?: string | null;
   models: ModelAssets[];
 };
 
-const PRINT_GREY = "#d4d4d4";
 const NUDGE = 0.005;
+const ART_NUDGE = 0.01;
 
 function defaultEntry(): CalibratorModelEntry {
   return {
@@ -76,18 +84,80 @@ function loadImage(url: string | null): Promise<HTMLImageElement | null> {
   });
 }
 
-function layerRect(
-  cw: number,
-  ch: number,
-  adj: CalibratorLayerAdjust,
-): { x: number; y: number; width: number; height: number } {
-  const baseW = cw * 0.72;
-  const baseH = ch * 0.88;
-  const w = baseW * adj.scale;
-  const h = baseH * adj.scale;
-  const x = (cw - w) / 2 + adj.offsetX * cw;
-  const y = (ch - h) / 2 + adj.offsetY * ch;
-  return { x, y, width: w, height: h };
+function getWhiteArtwork(): Promise<HTMLImageElement> {
+  return new Promise((resolve) => {
+    const c = document.createElement("canvas");
+    c.width = 64;
+    c.height = 64;
+    const cctx = c.getContext("2d");
+    if (cctx) {
+      cctx.fillStyle = "#ffffff";
+      cctx.fillRect(0, 0, 64, 64);
+    }
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.src = c.toDataURL("image/png");
+  });
+}
+
+let whiteArtPromise: Promise<HTMLImageElement> | null = null;
+function loadWhiteArtwork(): Promise<HTMLImageElement> {
+  if (!whiteArtPromise) whiteArtPromise = getWhiteArtwork();
+  return whiteArtPromise;
+}
+
+function buildCalibratorView(
+  baseView: FlatViewCalibration | null | undefined,
+  assets: ModelAssets["assets"],
+): FlatViewCalibration | null {
+  if (!baseView?.printFileDims) return null;
+  return {
+    ...baseView,
+    maskUrl: assets.mask ?? baseView.maskUrl,
+    shadingUrl: assets.shading ?? baseView.shadingUrl,
+    shadingMode: baseView.shadingMode === "blank" ? "map" : baseView.shadingMode ?? "map",
+  };
+}
+
+function drawPinkReference(
+  ctx: CanvasRenderingContext2D,
+  pink: HTMLImageElement,
+  view: FlatViewCalibration,
+  blank: HTMLImageElement,
+  mask: HTMLImageElement | null,
+  layerAdjust: CalibratorModelEntry,
+) {
+  const layout = flatPrintCanvasLayout(view, { mask, blank });
+  const dest = adjustCalibratorDrawRect(
+    layout.imageDraw,
+    layerAdjust.blank,
+    layout.previewW,
+    layout.previewH,
+  );
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.drawImage(pink, dest.x, dest.y, dest.width, dest.height);
+  ctx.restore();
+}
+
+function drawMaskDebugOverlay(
+  ctx: CanvasRenderingContext2D,
+  mask: HTMLImageElement,
+  view: FlatViewCalibration,
+  blank: HTMLImageElement,
+  layerAdjust: CalibratorLayerAdjust,
+) {
+  const layout = flatPrintCanvasLayout(view, { mask, blank });
+  const dest = adjustCalibratorDrawRect(
+    layout.imageDraw,
+    layerAdjust,
+    layout.previewW,
+    layout.previewH,
+  );
+  ctx.save();
+  ctx.globalAlpha = 0.4;
+  ctx.drawImage(mask, dest.x, dest.y, dest.width, dest.height);
+  ctx.restore();
 }
 
 export default function FlatCalibrationMapperPage() {
@@ -99,12 +169,14 @@ export default function FlatCalibrationMapperPage() {
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [activeLayer, setActiveLayer] = useState<LayerId | "stack">("stack");
   const [geometry, setGeometry] = useState<CalibratorModelEntry>(defaultEntry());
-  const [showPink, setShowPink] = useState(true);
+  const [showPink, setShowPink] = useState(false);
   const [showBlank, setShowBlank] = useState(true);
   const [showShading, setShowShading] = useState(true);
   const [showMask, setShowMask] = useState(false);
   const [testArtUrl, setTestArtUrl] = useState<string | null>(null);
-  const [artPlacement, setArtPlacement] = useState({ offsetX: 0, offsetY: 0, scale: 1 });
+  const [artPlacement, setArtPlacement] = useState<ArtworkPlacement>({
+    ...DEFAULT_ARTWORK_PLACEMENT,
+  });
 
   const { data, isLoading, refetch } = useQuery<CalibratorState>({
     queryKey: [`/api/admin/flat-calibrator/${productTypeId}`],
@@ -116,6 +188,7 @@ export default function FlatCalibrationMapperPage() {
 
   const models = data?.models ?? [];
   const selectedModel = models.find((m) => m.modelId === selectedModelId) ?? models[0];
+  const artScaleMax = flatPlacementScaleMax({ edgeWrapMode: true });
 
   useEffect(() => {
     if (models.length > 0 && !selectedModelId) {
@@ -129,7 +202,7 @@ export default function FlatCalibrationMapperPage() {
 
   const layerAdjust = useCallback(
     (layer: LayerId | "stack"): CalibratorLayerAdjust => {
-      if (layer === "stack") return geometry.blank;
+      if (layer === "stack" || layer === "pink") return geometry.blank;
       return geometry[layer];
     },
     [geometry],
@@ -148,7 +221,7 @@ export default function FlatCalibrationMapperPage() {
           apply("blank");
           apply("mask");
           apply("shading");
-        } else {
+        } else if (layer !== "pink") {
           apply(layer);
         }
         return next;
@@ -157,20 +230,23 @@ export default function FlatCalibrationMapperPage() {
     [],
   );
 
+  const patchArt = useCallback((patch: Partial<ArtworkPlacement>) => {
+    setArtPlacement((prev) => ({ ...prev, ...patch }));
+  }, []);
+
   const renderPreview = useCallback(async () => {
     const canvas = canvasRef.current;
     const model = selectedModel;
     if (!canvas || !model) return;
 
-    const cw = 420;
-    const ch = Math.round(cw * (2220 / 1311));
-    canvas.width = cw;
-    canvas.height = ch;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.fillStyle = PRINT_GREY;
-    ctx.fillRect(0, 0, cw, ch);
+    const view = buildCalibratorView(model.baseView, model.assets);
+    if (!view) {
+      canvas.width = 420;
+      canvas.height = 280;
+      const ctx = canvas.getContext("2d");
+      ctx?.fillRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
 
     const [blankImg, shadeImg, pinkImg, maskImg, artImg] = await Promise.all([
       loadImage(model.assets.blank),
@@ -180,50 +256,90 @@ export default function FlatCalibrationMapperPage() {
       loadImage(testArtUrl),
     ]);
 
-    const blankR = layerRect(cw, ch, geometry.blank);
-    const shadeR = layerRect(cw, ch, geometry.shading);
-    const pinkR = layerRect(cw, ch, geometry.blank);
+    if (!blankImg) return;
 
-    if (showBlank && blankImg) {
-      ctx.drawImage(blankImg, blankR.x, blankR.y, blankR.width, blankR.height);
-    }
+    const layerOnlyPink = activeLayer === "pink" && showPink;
+    const layerOnlyMask = activeLayer === "mask" && showMask && !showBlank && !showShading && !artImg;
 
-    if (artImg) {
-      const artR = layerRect(cw, ch, {
-        offsetX: geometry.blank.offsetX + artPlacement.offsetX,
-        offsetY: geometry.blank.offsetY + artPlacement.offsetY,
-        scale: geometry.blank.scale * artPlacement.scale,
+    if (layerOnlyPink && pinkImg) {
+      const layout = flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg });
+      canvas.width = layout.previewW;
+      canvas.height = layout.previewH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#d4d4d4";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry);
+    } else if (layerOnlyMask && maskImg) {
+      const layout = flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg });
+      canvas.width = layout.previewW;
+      canvas.height = layout.previewH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#d4d4d4";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask);
+    } else {
+      const shadingOnly =
+        activeLayer === "shading" && showShading && !showBlank && !artImg && shadeImg;
+      const previewArt = artImg ?? (shadingOnly ? await loadWhiteArtwork() : null);
+      const previewPlacement: ArtworkPlacement = artImg
+        ? artPlacement
+        : { offsetX: 0, offsetY: 0, scale: artScaleMax };
+
+      renderFlatView({
+        target: canvas,
+        blank: blankImg,
+        mask: maskImg,
+        shading: shadeImg,
+        artwork: previewArt,
+        view,
+        placement: previewPlacement,
+        tier: (data?.onTheFlyTier as "flat" | "mesh") ?? "flat",
+        edgeWrapMode: true,
+        forceShadingMap: true,
+        artworkCorsClean: true,
+        layerAdjust: {
+          blank: geometry.blank,
+          mask: geometry.mask,
+          shading: geometry.shading,
+        },
+        previewLayers: {
+          blank: showBlank,
+          shading: showShading,
+          artwork: !!previewArt,
+        },
       });
-      ctx.drawImage(artImg, artR.x, artR.y, artR.width, artR.height);
-    }
 
-    if (showShading && shadeImg) {
-      ctx.save();
-      ctx.globalCompositeOperation = "multiply";
-      ctx.globalAlpha = 0.85;
-      ctx.drawImage(shadeImg, shadeR.x, shadeR.y, shadeR.width, shadeR.height);
-      ctx.restore();
-    }
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        if (showPink && pinkImg && activeLayer !== "pink") {
+          drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry);
+        }
+        if (showMask && maskImg && activeLayer !== "mask") {
+          drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask);
+        }
 
-    if (showMask && maskImg) {
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.drawImage(maskImg, blankR.x, blankR.y, blankR.width, blankR.height);
-      ctx.restore();
+        ctx.strokeStyle = "#2563eb";
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 2;
+        ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+        ctx.setLineDash([]);
+      }
     }
-
-    if (showPink && pinkImg) {
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.drawImage(pinkImg, pinkR.x, pinkR.y, pinkR.width, pinkR.height);
-      ctx.restore();
-    }
-
-    ctx.strokeStyle = "#2563eb";
-    ctx.setLineDash([6, 4]);
-    ctx.strokeRect(2, 2, cw - 4, ch - 4);
-    ctx.setLineDash([]);
-  }, [selectedModel, geometry, showBlank, showShading, showMask, showPink, testArtUrl, artPlacement]);
+  }, [
+    selectedModel,
+    geometry,
+    showBlank,
+    showShading,
+    showMask,
+    showPink,
+    testArtUrl,
+    artPlacement,
+    activeLayer,
+    data?.onTheFlyTier,
+    artScaleMax,
+  ]);
 
   useEffect(() => {
     void renderPreview();
@@ -240,7 +356,10 @@ export default function FlatCalibrationMapperPage() {
       return res.json();
     },
     onSuccess: () => {
-      toast({ title: "Saved", description: "Layer alignment saved to geometry.json and manifest." });
+      toast({
+        title: "Saved",
+        description: "Alignment saved — blank baked into geometry; mask/shading offsets stored.",
+      });
       queryClient.invalidateQueries({ queryKey: [`/api/admin/flat-calibrator/${productTypeId}`] });
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
@@ -254,7 +373,7 @@ export default function FlatCalibrationMapperPage() {
     onSuccess: () => {
       toast({
         title: "Calibrator harvest started",
-        description: "Wiping old assets and re-fetching pink/blank/mask/shading from Printify (~5–15 min).",
+        description: "Wiping old assets and re-fetching pink/blank/mask/shading from Printify (~30–60 min).",
       });
       queryClient.invalidateQueries({ queryKey: [`/api/admin/flat-calibrator/${productTypeId}`] });
     },
@@ -283,7 +402,7 @@ export default function FlatCalibrationMapperPage() {
           <div>
             <h1 className="text-lg font-semibold">Flat Calibration Mapper</h1>
             <p className="text-xs text-muted-foreground">
-              Product {productTypeId}: {data?.name ?? "…"} — align blank, mask, and shading layers per phone model.
+              Product {productTypeId}: {data?.name ?? "…"} — WYSIWYG preview matches storefront compositing.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -322,7 +441,7 @@ export default function FlatCalibrationMapperPage() {
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-            <div className="w-full shrink-0 space-y-3 lg:w-64">
+            <div className="w-full shrink-0 space-y-3 overflow-y-auto lg:w-72 lg:max-h-full">
               <div>
                 <Label className="text-xs">Phone model</Label>
                 <select
@@ -373,29 +492,49 @@ export default function FlatCalibrationMapperPage() {
                 </select>
               </div>
 
-              <div className="space-y-2">
-                <Label className="text-xs">Fine position</Label>
+              <div className="space-y-2 rounded border p-2">
+                <Label className="text-xs font-medium">Layer alignment</Label>
                 <div className="grid grid-cols-3 gap-1">
                   <div />
-                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => patchLayer(activeLayer, { offsetY: activeAdj.offsetY - NUDGE })}>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => patchLayer(activeLayer, { offsetY: activeAdj.offsetY - NUDGE })}
+                  >
                     <ArrowUp className="h-3 w-3" />
                   </Button>
                   <div />
-                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => patchLayer(activeLayer, { offsetX: activeAdj.offsetX - NUDGE })}>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => patchLayer(activeLayer, { offsetX: activeAdj.offsetX - NUDGE })}
+                  >
                     <ArrowLeft className="h-3 w-3" />
                   </Button>
                   <div className="flex h-8 items-center justify-center text-[10px] text-muted-foreground">nudge</div>
-                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => patchLayer(activeLayer, { offsetX: activeAdj.offsetX + NUDGE })}>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => patchLayer(activeLayer, { offsetX: activeAdj.offsetX + NUDGE })}
+                  >
                     <ArrowRight className="h-3 w-3" />
                   </Button>
                   <div />
-                  <Button variant="outline" size="icon" className="h-8 w-8" onClick={() => patchLayer(activeLayer, { offsetY: activeAdj.offsetY + NUDGE })}>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => patchLayer(activeLayer, { offsetY: activeAdj.offsetY + NUDGE })}
+                  >
                     <ArrowDown className="h-3 w-3" />
                   </Button>
                   <div />
                 </div>
                 <div>
-                  <Label className="text-xs">Scale {(activeAdj.scale * 100).toFixed(0)}%</Label>
+                  <Label className="text-xs">Layer scale {(activeAdj.scale * 100).toFixed(0)}%</Label>
                   <Slider
                     min={50}
                     max={150}
@@ -406,25 +545,96 @@ export default function FlatCalibrationMapperPage() {
                 </div>
               </div>
 
-              <div>
-                <Label className="text-xs">Test artwork URL</Label>
+              <div className="space-y-2 rounded border p-2">
+                <Label className="text-xs font-medium">Test artwork</Label>
                 <Input
-                  className="mt-1 h-8 text-xs"
+                  className="h-8 text-xs"
                   placeholder="https://…"
                   value={testArtUrl ?? ""}
                   onChange={(e) => setTestArtUrl(e.target.value || null)}
                 />
+                {testArtUrl && (
+                  <>
+                    <div className="grid grid-cols-3 gap-1">
+                      <div />
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => patchArt({ offsetY: artPlacement.offsetY - ART_NUDGE })}
+                      >
+                        <ArrowUp className="h-3 w-3" />
+                      </Button>
+                      <div />
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => patchArt({ offsetX: artPlacement.offsetX - ART_NUDGE })}
+                      >
+                        <ArrowLeft className="h-3 w-3" />
+                      </Button>
+                      <div className="flex h-8 items-center justify-center text-[10px] text-muted-foreground">
+                        art
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => patchArt({ offsetX: artPlacement.offsetX + ART_NUDGE })}
+                      >
+                        <ArrowRight className="h-3 w-3" />
+                      </Button>
+                      <div />
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => patchArt({ offsetY: artPlacement.offsetY + ART_NUDGE })}
+                      >
+                        <ArrowDown className="h-3 w-3" />
+                      </Button>
+                      <div />
+                    </div>
+                    <div>
+                      <Label className="text-xs">
+                        Art scale {Math.round(artPlacement.scale * 100)}%
+                      </Label>
+                      <Slider
+                        min={Math.round(flatPlacementScaleMax({ edgeWrapMode: true }) * 0.2 * 100)}
+                        max={Math.round(artScaleMax * 100)}
+                        step={1}
+                        value={[Math.round(artPlacement.scale * 100)]}
+                        onValueChange={([v]) => patchArt({ scale: v / 100 })}
+                      />
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 w-full text-xs"
+                      onClick={() => setArtPlacement({ ...DEFAULT_ARTWORK_PLACEMENT })}
+                    >
+                      Reset art placement
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border bg-zinc-100 p-4">
               <canvas ref={canvasRef} className="max-h-full max-w-full rounded shadow" />
-              <p className="mt-2 text-[11px] text-muted-foreground">
-                Blue dashed = print canvas. Toggle pink reference to compare against Printify magenta mockup.
+              <p className="mt-2 max-w-md text-center text-[11px] text-muted-foreground">
+                Preview uses the same compositor as the storefront: blank and art are mask-clipped (rounded
+                corners + camera cutout), shading applies after art. Blue dashed = print canvas.
               </p>
               {selectedModel && !selectedModel.assets.blank && (
                 <p className="mt-1 text-xs text-amber-700">
                   No blank asset for this model — run Wipe + harvest first.
+                </p>
+              )}
+              {selectedModel && !selectedModel.baseView && (
+                <p className="mt-1 text-xs text-amber-700">
+                  No harvest geometry for this model — run Wipe + harvest, then align and save.
                 </p>
               )}
             </div>

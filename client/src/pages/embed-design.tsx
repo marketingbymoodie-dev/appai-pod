@@ -139,6 +139,24 @@ export interface FlatCalibrationManifest {
   edgeWrap?: boolean;
   /** Framed / multi-size decor — blanks keyed by size:color. */
   decorPerSize?: boolean;
+  /** Manual layer alignment from flat calibrator admin tool. */
+  calibratorGeometry?: {
+    productTypeId: number;
+    models: Record<
+      string,
+      Partial<
+        Record<
+          "front" | "back",
+          {
+            blank: { offsetX: number; offsetY: number; scale: number };
+            mask: { offsetX: number; offsetY: number; scale: number };
+            shading: { offsetX: number; offsetY: number; scale: number };
+          }
+        >
+      >
+    >;
+    updatedAt: string;
+  };
   generatedAt: string;
 }
 

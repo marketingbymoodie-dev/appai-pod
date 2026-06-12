@@ -1,5 +1,6 @@
 import { API_BASE } from "@/lib/urlBase";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
+import type { CalibratorLayerAdjust, FlatRenderInput } from "./flatRender";
 
 export type FlatViewName = "front" | "back";
 
@@ -64,7 +65,46 @@ export type FlatViewGeometryOverride = Pick<
 
 export type FlatCalibrationManifestWithGeometry = FlatCalibrationManifest & {
   geometryByBlank?: Record<string, Partial<Record<FlatViewName, FlatViewGeometryOverride>>>;
+  calibratorGeometry?: {
+    productTypeId: number;
+    models: Record<
+      string,
+      Partial<
+        Record<
+          FlatViewName,
+          {
+            blank: CalibratorLayerAdjust;
+            mask: CalibratorLayerAdjust;
+            shading: CalibratorLayerAdjust;
+          }
+        >
+      >
+    >;
+    updatedAt: string;
+  };
 };
+
+/** Layer nudges saved by the flat calibrator admin tool (mask/shading relative to baked blank). */
+export function resolveCalibratorLayerAdjust(
+  manifest: FlatCalibrationManifestWithGeometry,
+  geometryKey: string,
+  view: FlatViewName,
+): FlatRenderInput["layerAdjust"] | undefined {
+  const entry = manifest.calibratorGeometry?.models?.[geometryKey]?.[view];
+  if (!entry) return undefined;
+  const hasMask =
+    entry.mask.offsetX !== 0 || entry.mask.offsetY !== 0 || entry.mask.scale !== 1;
+  const hasShade =
+    entry.shading.offsetX !== 0 || entry.shading.offsetY !== 0 || entry.shading.scale !== 1;
+  const hasBlank =
+    entry.blank.offsetX !== 0 || entry.blank.offsetY !== 0 || entry.blank.scale !== 1;
+  if (!hasMask && !hasShade && !hasBlank) return undefined;
+  return {
+    blank: hasBlank ? entry.blank : undefined,
+    mask: hasMask ? entry.mask : undefined,
+    shading: hasShade ? entry.shading : undefined,
+  };
+}
 
 /**
  * Merge shared view calibration with optional per-blank-key overrides.

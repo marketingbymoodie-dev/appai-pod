@@ -72,6 +72,38 @@ function parseManifest(raw: unknown): Record<string, any> | null {
   return null;
 }
 
+function mergeViewCalibration(
+  manifest: Record<string, any> | null,
+  modelId: string,
+  view: ViewName,
+): Record<string, any> | null {
+  const base = manifest?.views?.[view];
+  if (!base) return null;
+  const override = manifest?.geometryByBlank?.[modelId]?.[view];
+  if (!override) return { ...base };
+  return {
+    ...base,
+    ...override,
+    visibleRectNormalized: override.visibleRectNormalized ?? base.visibleRectNormalized,
+    printBoundsNormalized: override.printBoundsNormalized ?? base.printBoundsNormalized,
+    backFaceCropNormalized: override.backFaceCropNormalized ?? base.backFaceCropNormalized,
+    phoneBackNormalized: override.phoneBackNormalized ?? base.phoneBackNormalized,
+    safeZoneNormalized: override.safeZoneNormalized ?? base.safeZoneNormalized,
+    sideProfileCropped: override.sideProfileCropped ?? base.sideProfileCropped,
+    sideProfileSourceCropNormalized:
+      override.sideProfileSourceCropNormalized ?? base.sideProfileSourceCropNormalized,
+    mockupDims: override.mockupDims ?? base.mockupDims,
+    printFileDims: override.printFileDims ?? base.printFileDims,
+    maskUrl: override.maskUrl ?? base.maskUrl,
+    shadingUrl: override.shadingUrl ?? base.shadingUrl,
+    shadingMode: override.shadingMode ?? base.shadingMode,
+    meshNodes: base.meshNodes,
+    meshGrid: base.meshGrid,
+    planarityScore: base.planarityScore,
+    coverage: base.coverage,
+  };
+}
+
 function safeSlug(id: string): string {
   return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 }
@@ -150,6 +182,7 @@ export function registerFlatCalibrationMapperRoutes(
           name: m.name,
           assets: assetUrls(productTypeId, m.id, view),
           geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
+          baseView: mergeViewCalibration(manifest, m.id, view),
         })),
         geometry,
         manifestSummary: manifest
@@ -274,7 +307,11 @@ export function registerFlatCalibrationMapperRoutes(
         } as FlatCalibratorGeometry);
 
       if (!existing.models[modelId]) existing.models[modelId] = {};
-      existing.models[modelId]![view] = entry;
+      const bakedEntry: CalibratorModelEntry = {
+        ...entry,
+        blank: { offsetX: 0, offsetY: 0, scale: 1 },
+      };
+      existing.models[modelId]![view] = bakedEntry;
       existing.updatedAt = new Date().toISOString();
 
       const geometryUrl = await uploadToFlatCalibrationBucket(
@@ -292,6 +329,7 @@ export function registerFlatCalibrationMapperRoutes(
         const baseView = manifest.geometryByBlank[modelId][view] || manifest.views?.[view] || {};
         const adj = entry.blank;
         const phoneBack = baseView.phoneBackNormalized || { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+        const savedAssets = assetUrls(productTypeId, modelId, view);
         manifest.geometryByBlank[modelId][view] = {
           ...baseView,
           phoneBackNormalized: {
@@ -301,9 +339,17 @@ export function registerFlatCalibrationMapperRoutes(
             height: +(phoneBack.height * (adj.scale || 1)).toFixed(5),
           },
           sideProfileSourceCropNormalized: entry.sourceCrop ?? baseView.sideProfileSourceCropNormalized,
+          maskUrl: savedAssets.mask ?? baseView.maskUrl,
+          shadingUrl: savedAssets.shading ?? baseView.shadingUrl,
         };
         manifest.representativeGeometry = false;
         manifest.edgeWrap = true;
+
+        if (savedAssets.blank) {
+          if (!manifest.blanks) manifest.blanks = {};
+          if (!manifest.blanks[modelId]) manifest.blanks[modelId] = {};
+          manifest.blanks[modelId][view] = savedAssets.blank;
+        }
       }
 
       await storage.updateProductType(productTypeId, {

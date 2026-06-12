@@ -17,6 +17,7 @@ import {
   loadFlatImage,
   resolveFlatBlank,
   resolveFlatViewCalibration,
+  resolveCalibratorLayerAdjust,
   type FlatViewName,
 } from "./lib/flatAssets";
 import {
@@ -364,6 +365,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           decorMode,
           cropToBackFace: false,
           sizeId: colorId,
+          layerAdjust: resolveCalibratorLayerAdjust(manifest, geometryKey, v),
         });
         return true;
       } catch (e) {
@@ -372,7 +374,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         return false;
       }
     },
-    [state, assets, manifest, colorId, artworkImg, artworkCorsClean, edgeWrapMode, decorMode],
+    [state, assets, manifest, geometryKey, artworkImg, artworkCorsClean, edgeWrapMode, decorMode],
   );
 
   // ---------- Live canvas ----------

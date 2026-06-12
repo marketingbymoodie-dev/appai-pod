@@ -60,6 +60,40 @@ export function flatPlacementScaleMax(opts: {
 /** Floor for the normalized shading multiply so artwork never goes fully black. */
 const SHADE_FACTOR_MIN = 0.45;
 
+/** Per-layer nudge from the flat calibrator admin tool (normalized to print canvas). */
+export type CalibratorLayerAdjust = {
+  offsetX: number;
+  offsetY: number;
+  scale: number;
+};
+
+export type FlatPreviewLayers = {
+  blank?: boolean;
+  shading?: boolean;
+  artwork?: boolean;
+};
+
+export function adjustCalibratorDrawRect(
+  rect: Rect,
+  adj: CalibratorLayerAdjust | undefined,
+  canvasW: number,
+  canvasH: number,
+): Rect {
+  if (!adj || (adj.offsetX === 0 && adj.offsetY === 0 && adj.scale === 1)) {
+    return rect;
+  }
+  const w = rect.width * adj.scale;
+  const h = rect.height * adj.scale;
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  return {
+    x: cx - w / 2 + adj.offsetX * canvasW,
+    y: cy - h / 2 + adj.offsetY * canvasH,
+    width: w,
+    height: h,
+  };
+}
+
 export type FlatRenderInput = {
   /** Target canvas — sized to the blank's natural (mockup) dimensions. */
   target: HTMLCanvasElement;
@@ -85,6 +119,14 @@ export type FlatRenderInput = {
   sizeId?: string;
   /** Crop to back face when the mockup has a side-profile strip (iPhone 14/15). */
   cropToBackFace?: boolean;
+  /** Manual per-layer alignment (flat calibrator → storefront). */
+  layerAdjust?: {
+    blank?: CalibratorLayerAdjust;
+    mask?: CalibratorLayerAdjust;
+    shading?: CalibratorLayerAdjust;
+  };
+  /** Calibrator / debug — toggle compositing stages. */
+  previewLayers?: FlatPreviewLayers;
 };
 
 function imgDims(img: HTMLImageElement): { w: number; h: number } {
@@ -950,6 +992,8 @@ export function renderFlatView(input: FlatRenderInput): void {
     forceShadingMap = false,
     edgeWrapMode = false,
     decorMode = false,
+    layerAdjust,
+    previewLayers,
   } = input;
   const { w: W, h: H } = imgDims(blank);
   if (W <= 0 || H <= 0) return;
@@ -959,7 +1003,10 @@ export function renderFlatView(input: FlatRenderInput): void {
     const outW = layout.previewW;
     const outH = layout.previewH;
     const crop = layout.sourceCrop;
-    const draw = layout.imageDraw;
+    const baseDraw = layout.imageDraw;
+    const blankDraw = adjustCalibratorDrawRect(baseDraw, layerAdjust?.blank, outW, outH);
+    const maskDraw = adjustCalibratorDrawRect(baseDraw, layerAdjust?.mask, outW, outH);
+    const shadeDraw = adjustCalibratorDrawRect(baseDraw, layerAdjust?.shading, outW, outH);
     const maskAligned = maskAlignsWithBlank(blank, mask);
 
     const maskRefW = mask ? (mask.naturalWidth || mask.width) : W;
@@ -968,6 +1015,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     const drawAssetScaled = (
       ctx: CanvasRenderingContext2D,
       img: HTMLImageElement,
+      dest: Rect,
       opts?: { refW?: number; refH?: number; useCrop?: boolean },
     ) => {
       const iw = img.naturalWidth || img.width;
@@ -985,15 +1033,47 @@ export function renderFlatView(input: FlatRenderInput): void {
           crop.y * sy,
           crop.width * sx,
           crop.height * sy,
-          draw.x,
-          draw.y,
-          draw.width,
-          draw.height,
+          dest.x,
+          dest.y,
+          dest.width,
+          dest.height,
         );
       } else {
-        ctx.drawImage(img, 0, 0, iw, ih, draw.x, draw.y, draw.width, draw.height);
+        ctx.drawImage(img, 0, 0, iw, ih, dest.x, dest.y, dest.width, dest.height);
       }
     };
+
+    const clipMaskToDest = (ctx: CanvasRenderingContext2D, dest: Rect) => {
+      if (!mask) return;
+      ctx.globalCompositeOperation = "destination-in";
+      if (maskAligned) {
+        drawAssetScaled(ctx, mask, dest, { useCrop: true });
+      } else {
+        const mw = mask.naturalWidth || mask.width;
+        const mh = mask.naturalHeight || mask.height;
+        const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
+        if (maskCrop && mw > 0 && mh > 0) {
+          ctx.drawImage(
+            mask,
+            maskCrop.x,
+            maskCrop.y,
+            maskCrop.width,
+            maskCrop.height,
+            dest.x,
+            dest.y,
+            dest.width,
+            dest.height,
+          );
+        } else if (mw > 0 && mh > 0) {
+          ctx.drawImage(mask, 0, 0, mw, mh, dest.x, dest.y, dest.width, dest.height);
+        }
+      }
+      ctx.globalCompositeOperation = "source-over";
+    };
+
+    const showBlankLayer = previewLayers?.blank !== false;
+    const showShadingLayer = previewLayers?.shading !== false;
+    const showArtLayer = previewLayers?.artwork !== false && !!artwork;
 
     target.width = outW;
     target.height = outH;
@@ -1007,47 +1087,23 @@ export function renderFlatView(input: FlatRenderInput): void {
 
     // Step 2: Blank phone photo, clipped to the phone silhouette so the JPEG
     // white background never bleeds over the grey margins.
-    const blankLayer = document.createElement("canvas");
-    blankLayer.width = outW;
-    blankLayer.height = outH;
-    const blCtx = blankLayer.getContext("2d");
-    if (blCtx) {
-      drawAssetScaled(blCtx, blank, {
-        refW: maskAligned ? maskRefW : W,
-        refH: maskAligned ? maskRefH : H,
-        useCrop: !!crop,
-      });
-      if (mask) {
-        blCtx.globalCompositeOperation = "destination-in";
-        if (maskAligned) {
-          drawAssetScaled(blCtx, mask, { useCrop: true });
-        } else {
-          const mw = mask.naturalWidth || mask.width;
-          const mh = mask.naturalHeight || mask.height;
-          const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
-          const d = layout.imageDraw;
-          if (maskCrop && mw > 0 && mh > 0) {
-            blCtx.drawImage(
-              mask,
-              maskCrop.x,
-              maskCrop.y,
-              maskCrop.width,
-              maskCrop.height,
-              d.x,
-              d.y,
-              d.width,
-              d.height,
-            );
-          } else if (mw > 0 && mh > 0) {
-            blCtx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
-          }
-        }
-        blCtx.globalCompositeOperation = "source-over";
+    if (showBlankLayer) {
+      const blankLayer = document.createElement("canvas");
+      blankLayer.width = outW;
+      blankLayer.height = outH;
+      const blCtx = blankLayer.getContext("2d");
+      if (blCtx) {
+        drawAssetScaled(blCtx, blank, blankDraw, {
+          refW: maskAligned ? maskRefW : W,
+          refH: maskAligned ? maskRefH : H,
+          useCrop: !!crop,
+        });
+        clipMaskToDest(blCtx, maskDraw);
       }
+      ctx.drawImage(blankLayer, 0, 0);
     }
-    ctx.drawImage(blankLayer, 0, 0);
 
-    if (!artwork) return;
+    if (!showArtLayer || !artwork) return;
     const { w: artW, h: artH } = imgDims(artwork);
     if (artW <= 0 || artH <= 0) return;
 
@@ -1062,31 +1118,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     actx.drawImage(artwork, box.x, box.y, box.width, box.height);
 
     if (mask) {
-      actx.globalCompositeOperation = "destination-in";
-      if (maskAligned) {
-        drawAssetScaled(actx, mask, { useCrop: true });
-      } else {
-        const mw = mask.naturalWidth || mask.width;
-        const mh = mask.naturalHeight || mask.height;
-        const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
-        const d = layout.imageDraw;
-        if (maskCrop && mw > 0 && mh > 0) {
-          actx.drawImage(
-            mask,
-            maskCrop.x,
-            maskCrop.y,
-            maskCrop.width,
-            maskCrop.height,
-            d.x,
-            d.y,
-            d.width,
-            d.height,
-          );
-        } else if (mw > 0 && mh > 0) {
-          actx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
-        }
-      }
-      actx.globalCompositeOperation = "source-over";
+      clipMaskToDest(actx, maskDraw);
     } else {
       const pb = layout.phoneBack;
       actx.save();
@@ -1099,103 +1131,53 @@ export function renderFlatView(input: FlatRenderInput): void {
       actx.restore();
     }
 
-    const shadeMode: "blank" | "map" =
-      view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
+    if (showShadingLayer) {
+      const shadeMode: "blank" | "map" =
+        view.shadingMode === "map" || (forceShadingMap && shading) ? "map" : view.shadingMode;
 
-    // Shading blank: same position as the clipped blank layer so luminance
-    // normalization samples the correct phone surface, not white margins.
-    const shadeBlankCanvas = document.createElement("canvas");
-    shadeBlankCanvas.width = outW;
-    shadeBlankCanvas.height = outH;
-    const sbCtx = shadeBlankCanvas.getContext("2d");
-    if (sbCtx) {
-      drawAssetScaled(sbCtx, blank, {
-        refW: maskAligned ? maskRefW : W,
-        refH: maskAligned ? maskRefH : H,
-        useCrop: !!crop,
-      });
-      if (mask) {
-        sbCtx.globalCompositeOperation = "destination-in";
-        if (maskAligned) {
-          drawAssetScaled(sbCtx, mask, { useCrop: true });
-        } else {
-          const mw = mask.naturalWidth || mask.width;
-          const mh = mask.naturalHeight || mask.height;
-          const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
-          const d = layout.imageDraw;
-          if (maskCrop && mw > 0 && mh > 0) {
-            sbCtx.drawImage(
-              mask,
-              maskCrop.x,
-              maskCrop.y,
-              maskCrop.width,
-              maskCrop.height,
-              d.x,
-              d.y,
-              d.width,
-              d.height,
-            );
-          } else if (mw > 0 && mh > 0) {
-            sbCtx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
-          }
-        }
-        sbCtx.globalCompositeOperation = "source-over";
-      }
-    }
-
-    let shadeMapImg: HTMLImageElement | HTMLCanvasElement | null = shading;
-    if (shading) {
-      const sc = document.createElement("canvas");
-      sc.width = outW;
-      sc.height = outH;
-      const scx = sc.getContext("2d");
-      if (scx) {
-        drawAssetScaled(scx, shading, {
+      // Shading blank: same position as the clipped blank layer so luminance
+      // normalization samples the correct phone surface, not white margins.
+      const shadeBlankCanvas = document.createElement("canvas");
+      shadeBlankCanvas.width = outW;
+      shadeBlankCanvas.height = outH;
+      const sbCtx = shadeBlankCanvas.getContext("2d");
+      if (sbCtx) {
+        drawAssetScaled(sbCtx, blank, blankDraw, {
           refW: maskAligned ? maskRefW : W,
           refH: maskAligned ? maskRefH : H,
           useCrop: !!crop,
         });
-        if (mask) {
-          scx.globalCompositeOperation = "destination-in";
-          if (maskAligned) {
-            drawAssetScaled(scx, mask, { useCrop: true });
-          } else {
-            const mw = mask.naturalWidth || mask.width;
-            const mh = mask.naturalHeight || mask.height;
-            const maskCrop = resolveEdgeWrapSourceCrop(view, mask);
-            const d = layout.imageDraw;
-            if (maskCrop && mw > 0 && mh > 0) {
-              scx.drawImage(
-                mask,
-                maskCrop.x,
-                maskCrop.y,
-                maskCrop.width,
-                maskCrop.height,
-                d.x,
-                d.y,
-                d.width,
-                d.height,
-              );
-            } else if (mw > 0 && mh > 0) {
-              scx.drawImage(mask, 0, 0, mw, mh, d.x, d.y, d.width, d.height);
-            }
-          }
-          scx.globalCompositeOperation = "source-over";
-        }
-        shadeMapImg = sc;
+        clipMaskToDest(sbCtx, maskDraw);
       }
-    }
 
-    applyShading(
-      art,
-      actx,
-      shadeMode,
-      shadeBlankCanvas as unknown as HTMLImageElement,
-      shadeMapImg as HTMLImageElement | null,
-      outW,
-      outH,
-      artworkCorsClean,
-    );
+      let shadeMapImg: HTMLImageElement | HTMLCanvasElement | null = shading;
+      if (shading) {
+        const sc = document.createElement("canvas");
+        sc.width = outW;
+        sc.height = outH;
+        const scx = sc.getContext("2d");
+        if (scx) {
+          drawAssetScaled(scx, shading, shadeDraw, {
+            refW: maskAligned ? maskRefW : W,
+            refH: maskAligned ? maskRefH : H,
+            useCrop: !!crop,
+          });
+          clipMaskToDest(scx, maskDraw);
+          shadeMapImg = sc;
+        }
+      }
+
+      applyShading(
+        art,
+        actx,
+        shadeMode,
+        shadeBlankCanvas as unknown as HTMLImageElement,
+        shadeMapImg as HTMLImageElement | null,
+        outW,
+        outH,
+        artworkCorsClean,
+      );
+    }
 
     ctx.drawImage(art, 0, 0);
     return;
