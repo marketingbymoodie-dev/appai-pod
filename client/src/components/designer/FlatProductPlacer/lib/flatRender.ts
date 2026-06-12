@@ -1022,6 +1022,91 @@ function drawEdgeWrapMaskAt(
 }
 
 /**
+ * Mask pixels that are transparent but not connected to the canvas border
+ * (camera cutouts), plus a thin outer rim ring. Avoids square phoneBack rects.
+ */
+function buildBlankHardwarePunchMask(
+  outW: number,
+  outH: number,
+  mask: HTMLImageElement,
+  maskDraw: Rect,
+  view: FlatViewCalibration,
+  maskAligned: boolean,
+  crop: Rect | null | undefined,
+  drawAssetScaled: DrawAssetScaledFn,
+): HTMLCanvasElement | null {
+  const alphaCanvas = document.createElement("canvas");
+  alphaCanvas.width = outW;
+  alphaCanvas.height = outH;
+  const actx = alphaCanvas.getContext("2d");
+  if (!actx) return null;
+  drawEdgeWrapMaskAt(actx, mask, maskDraw, view, maskAligned, crop, drawAssetScaled);
+
+  let data: ImageData;
+  try {
+    data = actx.getImageData(0, 0, outW, outH);
+  } catch {
+    return null;
+  }
+
+  const n = outW * outH;
+  const isTransparent = (idx: number) => data.data[idx * 4 + 3] <= 10;
+  const exterior = new Uint8Array(n);
+  const queue: number[] = [];
+  const pushIfExterior = (x: number, y: number) => {
+    if (x < 0 || x >= outW || y < 0 || y >= outH) return;
+    const idx = y * outW + x;
+    if (exterior[idx] || !isTransparent(idx)) return;
+    exterior[idx] = 1;
+    queue.push(idx);
+  };
+  for (let x = 0; x < outW; x++) {
+    pushIfExterior(x, 0);
+    pushIfExterior(x, outH - 1);
+  }
+  for (let y = 0; y < outH; y++) {
+    pushIfExterior(0, y);
+    pushIfExterior(outW - 1, y);
+  }
+  while (queue.length > 0) {
+    const idx = queue.pop()!;
+    const x = idx % outW;
+    const y = (idx / outW) | 0;
+    pushIfExterior(x - 1, y);
+    pushIfExterior(x + 1, y);
+    pushIfExterior(x, y - 1);
+    pushIfExterior(x, y + 1);
+  }
+
+  const punchMask = document.createElement("canvas");
+  punchMask.width = outW;
+  punchMask.height = outH;
+  const pmCtx = punchMask.getContext("2d");
+  if (!pmCtx) return null;
+  const punchData = pmCtx.createImageData(outW, outH);
+  for (let idx = 0; idx < n; idx++) {
+    if (isTransparent(idx) && !exterior[idx]) {
+      const o = idx * 4;
+      punchData.data[o] = 255;
+      punchData.data[o + 1] = 255;
+      punchData.data[o + 2] = 255;
+      punchData.data[o + 3] = 255;
+    }
+  }
+  pmCtx.putImageData(punchData, 0, 0);
+
+  // Thin outer rim — case bevel over artwork (rounded, follows mask silhouette).
+  const outerDraw = scaleRectAroundCenter(maskDraw, 1.012);
+  pmCtx.globalCompositeOperation = "source-over";
+  pmCtx.fillStyle = "#ffffff";
+  drawEdgeWrapMaskAt(pmCtx, mask, outerDraw, view, maskAligned, crop, drawAssetScaled);
+  pmCtx.globalCompositeOperation = "destination-out";
+  drawEdgeWrapMaskAt(pmCtx, mask, maskDraw, view, maskAligned, crop, drawAssetScaled);
+
+  return punchMask;
+}
+
+/**
  * Redraw blank on top of art for camera cutouts and the outer case lip.
  * Printable mask regions stay art-only; holes + rim show the blank photo again.
  */
@@ -1044,25 +1129,17 @@ function compositeBlankHardwareOnTop(
   const outW = layout.previewW;
   const outH = layout.previewH;
 
-  const punchMask = document.createElement("canvas");
-  punchMask.width = outW;
-  punchMask.height = outH;
-  const pmCtx = punchMask.getContext("2d");
-  if (!pmCtx) return;
-
-  const pb = layout.phoneBack;
-  pmCtx.fillStyle = "#ffffff";
-  pmCtx.fillRect(pb.x, pb.y, pb.width, pb.height);
-  pmCtx.globalCompositeOperation = "destination-out";
-  drawEdgeWrapMaskAt(pmCtx, mask, maskDraw, view, maskAligned, crop, drawAssetScaled);
-
-  // Thin outer rim — case bevel / edge visible over artwork.
-  const outerDraw = scaleRectAroundCenter(maskDraw, 1.014);
-  pmCtx.globalCompositeOperation = "source-over";
-  pmCtx.fillStyle = "#ffffff";
-  drawEdgeWrapMaskAt(pmCtx, mask, outerDraw, view, maskAligned, crop, drawAssetScaled);
-  pmCtx.globalCompositeOperation = "destination-out";
-  drawEdgeWrapMaskAt(pmCtx, mask, maskDraw, view, maskAligned, crop, drawAssetScaled);
+  const punchMask = buildBlankHardwarePunchMask(
+    outW,
+    outH,
+    mask,
+    maskDraw,
+    view,
+    maskAligned,
+    crop,
+    drawAssetScaled,
+  );
+  if (!punchMask) return;
 
   const hwLayer = document.createElement("canvas");
   hwLayer.width = outW;

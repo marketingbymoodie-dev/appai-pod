@@ -41,6 +41,10 @@ export type FlatDesignRectOverlayProps = {
   placementRect?: Rect | null;
   /** Max placement scale (decor / edge-wrap allow zoom past 100%). */
   scaleMax?: number;
+  /** Amber safe-zone guide (edge-wrap inner line). Default true. */
+  showInnerGuide?: boolean;
+  /** Blue print-canvas guide (edge-wrap outer line). Default auto when distinct from inner. */
+  showOuterGuide?: boolean;
   onChange: (next: ArtworkPlacement) => void;
   /** Fired on drag/resize so the canvas backdrop can ignore the trailing click. */
   onDragActivity?: () => void;
@@ -56,6 +60,8 @@ export default function FlatDesignRectOverlay({
   outerGuideRect = null,
   placementRect = null,
   scaleMax = 1,
+  showInnerGuide = true,
+  showOuterGuide,
   onChange,
   onDragActivity,
 }: FlatDesignRectOverlayProps) {
@@ -213,7 +219,9 @@ export default function FlatDesignRectOverlay({
     Math.abs(innerPct.top - outerPct.top) < 0.5 &&
     Math.abs(innerPct.width - outerPct.width) < 0.5 &&
     Math.abs(innerPct.height - outerPct.height) < 0.5;
-  const showOuterGuide = edgeWrapMode && outerPct && !guidesOverlap;
+  const showOuterGuideLine =
+    showOuterGuide ??
+    (edgeWrapMode && !!outerPct && !guidesOverlap);
 
   const handleSize = 14;
   const cornerStyle = (
@@ -237,7 +245,7 @@ export default function FlatDesignRectOverlay({
       data-testid="flat-rect-overlay"
     >
       {/* Full print canvas (edge-wrap outer guide). */}
-      {showOuterGuide && (
+      {showOuterGuideLine && outerPct && (
         <div
           className="pointer-events-none absolute border-2 border-dashed border-sky-400/95"
           style={{
@@ -251,7 +259,7 @@ export default function FlatDesignRectOverlay({
         />
       )}
 
-      {(edgeWrapMode ? safeGuideRect : rect) && (
+      {showInnerGuide && (edgeWrapMode ? safeGuideRect : rect) && (
       <div
         className={`pointer-events-none absolute border-2 border-dashed ${
           edgeWrapMode

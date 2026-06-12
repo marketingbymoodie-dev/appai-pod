@@ -202,7 +202,13 @@ export default function FlatCalibrationMapperPage() {
   }, [models, selectedModelId]);
 
   useEffect(() => {
-    if (selectedModel?.geometry) setGeometry(structuredClone(selectedModel.geometry));
+    if (selectedModel?.geometry) {
+      const g = structuredClone(selectedModel.geometry);
+      g.blank.scale = 1;
+      g.mask.scale = 1;
+      g.shading.scale = 1;
+      setGeometry(g);
+    }
   }, [selectedModel?.modelId, selectedModel?.geometry]);
 
   useEffect(() => {
@@ -250,12 +256,13 @@ export default function FlatCalibrationMapperPage() {
 
   const patchLayer = useCallback(
     (layer: LayerId | "stack", patch: Partial<CalibratorLayerAdjust>) => {
+      const { scale: _scale, ...offsetOnly } = patch;
       setGeometry((prev) => {
         const next = structuredClone(prev);
         const apply = (key: keyof CalibratorModelEntry) => {
           if (key === "sourceCrop") return;
           const cur = next[key] as CalibratorLayerAdjust;
-          next[key] = { ...cur, ...patch };
+          next[key] = { ...cur, ...offsetOnly, scale: 1 };
         };
         if (layer === "stack") {
           apply("blank");
@@ -268,6 +275,15 @@ export default function FlatCalibrationMapperPage() {
       });
     },
     [],
+  );
+
+  const lockedLayerAdjust = useMemo(
+    () => ({
+      blank: { ...geometry.blank, scale: 1 },
+      mask: { ...geometry.mask, scale: 1 },
+      shading: { ...geometry.shading, scale: 1 },
+    }),
+    [geometry],
   );
 
   const patchArt = useCallback((patch: Partial<ArtworkPlacement>) => {
@@ -339,11 +355,7 @@ export default function FlatCalibrationMapperPage() {
         edgeWrapMode: true,
         forceShadingMap: true,
         artworkCorsClean: true,
-        layerAdjust: {
-          blank: geometry.blank,
-          mask: geometry.mask,
-          shading: geometry.shading,
-        },
+        layerAdjust: lockedLayerAdjust,
         previewLayers: {
           blank: showBlank,
           shading: showShading,
@@ -373,6 +385,7 @@ export default function FlatCalibrationMapperPage() {
     activeLayer,
     data?.onTheFlyTier,
     artScaleMax,
+    lockedLayerAdjust,
   ]);
 
   useEffect(() => {
@@ -567,16 +580,10 @@ export default function FlatCalibrationMapperPage() {
                   </Button>
                   <div />
                 </div>
-                <div>
-                  <Label className="text-xs">Layer scale {(activeAdj.scale * 100).toFixed(0)}%</Label>
-                  <Slider
-                    min={50}
-                    max={150}
-                    step={1}
-                    value={[Math.round(activeAdj.scale * 100)]}
-                    onValueChange={([v]) => patchLayer(activeLayer, { scale: v / 100 })}
-                  />
-                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Nudge blank, mask, and shading together (or pick a single layer). Scale is fixed — use
+                  test artwork controls to check print coverage.
+                </p>
               </div>
 
               <div className="space-y-2 rounded border p-2">
@@ -665,8 +672,8 @@ export default function FlatCalibrationMapperPage() {
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border bg-zinc-100 p-4">
-              <div className="relative flex max-h-full max-w-full items-center justify-center">
-                <canvas ref={canvasRef} className="max-h-[70vh] max-w-full rounded shadow" />
+              <div className="relative inline-block max-h-[70vh] max-w-full leading-none">
+                <canvas ref={canvasRef} className="block max-h-[70vh] max-w-full rounded shadow" />
                 {testArtImg && calibratorView && printLayout && (
                   <FlatDesignRectOverlay
                     canvasRef={canvasRef}
@@ -674,7 +681,9 @@ export default function FlatCalibrationMapperPage() {
                     artwork={testArtImg}
                     placement={artPlacement}
                     edgeWrapMode
-                    innerGuideRect={printLayout.safeZone}
+                    showInnerGuide={false}
+                    showOuterGuide
+                    innerGuideRect={null}
                     outerGuideRect={printLayout.printCanvas}
                     placementRect={printLayout.printCanvas}
                     scaleMax={artScaleMax}
@@ -683,8 +692,8 @@ export default function FlatCalibrationMapperPage() {
                 )}
               </div>
               <p className="mt-2 max-w-md text-center text-[11px] text-muted-foreground">
-                Blue dashed = full print canvas; amber = safe back face. Drag artwork handles or use
-                sidebar controls. Blank redraws cameras and case edge on top of art when enabled.
+                Blue dashed = print canvas — scale artwork until it covers all four edges. Drag handles
+                or use sidebar nudge. Blank redraws cameras and rounded case lip on top of art.
               </p>
               {selectedModel && !selectedModel.assets.blank && (
                 <p className="mt-1 text-xs text-amber-700">
