@@ -114,6 +114,11 @@ export default function AdminProducts() {
     queryKey: ["/api/merchant"],
   });
 
+  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
+    queryKey: ["/api/platform/admin/status"],
+  });
+  const showOperatorCalibrationTools = !!platformStatus?.isPlatformAdmin;
+
   const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
     queryKey: ["/api/product-types"],
     refetchInterval: (query) => {
@@ -854,14 +859,8 @@ export default function AdminProducts() {
                           Resync Prices
                         </Button>
                       )}
-                      {/* On-the-fly calibration: shown for non-AOP products that
-                          don't yet have a final tier and weren't ruled out
-                          (unsupported). New imports auto-calibrate to a tier, so
-                          this self-removes for healthy products. It stays
-                          clickable even while "running" so an interrupted run
-                          (e.g. a server restart) can be restarted — it never
-                          gets permanently stuck on "Calibrating…". */}
-                      {!pt.isAllOverPrint && !pt.onTheFlyTier && pt.flatCalibrationStatus !== "unsupported" && (
+                      {/* On-the-fly calibration tools — platform operator only */}
+                      {showOperatorCalibrationTools && !pt.isAllOverPrint && !pt.onTheFlyTier && pt.flatCalibrationStatus !== "unsupported" && (
                         <Button
                           variant="outline"
                           size="sm"
@@ -888,7 +887,7 @@ export default function AdminProducts() {
                           )}
                         </Button>
                       )}
-                      {pt.onTheFlyTier && (
+                      {showOperatorCalibrationTools && pt.onTheFlyTier && (
                         <Badge
                           variant={pt.onTheFlyTier === "reject" ? "secondary" : "default"}
                           className="self-center"
@@ -904,7 +903,8 @@ export default function AdminProducts() {
                       {/* Re-run calibration for products that already have a tier
                           (e.g. after a code fix, or when a prior run left masks
                           but missing blank photos). */}
-                      {!pt.isAllOverPrint &&
+                      {showOperatorCalibrationTools &&
+                        !pt.isAllOverPrint &&
                         (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") &&
                         pt.flatCalibrationStatus !== "unsupported" && (
                         <Button
@@ -928,7 +928,7 @@ export default function AdminProducts() {
                           )}
                         </Button>
                       )}
-                      {(pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                      {showOperatorCalibrationTools && (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
                         <Button
                           variant="outline"
                           size="sm"

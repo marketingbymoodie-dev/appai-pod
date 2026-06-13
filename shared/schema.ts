@@ -949,3 +949,26 @@ export const insertFlatOrderSubmissionSchema = createInsertSchema(flatOrderSubmi
 });
 export type FlatOrderSubmission = typeof flatOrderSubmissions.$inferSelect;
 export type InsertFlatOrderSubmission = z.infer<typeof insertFlatOrderSubmissionSchema>;
+
+/** Platform-curated Printify catalog tags (operator UI — no deploy to add products). */
+export const platformCatalogBlueprints = pgTable("platform_catalog_blueprints", {
+  printifyBlueprintId: integer("printify_blueprint_id").primaryKey(),
+  label: text("label").notNull(),
+  brand: text("brand"),
+  category: text("category"),
+  /** printify = Printify mockup API; flat | aop = platform calibration queue; blocked = deny */
+  kind: text("kind").notNull(),
+  /** draft until operator publishes calibration; printify tags publish immediately */
+  status: text("status").notNull().default("draft"),
+  panelMappingTemplate: text("panel_mapping_template"),
+  notes: text("notes"),
+  taggedAt: timestamp("tagged_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertPlatformCatalogBlueprintSchema = createInsertSchema(platformCatalogBlueprints).omit({
+  taggedAt: true,
+  updatedAt: true,
+});
+export type PlatformCatalogBlueprint = typeof platformCatalogBlueprints.$inferSelect;
+export type InsertPlatformCatalogBlueprint = z.infer<typeof insertPlatformCatalogBlueprintSchema>;

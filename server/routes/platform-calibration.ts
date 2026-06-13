@@ -4,16 +4,17 @@
  */
 
 import { type Express, type Response } from "express";
-import {
-  canonicalStorageKey,
-  getCanonicalEntry,
-  getCanonicalRegistry,
-} from "@shared/canonicalProducts";
+import { canonicalStorageKey } from "@shared/canonicalProducts";
 import {
   getCanonicalPublishState,
   loadCanonicalManifest,
   publishCanonicalManifest,
 } from "../canonicalFlatCalibration";
+import {
+  getPlatformCatalogEntry,
+  listPlatformCatalogByKind,
+  type PlatformCatalogEntry,
+} from "../platformCatalogStore";
 import {
   buildHarvestColorsFromProductType,
   calibratorGeometryPath,
@@ -33,12 +34,166 @@ import {
 } from "../supabaseFlatCalibration";
 
 type StorageLike = {
+  getProductTypes(): Promise<any[]>;
   getProductTypesByMerchant(merchantId: string): Promise<any[]>;
   getMerchantByUserId(userId: string): Promise<any>;
   getMerchantByShop(shop: string): Promise<any>;
 };
 
+type FlatCanonicalEntry = {
+  blueprintId: number;
+  label: string;
+  category: string;
+  kind: "flat" | "aop";
+  panelMappingTemplate?: string | null;
+};
+
+type ReferenceProductLookup = {
+  product: any | null;
+  providerId: number | null;
+  expectedBlueprintId: number;
+  operatorBlueprintIds: number[];
+  matchedVia: "owner_shop" | "session_merchant" | "global" | "catalog_api" | null;
+};
+
 const DEFAULT_CANONICAL_VERSION = 1;
+
+function flatCanonicalEntryFromCatalog(entry: PlatformCatalogEntry): FlatCanonicalEntry | null {
+  if (entry.kind !== "flat" && entry.kind !== "aop") return null;
+  return {
+    blueprintId: entry.printifyBlueprintId,
+    label: entry.label,
+    category: entry.category ?? "",
+    kind: entry.kind,
+    panelMappingTemplate: entry.panelMappingTemplate,
+  };
+}
+
+async function listFlatCanonicalEntries(): Promise<FlatCanonicalEntry[]> {
+  const rows = await listPlatformCatalogByKind(["flat", "aop"]);
+  return rows
+    .map(flatCanonicalEntryFromCatalog)
+    .filter((e): e is FlatCanonicalEntry => e != null);
+}
+
+async function getFlatCanonicalEntry(blueprintId: number): Promise<FlatCanonicalEntry | null> {
+  const entry = await getPlatformCatalogEntry(blueprintId);
+  if (!entry) return null;
+  return flatCanonicalEntryFromCatalog(entry);
+}
+
+function referenceProductErrorMessage(lookup: ReferenceProductLookup): string {
+  const imported = [...new Set(lookup.operatorBlueprintIds)].sort((a, b) => a - b);
+  const importedHint =
+    imported.length > 0
+      ? `Operator shop has blueprint id(s): ${imported.join(", ")}.`
+      : "No Printify blueprints imported on the operator shop yet.";
+  const mismatchHint = imported.includes(lookup.expectedBlueprintId)
+    ? "A matching product exists but is missing printifyProviderId — re-import the blueprint."
+    : imported.length > 0
+      ? `Expected blueprint ${lookup.expectedBlueprintId}; none of the imported products match.`
+      : `Import blueprint ${lookup.expectedBlueprintId} on the operator shop first.`;
+  return `${mismatchHint} ${importedHint}`;
+}
+
+async function resolveProviderFromCatalog(
+  token: string,
+  blueprintId: number,
+  preferredProviderId?: number | null,
+): Promise<number | null> {
+  if (preferredProviderId) return preferredProviderId;
+  const res = await fetch(
+    `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    },
+  );
+  if (!res.ok) return null;
+  const providers = await res.json();
+  if (!Array.isArray(providers) || providers.length === 0) return null;
+  return Number(providers[0].id) || null;
+}
+
+async function findReferenceProduct(
+  storage: StorageLike,
+  creds: { merchant: any },
+  blueprintId: number,
+  sessionMerchantId?: string | null,
+): Promise<ReferenceProductLookup> {
+  const merchantIds: string[] = [];
+  const ownerShop = process.env.OWNER_SHOP_DOMAIN?.trim();
+  if (ownerShop) {
+    const ownerMerchant = await storage.getMerchantByShop(ownerShop);
+    if (ownerMerchant?.id) merchantIds.push(ownerMerchant.id);
+  }
+  if (creds.merchant?.id && !merchantIds.includes(creds.merchant.id)) {
+    merchantIds.push(creds.merchant.id);
+  }
+  if (sessionMerchantId && !merchantIds.includes(sessionMerchantId)) {
+    merchantIds.push(sessionMerchantId);
+  }
+
+  const operatorBlueprintIds: number[] = [];
+  const tryMerchant = async (
+    merchantId: string,
+    matchedVia: ReferenceProductLookup["matchedVia"],
+  ): Promise<any | null> => {
+    const types = await storage.getProductTypesByMerchant(merchantId);
+    for (const pt of types) {
+      if (pt.printifyBlueprintId != null) {
+        operatorBlueprintIds.push(Number(pt.printifyBlueprintId));
+      }
+      if (Number(pt.printifyBlueprintId) === blueprintId) {
+        return { product: pt, matchedVia };
+      }
+    }
+    return null;
+  };
+
+  for (const merchantId of merchantIds) {
+    const matchedVia: ReferenceProductLookup["matchedVia"] =
+      merchantId === merchantIds[0]
+        ? ownerShop
+          ? "owner_shop"
+          : "session_merchant"
+        : merchantId === sessionMerchantId
+          ? "session_merchant"
+          : "global";
+    const hit = await tryMerchant(merchantId, matchedVia);
+    if (hit?.product) {
+      return {
+        product: hit.product,
+        providerId: hit.product.printifyProviderId ?? null,
+        expectedBlueprintId: blueprintId,
+        operatorBlueprintIds,
+        matchedVia: hit.matchedVia,
+      };
+    }
+  }
+
+  const allTypes = await storage.getProductTypes();
+  const global = allTypes.find((pt) => Number(pt.printifyBlueprintId) === blueprintId) ?? null;
+  if (global) {
+    return {
+      product: global,
+      providerId: global.printifyProviderId ?? null,
+      expectedBlueprintId: blueprintId,
+      operatorBlueprintIds,
+      matchedVia: "global",
+    };
+  }
+
+  return {
+    product: null,
+    providerId: null,
+    expectedBlueprintId: blueprintId,
+    operatorBlueprintIds,
+    matchedVia: null,
+  };
+}
 
 function parseJsonArray(raw: unknown): any[] {
   if (Array.isArray(raw)) return raw;
@@ -142,15 +297,6 @@ async function resolvePlatformPrintifyCreds(
   return { token, shopId, merchant };
 }
 
-async function findReferenceProduct(
-  storage: StorageLike,
-  merchantId: string,
-  blueprintId: number,
-): Promise<any | null> {
-  const types = await storage.getProductTypesByMerchant(merchantId);
-  return types.find((pt) => Number(pt.printifyBlueprintId) === blueprintId) ?? null;
-}
-
 export function registerPlatformCalibrationRoutes(
   app: Express,
   deps: { storage: StorageLike; isAuthenticated: any },
@@ -162,7 +308,7 @@ export function registerPlatformCalibrationRoutes(
   });
 
   app.get("/api/admin/catalog/allowed-blueprints", isAuthenticated, async (_req: any, res: Response) => {
-    const entries = getCanonicalRegistry();
+    const entries = await listFlatCanonicalEntries();
     const blueprints = await Promise.all(
       entries.map(async (e) => ({
         ...e,
@@ -174,7 +320,7 @@ export function registerPlatformCalibrationRoutes(
 
   app.get("/api/platform/canonical/products", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    const entries = getCanonicalRegistry();
+    const entries = await listFlatCanonicalEntries();
     const products = await Promise.all(
       entries.map(async (e) => ({
         ...e,
@@ -189,7 +335,7 @@ export function registerPlatformCalibrationRoutes(
     try {
       const blueprintId = parseInt(req.params.blueprintId, 10);
       const version = parseInt(String(req.query.version || DEFAULT_CANONICAL_VERSION), 10);
-      const entry = getCanonicalEntry(blueprintId);
+      const entry = await getFlatCanonicalEntry(blueprintId);
       if (!entry || entry.kind !== "flat") {
         return res.status(404).json({ error: "Blueprint not in flat canonical registry" });
       }
@@ -202,10 +348,13 @@ export function registerPlatformCalibrationRoutes(
         null;
 
       const creds = await resolvePlatformPrintifyCreds(storage, req);
+      const sessionMerchantId = req.user?.claims?.sub
+        ? (await storage.getMerchantByUserId(req.user.claims.sub))?.id
+        : null;
       let models: Array<{ id: string; name: string }> = [];
       if (creds) {
-        const ref = await findReferenceProduct(storage, creds.merchant.id, blueprintId);
-        if (ref) models = phoneModelsFromProduct(ref);
+        const ref = await findReferenceProduct(storage, creds, blueprintId, sessionMerchantId);
+        if (ref.product) models = phoneModelsFromProduct(ref.product);
       }
       if (models.length === 0 && manifest?.blanks) {
         models = Object.keys(manifest.blanks).map((id) => ({ id, name: id }));
@@ -236,7 +385,7 @@ export function registerPlatformCalibrationRoutes(
     try {
       const blueprintId = parseInt(req.params.blueprintId, 10);
       const version = parseInt(String(req.body?.version || DEFAULT_CANONICAL_VERSION), 10);
-      const entry = getCanonicalEntry(blueprintId);
+      const entry = await getFlatCanonicalEntry(blueprintId);
       if (!entry || entry.kind !== "flat") {
         return res.status(404).json({ error: "Blueprint not in flat canonical registry" });
       }
@@ -246,34 +395,53 @@ export function registerPlatformCalibrationRoutes(
         return res.status(400).json({ error: "Platform Printify credentials not configured" });
       }
 
-      const ref = await findReferenceProduct(storage, creds.merchant.id, blueprintId);
-      if (!ref?.printifyProviderId) {
+      const sessionMerchantId = req.user?.claims?.sub
+        ? (await storage.getMerchantByUserId(req.user.claims.sub))?.id
+        : null;
+      let refLookup = await findReferenceProduct(storage, creds, blueprintId, sessionMerchantId);
+      let providerId =
+        refLookup.providerId ??
+        (refLookup.product?.printifyProviderId != null
+          ? Number(refLookup.product.printifyProviderId)
+          : null);
+      if (!providerId) {
+        providerId = await resolveProviderFromCatalog(creds.token, blueprintId);
+        if (providerId) refLookup = { ...refLookup, matchedVia: "catalog_api" };
+      }
+
+      if (!providerId) {
         return res.status(400).json({
-          error:
-            "Import this blueprint on your operator shop first (reference product needed for variant map)",
+          error: referenceProductErrorMessage(refLookup),
+          expectedBlueprintId: blueprintId,
+          operatorBlueprintIds: [...new Set(refLookup.operatorBlueprintIds)].sort((a, b) => a - b),
+          code: "REFERENCE_PRODUCT_REQUIRED",
         });
       }
+
+      const ref = refLookup.product;
 
       res.status(202).json({ status: "running", blueprintId, version });
 
       void (async () => {
         try {
-          const colors = buildHarvestColorsFromProductType({
-            designerType: ref.designerType,
-            frameColors: ref.frameColors,
-            sizes: ref.sizes,
-            variantMap: ref.variantMap,
-          });
+          const colors = ref
+            ? buildHarvestColorsFromProductType({
+                designerType: ref.designerType,
+                frameColors: ref.frameColors,
+                sizes: ref.sizes,
+                variantMap: ref.variantMap,
+              })
+            : [];
           const storageKey = canonicalStorageKey(blueprintId, version);
           const result = await harvestFlatCalibration({
             productTypeId: 0,
             name: entry.label,
             blueprintId,
-            providerId: ref.printifyProviderId,
+            providerId,
             token: creds.token,
             shopId: creds.shopId,
-            designerType: ref.designerType,
-            sizes: ref.sizes,
+            designerType: ref?.designerType,
+            sizes: ref?.sizes,
             colors: colors.length > 0 ? colors : undefined,
             calibratorMode: true,
             wipeExisting: true,
@@ -304,7 +472,7 @@ export function registerPlatformCalibrationRoutes(
     try {
       const blueprintId = parseInt(req.params.blueprintId, 10);
       const version = parseInt(String(req.body?.version || DEFAULT_CANONICAL_VERSION), 10);
-      const entry = getCanonicalEntry(blueprintId);
+      const entry = await getFlatCanonicalEntry(blueprintId);
       if (!entry || entry.kind !== "flat") {
         return res.status(404).json({ error: "Blueprint not in flat canonical registry" });
       }
@@ -356,10 +524,11 @@ export function registerPlatformCalibrationRoutes(
       );
 
       if (publishToManifest) {
+        const catalogEntry = await getFlatCanonicalEntry(blueprintId);
         const manifest =
           (await loadCanonicalManifest(blueprintId, version)) ?? {
             productTypeId: 0,
-            name: getCanonicalEntry(blueprintId)?.label ?? "",
+            name: catalogEntry?.label ?? "",
             blueprintId,
             providerId: 0,
             tier: "flat" as const,

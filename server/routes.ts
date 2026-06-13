@@ -48,7 +48,15 @@ import {
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, buildHarvestColorsFromProductType, type HarvestOptions } from "./flat-calibration";
-import { getCanonicalEntry, isBlueprintImportAllowed } from "@shared/canonicalProducts";
+import { slimPhoneCaseBlueprintId } from "@shared/canonicalProducts";
+import {
+  canMerchantImportEntry,
+  canOperatorImportEntry,
+  getPlatformCatalogEntry,
+  listMerchantImportableCatalog,
+  listPlatformCatalogByKind,
+} from "./platformCatalogStore";
+import { isPlatformAdminRequest } from "./platformAdmin";
 import {
   loadCanonicalManifest,
   loadCanonicalPublishedMeta,
@@ -12211,18 +12219,37 @@ ${textEdgeRestrictions}
       }
 
       const blueprintIdNum = parseInt(blueprintId, 10);
-      if (!isBlueprintImportAllowed(blueprintIdNum)) {
+      const catalogEntry = await getPlatformCatalogEntry(blueprintIdNum);
+      const isOperator = isPlatformAdminRequest(req);
+
+      if (!catalogEntry || catalogEntry.kind === "blocked") {
         return res.status(403).json({
           error: "This product is not available in the AppAI catalog yet.",
           code: "BLUEPRINT_NOT_ALLOWED",
         });
       }
 
-      const canonicalEntry = getCanonicalEntry(blueprintIdNum);
+      if (isOperator) {
+        if (!(await canOperatorImportEntry(catalogEntry))) {
+          return res.status(403).json({ error: "Blueprint not allowed", code: "BLUEPRINT_NOT_ALLOWED" });
+        }
+      } else if (!(await canMerchantImportEntry(catalogEntry))) {
+        if (catalogEntry.kind === "flat" || catalogEntry.kind === "aop") {
+          return res.status(403).json({
+            error: "Platform calibration for this product is not published yet.",
+            code: "CANONICAL_NOT_PUBLISHED",
+          });
+        }
+        return res.status(403).json({
+          error: "This product is not available in the AppAI catalog yet.",
+          code: "BLUEPRINT_NOT_ALLOWED",
+        });
+      }
+
       let canonicalFlatMeta: Awaited<ReturnType<typeof loadCanonicalPublishedMeta>> = null;
-      if (canonicalEntry?.kind === "flat") {
+      if (catalogEntry.kind === "flat" && catalogEntry.status === "published") {
         canonicalFlatMeta = await loadCanonicalPublishedMeta(blueprintIdNum);
-        if (!canonicalFlatMeta) {
+        if (!canonicalFlatMeta && !isOperator) {
           return res.status(403).json({
             error: "Platform calibration for this product is not published yet.",
             code: "CANONICAL_NOT_PUBLISHED",
@@ -12230,9 +12257,9 @@ ${textEdgeRestrictions}
         }
       }
 
-      // Check if this blueprint is already imported
-      const existingTypes = await storage.getProductTypes();
-      const alreadyImported = existingTypes.find(pt => pt.printifyBlueprintId === parseInt(blueprintId));
+      // Check if this blueprint is already imported for this merchant
+      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+      const alreadyImported = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintIdNum);
       if (alreadyImported) {
         return res.status(400).json({ 
           error: "Blueprint already imported",
@@ -13091,11 +13118,15 @@ ${textEdgeRestrictions}
 
       // Create the product type with parsed data
       const initialFlatStatus =
-        canonicalEntry?.kind === "flat" && canonicalFlatMeta
-          ? "ready"
-          : canonicalEntry?.kind === "aop"
-            ? "unsupported"
-            : "pending";
+        catalogEntry.kind === "printify"
+          ? "unsupported"
+          : catalogEntry.kind === "flat" && canonicalFlatMeta
+            ? "ready"
+            : catalogEntry.kind === "aop"
+              ? "unsupported"
+              : isOperator && (catalogEntry.kind === "flat" || catalogEntry.kind === "aop")
+                ? "unsupported"
+                : "pending";
 
       const productType = await storage.createProductType({
         merchantId: merchant.id,
@@ -13126,13 +13157,14 @@ ${textEdgeRestrictions}
         panelFlatLayImages: JSON.stringify(panelFlatLayImages),
         colorOptionName: blueprintColorOptionName,
         flatCalibrationStatus: initialFlatStatus,
-        panelMappingTemplate: canonicalEntry?.panelMappingTemplate ?? null,
+        panelMappingTemplate:
+          catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
         isActive: true,
         sortOrder: existingTypes.length,
       });
 
       // Seed shared canonical calibration (instant — no per-merchant harvest).
-      if (canonicalEntry?.kind === "flat" && canonicalFlatMeta) {
+      if (catalogEntry.kind === "flat" && canonicalFlatMeta) {
         const canonicalManifest = await loadCanonicalManifest(blueprintIdNum, canonicalFlatMeta.version);
         if (canonicalManifest) {
           await storage.updateProductType(productType.id, {
@@ -13143,17 +13175,26 @@ ${textEdgeRestrictions}
             ),
           });
         }
-      } else if (canonicalEntry?.kind === "aop" && canonicalEntry.panelMappingTemplate) {
+      } else if (catalogEntry.kind === "aop" && catalogEntry.panelMappingTemplate && catalogEntry.status === "published") {
         await storage.updateProductType(productType.id, {
-          panelMappingTemplate: canonicalEntry.panelMappingTemplate,
+          panelMappingTemplate: catalogEntry.panelMappingTemplate,
+          flatCalibrationStatus: "unsupported",
+        });
+      } else if (catalogEntry.kind === "printify") {
+        await storage.updateProductType(productType.id, {
           flatCalibrationStatus: "unsupported",
         });
       }
 
       res.json(productType);
 
-      // Legacy per-merchant harvest — only if not using canonical library.
-      if (!canonicalEntry || (canonicalEntry.kind !== "flat" && canonicalEntry.kind !== "aop")) {
+      // No per-merchant harvest for catalog-managed products.
+      const skipHarvest =
+        catalogEntry.kind === "printify" ||
+        catalogEntry.kind === "flat" ||
+        catalogEntry.kind === "aop" ||
+        (isOperator && (catalogEntry.kind === "flat" || catalogEntry.kind === "aop"));
+      if (!skipHarvest) {
         kickoffFlatCalibration({
           productTypeId: productType.id,
           name: productType.name,
@@ -17150,6 +17191,8 @@ ${textEdgeRestrictions}
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
+  const { registerOperatorCatalogRoutes } = await import("./routes/operator-catalog");
+  registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);

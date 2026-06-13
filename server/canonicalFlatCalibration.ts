@@ -5,11 +5,13 @@ import {
   canonicalManifestPath,
   canonicalPublishedMetaPath,
   canonicalStorageKey,
-  getCanonicalEntry,
   type CanonicalPublishedMeta,
-  type CanonicalProductKind,
 } from "@shared/canonicalProducts";
 import type { FlatCalibrationManifest, FlatTier } from "./flat-calibration";
+import {
+  getPlatformCatalogEntry,
+  markPlatformCatalogPublished,
+} from "./platformCatalogStore";
 import {
   downloadFlatCalibrationFile,
   publicFlatCalibrationUrl,
@@ -51,8 +53,8 @@ export async function loadCanonicalManifest(
 export async function getCanonicalPublishState(
   blueprintId: number,
 ): Promise<CanonicalPublishState | null> {
-  const entry = getCanonicalEntry(blueprintId);
-  if (!entry) return null;
+  const entry = await getPlatformCatalogEntry(blueprintId);
+  if (!entry || entry.kind === "blocked" || entry.kind === "printify") return null;
 
   if (entry.kind === "aop") {
     return {
@@ -60,10 +62,10 @@ export async function getCanonicalPublishState(
       version: 1,
       kind: "aop",
       label: entry.label,
-      publishedAt: "",
-      panelMappingTemplate: entry.panelMappingTemplate,
+      publishedAt: entry.status === "published" ? entry.updatedAt?.toISOString() ?? "" : "",
+      panelMappingTemplate: entry.panelMappingTemplate ?? undefined,
       manifestPath: "",
-      published: !!entry.panelMappingTemplate,
+      published: entry.status === "published" && !!entry.panelMappingTemplate,
     };
   }
 
@@ -83,7 +85,7 @@ export async function getCanonicalPublishState(
   return {
     ...meta,
     manifestPath: canonicalManifestPath(blueprintId, meta.version),
-    published: true,
+    published: entry.status === "published",
   };
 }
 
@@ -108,7 +110,7 @@ export async function publishCanonicalManifest(args: {
   label: string;
 }): Promise<CanonicalPublishedMeta> {
   const { blueprintId, version, manifest, tier, label } = args;
-  const entry = getCanonicalEntry(blueprintId);
+  const entry = await getPlatformCatalogEntry(blueprintId);
   if (!entry || entry.kind !== "flat") {
     throw new Error(`Blueprint ${blueprintId} is not a flat canonical product`);
   }
@@ -143,6 +145,8 @@ export async function publishCanonicalManifest(args: {
     Buffer.from(JSON.stringify(meta, null, 2), "utf-8"),
     "application/json",
   );
+
+  await markPlatformCatalogPublished(blueprintId);
 
   return meta;
 }

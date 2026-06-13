@@ -412,6 +412,23 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "platform_catalog_blueprints",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "platform_catalog_blueprints" (
+        "printify_blueprint_id"   INTEGER PRIMARY KEY,
+        "label"                   TEXT NOT NULL,
+        "brand"                   TEXT,
+        "category"                TEXT,
+        "kind"                    TEXT NOT NULL,
+        "status"                  TEXT NOT NULL DEFAULT 'draft',
+        "panel_mapping_template"  TEXT,
+        "notes"                   TEXT,
+        "tagged_at"               TIMESTAMP DEFAULT NOW() NOT NULL,
+        "updated_at"              TIMESTAMP DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
