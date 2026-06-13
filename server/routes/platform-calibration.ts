@@ -12,6 +12,7 @@ import {
 } from "../canonicalFlatCalibration";
 import {
   getPlatformCatalogEntry,
+  listMerchantImportableCatalog,
   listPlatformCatalogByKind,
   type PlatformCatalogEntry,
 } from "../platformCatalogStore";
@@ -43,6 +44,7 @@ type StorageLike = {
 type FlatCanonicalEntry = {
   blueprintId: number;
   label: string;
+  brand?: string | null;
   category: string;
   kind: "flat" | "aop";
   panelMappingTemplate?: string | null;
@@ -63,6 +65,7 @@ function flatCanonicalEntryFromCatalog(entry: PlatformCatalogEntry): FlatCanonic
   return {
     blueprintId: entry.printifyBlueprintId,
     label: entry.label,
+    brand: entry.brand,
     category: entry.category ?? "",
     kind: entry.kind,
     panelMappingTemplate: entry.panelMappingTemplate,
@@ -308,11 +311,18 @@ export function registerPlatformCalibrationRoutes(
   });
 
   app.get("/api/admin/catalog/allowed-blueprints", isAuthenticated, async (_req: any, res: Response) => {
-    const entries = await listFlatCanonicalEntries();
+    const entries = await listMerchantImportableCatalog();
     const blueprints = await Promise.all(
       entries.map(async (e) => ({
-        ...e,
-        publish: await getCanonicalPublishState(e.blueprintId),
+        blueprintId: e.printifyBlueprintId,
+        label: e.label,
+        brand: e.brand,
+        category: e.category ?? "",
+        kind: e.kind,
+        publish:
+          e.kind === "flat"
+            ? await getCanonicalPublishState(e.printifyBlueprintId)
+            : { published: e.status === "published" },
       })),
     );
     res.json({ blueprints });

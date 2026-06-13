@@ -5,16 +5,21 @@ import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2 } from "lucide-react";
-
-type PrintifyBlueprint = {
-  id: number;
-  title: string;
-  brand: string;
-  model?: string;
-};
+import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
+import {
+  usePrintifyCatalogFilters,
+  type PrintifyBlueprintListItem,
+} from "@/hooks/usePrintifyCatalogFilters";
 
 type CatalogTag = {
   printifyBlueprintId: number;
@@ -32,6 +37,16 @@ const KIND_LABELS: Record<CatalogTag["kind"], string> = {
   blocked: "Block",
 };
 
+const TAG_CATEGORY_OPTIONS = [
+  { value: "phone-cases", label: "Phone cases" },
+  { value: "apparel", label: "Apparel" },
+  { value: "mugs", label: "Mugs & drinkware" },
+  { value: "home-living", label: "Home & living" },
+  { value: "accessories", label: "Accessories" },
+  { value: "posters", label: "Posters & wall art" },
+  { value: "other", label: "Other" },
+];
+
 function kindBadgeVariant(kind: CatalogTag["kind"]) {
   if (kind === "printify") return "default" as const;
   if (kind === "flat") return "secondary" as const;
@@ -42,7 +57,9 @@ function kindBadgeVariant(kind: CatalogTag["kind"]) {
 export default function OperatorCatalogPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [search, setSearch] = useState("");
+  const [tagCategory, setTagCategory] = useState("other");
+  const [tagStatusFilter, setTagStatusFilter] = useState<"all" | "tagged" | "untagged" | "blocked">("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -53,42 +70,57 @@ export default function OperatorCatalogPage() {
     enabled: !!platformStatus?.isPlatformAdmin,
   });
 
-  const { data: blueprints, isLoading: blueprintsLoading, refetch } = useQuery<PrintifyBlueprint[]>({
-    queryKey: ["/api/admin/printify/blueprints"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin/printify/blueprints", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to load Printify catalog");
-      return res.json();
-    },
-    enabled: !!platformStatus?.isPlatformAdmin,
-  });
-
   const tagById = useMemo(() => {
     const m = new Map<number, CatalogTag>();
     for (const t of tagsData?.tags ?? []) m.set(t.printifyBlueprintId, t);
     return m;
   }, [tagsData?.tags]);
 
-  const filtered = useMemo(() => {
-    if (!blueprints) return [];
-    const q = search.trim().toLowerCase();
-    if (!q) return blueprints.slice(0, 200);
-    return blueprints
-      .filter(
-        (bp) =>
-          bp.title.toLowerCase().includes(q) ||
-          bp.brand.toLowerCase().includes(q) ||
-          String(bp.id).includes(q),
-      )
-      .slice(0, 200);
-  }, [blueprints, search]);
+  const tagCategories = useMemo(() => {
+    const cats = new Set<string>();
+    for (const t of tagsData?.tags ?? []) {
+      if (t.category) cats.add(t.category);
+    }
+    return Array.from(cats).sort();
+  }, [tagsData?.tags]);
+
+  const extraFilter = useMemo(() => {
+    return (bp: PrintifyBlueprintListItem) => {
+      const tag = tagById.get(bp.id);
+      if (tagStatusFilter === "tagged" && !tag) return false;
+      if (tagStatusFilter === "untagged" && tag) return false;
+      if (tagStatusFilter === "blocked" && tag?.kind !== "blocked") return false;
+      if (categoryFilter !== "all" && tag?.category !== categoryFilter) return false;
+      return true;
+    };
+  }, [tagById, tagStatusFilter, categoryFilter]);
+
+  const {
+    search,
+    setSearch,
+    locationFilter,
+    setLocationFilter,
+    availableLocations,
+    visible,
+    totalMatching,
+    isLoading: blueprintsLoading,
+    isFetching,
+    refetch,
+    error: blueprintsError,
+  } = usePrintifyCatalogFilters({
+    enabled: !!platformStatus?.isPlatformAdmin,
+    requireSearch: false,
+    maxResults: 150,
+    extraFilter,
+  });
 
   const tagMutation = useMutation({
-    mutationFn: async (args: { blueprintId: number; kind: CatalogTag["kind"]; bp: PrintifyBlueprint }) => {
+    mutationFn: async (args: { blueprintId: number; kind: CatalogTag["kind"]; bp: PrintifyBlueprintListItem }) => {
       const res = await apiRequest("PUT", `/api/platform/operator-catalog/${args.blueprintId}/tag`, {
         kind: args.kind,
         label: args.bp.title,
         brand: args.bp.brand,
+        category: tagCategory,
       });
       return res.json();
     },
@@ -140,9 +172,8 @@ export default function OperatorCatalogPage() {
         <div>
           <h1 className="text-2xl font-semibold">Operator Printify Catalog</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Tag products as you review the Printify catalog. <strong>API</strong> = instant merchant
-            import (Printify mockups). <strong>Flat</strong> / <strong>AOP</strong> = your Platform
-            Catalog queue. No deploy needed when tagging.
+            Tag products as you review the Printify catalog. Use filters to browse a niche (ships from,
+            category). Open Printify for supplier specs before tagging.
           </p>
         </div>
 
@@ -151,71 +182,145 @@ export default function OperatorCatalogPage() {
             placeholder="Search title, brand, or blueprint id…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="max-w-md"
+            className="min-w-[200px] flex-1 max-w-md"
           />
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={blueprintsLoading}>
-            {blueprintsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Reload catalog"}
+          <Select value={locationFilter} onValueChange={setLocationFilter}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Ships from" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All locations</SelectItem>
+              {availableLocations.map((loc) => (
+                <SelectItem key={loc} value={loc}>
+                  {loc}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={tagStatusFilter} onValueChange={(v) => setTagStatusFilter(v as typeof tagStatusFilter)}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="Tag status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All products</SelectItem>
+              <SelectItem value="tagged">Tagged only</SelectItem>
+              <SelectItem value="untagged">Untagged only</SelectItem>
+              <SelectItem value="blocked">Blocked only</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger className="w-[160px]">
+              <SelectValue placeholder="Category" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {tagCategories.map((cat) => (
+                <SelectItem key={cat} value={cat}>
+                  {cat}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={tagCategory} onValueChange={setTagCategory}>
+            <SelectTrigger className="w-[180px]" title="Category applied when you tag a product">
+              <SelectValue placeholder="Tag category" />
+            </SelectTrigger>
+            <SelectContent>
+              {TAG_CATEGORY_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  Tag as: {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+            {isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : "Reload"}
           </Button>
         </div>
+
+        {blueprintsError && (
+          <p className="text-sm text-destructive">{(blueprintsError as Error).message}</p>
+        )}
 
         {blueprintsLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading Printify blueprints…
           </div>
         ) : (
-          <ul className="divide-y rounded-lg border">
-            {filtered.map((bp) => {
-              const tag = tagById.get(bp.id);
-              return (
-                <li key={bp.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium truncate">{bp.title}</span>
-                      <span className="text-xs text-muted-foreground">{bp.brand}</span>
-                      <span className="text-xs text-muted-foreground">#{bp.id}</span>
-                      {tag && (
-                        <>
-                          <Badge variant={kindBadgeVariant(tag.kind)}>{KIND_LABELS[tag.kind]}</Badge>
-                          {tag.kind !== "printify" && tag.kind !== "blocked" && (
-                            <Badge variant={tag.status === "published" ? "default" : "destructive"}>
-                              {tag.status === "published" ? "Live" : "Draft"}
-                            </Badge>
+          <>
+            {totalMatching > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Showing {visible.length} of {totalMatching} matching
+                {locationFilter !== "all" ? ` (ships from ${locationFilter})` : ""}
+              </p>
+            )}
+            <ul className="divide-y rounded-lg border">
+              {visible.map((bp) => {
+                const tag = tagById.get(bp.id);
+                return (
+                  <li key={bp.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      {bp.images?.[0] ? (
+                        <img
+                          src={bp.images[0]}
+                          alt=""
+                          className="h-12 w-12 shrink-0 rounded object-contain"
+                        />
+                      ) : (
+                        <div className="h-12 w-12 shrink-0 rounded bg-muted" />
+                      )}
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium truncate">{bp.title}</span>
+                          <span className="text-xs text-muted-foreground">{bp.brand}</span>
+                          <span className="text-xs text-muted-foreground">#{bp.id}</span>
+                          <PrintifyCatalogLink blueprintId={bp.id} title={bp.title} />
+                          {tag && (
+                            <>
+                              <Badge variant={kindBadgeVariant(tag.kind)}>{KIND_LABELS[tag.kind]}</Badge>
+                              {tag.category && <Badge variant="outline">{tag.category}</Badge>}
+                              {tag.kind !== "printify" && tag.kind !== "blocked" && (
+                                <Badge variant={tag.status === "published" ? "default" : "destructive"}>
+                                  {tag.status === "published" ? "Live" : "Draft"}
+                                </Badge>
+                              )}
+                            </>
                           )}
-                        </>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {(["printify", "flat", "aop", "blocked"] as const).map((kind) => (
+                        <Button
+                          key={kind}
+                          size="sm"
+                          variant={tag?.kind === kind ? "default" : "outline"}
+                          disabled={tagMutation.isPending}
+                          onClick={() => tagMutation.mutate({ blueprintId: bp.id, kind, bp })}
+                        >
+                          {KIND_LABELS[kind]}
+                        </Button>
+                      ))}
+                      {tag && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={clearMutation.isPending}
+                          onClick={() => clearMutation.mutate(bp.id)}
+                        >
+                          Clear
+                        </Button>
                       )}
                     </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {(["printify", "flat", "aop", "blocked"] as const).map((kind) => (
-                      <Button
-                        key={kind}
-                        size="sm"
-                        variant={tag?.kind === kind ? "default" : "outline"}
-                        disabled={tagMutation.isPending}
-                        onClick={() => tagMutation.mutate({ blueprintId: bp.id, kind, bp })}
-                      >
-                        {KIND_LABELS[kind]}
-                      </Button>
-                    ))}
-                    {tag && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={clearMutation.isPending}
-                        onClick={() => clearMutation.mutate(bp.id)}
-                      >
-                        Clear
-                      </Button>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
 
-        {!blueprintsLoading && filtered.length === 0 && (
-          <p className="text-sm text-muted-foreground">No blueprints match your search.</p>
+        {!blueprintsLoading && visible.length === 0 && (
+          <p className="text-sm text-muted-foreground">No blueprints match your filters.</p>
         )}
       </div>
     </AdminLayout>

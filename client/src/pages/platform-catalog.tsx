@@ -1,11 +1,21 @@
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Redirect } from "wouter";
 import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2, Crosshair, Upload, RefreshCw } from "lucide-react";
+import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 
 type PublishState = {
   published: boolean;
@@ -18,6 +28,7 @@ type PublishState = {
 type CatalogProduct = {
   blueprintId: number;
   label: string;
+  brand?: string | null;
   category: string;
   kind: "flat" | "aop";
   panelMappingTemplate?: string;
@@ -27,6 +38,10 @@ type CatalogProduct = {
 export default function PlatformCatalogPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [kindFilter, setKindFilter] = useState<"all" | "flat" | "aop">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "live" | "draft">("all");
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -64,6 +79,32 @@ export default function PlatformCatalogPage() {
     onError: (e: Error) => toast({ title: "Harvest failed", description: e.message, variant: "destructive" }),
   });
 
+  const products = data?.products ?? [];
+
+  const categories = useMemo(() => {
+    const cats = new Set<string>();
+    for (const p of products) {
+      if (p.category) cats.add(p.category);
+    }
+    return Array.from(cats).sort();
+  }, [products]);
+
+  const filteredProducts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return products.filter((p) => {
+      if (kindFilter !== "all" && p.kind !== kindFilter) return false;
+      if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
+      if (statusFilter === "live" && !p.publish.published) return false;
+      if (statusFilter === "draft" && p.publish.published) return false;
+      if (!q) return true;
+      return (
+        p.label.toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q) ||
+        String(p.blueprintId).includes(q)
+      );
+    });
+  }, [products, search, categoryFilter, kindFilter, statusFilter]);
+
   if (platformLoading) {
     return (
       <AdminLayout>
@@ -78,8 +119,6 @@ export default function PlatformCatalogPage() {
     return <Redirect to="/admin" />;
   }
 
-  const products = data?.products ?? [];
-
   return (
     <AdminLayout>
       <div className="mx-auto max-w-4xl space-y-6 p-6">
@@ -91,13 +130,55 @@ export default function PlatformCatalogPage() {
           </p>
         </div>
 
+        <div className="flex flex-wrap gap-2">
+          <Input
+            placeholder="Search name or blueprint id…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="max-w-xs"
+          />
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger className="w-[160px]">
+              <SelectValue placeholder="Category" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {categories.map((cat) => (
+                <SelectItem key={cat} value={cat}>
+                  {cat}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={kindFilter} onValueChange={(v) => setKindFilter(v as typeof kindFilter)}>
+            <SelectTrigger className="w-[130px]">
+              <SelectValue placeholder="Kind" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All kinds</SelectItem>
+              <SelectItem value="flat">Flat</SelectItem>
+              <SelectItem value="aop">AOP</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as typeof statusFilter)}>
+            <SelectTrigger className="w-[130px]">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All status</SelectItem>
+              <SelectItem value="live">Live</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading catalog…
           </div>
         ) : (
           <ul className="space-y-4">
-            {products.map((p) => (
+            {filteredProducts.map((p) => (
               <li key={p.blueprintId} className="rounded-lg border p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -106,7 +187,16 @@ export default function PlatformCatalogPage() {
                       <Badge variant="outline">{p.category}</Badge>
                       <Badge variant="secondary">{p.kind === "aop" ? "AOP panel map" : "Flat / mesh"}</Badge>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">Printify blueprint {p.blueprintId}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Printify blueprint {p.blueprintId}
+                      {p.brand ? ` · ${p.brand}` : ""}
+                      {" · "}
+                      <PrintifyCatalogLink
+                        blueprintId={p.blueprintId}
+                        title={p.label}
+                        providerTitle={p.brand}
+                      />
+                    </p>
                     {p.kind === "aop" && p.panelMappingTemplate && (
                       <p className="mt-1 text-xs">Template: {p.panelMappingTemplate}</p>
                     )}
@@ -157,6 +247,10 @@ export default function PlatformCatalogPage() {
               </li>
             ))}
           </ul>
+        )}
+
+        {!isLoading && filteredProducts.length === 0 && (
+          <p className="text-sm text-muted-foreground">No products match your filters.</p>
         )}
       </div>
     </AdminLayout>

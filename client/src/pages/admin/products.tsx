@@ -21,6 +21,8 @@ import SizeChartTable from "@/components/SizeChartTable";
 import { getSizeChartByBlueprintId } from "@/lib/printifySizeCharts";
 import type { ProductType, Merchant } from "@shared/schema";
 import { AOP_TEMPLATE_ADMIN_OPTIONS, AOP_TEMPLATE_SELECT_AUTO } from "@/components/designer/aopTemplates/registry";
+import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
+import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
 
 interface VariantOption {
   id: string;
@@ -82,7 +84,7 @@ export default function AdminProducts() {
   const [, navigate] = useLocation();
   
   const [printifyImportOpen, setPrintifyImportOpen] = useState(false);
-  const [blueprintSearch, setBlueprintSearch] = useState("");
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState("all");
   const [selectedBlueprint, setSelectedBlueprint] = useState<PrintifyBlueprint | null>(null);
   const [providerSelectionOpen, setProviderSelectionOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<PrintifyProvider | null>(null);
@@ -130,7 +132,16 @@ export default function AdminProducts() {
     },
   });
 
-  const { data: allowedCatalog } = useQuery<{ blueprints: Array<{ blueprintId: number; publish?: { published: boolean } }> }>({
+  const { data: allowedCatalog } = useQuery<{
+    blueprints: Array<{
+      blueprintId: number;
+      label: string;
+      brand?: string | null;
+      category?: string;
+      kind?: string;
+      publish?: { published: boolean };
+    }>;
+  }>({
     queryKey: ["/api/admin/catalog/allowed-blueprints"],
   });
 
@@ -139,14 +150,49 @@ export default function AdminProducts() {
     [allowedCatalog],
   );
 
-  const { data: printifyBlueprints, isLoading: blueprintsLoading, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
-    queryKey: ["/api/admin/printify/blueprints"],
-    queryFn: async () => {
-      const response = await fetch("/api/admin/printify/blueprints", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch blueprints");
-      return response.json();
-    },
-    enabled: false,
+  const allowedCatalogById = useMemo(() => {
+    const m = new Map<number, NonNullable<typeof allowedCatalog>["blueprints"][number]>();
+    for (const b of allowedCatalog?.blueprints ?? []) m.set(b.blueprintId, b);
+    return m;
+  }, [allowedCatalog]);
+
+  const importCatalogCategories = useMemo(() => {
+    const cats = new Set<string>();
+    for (const b of allowedCatalog?.blueprints ?? []) {
+      if (b.category) cats.add(b.category);
+    }
+    return Array.from(cats).sort();
+  }, [allowedCatalog]);
+
+  const catalogAllowlistFilter = useMemo(() => {
+    return (bp: PrintifyBlueprint) => {
+      if (allowedBlueprintIds.size > 0 && !allowedBlueprintIds.has(bp.id)) {
+        return false;
+      }
+      if (catalogCategoryFilter !== "all") {
+        const meta = allowedCatalogById.get(bp.id);
+        if (meta?.category !== catalogCategoryFilter) return false;
+      }
+      return true;
+    };
+  }, [allowedBlueprintIds, catalogCategoryFilter, allowedCatalogById]);
+
+  const {
+    search: blueprintSearch,
+    setSearch: setBlueprintSearch,
+    locationFilter: catalogLocationFilter,
+    setLocationFilter: setCatalogLocationFilter,
+    availableLocations,
+    visible: filteredBlueprints,
+    totalMatching: filteredBlueprintCount,
+    isLoading: blueprintsLoading,
+    isFetching: blueprintsFetching,
+    refetch: refetchBlueprints,
+    error: blueprintsFetchError,
+  } = usePrintifyCatalogFilters({
+    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
+    maxResults: 80,
+    extraFilter: catalogAllowlistFilter,
   });
 
   const { data: printifyProviders, isLoading: providersLoading } = useQuery<PrintifyProvider[]>({
@@ -175,34 +221,11 @@ export default function AdminProducts() {
     enabled: !!selectedBlueprint && !!selectedProvider && variantSelectionOpen,
   });
 
-  const { data: allProviders } = useQuery<PrintifyProvider[]>({
-    queryKey: ["/api/admin/printify/providers"],
-    queryFn: async () => {
-      const response = await fetch("/api/admin/printify/providers", {
-        credentials: "include"
-      });
-      if (!response.ok) throw new Error("Failed to fetch providers");
-      return response.json();
-    },
-    enabled: printifyImportOpen && !!merchant?.printifyApiToken,
-    staleTime: 5 * 60 * 1000,
-  });
-
   const { data: selectedBlueprintSizeChart, isLoading: selectedBlueprintSizeChartLoading } = useQuery({
     queryKey: ["printify-size-chart", selectedBlueprint?.id],
     queryFn: () => getSizeChartByBlueprintId(selectedBlueprint!.id),
     enabled: !!selectedBlueprint,
   });
-
-  const availableLocations = useMemo(() => {
-    if (!allProviders) return [];
-    const countries = new Set<string>();
-    allProviders.forEach(p => {
-      if (p.location?.country) countries.add(p.location.country);
-      p.fulfillment_countries?.forEach(c => countries.add(c));
-    });
-    return Array.from(countries).sort();
-  }, [allProviders]);
 
   // Calculate variant count based on selections
   const variantCount = useMemo(() => {
@@ -505,27 +528,10 @@ export default function AdminProducts() {
     });
   };
 
-  const handleOpenPrintifyImport = async () => {
+  const handleOpenPrintifyImport = () => {
     setPrintifyImportOpen(true);
-    if (!printifyBlueprints) {
-      refetchBlueprints();
-    }
+    refetchBlueprints();
   };
-
-
-  const filteredBlueprints = useMemo(() => {
-    if (!printifyBlueprints) return [];
-    return printifyBlueprints.filter(bp => {
-      if (allowedBlueprintIds.size > 0 && !allowedBlueprintIds.has(bp.id)) {
-        return false;
-      }
-      const matchesSearch = !blueprintSearch || 
-        bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
-        bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase());
-      
-      return matchesSearch;
-    });
-  }, [printifyBlueprints, blueprintSearch, allowedBlueprintIds]);
 
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];
@@ -977,8 +983,8 @@ export default function AdminProducts() {
               <DialogTitle>Import from Printify Catalog</DialogTitle>
             </DialogHeader>
             <div className="space-y-4">
-              <div className="flex gap-2 flex-wrap">
-                <div className="flex-1 min-w-[200px]">
+              <div className="flex flex-wrap gap-2">
+                <div className="min-w-[200px] flex-1">
                   <Input
                     placeholder="Search blueprints..."
                     value={blueprintSearch}
@@ -986,35 +992,87 @@ export default function AdminProducts() {
                     data-testid="input-blueprint-search"
                   />
                 </div>
+                <Select value={catalogLocationFilter} onValueChange={setCatalogLocationFilter}>
+                  <SelectTrigger className="w-[170px]">
+                    <SelectValue placeholder="Ships from" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All locations</SelectItem>
+                    {availableLocations.map((loc) => (
+                      <SelectItem key={loc} value={loc}>
+                        {loc}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {importCatalogCategories.length > 0 && (
+                  <Select value={catalogCategoryFilter} onValueChange={setCatalogCategoryFilter}>
+                    <SelectTrigger className="w-[160px]">
+                      <SelectValue placeholder="Category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All categories</SelectItem>
+                      {importCatalogCategories.map((cat) => (
+                        <SelectItem key={cat} value={cat}>
+                          {cat}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
+
+              {blueprintsFetchError && (
+                <p className="text-sm text-destructive">{(blueprintsFetchError as Error).message}</p>
+              )}
 
               {blueprintsFetching ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-8 w-8 animate-spin" />
                 </div>
               ) : (
-                <div className="grid gap-3 max-h-[400px] overflow-y-auto">
-                  {filteredBlueprints.slice(0, 50).map((bp) => (
+                <>
+                  {filteredBlueprintCount > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Showing {filteredBlueprints.length} of {filteredBlueprintCount} allowlisted products
+                    </p>
+                  )}
+                <div className="grid max-h-[400px] gap-3 overflow-y-auto">
+                  {filteredBlueprints.map((bp) => {
+                    const meta = allowedCatalogById.get(bp.id);
+                    return (
                     <Card 
                       key={bp.id} 
                       className={`cursor-pointer hover-elevate ${selectedBlueprint?.id === bp.id ? 'ring-2 ring-primary' : ''}`}
                       onClick={() => {
                         setSelectedBlueprint(bp);
+                        if (catalogLocationFilter && catalogLocationFilter !== "all") {
+                          setProviderLocationFilter(catalogLocationFilter);
+                        }
                         setProviderSelectionOpen(true);
                       }}
                     >
-                      <CardContent className="p-4 flex items-center gap-4">
-                        {bp.images[0] && (
-                          <img src={bp.images[0]} alt={bp.title} className="w-16 h-16 object-cover rounded" />
+                      <CardContent className="flex items-center gap-4 p-4">
+                        {bp.images?.[0] && (
+                          <img src={bp.images[0]} alt={bp.title} className="h-16 w-16 rounded object-cover" />
                         )}
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-medium truncate">{bp.title}</h4>
-                          <p className="text-sm text-muted-foreground">{bp.brand}</p>
+                        <div className="min-w-0 flex-1">
+                          <h4 className="truncate font-medium">{bp.title}</h4>
+                          <p className="text-sm text-muted-foreground">
+                            {bp.brand}
+                            {meta?.category ? ` · ${meta.category}` : ""}
+                            {" · #"}
+                            {bp.id}
+                            {" · "}
+                            <PrintifyCatalogLink blueprintId={bp.id} title={bp.title} />
+                          </p>
                         </div>
                       </CardContent>
                     </Card>
-                  ))}
+                    );
+                  })}
                 </div>
+                </>
               )}
             </div>
           </DialogContent>
@@ -1027,9 +1085,17 @@ export default function AdminProducts() {
             </DialogHeader>
             <div className="space-y-4">
               {selectedBlueprint && (
-                <div className="p-3 bg-muted rounded-lg">
+                <div className="rounded-lg bg-muted p-3">
                   <p className="font-medium">{selectedBlueprint.title}</p>
-                  <p className="text-sm text-muted-foreground">{selectedBlueprint.brand}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {selectedBlueprint.brand}
+                    {" · "}
+                    <PrintifyCatalogLink
+                      blueprintId={selectedBlueprint.id}
+                      title={selectedBlueprint.title}
+                      providerTitle={selectedProvider?.title}
+                    />
+                  </p>
                 </div>
               )}
 
