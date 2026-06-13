@@ -56,6 +56,7 @@ const menuItems = [
 ];
 
 const platformMenuItems = [
+  { title: "Operator Catalog", url: "/admin/platform/operator-catalog", icon: Package },
   { title: "Platform Catalog", url: "/admin/platform/catalog", icon: Globe },
   { title: "Hoodie Template Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];
