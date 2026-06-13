@@ -11221,7 +11221,11 @@ ${textEdgeRestrictions}
   // ==================== PRINTIFY CATALOG INTEGRATION ====================
 
   // Cache for provider location mappings (provider_id -> location data)
-  const providerLocationCache = new Map<string, { location?: { country: string }, fulfillment_countries: string[] }>();
+  const providerLocationCache = new Map<string, {
+    title?: string;
+    location?: { country: string };
+    fulfillment_countries: string[];
+  }>();
   
   // Cache for blueprint provider IDs (blueprint_id -> provider_ids[])
   const blueprintProviderCache = new Map<number, number[]>();
@@ -11296,6 +11300,7 @@ ${textEdgeRestrictions}
                     if (detailResponse.ok) {
                       const details = await detailResponse.json();
                       providerLocationCache.set(String(provider.id), {
+                        title: details.title,
                         location: details.location,
                         fulfillment_countries: details.fulfillment_countries || [],
                       });
@@ -11535,6 +11540,7 @@ ${textEdgeRestrictions}
                 if (response.ok) {
                   const details = await response.json();
                   providerLocationCache.set(String(providerId), {
+                    title: details.title,
                     location: details.location,
                     fulfillment_countries: details.fulfillment_countries || [],
                   });
@@ -11548,24 +11554,46 @@ ${textEdgeRestrictions}
       }
       
       // Build response with blueprint -> location data mapping
-      const result: Record<number, { providerIds: number[]; locations: string[] }> = {};
-      
+      const result: Record<
+        number,
+        {
+          providerIds: number[];
+          locations: string[];
+          shipsFrom: string[];
+          shipsTo: string[];
+          primaryProviderTitle: string | null;
+        }
+      > = {};
+
       for (const [bpId, providerIds] of Object.entries(blueprintProviderMap)) {
         const locations = new Set<string>();
-        
+        const shipsFrom = new Set<string>();
+        const shipsTo = new Set<string>();
+        let primaryProviderTitle: string | null = null;
+
         for (const providerId of providerIds as number[]) {
           const providerData = providerLocationCache.get(String(providerId));
           if (providerData) {
+            if (!primaryProviderTitle && providerData.title) {
+              primaryProviderTitle = providerData.title;
+            }
             if (providerData.location?.country) {
               locations.add(providerData.location.country);
+              shipsFrom.add(providerData.location.country);
             }
-            providerData.fulfillment_countries?.forEach((c: string) => locations.add(c));
+            providerData.fulfillment_countries?.forEach((c: string) => {
+              locations.add(c);
+              shipsTo.add(c);
+            });
           }
         }
-        
+
         result[Number(bpId)] = {
           providerIds: providerIds as number[],
-          locations: Array.from(locations)
+          locations: Array.from(locations),
+          shipsFrom: Array.from(shipsFrom),
+          shipsTo: Array.from(shipsTo),
+          primaryProviderTitle,
         };
       }
       

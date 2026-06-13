@@ -22,7 +22,10 @@ import { getSizeChartByBlueprintId } from "@/lib/printifySizeCharts";
 import type { ProductType, Merchant } from "@shared/schema";
 import { AOP_TEMPLATE_ADMIN_OPTIONS, AOP_TEMPLATE_SELECT_AUTO } from "@/components/designer/aopTemplates/registry";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
+import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
 import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
+import { PLATFORM_CATALOG_CATEGORIES, platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
+import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
 
 interface VariantOption {
   id: string;
@@ -156,14 +159,6 @@ export default function AdminProducts() {
     return m;
   }, [allowedCatalog]);
 
-  const importCatalogCategories = useMemo(() => {
-    const cats = new Set<string>();
-    for (const b of allowedCatalog?.blueprints ?? []) {
-      if (b.category) cats.add(b.category);
-    }
-    return Array.from(cats).sort();
-  }, [allowedCatalog]);
-
   const catalogAllowlistFilter = useMemo(() => {
     return (bp: PrintifyBlueprint) => {
       if (allowedBlueprintIds.size > 0 && !allowedBlueprintIds.has(bp.id)) {
@@ -182,7 +177,8 @@ export default function AdminProducts() {
     setSearch: setBlueprintSearch,
     locationFilter: catalogLocationFilter,
     setLocationFilter: setCatalogLocationFilter,
-    availableLocations,
+    getShippingMeta,
+    shippingMetaLoading,
     visible: filteredBlueprints,
     totalMatching: filteredBlueprintCount,
     isLoading: blueprintsLoading,
@@ -536,12 +532,22 @@ export default function AdminProducts() {
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];
     if (!providerLocationFilter || providerLocationFilter === "all") return printifyProviders;
-    
-    return printifyProviders.filter(p => 
+
+    return printifyProviders.filter(p =>
       p.location?.country === providerLocationFilter ||
       p.fulfillment_countries?.includes(providerLocationFilter)
     );
   }, [printifyProviders, providerLocationFilter]);
+
+  const providerAvailableLocations = useMemo(() => {
+    if (!printifyProviders) return [];
+    const countries = new Set<string>();
+    printifyProviders.forEach((p) => {
+      if (p.location?.country) countries.add(p.location.country);
+      p.fulfillment_countries?.forEach((c) => countries.add(c));
+    });
+    return Array.from(countries).sort();
+  }, [printifyProviders]);
 
   // Load variant data for the selected blueprint/provider
   const loadVariantData = async () => {
@@ -992,35 +998,42 @@ export default function AdminProducts() {
                     data-testid="input-blueprint-search"
                   />
                 </div>
-                <Select value={catalogLocationFilter} onValueChange={setCatalogLocationFilter}>
+                <Select
+                  value={catalogLocationFilter}
+                  onValueChange={(v) => setCatalogLocationFilter(v as typeof catalogLocationFilter)}
+                >
                   <SelectTrigger className="w-[170px]">
                     <SelectValue placeholder="Ships from" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All locations</SelectItem>
-                    {availableLocations.map((loc) => (
-                      <SelectItem key={loc} value={loc}>
-                        {loc}
+                    {PRINTIFY_SHIPPING_REGIONS.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {importCatalogCategories.length > 0 && (
-                  <Select value={catalogCategoryFilter} onValueChange={setCatalogCategoryFilter}>
-                    <SelectTrigger className="w-[160px]">
-                      <SelectValue placeholder="Category" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All categories</SelectItem>
-                      {importCatalogCategories.map((cat) => (
-                        <SelectItem key={cat} value={cat}>
-                          {cat}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
+                <Select value={catalogCategoryFilter} onValueChange={setCatalogCategoryFilter}>
+                  <SelectTrigger className="w-[160px]">
+                    <SelectValue placeholder="Category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All categories</SelectItem>
+                    {PLATFORM_CATALOG_CATEGORIES.map((cat) => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
+
+              {shippingMetaLoading && catalogLocationFilter !== "all" && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading shipping regions…
+                </p>
+              )}
 
               {blueprintsFetchError && (
                 <p className="text-sm text-destructive">{(blueprintsFetchError as Error).message}</p>
@@ -1039,16 +1052,15 @@ export default function AdminProducts() {
                   )}
                 <div className="grid max-h-[400px] gap-3 overflow-y-auto">
                   {filteredBlueprints.map((bp) => {
-                    const meta = allowedCatalogById.get(bp.id);
+                    const catalogMeta = allowedCatalogById.get(bp.id);
+                    const shipping = getShippingMeta(bp.id);
                     return (
                     <Card 
                       key={bp.id} 
                       className={`cursor-pointer hover-elevate ${selectedBlueprint?.id === bp.id ? 'ring-2 ring-primary' : ''}`}
                       onClick={() => {
                         setSelectedBlueprint(bp);
-                        if (catalogLocationFilter && catalogLocationFilter !== "all") {
-                          setProviderLocationFilter(catalogLocationFilter);
-                        }
+                        setProviderLocationFilter("");
                         setProviderSelectionOpen(true);
                       }}
                     >
@@ -1056,16 +1068,23 @@ export default function AdminProducts() {
                         {bp.images?.[0] && (
                           <img src={bp.images[0]} alt={bp.title} className="h-16 w-16 rounded object-cover" />
                         )}
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0 flex-1 space-y-1">
                           <h4 className="truncate font-medium">{bp.title}</h4>
                           <p className="text-sm text-muted-foreground">
                             {bp.brand}
-                            {meta?.category ? ` · ${meta.category}` : ""}
+                            {catalogMeta?.category
+                              ? ` · ${platformCatalogCategoryLabel(catalogMeta.category)}`
+                              : ""}
                             {" · #"}
                             {bp.id}
                             {" · "}
-                            <PrintifyCatalogLink blueprintId={bp.id} title={bp.title} />
+                            <PrintifyCatalogLink
+                              blueprintId={bp.id}
+                              title={bp.title}
+                              providerTitle={shipping?.primaryProviderTitle}
+                            />
                           </p>
+                          <ShippingLocationBadges meta={shipping} compact />
                         </div>
                       </CardContent>
                     </Card>
@@ -1142,7 +1161,7 @@ export default function AdminProducts() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All locations</SelectItem>
-                    {availableLocations.map(loc => (
+                    {providerAvailableLocations.map(loc => (
                       <SelectItem key={loc} value={loc}>{loc}</SelectItem>
                     ))}
                   </SelectContent>

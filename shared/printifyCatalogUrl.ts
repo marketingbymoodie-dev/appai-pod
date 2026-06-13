@@ -9,13 +9,19 @@ export function slugifyPrintifySegment(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** Printify catalog search (reliable when provider slug unknown). */
+export function printifyCatalogSearchUrl(searchKey: string): string {
+  return `https://printify.com/app/products/search-catalog?searchKey=${encodeURIComponent(searchKey.trim())}`;
+}
+
 /**
- * Printify catalog product page, e.g.
+ * Printify catalog product page when print provider is known, e.g.
  * https://printify.com/app/products/2692/orca-coatings/accent-rim-and-handle-mug-11oz-15oz
  */
 export function printifyCatalogProductUrl(args: {
   blueprintId: number;
   productTitle: string;
+  /** Print provider title (NOT garment brand like "Bella+Canvas"). */
   providerTitle?: string | null;
 }): string {
   const productSlug = slugifyPrintifySegment(args.productTitle) || String(args.blueprintId);
@@ -25,5 +31,5 @@ export function printifyCatalogProductUrl(args: {
       return `https://printify.com/app/products/${args.blueprintId}/${providerSlug}/${productSlug}`;
     }
   }
-  return `https://printify.com/app/products/${args.blueprintId}/${productSlug}`;
+  return printifyCatalogSearchUrl(String(args.blueprintId));
 }

@@ -28,7 +28,7 @@ export default function PrintifyCatalogLink({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      title="Open on Printify (supplier details, specs, providers)"
+      title="Open on Printify catalog search (supplier details, providers)"
       className={cn(
         "inline-flex items-center gap-1 text-xs text-primary hover:underline",
         className,

@@ -16,10 +16,16 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { Loader2 } from "lucide-react";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
+import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
 import {
   usePrintifyCatalogFilters,
   type PrintifyBlueprintListItem,
 } from "@/hooks/usePrintifyCatalogFilters";
+import {
+  PLATFORM_CATALOG_CATEGORIES,
+  platformCatalogCategoryLabel,
+} from "@shared/platformCatalogCategories";
+import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
 
 type CatalogTag = {
   printifyBlueprintId: number;
@@ -37,16 +43,6 @@ const KIND_LABELS: Record<CatalogTag["kind"], string> = {
   blocked: "Block",
 };
 
-const TAG_CATEGORY_OPTIONS = [
-  { value: "phone-cases", label: "Phone cases" },
-  { value: "apparel", label: "Apparel" },
-  { value: "mugs", label: "Mugs & drinkware" },
-  { value: "home-living", label: "Home & living" },
-  { value: "accessories", label: "Accessories" },
-  { value: "posters", label: "Posters & wall art" },
-  { value: "other", label: "Other" },
-];
-
 function kindBadgeVariant(kind: CatalogTag["kind"]) {
   if (kind === "printify") return "default" as const;
   if (kind === "flat") return "secondary" as const;
@@ -57,7 +53,7 @@ function kindBadgeVariant(kind: CatalogTag["kind"]) {
 export default function OperatorCatalogPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [tagCategory, setTagCategory] = useState("other");
+  const [tagCategory, setTagCategory] = useState<string>("other");
   const [tagStatusFilter, setTagStatusFilter] = useState<"all" | "tagged" | "untagged" | "blocked">("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
@@ -76,14 +72,6 @@ export default function OperatorCatalogPage() {
     return m;
   }, [tagsData?.tags]);
 
-  const tagCategories = useMemo(() => {
-    const cats = new Set<string>();
-    for (const t of tagsData?.tags ?? []) {
-      if (t.category) cats.add(t.category);
-    }
-    return Array.from(cats).sort();
-  }, [tagsData?.tags]);
-
   const extraFilter = useMemo(() => {
     return (bp: PrintifyBlueprintListItem) => {
       const tag = tagById.get(bp.id);
@@ -100,7 +88,8 @@ export default function OperatorCatalogPage() {
     setSearch,
     locationFilter,
     setLocationFilter,
-    availableLocations,
+    shippingMetaLoading,
+    getShippingMeta,
     visible,
     totalMatching,
     isLoading: blueprintsLoading,
@@ -125,13 +114,14 @@ export default function OperatorCatalogPage() {
       return res.json();
     },
     onSuccess: (_data, vars) => {
+      const catLabel = platformCatalogCategoryLabel(tagCategory);
       toast({
-        title: `Tagged as ${KIND_LABELS[vars.kind]}`,
+        title: `Tagged: ${KIND_LABELS[vars.kind]} · ${catLabel}`,
         description:
           vars.kind === "printify"
-            ? "Merchants can import this product immediately."
+            ? "Published for merchant import (Printify mockups)."
             : vars.kind === "flat" || vars.kind === "aop"
-              ? "Added to Platform Catalog queue — harvest or map, then publish."
+              ? "Added to Platform Catalog — harvest/map, then Publish."
               : "Blocked from merchant import.",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/platform/operator-catalog/tags"] });
@@ -166,14 +156,18 @@ export default function OperatorCatalogPage() {
     return <Redirect to="/admin" />;
   }
 
+  const regionLabel =
+    PRINTIFY_SHIPPING_REGIONS.find((r) => r.id === locationFilter)?.label ?? locationFilter;
+
   return (
     <AdminLayout>
       <div className="mx-auto max-w-5xl space-y-4 p-6">
         <div>
           <h1 className="text-2xl font-semibold">Operator Printify Catalog</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Tag products as you review the Printify catalog. Use filters to browse a niche (ships from,
-            category). Open Printify for supplier specs before tagging.
+            Browse and tag products for your merchants. Set a <strong>category</strong>, then click{" "}
+            <strong>API</strong> / <strong>Flat</strong> / <strong>AOP</strong> / <strong>Block</strong> on
+            each row. Open Printify for full supplier specs.
           </p>
         </div>
 
@@ -184,15 +178,17 @@ export default function OperatorCatalogPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="min-w-[200px] flex-1 max-w-md"
           />
-          <Select value={locationFilter} onValueChange={setLocationFilter}>
+          <Select
+            value={locationFilter}
+            onValueChange={(v) => setLocationFilter(v as typeof locationFilter)}
+          >
             <SelectTrigger className="w-[180px]">
               <SelectValue placeholder="Ships from" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All locations</SelectItem>
-              {availableLocations.map((loc) => (
-                <SelectItem key={loc} value={loc}>
-                  {loc}
+              {PRINTIFY_SHIPPING_REGIONS.map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -210,25 +206,25 @@ export default function OperatorCatalogPage() {
           </Select>
           <Select value={categoryFilter} onValueChange={setCategoryFilter}>
             <SelectTrigger className="w-[160px]">
-              <SelectValue placeholder="Category" />
+              <SelectValue placeholder="Tagged category" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All categories</SelectItem>
-              {tagCategories.map((cat) => (
-                <SelectItem key={cat} value={cat}>
-                  {cat}
+              <SelectItem value="all">All tagged categories</SelectItem>
+              {PLATFORM_CATALOG_CATEGORIES.map((cat) => (
+                <SelectItem key={cat.value} value={cat.value}>
+                  {cat.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Select value={tagCategory} onValueChange={setTagCategory}>
-            <SelectTrigger className="w-[180px]" title="Category applied when you tag a product">
-              <SelectValue placeholder="Tag category" />
+            <SelectTrigger className="w-[200px]" title="Saved when you click API / Flat / AOP / Block">
+              <SelectValue placeholder="Category when tagging" />
             </SelectTrigger>
             <SelectContent>
-              {TAG_CATEGORY_OPTIONS.map((opt) => (
+              {PLATFORM_CATALOG_CATEGORIES.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
-                  Tag as: {opt.label}
+                  {opt.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -242,6 +238,13 @@ export default function OperatorCatalogPage() {
           <p className="text-sm text-destructive">{(blueprintsError as Error).message}</p>
         )}
 
+        {shippingMetaLoading && locationFilter !== "all" && (
+          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading shipping regions for filter…
+          </p>
+        )}
+
         {blueprintsLoading ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading Printify blueprints…
@@ -251,12 +254,13 @@ export default function OperatorCatalogPage() {
             {totalMatching > 0 && (
               <p className="text-xs text-muted-foreground">
                 Showing {visible.length} of {totalMatching} matching
-                {locationFilter !== "all" ? ` (ships from ${locationFilter})` : ""}
+                {locationFilter !== "all" ? ` (ships from ${regionLabel})` : ""}
               </p>
             )}
             <ul className="divide-y rounded-lg border">
               {visible.map((bp) => {
                 const tag = tagById.get(bp.id);
+                const shipping = getShippingMeta(bp.id);
                 return (
                   <li key={bp.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
                     <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -269,16 +273,22 @@ export default function OperatorCatalogPage() {
                       ) : (
                         <div className="h-12 w-12 shrink-0 rounded bg-muted" />
                       )}
-                      <div className="min-w-0">
+                      <div className="min-w-0 space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-medium truncate">{bp.title}</span>
                           <span className="text-xs text-muted-foreground">{bp.brand}</span>
                           <span className="text-xs text-muted-foreground">#{bp.id}</span>
-                          <PrintifyCatalogLink blueprintId={bp.id} title={bp.title} />
+                          <PrintifyCatalogLink
+                            blueprintId={bp.id}
+                            title={bp.title}
+                            providerTitle={shipping?.primaryProviderTitle}
+                          />
                           {tag && (
                             <>
                               <Badge variant={kindBadgeVariant(tag.kind)}>{KIND_LABELS[tag.kind]}</Badge>
-                              {tag.category && <Badge variant="outline">{tag.category}</Badge>}
+                              {tag.category && (
+                                <Badge variant="outline">{platformCatalogCategoryLabel(tag.category)}</Badge>
+                              )}
                               {tag.kind !== "printify" && tag.kind !== "blocked" && (
                                 <Badge variant={tag.status === "published" ? "default" : "destructive"}>
                                   {tag.status === "published" ? "Live" : "Draft"}
@@ -287,6 +297,7 @@ export default function OperatorCatalogPage() {
                             </>
                           )}
                         </div>
+                        <ShippingLocationBadges meta={shipping} />
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-1">
@@ -297,6 +308,15 @@ export default function OperatorCatalogPage() {
                           variant={tag?.kind === kind ? "default" : "outline"}
                           disabled={tagMutation.isPending}
                           onClick={() => tagMutation.mutate({ blueprintId: bp.id, kind, bp })}
+                          title={
+                            kind === "printify"
+                              ? "Instant merchant import (Printify mockups)"
+                              : kind === "flat"
+                                ? "Platform flat calibrator queue"
+                                : kind === "aop"
+                                  ? "AOP panel map queue"
+                                  : "Block merchant import"
+                          }
                         >
                           {KIND_LABELS[kind]}
                         </Button>
@@ -320,7 +340,11 @@ export default function OperatorCatalogPage() {
         )}
 
         {!blueprintsLoading && visible.length === 0 && (
-          <p className="text-sm text-muted-foreground">No blueprints match your filters.</p>
+          <p className="text-sm text-muted-foreground">
+            {locationFilter !== "all" && shippingMetaLoading
+              ? "Loading shipping data…"
+              : "No blueprints match your filters."}
+          </p>
         )}
       </div>
     </AdminLayout>
