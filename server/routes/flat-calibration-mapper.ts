@@ -15,6 +15,7 @@ import {
   calibratorLayerPaths,
   defaultCalibratorModelEntry,
   harvestFlatCalibration,
+  merchantStorageKey,
   type CalibratorModelEntry,
   type FlatCalibratorGeometry,
   type ViewName,
@@ -110,7 +111,7 @@ function safeSlug(id: string): string {
 
 function assetUrls(productTypeId: number, modelId: string, view: ViewName) {
   const safe = safeSlug(modelId);
-  const paths = calibratorLayerPaths(productTypeId, safe, view);
+  const paths = calibratorLayerPaths(merchantStorageKey(productTypeId), safe, view);
   return {
     modelId,
     safe,
@@ -124,7 +125,7 @@ function assetUrls(productTypeId: number, modelId: string, view: ViewName) {
 }
 
 async function loadCalibratorGeometry(productTypeId: number): Promise<FlatCalibratorGeometry | null> {
-  const buf = await downloadFlatCalibrationFile(calibratorGeometryPath(productTypeId));
+  const buf = await downloadFlatCalibrationFile(calibratorGeometryPath(merchantStorageKey(productTypeId)));
   if (!buf) return null;
   try {
     return JSON.parse(buf.toString("utf-8")) as FlatCalibratorGeometry;
@@ -315,7 +316,7 @@ export function registerFlatCalibrationMapperRoutes(
       existing.updatedAt = new Date().toISOString();
 
       const geometryUrl = await uploadToFlatCalibrationBucket(
-        calibratorGeometryPath(productTypeId),
+        calibratorGeometryPath(merchantStorageKey(productTypeId)),
         Buffer.from(JSON.stringify(existing, null, 2), "utf-8"),
         "application/json",
       );

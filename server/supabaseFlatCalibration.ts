@@ -124,11 +124,10 @@ export async function listFlatCalibrationFiles(prefix: string): Promise<string[]
   return paths;
 }
 
-/** Delete every object under `products/{productTypeId}/`. Returns count removed. */
-export async function deleteFlatCalibrationProductAssets(productTypeId: number): Promise<number> {
+/** Delete every object under a prefix. Returns count removed. */
+export async function deleteFlatCalibrationAssetsByPrefix(prefix: string): Promise<number> {
   const c = client();
   if (!c) throw new Error("Supabase is not configured");
-  const prefix = `products/${productTypeId}`;
   const files = await listFlatCalibrationFiles(prefix);
   if (files.length === 0) return 0;
   const batchSize = 100;
@@ -138,6 +137,11 @@ export async function deleteFlatCalibrationProductAssets(productTypeId: number):
     if (error) throw new Error(`remove(${prefix}) failed: ${error.message}`);
   }
   return files.length;
+}
+
+/** Delete every object under `products/{productTypeId}/`. Returns count removed. */
+export async function deleteFlatCalibrationProductAssets(productTypeId: number): Promise<number> {
+  return deleteFlatCalibrationAssetsByPrefix(`products/${productTypeId}`);
 }
 
 export async function downloadFlatCalibrationFile(filename: string): Promise<Buffer | null> {

@@ -116,9 +116,6 @@ export default function AdminProducts() {
 
   const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
     queryKey: ["/api/product-types"],
-    // Calibration runs server-side for several minutes; poll while any product
-    // is pending/running so the button doesn't stay on "Recalibrating…" until
-    // a manual refresh.
     refetchInterval: (query) => {
       const pts = query.state.data as ProductType[] | undefined;
       const calibrating = pts?.some(
@@ -127,6 +124,15 @@ export default function AdminProducts() {
       return calibrating ? 15_000 : false;
     },
   });
+
+  const { data: allowedCatalog } = useQuery<{ blueprints: Array<{ blueprintId: number; publish?: { published: boolean } }> }>({
+    queryKey: ["/api/admin/catalog/allowed-blueprints"],
+  });
+
+  const allowedBlueprintIds = useMemo(
+    () => new Set(allowedCatalog?.blueprints?.map((b) => b.blueprintId) ?? []),
+    [allowedCatalog],
+  );
 
   const { data: printifyBlueprints, isLoading: blueprintsLoading, refetch: refetchBlueprints, isFetching: blueprintsFetching } = useQuery<PrintifyBlueprint[]>({
     queryKey: ["/api/admin/printify/blueprints"],
@@ -505,13 +511,16 @@ export default function AdminProducts() {
   const filteredBlueprints = useMemo(() => {
     if (!printifyBlueprints) return [];
     return printifyBlueprints.filter(bp => {
+      if (allowedBlueprintIds.size > 0 && !allowedBlueprintIds.has(bp.id)) {
+        return false;
+      }
       const matchesSearch = !blueprintSearch || 
         bp.title.toLowerCase().includes(blueprintSearch.toLowerCase()) ||
         bp.brand.toLowerCase().includes(blueprintSearch.toLowerCase());
       
       return matchesSearch;
     });
-  }, [printifyBlueprints, blueprintSearch]);
+  }, [printifyBlueprints, blueprintSearch, allowedBlueprintIds]);
 
   const filteredProviders = useMemo(() => {
     if (!printifyProviders) return [];

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link, Redirect, useRoute } from "wouter";
 import AdminLayout from "@/components/admin-layout";
 import FlatDesignRectOverlay from "@/components/designer/FlatProductPlacer/FlatDesignRectOverlay";
 import { Button } from "@/components/ui/button";
@@ -165,7 +166,16 @@ function drawMaskDebugOverlay(
 }
 
 export default function FlatCalibrationMapperPage() {
-  const productTypeId = 19;
+  const [, params] = useRoute("/admin/platform/flat-calibrator/:blueprintId");
+  const blueprintId = params?.blueprintId ? parseInt(params.blueprintId, 10) : NaN;
+  const calibratorQueryKey = Number.isFinite(blueprintId)
+    ? [`/api/platform/flat-calibrator/${blueprintId}`]
+    : ["flat-calibrator-invalid"];
+
+  const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
+    queryKey: ["/api/platform/admin/status"],
+  });
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -184,11 +194,9 @@ export default function FlatCalibrationMapperPage() {
   });
 
   const { data, isLoading, refetch } = useQuery<CalibratorState>({
-    queryKey: [`/api/admin/flat-calibrator/${productTypeId}`],
-    refetchInterval: (q) => {
-      const st = q.state.data?.flatCalibrationStatus;
-      return st === "running" ? 4000 : false;
-    },
+    queryKey: calibratorQueryKey,
+    enabled: Number.isFinite(blueprintId) && !!platformStatus?.isPlatformAdmin,
+    refetchInterval: false,
   });
 
   const models = data?.models ?? [];
@@ -394,63 +402,94 @@ export default function FlatCalibrationMapperPage() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("PUT", `/api/admin/flat-calibrator/${productTypeId}/geometry`, {
+      const res = await apiRequest("PUT", `/api/platform/flat-calibrator/${blueprintId}/geometry`, {
         modelId: selectedModelId,
         view: "front",
         geometry,
         publishToManifest: true,
+        version: 1,
       });
       return res.json();
     },
     onSuccess: () => {
       toast({
         title: "Saved",
-        description: "Alignment saved — blank baked into geometry; mask/shading offsets stored.",
+        description: "Alignment saved to canonical library draft manifest.",
       });
-      queryClient.invalidateQueries({ queryKey: [`/api/admin/flat-calibrator/${productTypeId}`] });
+      queryClient.invalidateQueries({ queryKey: calibratorQueryKey });
     },
     onError: (e: Error) => toast({ title: "Save failed", description: e.message, variant: "destructive" }),
   });
 
   const harvestMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/admin/flat-calibrator/${productTypeId}/harvest`);
+      const res = await apiRequest("POST", `/api/platform/canonical/${blueprintId}/harvest`, { version: 1 });
       return res.json();
     },
     onSuccess: () => {
       toast({
-        title: "Calibrator harvest started",
-        description: "Wiping old assets and re-fetching pink/blank/mask/shading from Printify (~30–60 min).",
+        title: "Canonical harvest started",
+        description: "Harvesting to shared library (~15–30 min for phone cases). Refresh when complete, then Publish.",
       });
-      queryClient.invalidateQueries({ queryKey: [`/api/admin/flat-calibrator/${productTypeId}`] });
     },
     onError: (e: Error) => toast({ title: "Harvest failed", description: e.message, variant: "destructive" }),
   });
 
   const wipeMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/admin/flat-calibrator/${productTypeId}/wipe`);
+      const res = await apiRequest("POST", `/api/platform/canonical/${blueprintId}/wipe`, { version: 1 });
       return res.json();
     },
     onSuccess: (body: { removed?: number }) => {
       toast({ title: "Assets wiped", description: `Removed ${body.removed ?? 0} file(s) from Supabase.` });
-      queryClient.invalidateQueries({ queryKey: [`/api/admin/flat-calibrator/${productTypeId}`] });
+      queryClient.invalidateQueries({ queryKey: calibratorQueryKey });
     },
     onError: (e: Error) => toast({ title: "Wipe failed", description: e.message, variant: "destructive" }),
   });
 
+  if (platformLoading) {
+    return (
+      <AdminLayout>
+        <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking access…
+        </div>
+      </AdminLayout>
+    );
+  }
+
+  if (!platformStatus?.isPlatformAdmin) {
+    return <Redirect to="/admin" />;
+  }
+
+  if (!Number.isFinite(blueprintId)) {
+    return (
+      <AdminLayout>
+        <div className="p-6 text-sm text-muted-foreground">
+          Invalid blueprint. Open from{" "}
+          <Link href="/admin/platform/catalog" className="text-primary underline">
+            Platform Catalog
+          </Link>
+          .
+        </div>
+      </AdminLayout>
+    );
+  }
+
   const activeAdj = layerAdjust(activeLayer === "stack" ? "stack" : activeLayer);
-  const isRunning = data?.flatCalibrationStatus === "running";
+  const isRunning = harvestMutation.isPending;
 
   return (
     <AdminLayout>
       <div className="flex h-[calc(100vh-4rem)] flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h1 className="text-lg font-semibold">Flat Calibration Mapper</h1>
+            <h1 className="text-lg font-semibold">Platform Flat Calibrator</h1>
             <p className="text-xs text-muted-foreground">
-              Product {productTypeId}: {data?.name ?? "…"} — WYSIWYG preview matches storefront compositing.
+              Blueprint {blueprintId}: {data?.name ?? "…"} — shared canonical library (operator only).
             </p>
+            <Link href="/admin/platform/catalog" className="text-xs text-primary underline">
+              ← Back to platform catalog
+            </Link>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isLoading}>

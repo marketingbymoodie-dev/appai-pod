@@ -24,6 +24,7 @@ import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
   isSupabaseFlatCalibrationConfigured,
+  deleteFlatCalibrationAssetsByPrefix,
   deleteFlatCalibrationProductAssets,
 } from "./supabaseFlatCalibration";
 
@@ -85,6 +86,8 @@ export type FlatCalibrationManifest = {
   name: string;
   blueprintId: number;
   providerId: number;
+  /** When seeded from platform canonical library. */
+  canonicalVersion?: number;
   tier: FlatTier;
   views: Partial<Record<ViewName, FlatViewCalibration>>;
   /** colorOrModelId -> { view -> blank photo url } */
@@ -157,8 +160,8 @@ export type FlatCalibratorGeometry = {
   updatedAt: string;
 };
 
-export function calibratorLayerPaths(productTypeId: number, safe: string, view: ViewName) {
-  const base = `products/${productTypeId}/calibrator/${safe}`;
+export function calibratorLayerPaths(storageKey: string, safe: string, view: ViewName) {
+  const base = `${storageKey}/calibrator/${safe}`;
   const suffix = view === "front" ? "" : `-${view}`;
   return {
     pink: `${base}-pink${suffix}.jpg`,
@@ -168,8 +171,12 @@ export function calibratorLayerPaths(productTypeId: number, safe: string, view: 
   };
 }
 
-export function calibratorGeometryPath(productTypeId: number): string {
-  return `products/${productTypeId}/calibrator/geometry.json`;
+export function calibratorGeometryPath(storageKey: string): string {
+  return `${storageKey}/calibrator/geometry.json`;
+}
+
+export function merchantStorageKey(productTypeId: number): string {
+  return `products/${productTypeId}`;
 }
 
 export function defaultCalibratorLayerAdjust(): CalibratorLayerAdjust {
@@ -1393,7 +1400,7 @@ async function harvestPerBlankGeometry(args: {
   shopId: string;
   blueprintId: number;
   providerId: number;
-  productTypeId: number;
+  storageKey: string;
   color: ColorEntry;
   safe: string;
   availableViews: ViewName[];
@@ -1408,7 +1415,7 @@ async function harvestPerBlankGeometry(args: {
     shopId,
     blueprintId,
     providerId,
-    productTypeId,
+    storageKey,
     color,
     safe,
     availableViews,
@@ -1441,7 +1448,7 @@ async function harvestPerBlankGeometry(args: {
       const regBuf = await downloadBuffer(regMatch.url);
       const a = await analyzeMagenta(regBuf);
       const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap, dims);
-      const calPaths = calibratorMode ? calibratorLayerPaths(productTypeId, safe, view) : null;
+      const calPaths = calibratorMode ? calibratorLayerPaths(storageKey, safe, view) : null;
 
       if (calPaths) {
         await uploadToFlatCalibrationBucket(calPaths.pink, regBuf, "image/jpeg");
@@ -1452,7 +1459,7 @@ async function harvestPerBlankGeometry(args: {
         const maskPng = await rawToPng(geoDerived.maskRaw, geoDerived.mockupW, geoDerived.mockupH);
         const maskPath = calPaths
           ? calPaths.mask
-          : `products/${productTypeId}/mask-${safe}-${view}.png`;
+          : `${storageKey}/mask-${safe}-${view}.png`;
         maskUrl = await uploadToFlatCalibrationBucket(maskPath, maskPng, "image/png");
       }
 
@@ -1482,7 +1489,7 @@ async function harvestPerBlankGeometry(args: {
           if (cropPx) ({ buffer: grayBuf } = await cropImageBuffer(grayBuf, cropPx));
           const shadingPath = calPaths
             ? calPaths.shading
-            : `products/${productTypeId}/shading-${safe}-${view}.jpg`;
+            : `${storageKey}/shading-${safe}-${view}.jpg`;
           shadingUrl = await uploadToFlatCalibrationBucket(shadingPath, grayBuf, "image/jpeg");
           shadingMode = a.found ? await shadingModeFromGray(grayBuf, a) : "blank";
         }
@@ -1539,8 +1546,10 @@ export type HarvestOptions = {
   maxBlankColors?: number;
   /** Save assets under products/{id}/calibrator/{model}-pink|blank|mask|shading. */
   calibratorMode?: boolean;
-  /** Delete all products/{id}/ assets before harvest. */
+  /** Delete all objects under storageKey before harvest. */
   wipeExisting?: boolean;
+  /** Supabase prefix (default products/{productTypeId}). Use canonical/{blueprintId}/v{n} for platform library. */
+  storageKey?: string;
 };
 
 /**
@@ -1550,6 +1559,7 @@ export type HarvestOptions = {
  */
 export async function harvestFlatCalibration(opts: HarvestOptions): Promise<HarvestResult> {
   const { productTypeId, name, blueprintId, providerId, token, shopId } = opts;
+  const storageKey = opts.storageKey ?? merchantStorageKey(productTypeId);
   const maxBlankColors = opts.maxBlankColors ?? DEFAULT_MAX_BLANK_COLORS;
   const calibratorMode = !!opts.calibratorMode;
 
@@ -1589,8 +1599,8 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
   try {
     await ensureFlatCalibrationBucket();
     if (opts.wipeExisting) {
-      const removed = await deleteFlatCalibrationProductAssets(productTypeId);
-      console.log(`[flat-calibration] wiped ${removed} asset(s) for pt ${productTypeId}`);
+      const removed = await deleteFlatCalibrationAssetsByPrefix(storageKey);
+      console.log(`[flat-calibration] wiped ${removed} asset(s) under ${storageKey}`);
     }
 
     const calibratorModels: FlatCalibratorGeometry["models"] = {};
@@ -1634,7 +1644,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       let maskUrl: string | null = null;
       if (a.found) {
         const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);
-        maskUrl = await uploadToFlatCalibrationBucket(`products/${productTypeId}/mask-${view}.png`, maskPng, "image/png");
+        maskUrl = await uploadToFlatCalibrationBucket(`${storageKey}/mask-${view}.png`, maskPng, "image/png");
       }
       baseManifest.views[view] = {
         printFileDims: placeholderDims.get(view)!,
@@ -1676,7 +1686,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const cropPx = sideProfileCropPx(vc, mask.width, mask.height);
         if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
       }
-      vc.shadingUrl = await uploadToFlatCalibrationBucket(`products/${productTypeId}/shading-${view}.png`, buf, "image/jpeg");
+      vc.shadingUrl = await uploadToFlatCalibrationBucket(`${storageKey}/shading-${view}.png`, buf, "image/jpeg");
       vc.shadingMode = mask ? await shadingModeFromGray(buf, mask) : "blank";
     }
 
@@ -1730,7 +1740,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           shopId,
           blueprintId,
           providerId,
-          productTypeId,
+          storageKey,
           color,
           safe,
           availableViews,
@@ -1778,8 +1788,8 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
         }
         const blankPath = calibratorMode
-          ? calibratorLayerPaths(productTypeId, safe, view).blank
-          : `products/${productTypeId}/blank-${safe}-${view}.jpg`;
+          ? calibratorLayerPaths(storageKey, safe, view).blank
+          : `${storageKey}/blank-${safe}-${view}.jpg`;
         perView[view] = await uploadToFlatCalibrationBucket(blankPath, buf, "image/jpeg");
       }
       if (Object.keys(perView).length > 0) {
@@ -1812,7 +1822,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       };
       baseManifest.calibratorGeometry = calibratorGeometry;
       calibratorGeometryUrl = await uploadToFlatCalibrationBucket(
-        calibratorGeometryPath(productTypeId),
+        calibratorGeometryPath(storageKey),
         Buffer.from(JSON.stringify(calibratorGeometry, null, 2), "utf-8"),
         "application/json",
       );

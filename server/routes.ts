@@ -48,6 +48,12 @@ import {
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, buildHarvestColorsFromProductType, type HarvestOptions } from "./flat-calibration";
+import { getCanonicalEntry, isBlueprintImportAllowed } from "@shared/canonicalProducts";
+import {
+  loadCanonicalManifest,
+  loadCanonicalPublishedMeta,
+  merchantManifestFromCanonical,
+} from "./canonicalFlatCalibration";
 import {
   submitFlatTestOrder,
   submitFlatOrderToPrintify,
@@ -12204,6 +12210,26 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Blueprint ID and name are required" });
       }
 
+      const blueprintIdNum = parseInt(blueprintId, 10);
+      if (!isBlueprintImportAllowed(blueprintIdNum)) {
+        return res.status(403).json({
+          error: "This product is not available in the AppAI catalog yet.",
+          code: "BLUEPRINT_NOT_ALLOWED",
+        });
+      }
+
+      const canonicalEntry = getCanonicalEntry(blueprintIdNum);
+      let canonicalFlatMeta: Awaited<ReturnType<typeof loadCanonicalPublishedMeta>> = null;
+      if (canonicalEntry?.kind === "flat") {
+        canonicalFlatMeta = await loadCanonicalPublishedMeta(blueprintIdNum);
+        if (!canonicalFlatMeta) {
+          return res.status(403).json({
+            error: "Platform calibration for this product is not published yet.",
+            code: "CANONICAL_NOT_PUBLISHED",
+          });
+        }
+      }
+
       // Check if this blueprint is already imported
       const existingTypes = await storage.getProductTypes();
       const alreadyImported = existingTypes.find(pt => pt.printifyBlueprintId === parseInt(blueprintId));
@@ -13064,11 +13090,18 @@ ${textEdgeRestrictions}
       }));
 
       // Create the product type with parsed data
+      const initialFlatStatus =
+        canonicalEntry?.kind === "flat" && canonicalFlatMeta
+          ? "ready"
+          : canonicalEntry?.kind === "aop"
+            ? "unsupported"
+            : "pending";
+
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description: description || null,
-        printifyBlueprintId: parseInt(blueprintId),
+        printifyBlueprintId: blueprintIdNum,
         printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
@@ -13092,29 +13125,49 @@ ${textEdgeRestrictions}
         placeholderPositions: JSON.stringify(placeholderPositions),
         panelFlatLayImages: JSON.stringify(panelFlatLayImages),
         colorOptionName: blueprintColorOptionName,
-        flatCalibrationStatus: "pending",
+        flatCalibrationStatus: initialFlatStatus,
+        panelMappingTemplate: canonicalEntry?.panelMappingTemplate ?? null,
         isActive: true,
         sortOrder: existingTypes.length,
       });
 
+      // Seed shared canonical calibration (instant — no per-merchant harvest).
+      if (canonicalEntry?.kind === "flat" && canonicalFlatMeta) {
+        const canonicalManifest = await loadCanonicalManifest(blueprintIdNum, canonicalFlatMeta.version);
+        if (canonicalManifest) {
+          await storage.updateProductType(productType.id, {
+            onTheFlyTier: canonicalFlatMeta.tier ?? canonicalManifest.tier,
+            flatCalibrationStatus: "ready",
+            flatCalibration: JSON.stringify(
+              merchantManifestFromCanonical(canonicalManifest, productType.id, productType.name),
+            ),
+          });
+        }
+      } else if (canonicalEntry?.kind === "aop" && canonicalEntry.panelMappingTemplate) {
+        await storage.updateProductType(productType.id, {
+          panelMappingTemplate: canonicalEntry.panelMappingTemplate,
+          flatCalibrationStatus: "unsupported",
+        });
+      }
+
       res.json(productType);
 
-      // Kick off on-the-fly mockup calibration in the background (does not block
-      // the import response). Determines flat/mesh/reject tier and harvests
-      // masks/shading/blanks for eligible products.
-      kickoffFlatCalibration({
-        productTypeId: productType.id,
-        name: productType.name,
-        blueprintId: parseInt(blueprintId),
-        providerId,
-        token: merchant.printifyApiToken,
-        shopId: merchant.printifyShopId,
-        isAllOverPrint,
-        designerType: productType.designerType,
-        frameColors,
-        sizes,
-        variantMap,
-      });
+      // Legacy per-merchant harvest — only if not using canonical library.
+      if (!canonicalEntry || (canonicalEntry.kind !== "flat" && canonicalEntry.kind !== "aop")) {
+        kickoffFlatCalibration({
+          productTypeId: productType.id,
+          name: productType.name,
+          blueprintId: blueprintIdNum,
+          providerId,
+          token: merchant.printifyApiToken,
+          shopId: merchant.printifyShopId,
+          isAllOverPrint,
+          designerType: productType.designerType,
+          frameColors,
+          sizes,
+          variantMap,
+        });
+      }
     } catch (error) {
       console.error("Error importing Printify blueprint:", error);
       res.status(500).json({ error: "Failed to import blueprint" });
@@ -17095,6 +17148,8 @@ ${textEdgeRestrictions}
   registerAdminBrandingRoutes(app);
   const { registerFlatCalibrationMapperRoutes } = await import("./routes/flat-calibration-mapper");
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
+  const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
+  registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
   if (process.env.NODE_ENV !== "production") {
     const { registerAopCalibrationMapperRoutes } = await import("./routes/aop-calibration-mapper");
     registerAopCalibrationMapperRoutes(app);

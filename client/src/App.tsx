@@ -16,6 +16,7 @@ import ZipHoodieAopCalibrationPage from "@/pages/mockup-calibration/zip-hoodie-a
 import AopCalibrationMapperPage from "@/pages/aop-calibration-mapper";
 import HoodieTemplateMapperPage from "@/pages/hoodie-template-mapper";
 import FlatCalibrationMapperPage from "@/pages/flat-calibration-mapper";
+import PlatformCatalogPage from "@/pages/platform-catalog";
 import NotFound from "@/pages/not-found";
 
 import AdminDashboard from "@/pages/admin/dashboard";
@@ -49,7 +50,8 @@ function AppRouter() {
       <Route path="/mockup-calibration/zip-hoodie-aop" component={ZipHoodieAopCalibrationPage} />
       <Route path="/admin/aop-calibration-mapper" component={AopCalibrationMapperPage} />
       <Route path="/admin/hoodie-template-mapper" component={HoodieTemplateMapperPage} />
-      <Route path="/admin/flat-calibration-mapper" component={FlatCalibrationMapperPage} />
+      <Route path="/admin/platform/catalog" component={PlatformCatalogPage} />
+      <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
 
       {/* Storefront designer — dedicated path, never initializes App Bridge */}
       <Route path="/s/designer" component={EmbedDesign} />

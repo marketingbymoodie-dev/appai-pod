@@ -52,16 +52,12 @@ const menuItems = [
   { title: "Coupons", url: "/admin/coupons", icon: Ticket },
   { title: "Credits", url: "/admin/credits", icon: CreditCard },
   { title: "Plan & Billing", url: "/admin/plan", icon: TrendingUp },
-  { title: "Flat Calibrator", url: "/admin/flat-calibration-mapper", icon: Crosshair },
   { title: "Settings", url: "/admin/settings", icon: Settings },
 ];
 
-// Dev-only tools: only shown when running `npm run dev`. The pages are also
-// reachable via direct URL regardless of this flag.
-const devMenuItems = [
-  { title: "AOP Calibration Mapper", url: "/admin/aop-calibration-mapper", icon: Crosshair },
+const platformMenuItems = [
+  { title: "Platform Catalog", url: "/admin/platform/catalog", icon: Globe },
   { title: "Hoodie Template Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
-  { title: "Flat Calibration Mapper", url: "/admin/flat-calibration-mapper", icon: Crosshair },
 ];
 
 const customerLinks = [
@@ -77,6 +73,11 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   // In embedded Shopify Admin the Shopify JWT is the auth — enable regardless of app-level auth
   const { data: merchant, isLoading: merchantLoading } = useQuery<Merchant>({
     queryKey: ["/api/merchant"],
+    enabled: isAuthenticated || embedded,
+  });
+
+  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
+    queryKey: ["/api/platform/admin/status"],
     enabled: isAuthenticated || embedded,
   });
 
@@ -147,13 +148,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
-            {import.meta.env.DEV && (
+            {platformStatus?.isPlatformAdmin && (
               <SidebarGroup>
-                <SidebarGroupLabel>Dev tools</SidebarGroupLabel>
+                <SidebarGroupLabel>Platform (operator)</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
-                    {devMenuItems.map((item) => {
-                      const isActive = location === item.url || location.startsWith(item.url);
+                    {platformMenuItems.map((item) => {
+                      const isActive =
+                        location === item.url || location.startsWith(item.url);
                       return (
                         <SidebarMenuItem key={item.title}>
                           <SidebarMenuButton asChild data-active={isActive}>
@@ -165,6 +167,23 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                         </SidebarMenuItem>
                       );
                     })}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
+            {import.meta.env.DEV && (
+              <SidebarGroup>
+                <SidebarGroupLabel>Dev tools</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton asChild data-active={location.startsWith("/admin/aop-calibration-mapper")}>
+                        <Link href="/admin/aop-calibration-mapper" onClick={() => handleNavClick("/admin/aop-calibration-mapper")}>
+                          <Crosshair className="h-4 w-4" />
+                          <span>AOP Calibration Mapper</span>
+                        </Link>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
