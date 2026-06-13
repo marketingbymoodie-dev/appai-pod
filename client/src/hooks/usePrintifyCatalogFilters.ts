@@ -29,7 +29,7 @@ type UsePrintifyCatalogFiltersOptions = {
   requireSearch?: boolean;
   maxResults?: number;
   extraFilter?: (bp: PrintifyBlueprintListItem) => boolean;
-  /** Max blueprints to load shipping meta for (batch-providers). */
+  /** Max blueprints to load shipping meta for when no shipping filter is active (badges only). */
   shippingMetaLimit?: number;
 };
 
@@ -50,6 +50,23 @@ async function fetchBatchShippingMeta(blueprintIds: number[]): Promise<Record<nu
   return out;
 }
 
+function blueprintMatchesShippingFilters(
+  meta: BlueprintShippingMeta | undefined,
+  shipsFromFilter: PrintifyShippingRegionId,
+  shipsToFilter: PrintifyShippingRegionId,
+  requireMeta: boolean,
+): boolean {
+  if (shipsFromFilter === "all" && shipsToFilter === "all") return true;
+  if (!meta) return !requireMeta;
+  if (shipsFromFilter !== "all" && !anyLocationMatchesRegion(meta.shipsFrom, shipsFromFilter)) {
+    return false;
+  }
+  if (shipsToFilter !== "all" && !anyLocationMatchesRegion(meta.shipsTo, shipsToFilter)) {
+    return false;
+  }
+  return true;
+}
+
 export function usePrintifyCatalogFilters(options: UsePrintifyCatalogFiltersOptions = {}) {
   const {
     enabled = true,
@@ -60,9 +77,12 @@ export function usePrintifyCatalogFilters(options: UsePrintifyCatalogFiltersOpti
   } = options;
 
   const [search, setSearch] = useState("");
-  const [locationFilter, setLocationFilter] = useState<PrintifyShippingRegionId>("all");
+  const [shipsFromFilter, setShipsFromFilter] = useState<PrintifyShippingRegionId>("all");
+  const [shipsToFilter, setShipsToFilter] = useState<PrintifyShippingRegionId>("all");
   const [shippingMeta, setShippingMeta] = useState<Record<number, BlueprintShippingMeta>>({});
   const [shippingMetaLoading, setShippingMetaLoading] = useState(false);
+
+  const shippingFilterActive = shipsFromFilter !== "all" || shipsToFilter !== "all";
 
   const {
     data: blueprints,
@@ -102,17 +122,17 @@ export function usePrintifyCatalogFilters(options: UsePrintifyCatalogFiltersOpti
     );
   }, [blueprints, search, requireSearch]);
 
-  const preLocationFiltered = useMemo(() => {
+  const preShippingFiltered = useMemo(() => {
     if (!extraFilter) return searchFiltered;
     return searchFiltered.filter(extraFilter);
   }, [searchFiltered, extraFilter]);
 
   const idsNeedingMeta = useMemo(() => {
-    return preLocationFiltered
-      .slice(0, shippingMetaLimit)
-      .filter((bp) => !shippingMeta[bp.id])
-      .map((bp) => bp.id);
-  }, [preLocationFiltered, shippingMeta, shippingMetaLimit]);
+    const pool = shippingFilterActive
+      ? preShippingFiltered
+      : preShippingFiltered.slice(0, shippingMetaLimit);
+    return pool.filter((bp) => !shippingMeta[bp.id]).map((bp) => bp.id);
+  }, [preShippingFiltered, shippingMeta, shippingMetaLimit, shippingFilterActive]);
 
   const loadShippingMeta = useCallback(async (ids: number[]) => {
     if (ids.length === 0) return;
@@ -135,19 +155,21 @@ export function usePrintifyCatalogFilters(options: UsePrintifyCatalogFiltersOpti
     loadShippingMeta(idsNeedingMeta);
   }, [enabled, idsNeedingMeta, loadShippingMeta]);
 
-  const locationFiltered = useMemo(() => {
-    if (locationFilter === "all") return preLocationFiltered;
-    return preLocationFiltered.filter((bp) => {
-      const meta = shippingMeta[bp.id];
-      if (!meta) return false;
-      const check = [...meta.shipsFrom, ...meta.locations];
-      return anyLocationMatchesRegion(check, locationFilter);
-    });
-  }, [preLocationFiltered, locationFilter, shippingMeta]);
+  const shippingFiltered = useMemo(() => {
+    if (!shippingFilterActive) return preShippingFiltered;
+    return preShippingFiltered.filter((bp) =>
+      blueprintMatchesShippingFilters(
+        shippingMeta[bp.id],
+        shipsFromFilter,
+        shipsToFilter,
+        true,
+      ),
+    );
+  }, [preShippingFiltered, shippingFilterActive, shippingMeta, shipsFromFilter, shipsToFilter]);
 
   const visible = useMemo(
-    () => locationFiltered.slice(0, maxResults),
-    [locationFiltered, maxResults],
+    () => shippingFiltered.slice(0, maxResults),
+    [shippingFiltered, maxResults],
   );
 
   const getShippingMeta = useCallback(
@@ -158,17 +180,24 @@ export function usePrintifyCatalogFilters(options: UsePrintifyCatalogFiltersOpti
   return {
     search,
     setSearch,
-    locationFilter,
-    setLocationFilter,
+    shipsFromFilter,
+    setShipsFromFilter,
+    shipsToFilter,
+    setShipsToFilter,
+    /** @deprecated use shipsFromFilter */
+    locationFilter: shipsFromFilter,
+    /** @deprecated use setShipsFromFilter */
+    setLocationFilter: setShipsFromFilter,
     shippingRegions: PRINTIFY_SHIPPING_REGIONS,
+    shippingFilterActive,
     shippingMeta,
     shippingMetaLoading,
     getShippingMeta,
     loadShippingMeta,
     blueprints,
-    filtered: locationFiltered,
+    filtered: shippingFiltered,
     visible,
-    totalMatching: locationFiltered.length,
+    totalMatching: shippingFiltered.length,
     isLoading,
     isFetching,
     refetch,

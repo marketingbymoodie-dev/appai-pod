@@ -17,14 +17,12 @@ import { apiRequest } from "@/lib/queryClient";
 import { Loader2 } from "lucide-react";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
+import TagProductDialog from "@/components/catalog/TagProductDialog";
 import {
   usePrintifyCatalogFilters,
   type PrintifyBlueprintListItem,
 } from "@/hooks/usePrintifyCatalogFilters";
-import {
-  PLATFORM_CATALOG_CATEGORIES,
-  platformCatalogCategoryLabel,
-} from "@shared/platformCatalogCategories";
+import { platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
 
 type CatalogTag = {
@@ -53,9 +51,12 @@ function kindBadgeVariant(kind: CatalogTag["kind"]) {
 export default function OperatorCatalogPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [tagCategory, setTagCategory] = useState<string>("other");
   const [tagStatusFilter, setTagStatusFilter] = useState<"all" | "tagged" | "untagged" | "blocked">("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [pendingTag, setPendingTag] = useState<{
+    bp: PrintifyBlueprintListItem;
+    kind: CatalogTag["kind"];
+  } | null>(null);
+  const [dialogCategory, setDialogCategory] = useState("other");
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -78,16 +79,18 @@ export default function OperatorCatalogPage() {
       if (tagStatusFilter === "tagged" && !tag) return false;
       if (tagStatusFilter === "untagged" && tag) return false;
       if (tagStatusFilter === "blocked" && tag?.kind !== "blocked") return false;
-      if (categoryFilter !== "all" && tag?.category !== categoryFilter) return false;
       return true;
     };
-  }, [tagById, tagStatusFilter, categoryFilter]);
+  }, [tagById, tagStatusFilter]);
 
   const {
     search,
     setSearch,
-    locationFilter,
-    setLocationFilter,
+    shipsFromFilter,
+    setShipsFromFilter,
+    shipsToFilter,
+    setShipsToFilter,
+    shippingFilterActive,
     shippingMetaLoading,
     getShippingMeta,
     visible,
@@ -104,19 +107,24 @@ export default function OperatorCatalogPage() {
   });
 
   const tagMutation = useMutation({
-    mutationFn: async (args: { blueprintId: number; kind: CatalogTag["kind"]; bp: PrintifyBlueprintListItem }) => {
+    mutationFn: async (args: {
+      blueprintId: number;
+      kind: CatalogTag["kind"];
+      bp: PrintifyBlueprintListItem;
+      category: string;
+    }) => {
       const res = await apiRequest("PUT", `/api/platform/operator-catalog/${args.blueprintId}/tag`, {
         kind: args.kind,
         label: args.bp.title,
         brand: args.bp.brand,
-        category: tagCategory,
+        category: args.kind === "blocked" ? "other" : args.category,
       });
       return res.json();
     },
     onSuccess: (_data, vars) => {
-      const catLabel = platformCatalogCategoryLabel(tagCategory);
+      const catLabel = platformCatalogCategoryLabel(vars.category);
       toast({
-        title: `Tagged: ${KIND_LABELS[vars.kind]} · ${catLabel}`,
+        title: `Tagged: ${KIND_LABELS[vars.kind]}${vars.kind !== "blocked" ? ` · ${catLabel}` : ""}`,
         description:
           vars.kind === "printify"
             ? "Published for merchant import (Printify mockups)."
@@ -124,6 +132,7 @@ export default function OperatorCatalogPage() {
               ? "Added to Platform Catalog — harvest/map, then Publish."
               : "Blocked from merchant import.",
       });
+      setPendingTag(null);
       queryClient.invalidateQueries({ queryKey: ["/api/platform/operator-catalog/tags"] });
       queryClient.invalidateQueries({ queryKey: ["/api/platform/canonical/products"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/catalog/allowed-blueprints"] });
@@ -142,6 +151,22 @@ export default function OperatorCatalogPage() {
     },
   });
 
+  const openTagDialog = (bp: PrintifyBlueprintListItem, kind: CatalogTag["kind"]) => {
+    const existing = tagById.get(bp.id);
+    setDialogCategory(existing?.category ?? "other");
+    setPendingTag({ bp, kind });
+  };
+
+  const confirmTag = () => {
+    if (!pendingTag) return;
+    tagMutation.mutate({
+      blueprintId: pendingTag.bp.id,
+      kind: pendingTag.kind,
+      bp: pendingTag.bp,
+      category: dialogCategory,
+    });
+  };
+
   if (platformLoading) {
     return (
       <AdminLayout>
@@ -156,8 +181,10 @@ export default function OperatorCatalogPage() {
     return <Redirect to="/admin" />;
   }
 
-  const regionLabel =
-    PRINTIFY_SHIPPING_REGIONS.find((r) => r.id === locationFilter)?.label ?? locationFilter;
+  const shipsFromLabel =
+    PRINTIFY_SHIPPING_REGIONS.find((r) => r.id === shipsFromFilter)?.label ?? shipsFromFilter;
+  const shipsToLabel =
+    PRINTIFY_SHIPPING_REGIONS.find((r) => r.id === shipsToFilter)?.label ?? shipsToFilter;
 
   return (
     <AdminLayout>
@@ -165,9 +192,9 @@ export default function OperatorCatalogPage() {
         <div>
           <h1 className="text-2xl font-semibold">Operator Printify Catalog</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Browse and tag products for your merchants. Set a <strong>category</strong>, then click{" "}
-            <strong>API</strong> / <strong>Flat</strong> / <strong>AOP</strong> / <strong>Block</strong> on
-            each row. Open Printify for full supplier specs.
+            Filter by shipping, then click <strong>API</strong> / <strong>Flat</strong> /{" "}
+            <strong>AOP</strong> / <strong>Block</strong> on a row to tag it for merchants. Pin
+            badges = provider location; globe = ships-to countries.
           </p>
         </div>
 
@@ -179,22 +206,37 @@ export default function OperatorCatalogPage() {
             className="min-w-[200px] flex-1 max-w-md"
           />
           <Select
-            value={locationFilter}
-            onValueChange={(v) => setLocationFilter(v as typeof locationFilter)}
+            value={shipsFromFilter}
+            onValueChange={(v) => setShipsFromFilter(v as typeof shipsFromFilter)}
           >
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[170px]">
               <SelectValue placeholder="Ships from" />
             </SelectTrigger>
             <SelectContent>
               {PRINTIFY_SHIPPING_REGIONS.map((r) => (
-                <SelectItem key={r.id} value={r.id}>
-                  {r.label}
+                <SelectItem key={`from-${r.id}`} value={r.id}>
+                  Ships from: {r.id === "all" ? "Any" : r.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={shipsToFilter}
+            onValueChange={(v) => setShipsToFilter(v as typeof shipsToFilter)}
+          >
+            <SelectTrigger className="w-[170px]">
+              <SelectValue placeholder="Ships to" />
+            </SelectTrigger>
+            <SelectContent>
+              {PRINTIFY_SHIPPING_REGIONS.map((r) => (
+                <SelectItem key={`to-${r.id}`} value={r.id}>
+                  Ships to: {r.id === "all" ? "Any" : r.label}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Select value={tagStatusFilter} onValueChange={(v) => setTagStatusFilter(v as typeof tagStatusFilter)}>
-            <SelectTrigger className="w-[140px]">
+            <SelectTrigger className="w-[150px]">
               <SelectValue placeholder="Tag status" />
             </SelectTrigger>
             <SelectContent>
@@ -202,31 +244,6 @@ export default function OperatorCatalogPage() {
               <SelectItem value="tagged">Tagged only</SelectItem>
               <SelectItem value="untagged">Untagged only</SelectItem>
               <SelectItem value="blocked">Blocked only</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger className="w-[160px]">
-              <SelectValue placeholder="Tagged category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All tagged categories</SelectItem>
-              {PLATFORM_CATALOG_CATEGORIES.map((cat) => (
-                <SelectItem key={cat.value} value={cat.value}>
-                  {cat.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={tagCategory} onValueChange={setTagCategory}>
-            <SelectTrigger className="w-[200px]" title="Saved when you click API / Flat / AOP / Block">
-              <SelectValue placeholder="Category when tagging" />
-            </SelectTrigger>
-            <SelectContent>
-              {PLATFORM_CATALOG_CATEGORIES.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
-                </SelectItem>
-              ))}
             </SelectContent>
           </Select>
           <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
@@ -238,10 +255,10 @@ export default function OperatorCatalogPage() {
           <p className="text-sm text-destructive">{(blueprintsError as Error).message}</p>
         )}
 
-        {shippingMetaLoading && locationFilter !== "all" && (
+        {shippingMetaLoading && shippingFilterActive && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
-            Loading shipping regions for filter…
+            Loading shipping data for filters…
           </p>
         )}
 
@@ -254,7 +271,8 @@ export default function OperatorCatalogPage() {
             {totalMatching > 0 && (
               <p className="text-xs text-muted-foreground">
                 Showing {visible.length} of {totalMatching} matching
-                {locationFilter !== "all" ? ` (ships from ${regionLabel})` : ""}
+                {shipsFromFilter !== "all" ? ` · from ${shipsFromLabel}` : ""}
+                {shipsToFilter !== "all" ? ` · to ${shipsToLabel}` : ""}
               </p>
             )}
             <ul className="divide-y rounded-lg border">
@@ -286,7 +304,7 @@ export default function OperatorCatalogPage() {
                           {tag && (
                             <>
                               <Badge variant={kindBadgeVariant(tag.kind)}>{KIND_LABELS[tag.kind]}</Badge>
-                              {tag.category && (
+                              {tag.category && tag.kind !== "blocked" && (
                                 <Badge variant="outline">{platformCatalogCategoryLabel(tag.category)}</Badge>
                               )}
                               {tag.kind !== "printify" && tag.kind !== "blocked" && (
@@ -307,14 +325,14 @@ export default function OperatorCatalogPage() {
                           size="sm"
                           variant={tag?.kind === kind ? "default" : "outline"}
                           disabled={tagMutation.isPending}
-                          onClick={() => tagMutation.mutate({ blueprintId: bp.id, kind, bp })}
+                          onClick={() => openTagDialog(bp, kind)}
                           title={
                             kind === "printify"
-                              ? "Instant merchant import (Printify mockups)"
+                              ? "Tag for instant merchant import"
                               : kind === "flat"
-                                ? "Platform flat calibrator queue"
+                                ? "Tag for flat calibrator queue"
                                 : kind === "aop"
-                                  ? "AOP panel map queue"
+                                  ? "Tag for AOP panel map queue"
                                   : "Block merchant import"
                           }
                         >
@@ -341,11 +359,24 @@ export default function OperatorCatalogPage() {
 
         {!blueprintsLoading && visible.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            {locationFilter !== "all" && shippingMetaLoading
+            {shippingFilterActive && shippingMetaLoading
               ? "Loading shipping data…"
               : "No blueprints match your filters."}
           </p>
         )}
+
+        <TagProductDialog
+          open={!!pendingTag}
+          onOpenChange={(open) => {
+            if (!open) setPendingTag(null);
+          }}
+          productTitle={pendingTag?.bp.title ?? ""}
+          kind={pendingTag?.kind ?? null}
+          category={dialogCategory}
+          onCategoryChange={setDialogCategory}
+          onConfirm={confirmTag}
+          isPending={tagMutation.isPending}
+        />
       </div>
     </AdminLayout>
   );

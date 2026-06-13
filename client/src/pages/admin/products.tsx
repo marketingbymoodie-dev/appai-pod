@@ -175,8 +175,11 @@ export default function AdminProducts() {
   const {
     search: blueprintSearch,
     setSearch: setBlueprintSearch,
-    locationFilter: catalogLocationFilter,
-    setLocationFilter: setCatalogLocationFilter,
+    shipsFromFilter: catalogShipsFromFilter,
+    setShipsFromFilter: setCatalogShipsFromFilter,
+    shipsToFilter: catalogShipsToFilter,
+    setShipsToFilter: setCatalogShipsToFilter,
+    shippingFilterActive,
     getShippingMeta,
     shippingMetaLoading,
     visible: filteredBlueprints,
@@ -999,16 +1002,31 @@ export default function AdminProducts() {
                   />
                 </div>
                 <Select
-                  value={catalogLocationFilter}
-                  onValueChange={(v) => setCatalogLocationFilter(v as typeof catalogLocationFilter)}
+                  value={catalogShipsFromFilter}
+                  onValueChange={(v) => setCatalogShipsFromFilter(v as typeof catalogShipsFromFilter)}
                 >
                   <SelectTrigger className="w-[170px]">
                     <SelectValue placeholder="Ships from" />
                   </SelectTrigger>
                   <SelectContent>
                     {PRINTIFY_SHIPPING_REGIONS.map((r) => (
-                      <SelectItem key={r.id} value={r.id}>
-                        {r.label}
+                      <SelectItem key={`from-${r.id}`} value={r.id}>
+                        Ships from: {r.id === "all" ? "Any" : r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={catalogShipsToFilter}
+                  onValueChange={(v) => setCatalogShipsToFilter(v as typeof catalogShipsToFilter)}
+                >
+                  <SelectTrigger className="w-[170px]">
+                    <SelectValue placeholder="Ships to" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRINTIFY_SHIPPING_REGIONS.map((r) => (
+                      <SelectItem key={`to-${r.id}`} value={r.id}>
+                        Ships to: {r.id === "all" ? "Any" : r.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1028,10 +1046,10 @@ export default function AdminProducts() {
                 </Select>
               </div>
 
-              {shippingMetaLoading && catalogLocationFilter !== "all" && (
+              {shippingMetaLoading && shippingFilterActive && (
                 <p className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Loading shipping regions…
+                  Loading shipping data…
                 </p>
               )}
 
