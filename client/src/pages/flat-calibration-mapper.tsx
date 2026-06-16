@@ -18,10 +18,13 @@ import {
   adjustCalibratorDrawRect,
   flatArtBox,
   flatCovers,
+  flatOverflows,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
+  flatVisibleRectPx,
   renderFlatView,
   type CalibratorLayerAdjust,
+  type Rect,
 } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import type { FlatViewCalibration } from "@/pages/embed-design";
 import {
@@ -127,6 +130,12 @@ function buildCalibratorView(
   };
 }
 
+function mockupCanvasRect(view: FlatViewCalibration, blank: HTMLImageElement): Rect {
+  const w = blank.naturalWidth || blank.width || view.mockupDims?.width || 1;
+  const h = blank.naturalHeight || blank.height || view.mockupDims?.height || 1;
+  return { x: 0, y: 0, width: w, height: h };
+}
+
 function drawPinkReference(
   ctx: CanvasRenderingContext2D,
   pink: HTMLImageElement,
@@ -134,14 +143,25 @@ function drawPinkReference(
   blank: HTMLImageElement,
   mask: HTMLImageElement | null,
   layerAdjust: CalibratorModelEntry,
+  edgeWrapMode: boolean,
 ) {
-  const layout = flatPrintCanvasLayout(view, { mask, blank });
-  const dest = adjustCalibratorDrawRect(
-    layout.imageDraw,
-    layerAdjust.blank,
-    layout.previewW,
-    layout.previewH,
-  );
+  if (edgeWrapMode) {
+    const layout = flatPrintCanvasLayout(view, { mask, blank });
+    const dest = adjustCalibratorDrawRect(
+      layout.imageDraw,
+      layerAdjust.blank,
+      layout.previewW,
+      layout.previewH,
+    );
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.drawImage(pink, dest.x, dest.y, dest.width, dest.height);
+    ctx.restore();
+    return;
+  }
+
+  const canvas = mockupCanvasRect(view, blank);
+  const dest = adjustCalibratorDrawRect(canvas, layerAdjust.blank, canvas.width, canvas.height);
   ctx.save();
   ctx.globalAlpha = 0.35;
   ctx.drawImage(pink, dest.x, dest.y, dest.width, dest.height);
@@ -154,14 +174,25 @@ function drawMaskDebugOverlay(
   view: FlatViewCalibration,
   blank: HTMLImageElement,
   layerAdjust: CalibratorLayerAdjust,
+  edgeWrapMode: boolean,
 ) {
-  const layout = flatPrintCanvasLayout(view, { mask, blank });
-  const dest = adjustCalibratorDrawRect(
-    layout.imageDraw,
-    layerAdjust,
-    layout.previewW,
-    layout.previewH,
-  );
+  if (edgeWrapMode) {
+    const layout = flatPrintCanvasLayout(view, { mask, blank });
+    const dest = adjustCalibratorDrawRect(
+      layout.imageDraw,
+      layerAdjust,
+      layout.previewW,
+      layout.previewH,
+    );
+    ctx.save();
+    ctx.globalAlpha = 0.4;
+    ctx.drawImage(mask, dest.x, dest.y, dest.width, dest.height);
+    ctx.restore();
+    return;
+  }
+
+  const canvas = mockupCanvasRect(view, blank);
+  const dest = adjustCalibratorDrawRect(canvas, layerAdjust, canvas.width, canvas.height);
   ctx.save();
   ctx.globalAlpha = 0.4;
   ctx.drawImage(mask, dest.x, dest.y, dest.width, dest.height);
@@ -205,7 +236,8 @@ export default function FlatCalibrationMapperPage() {
 
   const models = data?.models ?? [];
   const selectedModel = models.find((m) => m.modelId === selectedModelId) ?? models[0];
-  const artScaleMax = flatPlacementScaleMax({ edgeWrapMode: true });
+  const edgeWrapMode = !!data?.edgeWrap;
+  const artScaleMax = flatPlacementScaleMax({ edgeWrapMode });
   const showModelPicker = models.length > 1;
   const modelPickerLabel =
     data?.modelPickerLabel === "phone"
@@ -261,12 +293,26 @@ export default function FlatCalibrationMapperPage() {
     [selectedModel],
   );
 
-  const printLayout = useMemo(
-    () => (calibratorView ? flatPrintCanvasLayout(calibratorView) : null),
-    [calibratorView],
-  );
+  const printLayout = useMemo(() => {
+    if (!calibratorView) return null;
+    if (edgeWrapMode) return flatPrintCanvasLayout(calibratorView);
+    const mockupW = calibratorView.mockupDims?.width ?? 900;
+    const pfW = calibratorView.printFileDims?.width ?? 1;
+    const pfH = calibratorView.printFileDims?.height ?? 1;
+    const mockupH = calibratorView.mockupDims?.height ?? Math.max(1, Math.round(mockupW * (pfH / pfW)));
+    const visible = flatVisibleRectPx(calibratorView, mockupW, mockupH);
+    return {
+      previewW: mockupW,
+      previewH: mockupH,
+      printCanvas: visible,
+      phoneBack: visible,
+      safeZone: visible,
+      imageDraw: { x: 0, y: 0, width: mockupW, height: mockupH },
+      sourceCrop: null,
+    };
+  }, [calibratorView, edgeWrapMode]);
 
-  const artCoversPrintCanvas = useMemo(() => {
+  const artCoversPrintArea = useMemo(() => {
     if (!testArtImg || !printLayout) return true;
     const box = flatArtBox(
       printLayout.printCanvas,
@@ -274,8 +320,9 @@ export default function FlatCalibrationMapperPage() {
       testArtImg.naturalWidth || testArtImg.width,
       testArtImg.naturalHeight || testArtImg.height,
     );
-    return flatCovers(printLayout.printCanvas, box);
-  }, [testArtImg, printLayout, artPlacement]);
+    if (edgeWrapMode) return flatCovers(printLayout.printCanvas, box);
+    return !flatOverflows(printLayout.printCanvas, box);
+  }, [testArtImg, printLayout, artPlacement, edgeWrapMode]);
 
   const layerAdjust = useCallback(
     (layer: LayerId | "stack"): CalibratorLayerAdjust => {
@@ -348,24 +395,29 @@ export default function FlatCalibrationMapperPage() {
     const layerOnlyPink = activeLayer === "pink" && showPink;
     const layerOnlyMask = activeLayer === "mask" && showMask && !showBlank && !showShading && !artImg;
 
+    const previewW = edgeWrapMode
+      ? flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg }).previewW
+      : mockupCanvasRect(view, blankImg).width;
+    const previewH = edgeWrapMode
+      ? flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg }).previewH
+      : mockupCanvasRect(view, blankImg).height;
+
     if (layerOnlyPink && pinkImg) {
-      const layout = flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg });
-      canvas.width = layout.previewW;
-      canvas.height = layout.previewH;
+      canvas.width = previewW;
+      canvas.height = previewH;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      ctx.fillStyle = "#d4d4d4";
+      ctx.fillStyle = edgeWrapMode ? "#d4d4d4" : "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry);
+      drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
     } else if (layerOnlyMask && maskImg) {
-      const layout = flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg });
-      canvas.width = layout.previewW;
-      canvas.height = layout.previewH;
+      canvas.width = previewW;
+      canvas.height = previewH;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      ctx.fillStyle = "#d4d4d4";
+      ctx.fillStyle = edgeWrapMode ? "#d4d4d4" : "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask);
+      drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask, edgeWrapMode);
     } else {
       const shadingOnly =
         activeLayer === "shading" && showShading && !showBlank && !artImg && shadeImg;
@@ -383,8 +435,8 @@ export default function FlatCalibrationMapperPage() {
         view,
         placement: previewPlacement,
         tier: "flat",
-        edgeWrapMode: true,
-        forceShadingMap: true,
+        edgeWrapMode,
+        forceShadingMap: edgeWrapMode,
         artworkCorsClean: true,
         layerAdjust: lockedLayerAdjust,
         previewLayers: {
@@ -397,10 +449,10 @@ export default function FlatCalibrationMapperPage() {
       const ctx = canvas.getContext("2d");
       if (ctx) {
         if (showPink && pinkImg && activeLayer !== "pink") {
-          drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry);
+          drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
         }
         if (showMask && maskImg && activeLayer !== "mask") {
-          drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask);
+          drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask, edgeWrapMode);
         }
       }
     }
@@ -414,7 +466,7 @@ export default function FlatCalibrationMapperPage() {
     testArtUrl,
     artPlacement,
     activeLayer,
-    data?.edgeWrap,
+    edgeWrapMode,
     artScaleMax,
     lockedLayerAdjust,
   ]);
@@ -729,7 +781,7 @@ export default function FlatCalibrationMapperPage() {
                         Art scale {Math.round(artPlacement.scale * 100)}%
                       </Label>
                       <Slider
-                        min={Math.round(flatPlacementScaleMax({ edgeWrapMode: true }) * 0.2 * 100)}
+                        min={Math.round(flatPlacementScaleMax({ edgeWrapMode }) * 0.2 * 100)}
                         max={Math.round(artScaleMax * 100)}
                         step={1}
                         value={[Math.round(artPlacement.scale * 100)]}
@@ -746,12 +798,13 @@ export default function FlatCalibrationMapperPage() {
                     </Button>
                   </>
                 )}
-                {testArtUrl && !artCoversPrintCanvas && (
+                {testArtUrl && !artCoversPrintArea && (
                   <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <span>
-                      Art doesn&apos;t fully cover the print canvas — scale up or reposition so the
-                      design reaches all four edges of the blue outline.
+                      {edgeWrapMode
+                        ? "Art doesn't fully cover the print canvas — scale up or reposition so the design reaches all four edges of the blue outline."
+                        : "Art extends past the printable area — scale down or reposition so edges stay inside the dashed outline (mask will trim overflow)."}
                     </span>
                   </div>
                 )}
@@ -771,11 +824,11 @@ export default function FlatCalibrationMapperPage() {
                       view={calibratorView}
                       artwork={testArtImg}
                       placement={artPlacement}
-                      edgeWrapMode
-                      showInnerGuide={false}
-                      showOuterGuide
-                      innerGuideRect={null}
-                      outerGuideRect={printLayout.printCanvas}
+                      edgeWrapMode={edgeWrapMode}
+                      showInnerGuide={!edgeWrapMode}
+                      showOuterGuide={edgeWrapMode}
+                      innerGuideRect={edgeWrapMode ? null : printLayout.printCanvas}
+                      outerGuideRect={edgeWrapMode ? printLayout.printCanvas : null}
                       placementRect={printLayout.printCanvas}
                       scaleMax={artScaleMax}
                       onChange={setArtPlacement}
@@ -784,8 +837,9 @@ export default function FlatCalibrationMapperPage() {
                 </div>
               </div>
               <p className="mt-2 shrink-0 max-w-md self-center text-center text-[11px] text-muted-foreground">
-                Blue dashed = print canvas — scale artwork until it covers all four edges. Drag handles
-                or use sidebar nudge. Blank redraws cameras and rounded case lip on top of art.
+                {edgeWrapMode
+                  ? "Blue dashed = print canvas — scale artwork until it covers all four edges. Drag handles or use sidebar nudge. Blank redraws cameras and rounded case lip on top of art."
+                  : "Dashed outline = printable area on the mockup — artwork is clipped to the harvested mask. Nudge blank, mask, and shading layers if registration is off."}
               </p>
               {selectedModel && !selectedModel.assets.blank && (
                 <p className="mt-1 text-xs text-amber-700">
