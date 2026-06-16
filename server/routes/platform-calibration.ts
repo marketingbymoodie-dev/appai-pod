@@ -370,10 +370,15 @@ export function registerPlatformCalibrationRoutes(
     if (!requirePlatformAdmin(req, res)) return;
     const entries = await listFlatCanonicalEntries();
     const products = await Promise.all(
-      entries.map(async (e) => ({
-        ...e,
-        publish: await getCanonicalPublishState(e.blueprintId),
-      })),
+      entries.map(async (e) => {
+        const manifest =
+          e.kind === "flat" ? await loadCanonicalManifest(e.blueprintId, DEFAULT_CANONICAL_VERSION) : null;
+        return {
+          ...e,
+          harvestComplete: e.kind === "flat" ? isHarvestComplete(manifest) : false,
+          publish: await getCanonicalPublishState(e.blueprintId),
+        };
+      }),
     );
     res.json({ products });
   });

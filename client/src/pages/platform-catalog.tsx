@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Redirect } from "wouter";
 import AdminLayout from "@/components/admin-layout";
@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Loader2, Crosshair, Upload, RefreshCw, Trash2 } from "lucide-react";
+import { Loader2, Crosshair, Upload, RefreshCw, Trash2, Check } from "lucide-react";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 import {
   AlertDialog,
@@ -42,8 +42,11 @@ type CatalogProduct = {
   category: string;
   kind: "flat" | "aop";
   panelMappingTemplate?: string;
+  harvestComplete?: boolean;
   publish: PublishState;
 };
+
+type HarvestPhase = "idle" | "running" | "complete";
 
 export default function PlatformCatalogPage() {
   const { toast } = useToast();
@@ -53,15 +56,54 @@ export default function PlatformCatalogPage() {
   const [kindFilter, setKindFilter] = useState<"all" | "flat" | "aop">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "live" | "draft">("all");
   const [removeTarget, setRemoveTarget] = useState<CatalogProduct | null>(null);
+  const [harvestPhaseById, setHarvestPhaseById] = useState<Record<number, HarvestPhase>>({});
+  const prevHarvestPhaseRef = useRef<Record<number, HarvestPhase>>({});
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
   });
 
-  const { data, isLoading } = useQuery<{ products: CatalogProduct[] }>({
+  const anyHarvesting = useMemo(
+    () => Object.values(harvestPhaseById).some((phase) => phase === "running"),
+    [harvestPhaseById],
+  );
+
+  const { data, isLoading, refetch } = useQuery<{ products: CatalogProduct[] }>({
     queryKey: ["/api/platform/canonical/products"],
     enabled: !!platformStatus?.isPlatformAdmin,
+    refetchInterval: anyHarvesting ? 15_000 : false,
   });
+
+  useEffect(() => {
+    if (!data?.products) return;
+    setHarvestPhaseById((prev) => {
+      const next = { ...prev };
+      for (const p of data.products) {
+        if (p.kind !== "flat") continue;
+        if (p.harvestComplete) {
+          next[p.blueprintId] = "complete";
+        } else if (prev[p.blueprintId] !== "running") {
+          next[p.blueprintId] = "idle";
+        }
+      }
+      return next;
+    });
+  }, [data?.products]);
+
+  useEffect(() => {
+    for (const p of data?.products ?? []) {
+      if (p.kind !== "flat") continue;
+      const phase = harvestPhaseById[p.blueprintId] ?? "idle";
+      const prev = prevHarvestPhaseRef.current[p.blueprintId] ?? "idle";
+      if (prev === "running" && phase === "complete" && p.harvestComplete) {
+        toast({
+          title: "Harvest complete",
+          description: `${p.label} is ready — open Flat calibrator, then Publish.`,
+        });
+      }
+      prevHarvestPhaseRef.current[p.blueprintId] = phase;
+    }
+  }, [data?.products, harvestPhaseById, toast]);
 
   const publishMutation = useMutation({
     mutationFn: async (blueprintId: number) => {
@@ -81,11 +123,13 @@ export default function PlatformCatalogPage() {
       const res = await apiRequest("POST", `/api/platform/canonical/${blueprintId}/harvest`, { version: 1 });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (_body, blueprintId) => {
+      setHarvestPhaseById((prev) => ({ ...prev, [blueprintId]: "running" }));
       toast({
         title: "Harvest started",
-        description: "Runs in background. Open calibrator after ~15–30 min to review, then Publish.",
+        description: "Running in background — this page updates every 15s until assets are ready.",
       });
+      void refetch();
     },
     onError: (e: Error) => toast({ title: "Harvest failed", description: e.message, variant: "destructive" }),
   });
@@ -207,7 +251,13 @@ export default function PlatformCatalogPage() {
           </div>
         ) : (
           <ul className="space-y-4">
-            {filteredProducts.map((p) => (
+            {filteredProducts.map((p) => {
+              const harvestPhase =
+                harvestPhaseById[p.blueprintId] ?? (p.harvestComplete ? "complete" : "idle");
+              const isHarvesting = harvestPhase === "running";
+              const isHarvested = harvestPhase === "complete" || !!p.harvestComplete;
+
+              return (
               <li key={p.blueprintId} className="rounded-lg border p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
@@ -245,11 +295,26 @@ export default function PlatformCatalogPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={harvestMutation.isPending}
+                        className={isHarvested && !isHarvesting ? "border-green-600 text-green-700" : undefined}
+                        disabled={isHarvesting}
                         onClick={() => harvestMutation.mutate(p.blueprintId)}
                       >
-                        <RefreshCw className="mr-1 h-3 w-3" />
-                        Harvest to library
+                        {isHarvesting ? (
+                          <>
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            Harvesting…
+                          </>
+                        ) : isHarvested ? (
+                          <>
+                            <Check className="mr-1 h-3 w-3" />
+                            Harvested
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="mr-1 h-3 w-3" />
+                            Harvest to library
+                          </>
+                        )}
                       </Button>
                       <Link href={`/admin/platform/flat-calibrator/${p.blueprintId}`}>
                         <Button size="sm" variant="outline">
@@ -257,14 +322,16 @@ export default function PlatformCatalogPage() {
                           Flat calibrator
                         </Button>
                       </Link>
-                      <Button
-                        size="sm"
-                        disabled={publishMutation.isPending}
-                        onClick={() => publishMutation.mutate(p.blueprintId)}
-                      >
-                        <Upload className="mr-1 h-3 w-3" />
-                        Publish for merchants
-                      </Button>
+                      {p.harvestComplete && (
+                        <Button
+                          size="sm"
+                          disabled={publishMutation.isPending}
+                          onClick={() => publishMutation.mutate(p.blueprintId)}
+                        >
+                          <Upload className="mr-1 h-3 w-3" />
+                          Publish for merchants
+                        </Button>
+                      )}
                     </>
                   )}
                   {p.kind === "aop" && (
@@ -284,7 +351,8 @@ export default function PlatformCatalogPage() {
                   </Button>
                 </div>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
 
