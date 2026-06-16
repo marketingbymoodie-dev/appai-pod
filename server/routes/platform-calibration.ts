@@ -11,6 +11,7 @@ import {
   publishCanonicalManifest,
 } from "../canonicalFlatCalibration";
 import {
+  clearPlatformCatalogTag,
   getPlatformCatalogEntry,
   listMerchantImportableCatalog,
   listPlatformCatalogByKind,
@@ -504,6 +505,23 @@ export function registerPlatformCalibrationRoutes(
     } catch (e: any) {
       console.error("[platform-canonical] publish failed:", e);
       res.status(500).json({ error: e?.message || "Publish failed" });
+    }
+  });
+
+  app.delete("/api/platform/canonical/:blueprintId", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      const entry = await getPlatformCatalogEntry(blueprintId);
+      if (!entry || (entry.kind !== "flat" && entry.kind !== "aop")) {
+        return res.status(404).json({ error: "Product not in platform catalog" });
+      }
+
+      await clearPlatformCatalogTag(blueprintId);
+      res.json({ ok: true, blueprintId });
+    } catch (e: any) {
+      console.error("[platform-canonical] remove failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to remove from platform catalog" });
     }
   });
 

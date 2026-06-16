@@ -14,8 +14,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import { Loader2, Crosshair, Upload, RefreshCw } from "lucide-react";
+import { Loader2, Crosshair, Upload, RefreshCw, Trash2 } from "lucide-react";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type PublishState = {
   published: boolean;
@@ -42,6 +52,7 @@ export default function PlatformCatalogPage() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [kindFilter, setKindFilter] = useState<"all" | "flat" | "aop">("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "live" | "draft">("all");
+  const [removeTarget, setRemoveTarget] = useState<CatalogProduct | null>(null);
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -77,6 +88,24 @@ export default function PlatformCatalogPage() {
       });
     },
     onError: (e: Error) => toast({ title: "Harvest failed", description: e.message, variant: "destructive" }),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (blueprintId: number) => {
+      const res = await apiRequest("DELETE", `/api/platform/canonical/${blueprintId}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Removed from platform catalog",
+        description: "Merchants can no longer import this product. Harvested Supabase files are kept.",
+      });
+      setRemoveTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/canonical/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/operator-catalog/tags"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/catalog/allowed-blueprints"] });
+    },
+    onError: (e: Error) => toast({ title: "Remove failed", description: e.message, variant: "destructive" }),
   });
 
   const products = data?.products ?? [];
@@ -243,6 +272,16 @@ export default function PlatformCatalogPage() {
                       AOP uses Hoodie Template Mapper + publish script. Already live when template is on Supabase.
                     </p>
                   )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    disabled={removeMutation.isPending}
+                    onClick={() => setRemoveTarget(p)}
+                  >
+                    <Trash2 className="mr-1 h-3 w-3" />
+                    Remove from catalog
+                  </Button>
                 </div>
               </li>
             ))}
@@ -252,6 +291,32 @@ export default function PlatformCatalogPage() {
         {!isLoading && filteredProducts.length === 0 && (
           <p className="text-sm text-muted-foreground">No products match your filters.</p>
         )}
+
+        <AlertDialog open={!!removeTarget} onOpenChange={(open) => !open && setRemoveTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove from platform catalog?</AlertDialogTitle>
+              <AlertDialogDescription>
+                <strong>{removeTarget?.label}</strong> (blueprint {removeTarget?.blueprintId}) will be removed from
+                the platform catalog and merchant import allowlist. Merchants who already imported it keep their
+                product; harvested calibration files on Supabase are not deleted.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={removeMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={removeMutation.isPending}
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (removeTarget) removeMutation.mutate(removeTarget.blueprintId);
+                }}
+              >
+                {removeMutation.isPending ? "Removing…" : "Remove"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </AdminLayout>
   );
