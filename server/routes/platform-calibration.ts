@@ -271,6 +271,43 @@ function phoneModelsFromProduct(productType: any): Array<{ id: string; name: str
     .map((s: any) => ({ id: String(s.id), name: String(s.name || s.id) }));
 }
 
+function resolveCalibratorModels(
+  entry: FlatCanonicalEntry,
+  manifest: Awaited<ReturnType<typeof loadCanonicalManifest>>,
+  refProduct: any | null,
+): Array<{ id: string; name: string }> {
+  if (manifest?.blanks && Object.keys(manifest.blanks).length > 0) {
+    return Object.keys(manifest.blanks).map((id) => ({
+      id,
+      name: (manifest.blanks as Record<string, { name?: string }>)?.[id]?.name ?? id,
+    }));
+  }
+
+  if (refProduct) {
+    const variants = phoneModelsFromProduct(refProduct);
+    if (entry.category === "phone-cases" && variants.length > 0) {
+      return variants;
+    }
+    if (variants.length > 1) {
+      return variants;
+    }
+    if (variants.length === 1) {
+      return variants;
+    }
+  }
+
+  return [{ id: "default", name: entry.label || "Default" }];
+}
+
+function isHarvestComplete(manifest: Awaited<ReturnType<typeof loadCanonicalManifest>>): boolean {
+  return !!(
+    manifest?.views &&
+    Object.keys(manifest.views).length > 0 &&
+    manifest?.blanks &&
+    Object.keys(manifest.blanks).length > 0
+  );
+}
+
 function assetUrlsForStorage(storageKey: string, modelId: string, view: ViewName) {
   const safe = modelId.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
   const paths = calibratorLayerPaths(storageKey, safe, view);
@@ -362,14 +399,19 @@ export function registerPlatformCalibrationRoutes(
       const sessionMerchantId = req.user?.claims?.sub
         ? (await storage.getMerchantByUserId(req.user.claims.sub))?.id
         : null;
-      let models: Array<{ id: string; name: string }> = [];
+      let refProduct: any | null = null;
       if (creds) {
         const ref = await findReferenceProduct(storage, creds, blueprintId, sessionMerchantId);
-        if (ref.product) models = phoneModelsFromProduct(ref.product);
+        refProduct = ref.product;
       }
-      if (models.length === 0 && manifest?.blanks) {
-        models = Object.keys(manifest.blanks).map((id) => ({ id, name: id }));
-      }
+
+      const models = resolveCalibratorModels(entry, manifest, refProduct);
+      const modelPickerLabel =
+        models.length <= 1
+          ? null
+          : entry.category === "phone-cases"
+            ? "phone"
+            : "variant";
 
       const view: ViewName = "front";
       res.json({
@@ -377,9 +419,13 @@ export function registerPlatformCalibrationRoutes(
         version,
         storageKey,
         name: entry.label,
+        category: entry.category,
         edgeWrap: !!manifest?.edgeWrap,
+        harvestComplete: isHarvestComplete(manifest),
+        modelPickerLabel,
         models: models.map((m) => ({
-          ...m,
+          modelId: m.id,
+          name: m.name,
           assets: assetUrlsForStorage(storageKey, m.id, view),
           geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
           baseView: mergeViewCalibration(manifest as any, m.id, view),

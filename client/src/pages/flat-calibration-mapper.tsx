@@ -30,6 +30,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Check,
   Loader2,
   RefreshCw,
   Save,
@@ -59,10 +60,12 @@ type ModelAssets = {
 };
 
 type CalibratorState = {
-  productTypeId: number;
+  blueprintId?: number;
   name: string;
-  flatCalibrationStatus: string | null;
-  onTheFlyTier?: string | null;
+  category?: string;
+  harvestComplete?: boolean;
+  modelPickerLabel?: "phone" | "variant" | null;
+  edgeWrap?: boolean;
   models: ModelAssets[];
 };
 
@@ -192,16 +195,36 @@ export default function FlatCalibrationMapperPage() {
   const [artPlacement, setArtPlacement] = useState<ArtworkPlacement>({
     ...DEFAULT_ARTWORK_PLACEMENT,
   });
+  const [harvestPhase, setHarvestPhase] = useState<"idle" | "running" | "complete">("idle");
 
   const { data, isLoading, refetch } = useQuery<CalibratorState>({
     queryKey: calibratorQueryKey,
     enabled: Number.isFinite(blueprintId) && !!platformStatus?.isPlatformAdmin,
-    refetchInterval: false,
+    refetchInterval: harvestPhase === "running" ? 15_000 : false,
   });
 
   const models = data?.models ?? [];
   const selectedModel = models.find((m) => m.modelId === selectedModelId) ?? models[0];
   const artScaleMax = flatPlacementScaleMax({ edgeWrapMode: true });
+  const showModelPicker = models.length > 1;
+  const modelPickerLabel =
+    data?.modelPickerLabel === "phone"
+      ? "Phone model"
+      : data?.modelPickerLabel === "variant"
+        ? "Variant"
+        : "Model";
+
+  useEffect(() => {
+    if (data?.harvestComplete && harvestPhase === "running") {
+      setHarvestPhase("complete");
+      toast({
+        title: "Harvest complete",
+        description: "Assets are ready — align layers and save, then publish from Platform Catalog.",
+      });
+    } else if (data?.harvestComplete && harvestPhase === "idle") {
+      setHarvestPhase("complete");
+    }
+  }, [data?.harvestComplete, harvestPhase, toast]);
 
   useEffect(() => {
     if (models.length > 0 && !selectedModelId) {
@@ -359,7 +382,7 @@ export default function FlatCalibrationMapperPage() {
         artwork: previewArt,
         view,
         placement: previewPlacement,
-        tier: (data?.onTheFlyTier as "flat" | "mesh") ?? "flat",
+        tier: "flat",
         edgeWrapMode: true,
         forceShadingMap: true,
         artworkCorsClean: true,
@@ -391,7 +414,7 @@ export default function FlatCalibrationMapperPage() {
     testArtUrl,
     artPlacement,
     activeLayer,
-    data?.onTheFlyTier,
+    data?.edgeWrap,
     artScaleMax,
     lockedLayerAdjust,
   ]);
@@ -427,10 +450,12 @@ export default function FlatCalibrationMapperPage() {
       return res.json();
     },
     onSuccess: () => {
+      setHarvestPhase("running");
       toast({
-        title: "Canonical harvest started",
-        description: "Harvesting to shared library (~15–30 min for phone cases). Refresh when complete, then Publish.",
+        title: "Harvest started",
+        description: "Running in background — this page will update when assets are ready (~15–30 min for phone cases).",
       });
+      void refetch();
     },
     onError: (e: Error) => toast({ title: "Harvest failed", description: e.message, variant: "destructive" }),
   });
@@ -441,6 +466,7 @@ export default function FlatCalibrationMapperPage() {
       return res.json();
     },
     onSuccess: (body: { removed?: number }) => {
+      setHarvestPhase("idle");
       toast({ title: "Assets wiped", description: `Removed ${body.removed ?? 0} file(s) from Supabase.` });
       queryClient.invalidateQueries({ queryKey: calibratorQueryKey });
     },
@@ -476,7 +502,8 @@ export default function FlatCalibrationMapperPage() {
   }
 
   const activeAdj = layerAdjust(activeLayer === "stack" ? "stack" : activeLayer);
-  const isRunning = harvestMutation.isPending;
+  const isHarvesting = harvestPhase === "running";
+  const isHarvested = harvestPhase === "complete";
 
   return (
     <AdminLayout>
@@ -505,15 +532,27 @@ export default function FlatCalibrationMapperPage() {
             </Button>
             <Button
               size="sm"
+              variant={isHarvested ? "outline" : "default"}
+              className={isHarvested ? "border-green-600 text-green-700" : undefined}
               onClick={() => harvestMutation.mutate()}
-              disabled={harvestMutation.isPending || isRunning}
+              disabled={isHarvesting || harvestMutation.isPending}
             >
-              {isRunning ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              {isHarvesting ? (
+                <>
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  Harvesting…
+                </>
+              ) : isHarvested ? (
+                <>
+                  <Check className="mr-1 h-3 w-3" />
+                  Harvested
+                </>
               ) : (
-                <RefreshCw className="mr-1 h-3 w-3" />
+                <>
+                  <RefreshCw className="mr-1 h-3 w-3" />
+                  Wipe + harvest
+                </>
               )}
-              {isRunning ? "Harvesting…" : "Wipe + harvest"}
             </Button>
             <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || !selectedModelId}>
               <Save className="mr-1 h-3 w-3" /> Save alignment
@@ -528,20 +567,29 @@ export default function FlatCalibrationMapperPage() {
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row lg:overflow-hidden">
             <div className="w-full shrink-0 space-y-3 overflow-y-auto lg:w-72 lg:max-h-full">
-              <div>
-                <Label className="text-xs">Phone model</Label>
-                <select
-                  className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
-                  value={selectedModelId}
-                  onChange={(e) => setSelectedModelId(e.target.value)}
-                >
-                  {models.map((m) => (
-                    <option key={m.modelId} value={m.modelId}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {showModelPicker && (
+                <div>
+                  <Label className="text-xs">{modelPickerLabel}</Label>
+                  <select
+                    className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+                    value={selectedModelId}
+                    onChange={(e) => setSelectedModelId(e.target.value)}
+                  >
+                    {models.map((m) => (
+                      <option key={m.modelId} value={m.modelId}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {isHarvesting && (
+                <p className="flex items-center gap-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Harvesting assets… checking every 15s
+                </p>
+              )}
 
               <div className="space-y-2 rounded border p-2">
                 <div className="text-xs font-medium">Visible layers</div>
