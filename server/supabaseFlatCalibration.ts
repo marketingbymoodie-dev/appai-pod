@@ -151,3 +151,13 @@ export async function downloadFlatCalibrationFile(filename: string): Promise<Buf
   if (error || !data) return null;
   return Buffer.from(await data.arrayBuffer());
 }
+
+/** Prefer calibrator-layer path; fall back to manifest URL when layer file is missing. */
+export async function resolveFlatCalibrationAssetUrl(
+  storagePath: string,
+  fallbackPublicUrl?: string | null,
+): Promise<string | null> {
+  const buf = await downloadFlatCalibrationFile(storagePath);
+  if (buf) return publicFlatCalibrationUrl(storagePath);
+  return fallbackPublicUrl ?? null;
+}

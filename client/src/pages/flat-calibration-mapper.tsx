@@ -95,6 +95,14 @@ function loadImage(url: string | null): Promise<HTMLImageElement | null> {
   });
 }
 
+async function loadImageFirst(...urls: (string | null | undefined)[]): Promise<HTMLImageElement | null> {
+  for (const url of urls) {
+    const img = await loadImage(url ?? null);
+    if (img) return img;
+  }
+  return null;
+}
+
 function getWhiteArtwork(): Promise<HTMLImageElement> {
   return new Promise((resolve) => {
     const c = document.createElement("canvas");
@@ -124,8 +132,8 @@ function buildCalibratorView(
   if (!baseView?.printFileDims) return null;
   return {
     ...baseView,
-    maskUrl: assets.mask ?? baseView.maskUrl,
-    shadingUrl: assets.shading ?? baseView.shadingUrl,
+    maskUrl: baseView.maskUrl ?? assets.mask ?? null,
+    shadingUrl: baseView.shadingUrl ?? assets.shading ?? null,
     shadingMode: baseView.shadingMode === "blank" ? "map" : baseView.shadingMode ?? "map",
   };
 }
@@ -383,10 +391,10 @@ export default function FlatCalibrationMapperPage() {
     }
 
     const [blankImg, shadeImg, pinkImg, maskImg, artImg] = await Promise.all([
-      loadImage(model.assets.blank),
-      loadImage(model.assets.shading),
-      loadImage(model.assets.pink),
-      loadImage(model.assets.mask),
+      loadImageFirst(model.assets.blank),
+      loadImageFirst(model.assets.shading, view.shadingUrl),
+      loadImageFirst(model.assets.pink),
+      loadImageFirst(model.assets.mask, view.maskUrl),
       loadImage(testArtUrl),
     ]);
 

@@ -31,7 +31,7 @@ import { isPlatformAdminRequest, requirePlatformAdmin } from "../platformAdmin";
 import {
   deleteFlatCalibrationAssetsByPrefix,
   downloadFlatCalibrationFile,
-  publicFlatCalibrationUrl,
+  resolveFlatCalibrationAssetUrl,
   uploadToFlatCalibrationBucket,
 } from "../supabaseFlatCalibration";
 
@@ -308,15 +308,22 @@ function isHarvestComplete(manifest: Awaited<ReturnType<typeof loadCanonicalMani
   );
 }
 
-function assetUrlsForStorage(storageKey: string, modelId: string, view: ViewName) {
+async function assetUrlsForStorage(
+  storageKey: string,
+  modelId: string,
+  view: ViewName,
+  baseView: Record<string, any> | null,
+  blankFallbackUrl?: string | null,
+) {
   const safe = modelId.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
   const paths = calibratorLayerPaths(storageKey, safe, view);
-  return {
-    pink: publicFlatCalibrationUrl(paths.pink),
-    blank: publicFlatCalibrationUrl(paths.blank),
-    mask: publicFlatCalibrationUrl(paths.mask),
-    shading: publicFlatCalibrationUrl(paths.shading),
-  };
+  const [pink, blank, mask, shading] = await Promise.all([
+    resolveFlatCalibrationAssetUrl(paths.pink, null),
+    resolveFlatCalibrationAssetUrl(paths.blank, blankFallbackUrl),
+    resolveFlatCalibrationAssetUrl(paths.mask, baseView?.maskUrl ?? null),
+    resolveFlatCalibrationAssetUrl(paths.shading, baseView?.shadingUrl ?? null),
+  ]);
+  return { pink, blank, mask, shading };
 }
 
 async function resolvePlatformPrintifyCreds(
@@ -419,6 +426,22 @@ export function registerPlatformCalibrationRoutes(
             : "variant";
 
       const view: ViewName = "front";
+      const modelPayload = await Promise.all(
+        models.map(async (m) => {
+          const baseView = mergeViewCalibration(manifest as any, m.id, view);
+          const blankFallbackUrl =
+            (manifest as any)?.blanks?.[m.id]?.[view] ??
+            (manifest as any)?.blanks?.[m.id]?.front ??
+            null;
+          return {
+            modelId: m.id,
+            name: m.name,
+            assets: await assetUrlsForStorage(storageKey, m.id, view, baseView, blankFallbackUrl),
+            geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
+            baseView,
+          };
+        }),
+      );
       res.json({
         blueprintId,
         version,
@@ -428,13 +451,7 @@ export function registerPlatformCalibrationRoutes(
         edgeWrap: !!manifest?.edgeWrap,
         harvestComplete: isHarvestComplete(manifest),
         modelPickerLabel,
-        models: models.map((m) => ({
-          modelId: m.id,
-          name: m.name,
-          assets: assetUrlsForStorage(storageKey, m.id, view),
-          geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
-          baseView: mergeViewCalibration(manifest as any, m.id, view),
-        })),
+        models: modelPayload,
       });
     } catch (e) {
       console.error("[platform-calibrator] GET failed:", e);

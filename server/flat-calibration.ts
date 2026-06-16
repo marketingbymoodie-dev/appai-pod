@@ -1699,16 +1699,20 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     createdProductIds.push(reg.productId);
     const regImages = await pollMockups(token, shopId, reg.productId, reg.images);
     const maskByView: Partial<Record<ViewName, MagentaAnalysis>> = {};
+    const regImageByView: Partial<Record<ViewName, Buffer>> = {};
+    const maskPngByView: Partial<Record<ViewName, Buffer>> = {};
     for (const view of availableViews) {
       const match = pickView(regImages, view);
       if (!match) continue;
       const buf = await downloadBuffer(match.url);
+      if (calibratorMode) regImageByView[view] = buf;
       const a = await analyzeMagenta(buf);
       maskByView[view] = a;
       const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct, placeholderDims.get(view));
       let maskUrl: string | null = null;
       if (a.found) {
         const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);
+        if (calibratorMode) maskPngByView[view] = maskPng;
         maskUrl = await uploadToFlatCalibrationBucket(`${storageKey}/mask-${view}.png`, maskPng, "image/png");
       }
       baseManifest.views[view] = {
@@ -1741,6 +1745,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const gray = await createTempProduct(token, shopId, blueprintId, providerId, representativeVariantId, grayPlaceholders);
     createdProductIds.push(gray.productId);
     const grayImages = await pollMockups(token, shopId, gray.productId, gray.images);
+    const shadingImageByView: Partial<Record<ViewName, Buffer>> = {};
     for (const view of availableViews) {
       const vc = baseManifest.views[view];
       const match = pickView(grayImages, view);
@@ -1751,6 +1756,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const cropPx = sideProfileCropPx(vc, mask.width, mask.height);
         if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
       }
+      if (calibratorMode) shadingImageByView[view] = buf;
       vc.shadingUrl = await uploadToFlatCalibrationBucket(`${storageKey}/shading-${view}.png`, buf, "image/jpeg");
       vc.shadingMode = mask ? await shadingModeFromGray(buf, mask) : "blank";
     }
@@ -1797,10 +1803,8 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         ? placeholderDimsForVariant(variant)
         : placeholderDims;
       let perBlankGeo: Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null = null;
-      if (
-        needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize) &&
-        variantDims.size > 0
-      ) {
+      const perBlank = needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize);
+      if (perBlank && variantDims.size > 0) {
         perBlankGeo = await harvestPerBlankGeometry({
           token,
           shopId,
@@ -1827,8 +1831,20 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
               harvestWarnings.push(`${color.id}/${view}: geometry harvested but no mask (magenta not detected)`);
             }
           }
-        } else if (needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize) && variantDims.size > 0) {
+        } else if (perBlank && variantDims.size > 0) {
           harvestWarnings.push(`${color.id}: per-model geometry harvest returned nothing (all views failed)`);
+        }
+      }
+
+      if (calibratorMode && !perBlank) {
+        for (const view of availableViews) {
+          const paths = calibratorLayerPaths(storageKey, safe, view);
+          const pink = regImageByView[view];
+          const maskPng = maskPngByView[view];
+          const shade = shadingImageByView[view];
+          if (pink) await uploadToFlatCalibrationBucket(paths.pink, pink, "image/jpeg");
+          if (maskPng) await uploadToFlatCalibrationBucket(paths.mask, maskPng, "image/png");
+          if (shade) await uploadToFlatCalibrationBucket(paths.shading, shade, "image/jpeg");
         }
       }
 

@@ -22,7 +22,7 @@ import {
 } from "../flat-calibration";
 import {
   downloadFlatCalibrationFile,
-  publicFlatCalibrationUrl,
+  resolveFlatCalibrationAssetUrl,
   uploadToFlatCalibrationBucket,
   deleteFlatCalibrationProductAssets,
 } from "../supabaseFlatCalibration";
@@ -109,17 +109,29 @@ function safeSlug(id: string): string {
   return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 }
 
-function assetUrls(productTypeId: number, modelId: string, view: ViewName) {
+async function assetUrls(
+  productTypeId: number,
+  modelId: string,
+  view: ViewName,
+  baseView: Record<string, any> | null,
+  blankFallbackUrl?: string | null,
+) {
   const safe = safeSlug(modelId);
   const paths = calibratorLayerPaths(merchantStorageKey(productTypeId), safe, view);
+  const [pink, blank, mask, shading] = await Promise.all([
+    resolveFlatCalibrationAssetUrl(paths.pink, null),
+    resolveFlatCalibrationAssetUrl(paths.blank, blankFallbackUrl),
+    resolveFlatCalibrationAssetUrl(paths.mask, baseView?.maskUrl ?? null),
+    resolveFlatCalibrationAssetUrl(paths.shading, baseView?.shadingUrl ?? null),
+  ]);
   return {
     modelId,
     safe,
     view,
-    pink: publicFlatCalibrationUrl(paths.pink),
-    blank: publicFlatCalibrationUrl(paths.blank),
-    mask: publicFlatCalibrationUrl(paths.mask),
-    shading: publicFlatCalibrationUrl(paths.shading),
+    pink,
+    blank,
+    mask,
+    shading,
     paths,
   };
 }
@@ -171,6 +183,19 @@ export function registerFlatCalibrationMapperRoutes(
       const geometry = (await loadCalibratorGeometry(productTypeId)) ?? manifest?.calibratorGeometry ?? null;
       const models = phoneModelsFromProduct(productType);
       const view: ViewName = "front";
+      const modelPayload = await Promise.all(
+        models.map(async (m) => {
+          const baseView = mergeViewCalibration(manifest, m.id, view);
+          const blankFallbackUrl = manifest?.blanks?.[m.id]?.[view] ?? manifest?.blanks?.[m.id]?.front ?? null;
+          return {
+            modelId: m.id,
+            name: m.name,
+            assets: await assetUrls(productTypeId, m.id, view, baseView, blankFallbackUrl),
+            geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
+            baseView,
+          };
+        }),
+      );
 
       res.json({
         productTypeId,
@@ -178,13 +203,7 @@ export function registerFlatCalibrationMapperRoutes(
         flatCalibrationStatus: productType.flatCalibrationStatus,
         onTheFlyTier: productType.onTheFlyTier,
         edgeWrap: !!manifest?.edgeWrap,
-        models: models.map((m) => ({
-          modelId: m.id,
-          name: m.name,
-          assets: assetUrls(productTypeId, m.id, view),
-          geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
-          baseView: mergeViewCalibration(manifest, m.id, view),
-        })),
+        models: modelPayload,
         geometry,
         manifestSummary: manifest
           ? {
