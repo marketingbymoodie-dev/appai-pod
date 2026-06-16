@@ -700,22 +700,53 @@ function slugColorId(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, "_");
 }
 
+function variantOptionValues(variant: any): number[] {
+  return Array.isArray(variant.options)
+    ? variant.options.map(Number)
+    : Object.values(variant.options || {}).map(Number);
+}
+
+function colorsFromBlueprintOption(
+  variants: any[],
+  option: { values?: Array<{ id: number | string; title?: string; colors?: string[] }> } | undefined,
+): ColorEntry[] {
+  const valueMeta = new Map<number, { name: string; hex?: string }>();
+  for (const v of option?.values || []) {
+    valueMeta.set(Number(v.id), {
+      name: v.title || String(v.id),
+      hex: Array.isArray(v.colors) ? v.colors[0] : undefined,
+    });
+  }
+  const valueIdSet = new Set(valueMeta.keys());
+  const byValue = new Map<number, ColorEntry>();
+  for (const variant of variants) {
+    const matchId = variantOptionValues(variant).find((id) => valueIdSet.has(Number(id)));
+    if (matchId == null || byValue.has(matchId)) continue;
+    const meta = valueMeta.get(Number(matchId));
+    const name = meta?.name || String(matchId);
+    byValue.set(matchId, { id: slugColorId(name), name, hex: meta?.hex, variantId: variant.id });
+  }
+  return [...byValue.values()];
+}
+
 async function resolveColorsFromCatalog(token: string, blueprintId: number, providerId: number, variants: any[]): Promise<ColorEntry[]> {
   const blueprint = await pf<any>(`/catalog/blueprints/${blueprintId}.json`, token);
-  const colorOption = (blueprint.options || []).find((o: any) => o.type === "color" || /colou?r/i.test(o.name || ""));
-  const valueMeta = new Map<number, { name: string; hex?: string }>();
-  if (colorOption) for (const v of colorOption.values || []) valueMeta.set(Number(v.id), { name: v.title || String(v.id), hex: Array.isArray(v.colors) ? v.colors[0] : undefined });
-  const colorIdSet = new Set(valueMeta.keys());
-  const byColor = new Map<number, ColorEntry>();
-  for (const variant of variants) {
-    const optVals: number[] = Array.isArray(variant.options) ? variant.options : Object.values(variant.options || {}).map(Number);
-    const colorId = optVals.find((id) => colorIdSet.has(Number(id)));
-    if (colorId == null || byColor.has(colorId)) continue;
-    const meta = valueMeta.get(Number(colorId));
-    const name = meta?.name || String(colorId);
-    byColor.set(colorId, { id: slugColorId(name), name, hex: meta?.hex, variantId: variant.id });
+  const options: any[] = blueprint.options || [];
+  const colorOption = options.find((o: any) => o.type === "color" || /colou?r/i.test(o.name || ""));
+  const fromColor = colorsFromBlueprintOption(variants, colorOption);
+  if (fromColor.length > 0) return fromColor;
+
+  // AOP / accessories often expose only size (or model) — one blank per distinct option value.
+  const sizeOption = options.find((o: any) => o.type === "size" || /size/i.test(o.name || ""));
+  const fromSize = colorsFromBlueprintOption(variants, sizeOption);
+  if (fromSize.length > 0) return fromSize;
+
+  for (const option of options) {
+    const fromOption = colorsFromBlueprintOption(variants, option);
+    if (fromOption.length > 0) return fromOption;
   }
-  return [...byColor.values()];
+
+  return [];
 }
 
 function parseJsonArray(raw: unknown): any[] {
@@ -1385,6 +1416,40 @@ export function buildHarvestColorsFromProductType(productType: {
     }
   }
 
+  // Imported product with variantMap but empty frameColors (common for AOP staging).
+  if (colors.length === 0 && Object.keys(variantMap).length > 0) {
+    const colorIds = new Set<string>();
+    for (const key of Object.keys(variantMap)) {
+      const parts = key.split(":");
+      if (parts.length >= 2 && parts[1]) colorIds.add(parts[1]);
+    }
+    const idsToTry = colorIds.size > 0 ? [...colorIds] : ["default"];
+    for (const colorId of idsToTry) {
+      let variantId: number | null = null;
+      for (const size of sizes) {
+        variantId = resolveVariantIdForHarvest(variantMap, String(size.id), colorId, {
+          allowSizeFallbackForColor: true,
+        });
+        if (variantId != null) break;
+      }
+      if (variantId == null) {
+        for (const [key, entry] of Object.entries(variantMap)) {
+          if ((key === colorId || key.endsWith(`:${colorId}`)) && entry?.printifyVariantId) {
+            variantId = Number(entry.printifyVariantId);
+            break;
+          }
+        }
+      }
+      if (variantId == null) {
+        const first = Object.values(variantMap).find((entry) => entry?.printifyVariantId);
+        variantId = first?.printifyVariantId ? Number(first.printifyVariantId) : null;
+      }
+      if (variantId != null) {
+        pushColor({ id: colorId, name: colorId, variantId });
+      }
+    }
+  }
+
   return colors;
 }
 
@@ -1697,8 +1762,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         : await resolveColorsFromCatalog(token, blueprintId, providerId, variants);
     if (colors.length === 0) {
       console.warn(
-        `[flat-calibration] ${name} (pt ${productTypeId}): catalog colour resolution returned 0 — blank harvest skipped`,
+        `[flat-calibration] ${name} (pt ${productTypeId}): no colours resolved — using first catalog variant as default blank`,
       );
+      colors = [{ id: "default", name: "default", variantId: variants[0].id }];
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
     const harvestWarnings: string[] = [];
