@@ -263,12 +263,6 @@ export function registerFlatCalibrationMapperRoutes(
       void (async () => {
         try {
           await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
-          const colors = buildHarvestColorsFromProductType({
-            designerType: productType.designerType,
-            frameColors: productType.frameColors,
-            sizes: productType.sizes,
-            variantMap: productType.variantMap,
-          });
           const result = await harvestFlatCalibration({
             productTypeId,
             name: productType.name,
@@ -278,7 +272,8 @@ export function registerFlatCalibrationMapperRoutes(
             shopId: merchant.printifyShopId,
             designerType: productType.designerType,
             sizes: productType.sizes,
-            colors: colors.length > 0 ? colors : undefined,
+            frameColors: productType.frameColors,
+            variantMap: productType.variantMap,
             calibratorMode: true,
             wipeExisting: true,
           });

@@ -503,14 +503,6 @@ export function registerPlatformCalibrationRoutes(
 
       void (async () => {
         try {
-          const colors = ref
-            ? buildHarvestColorsFromProductType({
-                designerType: ref.designerType,
-                frameColors: ref.frameColors,
-                sizes: ref.sizes,
-                variantMap: ref.variantMap,
-              })
-            : [];
           const storageKey = canonicalStorageKey(blueprintId, version);
           const result = await harvestFlatCalibration({
             productTypeId: 0,
@@ -521,7 +513,8 @@ export function registerPlatformCalibrationRoutes(
             shopId: creds.shopId,
             designerType: ref?.designerType,
             sizes: ref?.sizes,
-            colors: colors.length > 0 ? colors : undefined,
+            frameColors: ref?.frameColors,
+            variantMap: ref?.variantMap,
             calibratorMode: true,
             wipeExisting: true,
             storageKey,

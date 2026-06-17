@@ -47,7 +47,7 @@ import {
   listPublicTemplateNames,
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
-import { harvestFlatCalibration, buildHarvestColorsFromProductType, type HarvestOptions } from "./flat-calibration";
+import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId } from "@shared/canonicalProducts";
 import {
   canMerchantImportEntry,
@@ -101,7 +101,6 @@ function kickoffFlatCalibration(args: {
   void (async () => {
     try {
       await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
-      const colors = buildHarvestColorsFromProductType({ designerType, frameColors, sizes, variantMap });
       const opts: HarvestOptions = {
         productTypeId,
         name,
@@ -111,7 +110,8 @@ function kickoffFlatCalibration(args: {
         shopId,
         designerType,
         sizes,
-        colors: colors.length > 0 ? colors : undefined,
+        frameColors,
+        variantMap,
       };
       const result = await harvestFlatCalibration(opts);
       await storage.updateProductType(productTypeId, {

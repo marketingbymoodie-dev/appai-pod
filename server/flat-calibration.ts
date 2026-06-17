@@ -700,6 +700,11 @@ function slugColorId(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, "_");
 }
 
+/** Match client `normalizeFlatColorKey` / import slug lookups across `/`, `_`, spaces. */
+function normalizeHarvestColorKey(id: string): string {
+  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+}
+
 function variantOptionValues(variant: any): number[] {
   return Array.isArray(variant.options)
     ? variant.options.map(Number)
@@ -1440,10 +1445,6 @@ export function buildHarvestColorsFromProductType(productType: {
           }
         }
       }
-      if (variantId == null) {
-        const first = Object.values(variantMap).find((entry) => entry?.printifyVariantId);
-        variantId = first?.printifyVariantId ? Number(first.printifyVariantId) : null;
-      }
       if (variantId != null) {
         pushColor({ id: colorId, name: colorId, variantId });
       }
@@ -1451,6 +1452,100 @@ export function buildHarvestColorsFromProductType(productType: {
   }
 
   return colors;
+}
+
+/**
+ * Resolve every distinct colour/model blank to harvest — merges merchant product
+ * frameColors+variantMap with Printify catalog options so blank keys align with
+ * storefront dropdown ids and each variant gets its own mockup photo.
+ */
+export async function resolveHarvestColors(args: {
+  token: string;
+  blueprintId: number;
+  providerId: number;
+  variants: any[];
+  productType?: {
+    designerType?: string | null;
+    frameColors?: unknown;
+    sizes?: unknown;
+    variantMap?: unknown;
+  } | null;
+}): Promise<ColorEntry[]> {
+  const { token, blueprintId, providerId, variants, productType } = args;
+  const byKey = new Map<string, ColorEntry>();
+
+  const upsert = (entry: ColorEntry, preferId?: string) => {
+    if (!entry.variantId || entry.variantId <= 0) return;
+    const key = normalizeHarvestColorKey(preferId || entry.id);
+    const cur = byKey.get(key);
+    const id = preferId || cur?.id || entry.id;
+    byKey.set(key, {
+      id,
+      name: cur?.name || entry.name || id,
+      hex: cur?.hex || entry.hex,
+      variantId: entry.variantId,
+    });
+  };
+
+  if (productType) {
+    for (const c of buildHarvestColorsFromProductType(productType)) {
+      upsert(c);
+    }
+
+    const frameColors = parseJsonArray(productType.frameColors);
+    const sizes = parseJsonArray(productType.sizes);
+    const variantMap = parseJsonRecord(productType.variantMap);
+    for (const fc of frameColors) {
+      if (!fc?.id) continue;
+      const id = String(fc.id);
+      if (byKey.has(normalizeHarvestColorKey(id))) continue;
+      let variantId: number | null = null;
+      for (const size of sizes) {
+        variantId = resolveVariantIdForHarvest(variantMap, String(size.id), id, {
+          allowSizeFallbackForColor: true,
+        });
+        if (variantId != null) break;
+      }
+      if (variantId == null) {
+        for (const [key, entry] of Object.entries(variantMap)) {
+          if ((key === id || key.endsWith(`:${id}`)) && entry?.printifyVariantId) {
+            variantId = Number(entry.printifyVariantId);
+            break;
+          }
+        }
+      }
+      if (variantId != null) {
+        upsert({ id, name: fc.name || id, hex: fc.hex, variantId }, id);
+      }
+    }
+  }
+
+  const catalog = await resolveColorsFromCatalog(token, blueprintId, providerId, variants);
+  for (const c of catalog) {
+    upsert(c);
+  }
+
+  // Frame colour ids from import may differ slightly from catalog slugs — match by name.
+  if (productType) {
+    const frameColors = parseJsonArray(productType.frameColors);
+    for (const fc of frameColors) {
+      if (!fc?.id) continue;
+      const id = String(fc.id);
+      const key = normalizeHarvestColorKey(id);
+      if (byKey.has(key)) continue;
+      const nameKey = normalizeHarvestColorKey(String(fc.name || id));
+      const catalogHit = catalog.find(
+        (c) =>
+          normalizeHarvestColorKey(c.id) === nameKey ||
+          normalizeHarvestColorKey(c.name) === nameKey,
+      );
+      if (catalogHit) {
+        upsert({ id, name: fc.name || id, hex: fc.hex, variantId: catalogHit.variantId }, id);
+      }
+    }
+  }
+
+  return [...byKey.values()];
 }
 
 function manifestHasBlanks(manifest: FlatCalibrationManifest): boolean {
@@ -1606,7 +1701,9 @@ export type HarvestOptions = {
   shopId: string;
   designerType?: string | null;
   sizes?: unknown;
-  /** Optional explicit color list (e.g. from product frameColors+variantMap). Falls back to catalog. */
+  frameColors?: unknown;
+  variantMap?: unknown;
+  /** Optional explicit color list; when omitted, resolves all colours from product + catalog. */
   colors?: ColorEntry[];
   maxBlankColors?: number;
   /** Save assets under products/{id}/calibrator/{model}-pink|blank|mask|shading. */
@@ -1765,12 +1862,30 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     let colors =
       opts.colors && opts.colors.length > 0
         ? opts.colors
-        : await resolveColorsFromCatalog(token, blueprintId, providerId, variants);
+        : await resolveHarvestColors({
+            token,
+            blueprintId,
+            providerId,
+            variants,
+            productType:
+              opts.frameColors || opts.variantMap || opts.designerType || opts.sizes
+                ? {
+                    designerType: opts.designerType,
+                    frameColors: opts.frameColors,
+                    sizes: opts.sizes,
+                    variantMap: opts.variantMap,
+                  }
+                : null,
+          });
     if (colors.length === 0) {
       console.warn(
         `[flat-calibration] ${name} (pt ${productTypeId}): no colours resolved — using first catalog variant as default blank`,
       );
       colors = [{ id: "default", name: "default", variantId: variants[0].id }];
+    } else {
+      console.log(
+        `[flat-calibration] ${name} (pt ${productTypeId}): harvesting ${colors.length} blank(s): ${colors.map((c) => c.id).join(", ")}`,
+      );
     }
     colors = colors.slice(0, Math.max(1, maxBlankColors));
     const harvestWarnings: string[] = [];
