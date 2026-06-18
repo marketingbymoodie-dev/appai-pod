@@ -11806,27 +11806,16 @@ ${textEdgeRestrictions}
       }
 
       // Get providers if no providerId specified
-      let actualProviderId = providerId;
-      if (!actualProviderId) {
-        const providersResponse = await fetch(
-          `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`,
-          {
-            headers: {
-              "Authorization": `Bearer ${merchant.printifyApiToken}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-        if (providersResponse.ok) {
-          const providers = await providersResponse.json();
-          if (providers && providers.length > 0) {
-            actualProviderId = providers[0].id;
-          }
-        }
+      if (!providerId) {
+        return res.status(400).json({
+          error: "providerId is required — each print provider has different variants, costs, and shipping.",
+          code: "PROVIDER_REQUIRED",
+        });
       }
 
-      if (!actualProviderId) {
-        return res.status(400).json({ error: "No provider available for this blueprint" });
+      const actualProviderId = Number(providerId);
+      if (!Number.isFinite(actualProviderId) || actualProviderId <= 0) {
+        return res.status(400).json({ error: "Invalid providerId" });
       }
 
       const response = await fetch(
@@ -12231,7 +12220,7 @@ ${textEdgeRestrictions}
   app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { blueprintId, name, description, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
+      const { blueprintId, name, description, providerId: bodyProviderId, selectedSizeIds, selectedColorIds, placeholderPrimaryUrl, placeholderGalleryUrls, customPlaceholderUrls } = req.body;
       const merchant = await storage.getMerchantByUserId(userId);
       
       if (!merchant) {
@@ -12317,8 +12306,25 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "No print providers available for this blueprint" });
       }
 
-      // Use provided provider ID or default to first provider
-      const providerId = req.body.providerId || providers[0].id;
+      if (!bodyProviderId) {
+        return res.status(400).json({
+          error: "Print provider is required. Each supplier has different colours, production costs, and shipping.",
+          code: "PROVIDER_REQUIRED",
+        });
+      }
+
+      const providerId = Number(bodyProviderId);
+      if (!Number.isFinite(providerId) || providerId <= 0) {
+        return res.status(400).json({ error: "Invalid print provider ID" });
+      }
+
+      const providerValid = providers.some((p: { id: number }) => Number(p.id) === providerId);
+      if (!providerValid) {
+        return res.status(400).json({
+          error: "Selected print provider is not available for this blueprint.",
+          code: "PROVIDER_INVALID",
+        });
+      }
 
       // Fetch blueprint details to get color hex codes from options
       const blueprintResponse = await fetchWithRetry(

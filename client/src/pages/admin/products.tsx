@@ -554,13 +554,11 @@ export default function AdminProducts() {
 
   // Load variant data for the selected blueprint/provider
   const loadVariantData = async () => {
-    if (!selectedBlueprint) return;
+    if (!selectedBlueprint || !selectedProvider) return;
     
     setVariantDataLoading(true);
     try {
-      const url = selectedProvider 
-        ? `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`
-        : `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants`;
+      const url = `/api/admin/printify/blueprints/${selectedBlueprint.id}/variants?providerId=${selectedProvider.id}`;
       
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch variants");
@@ -581,6 +579,14 @@ export default function AdminProducts() {
   };
   
   const handleProceedToVariants = async () => {
+    if (!selectedProvider) {
+      toast({
+        title: "Select a print provider",
+        description: "Each supplier has different colours, costs, and shipping. Pick one before choosing variants.",
+        variant: "destructive",
+      });
+      return;
+    }
     setProviderSelectionOpen(false);
     setVariantSelectionOpen(true);
     setPlaceholderPrimaryUrl("");
@@ -589,7 +595,7 @@ export default function AdminProducts() {
   };
 
   const handleImportBlueprint = async () => {
-    if (!selectedBlueprint) return;
+    if (!selectedBlueprint || !selectedProvider) return;
     if (!isVariantCountValid) return;
     
     importPrintifyMutation.mutate({
@@ -1078,6 +1084,7 @@ export default function AdminProducts() {
                       className={`cursor-pointer hover-elevate ${selectedBlueprint?.id === bp.id ? 'ring-2 ring-primary' : ''}`}
                       onClick={() => {
                         setSelectedBlueprint(bp);
+                        setSelectedProvider(null);
                         setProviderLocationFilter("");
                         setProviderSelectionOpen(true);
                       }}
@@ -1196,6 +1203,11 @@ export default function AdminProducts() {
                   <p className="text-xs mt-1">Try selecting a different product or adjusting the location filter.</p>
                 </div>
               ) : (
+                <>
+                <p className="text-sm text-muted-foreground">
+                  One product uses one print provider for fulfilment, costs, and mockup calibration.
+                  Import the same blueprint again with a different supplier if you need a separate EU or US listing.
+                </p>
                 <div className="space-y-2 max-h-[300px] overflow-y-auto">
                   {filteredProviders.map((provider) => (
                     <Card
@@ -1223,6 +1235,7 @@ export default function AdminProducts() {
                     </Card>
                   ))}
                 </div>
+                </>
               )}
 
               <div className="flex justify-end gap-2">
@@ -1231,7 +1244,7 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleProceedToVariants}
-                  disabled={!selectedBlueprint}
+                  disabled={!selectedBlueprint || !selectedProvider}
                 >
                   Select Variants
                 </Button>
@@ -1248,10 +1261,15 @@ export default function AdminProducts() {
             </DialogHeader>
             <div className="space-y-4">
               {selectedBlueprint && (
-                <div className="p-3 bg-muted rounded-lg">
+                <div className="p-3 bg-muted rounded-lg space-y-1">
                   <p className="font-medium">{selectedBlueprint.title}</p>
-                  {selectedProvider && (
-                    <p className="text-sm text-muted-foreground">{selectedProvider.title}</p>
+                  {selectedProvider ? (
+                    <p className="text-sm text-muted-foreground">
+                      Supplier: <span className="font-medium text-foreground">{selectedProvider.title}</span>
+                      {selectedProvider.location?.country ? ` · ${selectedProvider.location.country}` : ""}
+                    </p>
+                  ) : (
+                    <p className="text-sm text-destructive">No supplier selected — go back and pick one.</p>
                   )}
                 </div>
               )}
@@ -1432,7 +1450,7 @@ export default function AdminProducts() {
                 </Button>
                 <Button 
                   onClick={handleImportBlueprint}
-                  disabled={!isVariantCountValid || importPrintifyMutation.isPending}
+                  disabled={!selectedProvider || !isVariantCountValid || importPrintifyMutation.isPending}
                 >
                   {importPrintifyMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
