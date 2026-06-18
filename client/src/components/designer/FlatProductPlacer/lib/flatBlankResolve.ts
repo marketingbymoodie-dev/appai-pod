@@ -14,9 +14,28 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
   if (blankKeyMatches(manifest, id)) return id;
   const norm = normalizeFlatColorKey(id);
   for (const k of Object.keys(manifest.blanks || {})) {
-    if (normalizeFlatColorKey(k) === norm && blankKeyMatches(manifest, k)) return k;
+    if (!blankKeyMatches(manifest, k)) continue;
+    const kn = normalizeFlatColorKey(k);
+    if (kn === norm || kn.endsWith(`-${norm}`)) return k;
   }
   return null;
+}
+
+/** Prefer `default`, else first blank with front/back URLs. */
+export function firstUsableBlankKey(manifest: FlatCalibrationManifest): string | null {
+  if (blankKeyMatches(manifest, "default")) return "default";
+  for (const k of Object.keys(manifest.blanks || {})) {
+    if (blankKeyMatches(manifest, k)) return k;
+  }
+  return null;
+}
+
+/** True when harvest has distinct colour/model blanks (not a single default-only manifest). */
+export function manifestHasMultipleColorBlanks(manifest: FlatCalibrationManifest): boolean {
+  const keys = Object.keys(manifest.blanks || {}).filter((k) => blankKeyMatches(manifest, k));
+  if (keys.length <= 1) return false;
+  if (keys.length === 1 && keys[0] === "default") return false;
+  return true;
 }
 
 /** True when every blank key is `{apparelSize}:{color}` (legacy mis-harvested sweaters). */
@@ -74,8 +93,11 @@ export function resolveFlatBlankColorId(
     if (colorHit) return colorHit;
     const direct = findBlankKey(manifest, opts.frameColorId);
     if (direct) return direct;
-    // Do not fall back to the first harvested blank — that makes every colour
-    // show the same shirt when slug lookup misses.
+    // Multi-colour harvest: never swap in a different blank when slug lookup misses.
+    if (manifestHasMultipleColorBlanks(manifest)) return opts.frameColorId;
+    // Single/default blank harvest — keep flat tier alive until re-harvest adds per-colour blanks.
+    const singleBlank = firstUsableBlankKey(manifest);
+    if (singleBlank) return singleBlank;
     return opts.frameColorId;
   }
 

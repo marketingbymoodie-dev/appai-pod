@@ -877,15 +877,30 @@ interface SaveImageOptions {
   isAllOverPrint?: boolean;
   targetDims?: TargetDimensions;
   colorTier?: ColorTier;
+  /** 0–100; higher = more aggressive alpha erosion after background removal. */
+  bgRemovalSensitivity?: number;
+}
+
+/** Alpha erosion radius after matting — lighter when remove.bg succeeded cleanly. */
+function resolveAlphaErosionRadius(opts: {
+  removeBgUsedApi: boolean;
+  bgRemovalSensitivity?: number;
+}): number {
+  if (typeof opts.bgRemovalSensitivity === "number" && Number.isFinite(opts.bgRemovalSensitivity)) {
+    const s = Math.max(0, Math.min(100, opts.bgRemovalSensitivity));
+    return Math.round((s / 100) * 2);
+  }
+  return opts.removeBgUsedApi ? 0 : 1;
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims } = options || {};
+  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
 
   let buffer: Buffer = Buffer.from(base64Data, "base64");
+  let removeBgUsedApi = false;
 
   // For apparel, remove background using Picsart — including AOP
   // This ensures the motif is clean before tiling or placement
@@ -911,6 +926,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
           buffer = Buffer.from(base64Data, "base64");
           extension = "png";
           actualMimeType = "image/png";
+          removeBgUsedApi = true;
           console.log("[saveImageToStorage] remove.bg background removal successful");
         } else {
           // Legacy URL format fallback
@@ -919,6 +935,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
             buffer = Buffer.from(await response.arrayBuffer());
             extension = "png";
             actualMimeType = "image/png";
+            removeBgUsedApi = true;
             console.log("[saveImageToStorage] remove.bg background removal successful (URL)");
           } else {
             throw new Error(`Failed to download remove.bg result: ${response.statusText}`);
@@ -942,13 +959,16 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       console.warn("[saveImageToStorage] magenta despill skipped:", (despillErr as Error).message);
     }
 
-    try {
-      buffer = await erodeAlphaChannel(buffer, 2);
-    } catch (erodeErr) {
-      console.warn("[saveImageToStorage] alpha erosion skipped:", (erodeErr as Error).message);
+    const erosionRadius = resolveAlphaErosionRadius({ removeBgUsedApi, bgRemovalSensitivity });
+    if (erosionRadius > 0) {
+      try {
+        buffer = await erodeAlphaChannel(buffer, erosionRadius);
+      } catch (erodeErr) {
+        console.warn("[saveImageToStorage] alpha erosion skipped:", (erodeErr as Error).message);
+      }
     }
 
-    buffer = await trimTransparentBounds(buffer);
+    buffer = await trimTransparentBounds(buffer, 8, removeBgUsedApi ? 4 : 8);
   } else if (targetDims && targetDims.width !== targetDims.height) {
     const outputFormat =
       actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
@@ -2700,6 +2720,7 @@ console.log("[api/generate] replicate returned", {
   isApparel,
   isAllOverPrint,
   targetDims,
+  bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
 });
 
 console.log("[api/shopify/generate] saved image", result);
@@ -3444,6 +3465,7 @@ ${textEdgeRestrictions}
           isApparel,
           isAllOverPrint,
           targetDims,
+          bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -3454,6 +3476,7 @@ ${textEdgeRestrictions}
             isApparel,
             isAllOverPrint,
             targetDims,
+            bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -7351,14 +7374,24 @@ ${textEdgeRestrictions}
           let imageUrl: string;
           let thumbnailUrl: string | undefined;
           try {
-            const result = await saveImageToStorage(base64Data, mimeType, { isApparel, isAllOverPrint, targetDims });
+            const result = await saveImageToStorage(base64Data, mimeType, {
+              isApparel,
+              isAllOverPrint,
+              targetDims,
+              bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+            });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
             console.log(`${W} storage save OK ${Date.now() - saveStart}ms`);
           } catch (storageError) {
             console.warn(`${W} Storage save failed, retrying once:`, storageError);
             try {
-              const result = await saveImageToStorage(base64Data, mimeType, { isApparel, isAllOverPrint, targetDims });
+              const result = await saveImageToStorage(base64Data, mimeType, {
+                isApparel,
+                isAllOverPrint,
+                targetDims,
+                bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+              });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);

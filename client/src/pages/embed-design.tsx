@@ -5127,6 +5127,52 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }
   }, [isStorefront, shopDomain, storefrontCustomerId]);
 
+  /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
+  const persistFlatMockupsForGallery = useCallback(
+    async (mockupUrls: string[], dedupeKey: string) => {
+      if (!isStorefront || !savedJobIdRef.current || !shopDomain) return;
+      if (dedupeKey && dedupeKey === lastFlatGalleryMockupKeyRef.current) return;
+
+      const absUrls = mockupUrls
+        .map((u) => toAbsoluteMockupUrlForSave(u))
+        .filter((u): u is string => !!u);
+      if (absUrls.length === 0) return;
+
+      try {
+        await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: savedJobIdRef.current,
+            shop: shopDomain,
+            mockupUrls: absUrls,
+          }),
+        });
+        lastFlatGalleryMockupKeyRef.current = dedupeKey;
+        try {
+          window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+        } catch {
+          /* cross-origin parent */
+        }
+        if (storefrontCustomerId && shopDomain) {
+          void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d?.designs) setSavedDesigns(d.designs);
+            })
+            .catch(() => {});
+        }
+      } catch (e) {
+        console.error("[FlatMockups] save-mockups failed:", e);
+      }
+    },
+    [isStorefront, shopDomain, storefrontCustomerId],
+  );
+
   /**
    * Handle the customer's auto-apply from `FlatProductPlacer` (on-the-fly
    * flat/mesh products). Renders the enabled view(s) locally, uploads the PNGs
@@ -5203,25 +5249,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
           console.error("[FlatApply] Failed to persist designState:", e);
         });
 
-        const toAbsoluteMockupUrl = (u: string | null): string | null => {
-          if (!u) return null;
-          if (u.startsWith("http://") || u.startsWith("https://")) return u;
-          const resolved = toAbsoluteImageUrl(u);
-          if (resolved.startsWith("http")) return resolved;
-          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
-          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
-        };
-        const frontAbs = toAbsoluteMockupUrl(frontHosted);
-        const backAbs = toAbsoluteMockupUrl(backHosted);
-        const mockupUrls = [frontAbs, backAbs].filter((u): u is string => !!u);
+        const mockupUrls = [frontHosted, backHosted].filter((u): u is string => !!u);
         if (mockupUrls.length > 0) {
-          await safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ jobId, shop: shopDomain, mockupUrls }),
-          }).catch((e) => {
-            console.error("[FlatApply] Failed to save mockup URLs:", e);
-          });
+          await persistFlatMockupsForGallery(
+            mockupUrls,
+            `${flatBlankColorId}::${selectedSize ?? ""}::apply`,
+          );
         }
       }
     } catch (err: any) {
@@ -5230,7 +5263,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setMockupFailed(true);
       throw err;
     }
-  }, [isStorefront, shopDomain, selectedFrameColor, flatBlankColorId]);
+  }, [isStorefront, shopDomain, selectedFrameColor, flatBlankColorId, selectedSize, persistFlatMockupsForGallery]);
 
   const handleFlatPlacerChange = useCallback(
     (s: FlatProductPlacerState) => {
@@ -6082,8 +6115,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             ...(flatPlacerState?.placements ?? {}),
           },
           enabled: {
-            front: flatPlacerState?.enabled?.front ?? true,
-            back: flatPlacerState?.enabled?.back ?? false,
+            front:
+              flatPlacerState?.enabled?.front ??
+              (printPlacement === "front" || printPlacement === "both"),
+            back:
+              flatPlacerState?.enabled?.back ??
+              (printPlacement === "back" || printPlacement === "both"),
           },
           artworkUrl,
         };
@@ -6127,6 +6164,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         setSelectedMockupIndex((prev) => (prev === 0 ? 1 : prev));
         setMockupsStale(false);
         currentMockupColorRef.current = flatMockupBlankKey;
+        void persistFlatMockupsForGallery(
+          images.map((i) => i.url),
+          flatMockupBlankKey,
+        );
       })();
     }, 200);
 
@@ -6142,6 +6183,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     flatBlankColorId,
     flatMockupBlankKey,
     selectedSize,
+    printPlacement,
+    persistFlatMockupsForGallery,
   ]);
 
   // Flat tier: model/colour swap uses local canvas — never gate on Printify refresh.
@@ -7650,21 +7693,44 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onValueChange={(value) => {
                               const nextPlacement = value as "front" | "back" | "both";
                               setPrintPlacement(nextPlacement);
-                              if (generatedDesign?.imageUrl && productTypeConfig && selectedSize && !productTypeConfig.isAllOverPrint) {
-                                fetchPrintifyMockups(
-                                  toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                  productTypeConfig.id,
-                                  selectedSize,
-                                  selectedFrameColor || "default",
-                                  transform.scale,
-                                  transform.x,
-                                  transform.y,
-                                  undefined,
-                                  undefined,
-                                  undefined,
-                                  nextPlacement,
-                                );
+                              if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || productTypeConfig.isAllOverPrint) {
+                                return;
                               }
+                              const flatOnTheFly = !!(
+                                (productTypeConfig.onTheFlyTier === "flat" ||
+                                  productTypeConfig.onTheFlyTier === "mesh") &&
+                                productTypeConfig.flatCalibration
+                              );
+                              if (flatOnTheFly) {
+                                setFlatPlacerState((prev) => ({
+                                  view: prev?.view ?? "front",
+                                  placements: prev?.placements ?? {
+                                    front: { scale: 1, offsetX: 0, offsetY: 0 },
+                                    back: { scale: 1, offsetX: 0, offsetY: 0 },
+                                  },
+                                  artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
+                                  enabled: {
+                                    front: nextPlacement === "front" || nextPlacement === "both",
+                                    back: nextPlacement === "back" || nextPlacement === "both",
+                                  },
+                                }));
+                                currentMockupColorRef.current = "";
+                                lastFlatGalleryMockupKeyRef.current = "";
+                                return;
+                              }
+                              fetchPrintifyMockups(
+                                toAbsoluteImageUrl(generatedDesign.imageUrl),
+                                productTypeConfig.id,
+                                selectedSize,
+                                selectedFrameColor || "default",
+                                transform.scale,
+                                transform.x,
+                                transform.y,
+                                undefined,
+                                undefined,
+                                undefined,
+                                nextPlacement,
+                              );
                             }}
                           >
                             <SelectTrigger id="print-placement-select" className="h-11">

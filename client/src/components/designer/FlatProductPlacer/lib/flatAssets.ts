@@ -27,7 +27,19 @@ export function flatBlankHasViews(
   return !!(entry?.front || entry?.back);
 }
 
-export { resolveFlatBlankColorId, resolveFlatPlacementGeometryKey } from "./flatBlankResolve";
+import {
+  resolveFlatBlankColorId,
+  resolveFlatPlacementGeometryKey,
+  firstUsableBlankKey,
+  manifestHasMultipleColorBlanks,
+} from "./flatBlankResolve";
+
+export {
+  resolveFlatBlankColorId,
+  resolveFlatPlacementGeometryKey,
+  firstUsableBlankKey,
+  manifestHasMultipleColorBlanks,
+};
 
 function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | null {
   if (!id) return null;
@@ -154,7 +166,13 @@ export function resolveFlatBlank(
   const blanks = manifest.blanks || {};
   const hit = colorId ? findBlankKey(manifest, colorId) : null;
   if (hit && flatBlankHasViews(blanks[hit])) return blanks[hit];
-  if (colorId) return {};
+  if (colorId) {
+    if (!manifestHasMultipleColorBlanks(manifest)) {
+      const fallbackKey = firstUsableBlankKey(manifest);
+      if (fallbackKey && flatBlankHasViews(blanks[fallbackKey])) return blanks[fallbackKey];
+    }
+    return {};
+  }
   for (const k of Object.keys(blanks)) {
     if (flatBlankHasViews(blanks[k])) return blanks[k];
   }
