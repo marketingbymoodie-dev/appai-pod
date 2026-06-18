@@ -447,6 +447,36 @@ export default function AdminCustomizerPages() {
     return Math.ceil(num) - 0.05;
   }
 
+  /** Blank variant ids from /api/appai/blanks use `printify:{id}`; costs keys are raw Printify ids. */
+  function resolveBlankVariantCostCents(
+    v: BlankVariant,
+    costs: {
+      costs?: Record<string, number>;
+      shopifyVariantCosts?: Record<string, number>;
+      printifyVariantLabels?: Record<string, string>;
+    },
+    labelToCost: Record<string, number>,
+  ): number | undefined {
+    let costCents: number | undefined = costs.shopifyVariantCosts?.[v.id];
+    if (costCents == null && v.id.startsWith("printify:")) {
+      costCents = costs.costs?.[v.id.slice("printify:".length)];
+    }
+    if (costCents == null) costCents = costs.costs?.[v.id];
+    if (costCents == null && v.title) {
+      const normTitle = v.title.toLowerCase().trim();
+      costCents = labelToCost[normTitle];
+      if (costCents == null) {
+        for (const [label, cost] of Object.entries(labelToCost)) {
+          if (normTitle.includes(label) || label.includes(normTitle)) {
+            costCents = cost;
+            break;
+          }
+        }
+      }
+    }
+    return costCents;
+  }
+
   // Recommended retail prices based on production costs + markup
   const recommendedPrices = useMemo(() => {
     if (!costsData?.costs || selectedVariants.length === 0) return {};
@@ -463,25 +493,7 @@ export default function AdminCustomizerPages() {
       }
     }
     for (const v of selectedVariants) {
-      // 1) Direct Shopify variant ID bridge
-      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
-      // 2) Direct Printify variant ID lookup (fallback)
-      if (costCents == null) costCents = costsData.costs?.[v.id];
-      // 3) Label-based fallback: match variant title against Printify variant labels
-      if (costCents == null && v.title) {
-        const normTitle = v.title.toLowerCase().trim();
-        // Try exact match first
-        costCents = labelToCost[normTitle];
-        // Try partial match: check if any label is contained in the variant title or vice versa
-        if (costCents == null) {
-          for (const [label, cost] of Object.entries(labelToCost)) {
-            if (normTitle.includes(label) || label.includes(normTitle)) {
-              costCents = cost;
-              break;
-            }
-          }
-        }
-      }
+      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
       result[v.id] = roundUpTo95(raw).toFixed(2);
@@ -813,25 +825,14 @@ export default function AdminCustomizerPages() {
                                       <span className="text-right text-emerald-700">Premium Cost</span>
                                     </div>
                                     {selectedVariants.length > 0 ? selectedVariants.map((v) => {
-                                      // Try Shopify variant ID first, then fall back to label-based matching
-                                      // (label matching handles cases where shopifyVariantCosts is not populated)
-                                      let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id] ?? costsData.costs?.[v.id];
-                                      if (costCents == null && costsData.printifyVariantLabels) {
-                                        const matchingPrintifyId = Object.entries(costsData.printifyVariantLabels)
-                                          .find(([, label]) => label === v.title)?.[0];
-                                        if (matchingPrintifyId) costCents = costsData.costs?.[matchingPrintifyId];
-                                        // Partial match fallback
-                                        if (costCents == null && v.title) {
-                                          const normTitle = v.title.toLowerCase().trim();
-                                          for (const [pid, label] of Object.entries(costsData.printifyVariantLabels)) {
-                                            const normLabel = label.toLowerCase().trim();
-                                            if (normTitle.includes(normLabel) || normLabel.includes(normTitle)) {
-                                              costCents = costsData.costs?.[pid];
-                                              if (costCents != null) break;
-                                            }
-                                          }
+                                      const labelToCost: Record<string, number> = {};
+                                      if (costsData.printifyVariantLabels && costsData.costs) {
+                                        for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
+                                          const c = costsData.costs[printifyVid];
+                                          if (c != null) labelToCost[label.toLowerCase().trim()] = c;
                                         }
                                       }
+                                      const costCents = resolveBlankVariantCostCents(v, costsData, labelToCost);
                                       return (
                                         <div key={v.id} className="grid grid-cols-3 gap-2 px-3 py-2 border-t">
                                           <span className="truncate">{v.title}</span>

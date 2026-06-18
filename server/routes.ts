@@ -13955,6 +13955,7 @@ ${textEdgeRestrictions}
         variantMap: JSON.stringify(variantMap),
         selectedSizeIds: JSON.stringify(finalSizeIds),
         selectedColorIds: JSON.stringify(finalColorIds),
+        printifyCosts: "{}",
       });
 
       const allMapKeys = Object.keys(variantMap);
@@ -14550,11 +14551,26 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
       }
 
-      // Check cache first (24h TTL)
+      const variantMap = JSON.parse(productType.variantMap || "{}");
+      const currentPrintifyVariantIds = new Set<number>();
+      for (const entry of Object.values(variantMap) as any[]) {
+        if (entry?.printifyVariantId) currentPrintifyVariantIds.add(Number(entry.printifyVariantId));
+      }
+
+      // Check cache first (24h TTL) — skip when cached keys no longer match current variantMap
       const cachedRaw = JSON.parse(productType.printifyCosts || "{}");
       const cacheAge = cachedRaw._fetchedAt ? Date.now() - new Date(cachedRaw._fetchedAt).getTime() : Infinity;
-      if (cacheAge < 24 * 60 * 60 * 1000 && Object.keys(cachedRaw).length > 1) {
-        const { _fetchedAt, ...cachedCosts } = cachedRaw;
+      const { _fetchedAt, ...cachedCostsOnly } = cachedRaw;
+      const cachedCostKeys = Object.keys(cachedCostsOnly).filter((k) => k !== "_fetchedAt");
+      const cacheMatchesVariants =
+        currentPrintifyVariantIds.size === 0 ||
+        cachedCostKeys.some((k) => currentPrintifyVariantIds.has(Number(k)));
+      if (
+        cacheAge < 24 * 60 * 60 * 1000 &&
+        cachedCostKeys.length > 0 &&
+        cacheMatchesVariants
+      ) {
+        const cachedCosts = cachedCostsOnly;
         const svIds = (typeof productType.shopifyVariantIds === "string"
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
@@ -14592,19 +14608,11 @@ ${textEdgeRestrictions}
         return res.json({ costs: cachedCosts, shopifyVariantCosts: cachedShopifyCosts, printifyVariantLabels: cachedLabels, cached: true });
       }
 
-      // Extract all unique Printify variant IDs from variantMap
-      const variantMap = JSON.parse(productType.variantMap || "{}");
-      const printifyVariantIds: number[] = [];
-      const seen = new Set<number>();
-      for (const entry of Object.values(variantMap) as any[]) {
-        if (entry?.printifyVariantId && !seen.has(Number(entry.printifyVariantId))) {
-          seen.add(Number(entry.printifyVariantId));
-          printifyVariantIds.push(Number(entry.printifyVariantId));
-        }
-      }
-      if (printifyVariantIds.length === 0) {
+      if (currentPrintifyVariantIds.size === 0) {
         return res.status(400).json({ error: "No Printify variant IDs found in product type" });
       }
+
+      const printifyVariantIds = [...currentPrintifyVariantIds];
 
       const baseMockupImages = typeof productType.baseMockupImages === "string"
         ? JSON.parse(productType.baseMockupImages || "{}")
