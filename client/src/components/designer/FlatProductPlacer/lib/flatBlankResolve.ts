@@ -72,6 +72,11 @@ export function resolveFlatBlankColorId(
   if ((manifest.decorPerSize || apparelColorOnly) && opts.frameColorId) {
     const colorHit = findBlankKeyForColor(manifest, opts.frameColorId);
     if (colorHit) return colorHit;
+    const direct = findBlankKey(manifest, opts.frameColorId);
+    if (direct) return direct;
+    // Do not fall back to the first harvested blank — that makes every colour
+    // show the same shirt when slug lookup misses.
+    return opts.frameColorId;
   }
 
   if (manifest.edgeWrap && opts.sizeId) {

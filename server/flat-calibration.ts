@@ -20,6 +20,7 @@
  */
 import sharp from "sharp";
 import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 import {
   uploadToFlatCalibrationBucket,
   ensureFlatCalibrationBucket,
@@ -697,12 +698,11 @@ export function resolveFlatBakePlacementRect(
  * numeric colour value id would never match and every colour would show the same blank.
  */
 function slugColorId(name: string): string {
-  return name.toLowerCase().trim().replace(/\s+/g, "_");
+  return slugPrintifyColorId(name);
 }
 
-/** Match client `normalizeFlatColorKey` / import slug lookups across `/`, `_`, spaces. */
 function normalizeHarvestColorKey(id: string): string {
-  return id.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  return normalizePrintifyColorKey(id);
 }
 
 function variantOptionValues(variant: any): number[] {

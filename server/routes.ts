@@ -15,6 +15,7 @@ import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
+import { slugPrintifyColorId } from "@shared/printifyColorSlug";
 import {
   hasExactVariantMapping,
   normalizeApparelSizeId,
@@ -11944,20 +11945,26 @@ ${textEdgeRestrictions}
         if (options.color || options.colour || options.Color || options.Colour || options.frame_color) {
           colorName = options.color || options.colour || options.Color || options.Colour || options.frame_color;
         } else if (title.includes(" / ") || title.includes("/")) {
-          // Use " / " split to preserve combined model names like "iPhone 12/12 Pro"
-          const _cParts = title.includes(" / ")
+          const hasSeparator = title.includes(" / ");
+          const parts = hasSeparator
             ? title.split(" / ").map((p: string) => p.trim())
             : title.split("/").map((p: string) => p.trim());
-          for (let i = _cParts.length - 1; i >= 0; i--) {
-            if (!looksLikeSize(_cParts[i])) {
-              colorName = _cParts[i];
-              break;
+          if (parts.length >= 3 && looksLikeSize(parts[0])) {
+            const colorParts = parts.slice(1).filter((p) => !looksLikeSize(p));
+            if (colorParts.length > 0) colorName = colorParts.join(" / ");
+          }
+          if (!colorName) {
+            for (let i = parts.length - 1; i >= 0; i--) {
+              if (!looksLikeSize(parts[i])) {
+                colorName = parts[i];
+                break;
+              }
             }
           }
         }
         
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {
-          const colorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          const colorId = slugPrintifyColorId(colorName);
           // Comprehensive color hex lookup - Printify API doesn't provide hex codes
           const colorHexMap: Record<string, string> = {
             // Basic colors
@@ -12760,22 +12767,27 @@ ${textEdgeRestrictions}
         } else if (options.Colour) {
           colorName = options.Colour;
         } else if (title.includes(" / ") || title.includes("/")) {
-          // Use " / " (space-slash-space) split to preserve combined model names like "iPhone 12/12 Pro".
-          // Fall back to "/" split only if no " / " separator exists.
-          const _cParts = title.includes(" / ")
+          const hasSeparator = title.includes(" / ");
+          const parts = hasSeparator
             ? title.split(" / ").map((p: string) => p.trim())
             : title.split("/").map((p: string) => p.trim());
-          for (let i = _cParts.length - 1; i >= 0; i--) {
-            if (looksLikeSize(_cParts[i])) continue;
-            colorName = _cParts[i];
-            break;
+          if (parts.length >= 3 && looksLikeSize(parts[0])) {
+            const colorParts = parts.slice(1).filter((p) => !looksLikeSize(p));
+            if (colorParts.length > 0) colorName = colorParts.join(" / ");
+          }
+          if (!colorName) {
+            for (let i = parts.length - 1; i >= 0; i--) {
+              if (looksLikeSize(parts[i])) continue;
+              colorName = parts[i];
+              break;
+            }
           }
         }
 
         // Extract color and track the extractedColorId for this variant
         let extractedColorId = "";
         if (colorName) {
-          extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          extractedColorId = slugPrintifyColorId(colorName);
           
           if (!colorsMap.has(colorName.toLowerCase())) {
             // Map common color names to hex values (frames + apparel)
@@ -13808,14 +13820,20 @@ ${textEdgeRestrictions}
 
         // If no color in options, try to extract from title
         if (!colorName) {
-          // Use " / " split to preserve combined model names like "iPhone 12/12 Pro"
-          const _cParts = title.includes(" / ")
+          const hasSeparator = title.includes(" / ");
+          const parts = hasSeparator
             ? title.split(" / ").map((p: string) => p.trim())
             : title.split("/").map((p: string) => p.trim());
-          for (let i = _cParts.length - 1; i >= 0; i--) {
-            if (!looksLikeSize(_cParts[i])) {
-              colorName = _cParts[i];
-              break;
+          if (parts.length >= 3 && looksLikeSize(parts[0])) {
+            const colorParts = parts.slice(1).filter((p) => !looksLikeSize(p));
+            if (colorParts.length > 0) colorName = colorParts.join(" / ");
+          }
+          if (!colorName) {
+            for (let i = parts.length - 1; i >= 0; i--) {
+              if (!looksLikeSize(parts[i])) {
+                colorName = parts[i];
+                break;
+              }
             }
           }
         }
@@ -13827,7 +13845,7 @@ ${textEdgeRestrictions}
 
         let extractedColorId = "";
         if (colorName) {
-          extractedColorId = colorName.toLowerCase().replace(/\s+/g, '_');
+          extractedColorId = slugPrintifyColorId(colorName);
           if (!colorsMap.has(colorName.toLowerCase())) {
             const { hex } = resolvePrintifyColorHex(colorName);
             colorsMap.set(colorName.toLowerCase(), { id: extractedColorId, name: colorName, hex });

@@ -702,6 +702,16 @@ const _isStorefrontIframe = typeof window !== 'undefined' &&
 
 const DIRECT_APP_API_BASE = "https://appai-pod-production.up.railway.app";
 
+/** Absolute http(s) URL for save-mockups (server rejects relative/proxy paths). */
+function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null {
+  if (!u) return null;
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  const resolved = toAbsoluteImageUrl(u);
+  if (resolved.startsWith("http")) return resolved;
+  const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
+  return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 /**
  * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
  * is broken by Shopify's service worker) and window.fetch everywhere else.
@@ -1393,6 +1403,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [flatApplyStatus, setFlatApplyStatus] = useState<FlatApplyStatus>("idle");
   const [flatRenderFailed, setFlatRenderFailed] = useState(false);
   const flatPlacerRef = useRef<FlatProductPlacerHandle>(null);
+  /** Dedupes save-mockups + gallery refresh for flat on-the-fly previews. */
+  const lastFlatGalleryMockupKeyRef = useRef<string>("");
 
   // Per-color mockup cache: instantly swap mockups when the user picks a different frame color
   const mockupColorCacheRef = useRef<Record<string, { urls: string[]; images: { url: string; label: string }[] }>>({});
@@ -3849,6 +3861,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       const saveShop = variables.shop || shopDomain;
       // Store jobId for mockup saving after fetchPrintifyMockups completes
       if (data.jobId) savedJobIdRef.current = data.jobId;
+      lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
@@ -6044,6 +6057,12 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   const flatMockupBlankKey = `${flatBlankColorId}::${selectedSize ?? ""}::pc10`;
 
+  // Force mockup re-raster when the harvested blank key changes (shirt colour swap).
+  useEffect(() => {
+    if (!flatPlacerEligible) return;
+    currentMockupColorRef.current = "";
+  }, [flatPlacerEligible, flatBlankColorId]);
+
   useEffect(() => {
     if (!flatPlacerEligible) return;
     if (!productTypeConfig?.flatCalibration || !generatedDesign?.imageUrl) return;
@@ -8065,7 +8084,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 )}
                 <FlatProductPlacer
                   ref={flatPlacerRef}
-                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
+                  key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}`}
                   manifest={productTypeConfig.flatCalibration}
                   colorId={flatBlankColorId}
                   placementGeometryKey={flatPlacerGeometryKey}

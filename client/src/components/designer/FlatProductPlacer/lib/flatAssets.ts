@@ -34,7 +34,9 @@ function findBlankKey(manifest: FlatCalibrationManifest, id: string): string | n
   if (flatBlankHasViews(manifest.blanks?.[id])) return id;
   const norm = normalizeFlatColorKey(id);
   for (const k of Object.keys(manifest.blanks || {})) {
-    if (normalizeFlatColorKey(k) === norm && flatBlankHasViews(manifest.blanks?.[k])) return k;
+    if (!flatBlankHasViews(manifest.blanks?.[k])) continue;
+    const kn = normalizeFlatColorKey(k);
+    if (kn === norm || kn.endsWith(`-${norm}`)) return k;
   }
   return null;
 }
@@ -150,13 +152,9 @@ export function resolveFlatBlank(
   colorId: string,
 ): Partial<Record<FlatViewName, string>> {
   const blanks = manifest.blanks || {};
-  if (colorId && flatBlankHasViews(blanks[colorId])) return blanks[colorId];
-  if (colorId) {
-    const norm = normalizeFlatColorKey(colorId);
-    for (const k of Object.keys(blanks)) {
-      if (normalizeFlatColorKey(k) === norm && flatBlankHasViews(blanks[k])) return blanks[k];
-    }
-  }
+  const hit = colorId ? findBlankKey(manifest, colorId) : null;
+  if (hit && flatBlankHasViews(blanks[hit])) return blanks[hit];
+  if (colorId) return {};
   for (const k of Object.keys(blanks)) {
     if (flatBlankHasViews(blanks[k])) return blanks[k];
   }
