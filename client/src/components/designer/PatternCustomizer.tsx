@@ -21,6 +21,10 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Loader2, Pipette } from "lucide-react";
+import {
+  FinePositionNudge,
+  PLACEMENT_NUDGE_SCREEN_PX,
+} from "@/components/designer/placementNudge";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -3709,6 +3713,24 @@ export function PatternCustomizer({
       </div>
     ) : null;
 
+  const placementNudgeControl =
+    activePanelT && transformEditPanelId && activePanel && shouldRenderPanelArtwork(activePanel) ? (
+      <FinePositionNudge
+        onNudge={(axis, direction) => {
+          const delta = PLACEMENT_NUDGE_SCREEN_PX * direction;
+          const rawDx = activePanelT.dxPx + (axis === "x" ? delta : 0);
+          const rawDy = activePanelT.dyPx + (axis === "y" ? delta : 0);
+          const { dxPx, dyPx } = applySnap(rawDx, rawDy);
+          updatePanelTransform(transformEditPanelId, { dxPx, dyPx });
+        }}
+        hint={
+          mode === "place"
+            ? "Drag artwork on the panel to move freely. Right-click a nudge arrow for the opposite direction."
+            : "Drag the pattern on the panel to place it. Right-click a nudge arrow for the opposite direction."
+        }
+      />
+    ) : null;
+
   return (
     <div className="w-full h-full min-h-0 flex flex-col">
       {/* Slightly slimmer control column so the preview (ResizeObserver width) is wider on lg+ */}
@@ -3785,6 +3807,7 @@ export function PatternCustomizer({
 
           {tileSizeControl}
           {artworkScaleControl}
+          {placementNudgeControl}
 
           {mode === "pattern" && (
             <>

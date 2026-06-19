@@ -7,7 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
-import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
+import { Eye, EyeOff, Loader2, RotateCcw, AlertTriangle } from "lucide-react";
+import {
+  FinePositionNudge,
+  mockupDeltaFromScreenNudge,
+} from "@/components/designer/placementNudge";
 import {
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
@@ -116,9 +120,6 @@ type LoadedAssets = {
 };
 
 const EMPTY_ASSETS: LoadedAssets = { blank: null, mask: null, shading: null };
-
-/** Canvas nudge step in CSS pixels (converted to normalized placement offset). */
-const NUDGE_SCREEN_PX = 4;
 
 function outputSignature(s: FlatProductPlacerState): string {
   return JSON.stringify({
@@ -516,10 +517,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           decorMode,
         });
         const cr = canvas.getBoundingClientRect();
-        const deltaMock =
-          axis === "x"
-            ? (NUDGE_SCREEN_PX / Math.max(1, cr.width)) * mW
-            : (NUDGE_SCREEN_PX / Math.max(1, cr.height)) * mH;
+        const deltaMock = mockupDeltaFromScreenNudge(
+          axis,
+          direction,
+          cr,
+          mW,
+          mH,
+        );
         const dOff =
           axis === "x"
             ? deltaMock / Math.max(1, pRect.width)
@@ -803,46 +807,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </p>
             )}
             <div className="mt-2">
-              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Fine position
-              </div>
-              <div className="flex flex-col items-center gap-1">
-                <NudgeButton
-                  label="Nudge up"
-                  direction={-1}
-                  onPress={(dir) => nudgePlacement(state.view, "y", dir)}
-                >
-                  <ChevronUp className="h-3.5 w-3.5" />
-                </NudgeButton>
-                <div className="flex items-center gap-1">
-                  <NudgeButton
-                    label="Nudge left"
-                    direction={-1}
-                    onPress={(dir) => nudgePlacement(state.view, "x", dir)}
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </NudgeButton>
-                  <NudgeButton
-                    label="Nudge right"
-                    direction={1}
-                    onPress={(dir) => nudgePlacement(state.view, "x", dir)}
-                  >
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </NudgeButton>
-                </div>
-                <NudgeButton
-                  label="Nudge down"
-                  direction={1}
-                  onPress={(dir) => nudgePlacement(state.view, "y", dir)}
-                >
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </NudgeButton>
-              </div>
-              <p className="mt-1 text-[10px] text-muted-foreground leading-snug">
-                Tap canvas left/right to nudge horizontally; right-click for the
-                opposite direction. Drag the artwork box to move freely — it snaps
-                to center within 10px.
-              </p>
+              <FinePositionNudge
+                onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
+                hint="Tap canvas left/right to nudge horizontally; right-click for the opposite direction. Drag the artwork box to move freely — it snaps to center within 10px."
+              />
             </div>
           </div>
         )}
@@ -936,38 +904,6 @@ function Toggle({
           checked ? "translate-x-4" : "translate-x-0.5"
         }`}
       />
-    </button>
-  );
-}
-
-function NudgeButton({
-  children,
-  label,
-  direction,
-  onPress,
-}: {
-  children: React.ReactNode;
-  label: string;
-  direction: 1 | -1;
-  onPress: (direction: 1 | -1) => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={`${label} (right-click: opposite)`}
-      className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
-      onClick={(e) => {
-        e.stopPropagation();
-        onPress(direction);
-      }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onPress((-direction) as 1 | -1);
-      }}
-    >
-      {children}
     </button>
   );
 }
