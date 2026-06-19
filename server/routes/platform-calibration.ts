@@ -324,7 +324,7 @@ function resolveHarvestOutcome(manifest: Awaited<ReturnType<typeof loadCanonical
       outcome: "unsupported",
       error:
         err ||
-        "Product is not suitable for flat on-the-fly mockups (wrapped/3D or AOP). Tag as AOP instead.",
+        "Print area probe rejected this product (curved/wrap/3D or undetectable grid). Enable “Force flat harvest” on the catalog tag for operator overrides.",
     };
   }
   if (manifest.views && Object.keys(manifest.views).length > 0) {
@@ -511,6 +511,7 @@ export function registerPlatformCalibrationRoutes(
           blueprintId,
           isAllOverPrint: true,
           forceFlatHarvest: catalogEntry?.forceFlatHarvest,
+          fulfillmentLayout: catalogEntry?.fulfillmentLayout,
         })
       ) {
         return res.status(400).json({
@@ -570,6 +571,7 @@ export function registerPlatformCalibrationRoutes(
             wipeExisting: true,
             storageKey,
             forceFlatHarvest: catalogEntry?.forceFlatHarvest ?? false,
+            fulfillmentLayout: catalogEntry?.fulfillmentLayout ?? null,
           });
           if (result.manifest) {
             await uploadToFlatCalibrationBucket(
@@ -595,6 +597,29 @@ export function registerPlatformCalibrationRoutes(
           );
         } catch (err) {
           console.error(`[platform-canonical] harvest failed bp ${blueprintId}:`, err);
+          try {
+            const storageKey = canonicalStorageKey(blueprintId, version);
+            await uploadToFlatCalibrationBucket(
+              `${storageKey}/manifest.json`,
+              Buffer.from(
+                JSON.stringify(
+                  {
+                    blueprintId,
+                    tier: "reject",
+                    harvestStatus: "failed",
+                    harvestError: (err as Error)?.message || "Harvest failed unexpectedly",
+                    generatedAt: new Date().toISOString(),
+                  },
+                  null,
+                  2,
+                ),
+                "utf-8",
+              ),
+              "application/json",
+            );
+          } catch (writeErr) {
+            console.error(`[platform-canonical] failed to write harvest error manifest bp ${blueprintId}:`, writeErr);
+          }
         }
       })();
     } catch (e) {

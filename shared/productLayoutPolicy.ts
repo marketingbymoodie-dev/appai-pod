@@ -118,10 +118,19 @@ export function shouldAllowFlatHarvest(args: {
   blueprintId: number;
   forceFlatHarvest?: boolean | null;
   isAllOverPrint?: boolean | null;
+  fulfillmentLayout?: string | null;
 }): boolean {
   if (args.forceFlatHarvest) return true;
+  if (normFulfillment(args.fulfillmentLayout) === TOTE_FOLDED_V1_TEMPLATE) return true;
+  if (args.blueprintId === ADJUSTABLE_TOTE_BLUEPRINT_ID) return true;
   if (!args.isAllOverPrint) return true;
   return false;
+}
+
+/** Skip curved/wrap probe rejection — operator tagged flat despite AOP name or tote_folded layout. */
+export function shouldForceFlatTierDespiteProbe(source: LayoutPolicySource): boolean {
+  if (source.forceFlatHarvest) return true;
+  return usesToteFoldedFulfillment(source);
 }
 
 export function shouldBlockFlatCatalogTag(args: {

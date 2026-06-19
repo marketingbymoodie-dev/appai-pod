@@ -94,19 +94,52 @@ function kickoffFlatCalibration(args: {
   frameColors?: unknown;
   sizes?: unknown;
   variantMap?: unknown;
+  forceFlatHarvest?: boolean;
+  fulfillmentLayout?: string | null;
 }): void {
-  const { productTypeId, name, blueprintId, providerId, token, shopId, isAllOverPrint, designerType, frameColors, sizes, variantMap } = args;
-  if (isAllOverPrint) {
-    // AOP products use the hoodie/pattern mesh pipeline, not on-the-fly flat mockups.
-    void storage.updateProductType(productTypeId, { flatCalibrationStatus: "unsupported" }).catch(() => {});
-    return;
-  }
+  const {
+    productTypeId,
+    name,
+    blueprintId,
+    providerId,
+    token,
+    shopId,
+    isAllOverPrint,
+    designerType,
+    frameColors,
+    sizes,
+    variantMap,
+    forceFlatHarvest: forceFlatHarvestArg,
+    fulfillmentLayout: fulfillmentLayoutArg,
+  } = args;
   if (!token || !shopId || !blueprintId || !providerId) {
     void storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
     return;
   }
   void (async () => {
     try {
+      let forceFlatHarvest = forceFlatHarvestArg;
+      let fulfillmentLayout = fulfillmentLayoutArg ?? null;
+      if (forceFlatHarvest == null && blueprintId) {
+        const catalogEntry = await getPlatformCatalogEntry(blueprintId);
+        forceFlatHarvest = catalogEntry?.forceFlatHarvest ?? false;
+        fulfillmentLayout = fulfillmentLayout ?? catalogEntry?.fulfillmentLayout ?? null;
+      }
+
+      if (
+        isAllOverPrint &&
+        !shouldAllowFlatHarvest({
+          name,
+          blueprintId,
+          isAllOverPrint: true,
+          forceFlatHarvest,
+          fulfillmentLayout,
+        })
+      ) {
+        await storage.updateProductType(productTypeId, { flatCalibrationStatus: "unsupported" });
+        return;
+      }
+
       await storage.updateProductType(productTypeId, { flatCalibrationStatus: "running" });
       const opts: HarvestOptions = {
         productTypeId,
@@ -119,6 +152,8 @@ function kickoffFlatCalibration(args: {
         sizes,
         frameColors,
         variantMap,
+        forceFlatHarvest: !!forceFlatHarvest,
+        fulfillmentLayout,
       };
       const result = await harvestFlatCalibration(opts);
       await storage.updateProductType(productTypeId, {
@@ -13398,6 +13433,8 @@ ${textEdgeRestrictions}
         frameColors: productType.frameColors,
         sizes: productType.sizes,
         variantMap: productType.variantMap,
+        forceFlatHarvest: (productType as any).forceFlatHarvest,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
       });
       res.status(202).json({ status: "running", productTypeId: productType.id });
     } catch (error) {

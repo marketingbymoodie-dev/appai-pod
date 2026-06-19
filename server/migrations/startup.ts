@@ -68,6 +68,10 @@ const DATA_MIGRATIONS: string[] = [
        force_flat_harvest = true
    WHERE printify_blueprint_id = 1300
      AND (fulfillment_layout IS NULL OR fulfillment_layout = '' OR fulfillment_layout = 'auto')`,
+  `UPDATE platform_catalog_blueprints
+   SET force_flat_harvest = true
+   WHERE printify_blueprint_id = 1300
+      OR fulfillment_layout = 'tote_folded_v1'`,
   `UPDATE product_types SET aop_template_id = 'leggings_v1'
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)

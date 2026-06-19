@@ -10,6 +10,8 @@ import {
   ADJUSTABLE_TOTE_BLUEPRINT_ID,
   resolveFulfillmentLayout,
   resolveStorefrontMockupMode,
+  shouldAllowFlatHarvest,
+  shouldForceFlatTierDespiteProbe,
   usesAopStorefrontCustomizer,
   usesToteFoldedFulfillment,
 } from "./productLayoutPolicy";
@@ -61,6 +63,21 @@ describe("productLayoutPolicy", () => {
         isAllOverPrint: true,
         printifyBlueprintId: ADJUSTABLE_TOTE_BLUEPRINT_ID,
         storefrontMockupMode: "aop",
+      }),
+    ).toBe(true);
+  });
+
+  it("allows flat harvest for adjustable tote without explicit force flag", () => {
+    expect(
+      shouldAllowFlatHarvest({
+        name: "Adjustable Tote Bag (AOP)",
+        blueprintId: ADJUSTABLE_TOTE_BLUEPRINT_ID,
+        isAllOverPrint: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldForceFlatTierDespiteProbe({
+        printifyBlueprintId: ADJUSTABLE_TOTE_BLUEPRINT_ID,
       }),
     ).toBe(true);
   });

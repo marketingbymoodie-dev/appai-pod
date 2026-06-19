@@ -29,7 +29,7 @@ import {
   deleteFlatCalibrationProductAssets,
 } from "./supabaseFlatCalibration";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
-import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
+import { shouldAllowFlatHarvest, shouldForceFlatTierDespiteProbe } from "@shared/productLayoutPolicy";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -199,11 +199,23 @@ export function defaultCalibratorModelEntry(): CalibratorModelEntry {
 }
 
 // ── Printify REST helpers (self-contained; mirrors the proven script) ─────────
-async function pf<T = any>(pathname: string, token: string, init?: RequestInit): Promise<T> {
+async function pf<T = any>(
+  pathname: string,
+  token: string,
+  init?: RequestInit,
+  attempt = 0,
+): Promise<T> {
   const res = await fetch(`${PRINTIFY_API_BASE}${pathname}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init?.headers || {}) },
   });
+  if (res.status === 429 && attempt < 6) {
+    const retrySec = Number.parseInt(res.headers.get("Retry-After") || "3", 10);
+    const delayMs = Math.min(Number.isFinite(retrySec) ? retrySec * 1000 : 3000, 30_000);
+    console.warn(`[flat-calibration] Printify 429 on ${pathname} — retry in ${delayMs}ms (${attempt + 1}/6)`);
+    await new Promise((r) => setTimeout(r, delayMs));
+    return pf(pathname, token, init, attempt + 1);
+  }
   const text = await res.text();
   if (!res.ok) throw new Error(`Printify ${res.status} on ${pathname}: ${text.slice(0, 300)}`);
   return (text ? JSON.parse(text) : {}) as T;
@@ -1719,6 +1731,7 @@ export type HarvestOptions = {
   storageKey?: string;
   /** Platform catalog override — harvest despite (AOP) in Printify title. */
   forceFlatHarvest?: boolean;
+  fulfillmentLayout?: string | null;
 };
 
 /**
@@ -1751,6 +1764,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       blueprintId,
       isAllOverPrint: true,
       forceFlatHarvest: opts.forceFlatHarvest,
+      fulfillmentLayout: opts.fulfillmentLayout,
     })
   ) {
     const error =
@@ -1802,13 +1816,31 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       }
     }
     const tiers = Object.values(probes).map((p) => p!.tier);
-    const productTier: FlatTier = tiers.includes("reject") || tiers.length === 0 ? "reject" : tiers.includes("mesh") ? "mesh" : "flat";
+    let productTier: FlatTier =
+      tiers.includes("reject") || tiers.length === 0 ? "reject" : tiers.includes("mesh") ? "mesh" : "flat";
+    const forceFlatDespiteProbe = shouldForceFlatTierDespiteProbe({
+      forceFlatHarvest: opts.forceFlatHarvest,
+      fulfillmentLayout: opts.fulfillmentLayout,
+      printifyBlueprintId: blueprintId,
+    });
+    if (productTier === "reject" && forceFlatDespiteProbe) {
+      console.log(
+        `[flat-calibration] ${name} (bp ${blueprintId}): probe rejected but forceFlatHarvest/tote_folded — continuing as flat tier`,
+      );
+      productTier = "flat";
+    }
     baseManifest.tier = productTier;
     baseManifest.edgeWrap = edgeWrapProduct;
 
     if (productTier === "reject") {
-      // Curved/wrap/3D or undetectable -> keep Printify mockups. Skip the rest.
-      return { tier: "reject", status: "unsupported", manifest: baseManifest };
+      const error =
+        "Print area probe rejected this product (curved/wrap/3D or undetectable grid). Enable “Force flat harvest” on the catalog tag for operator overrides.";
+      return {
+        tier: "reject",
+        status: "unsupported",
+        manifest: { ...baseManifest, harvestStatus: "unsupported", harvestError: error },
+        error,
+      };
     }
 
     // ── 1. REGISTRATION pass (all views, one temp product) -> masks ───────────
