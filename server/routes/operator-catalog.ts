@@ -11,6 +11,8 @@ import {
   upsertPlatformCatalogTag,
   type PlatformCatalogKind,
 } from "../platformCatalogStore";
+import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
+import { shouldBlockFlatCatalogTag } from "@shared/productLayoutPolicy";
 
 type StorageLike = {
   getMerchantByUserId(userId: string): Promise<any>;
@@ -32,13 +34,25 @@ export function registerOperatorCatalogRoutes(
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const blueprintId = parseInt(req.params.blueprintId, 10);
-      const { kind, label, brand, category, panelMappingTemplate, notes } = req.body ?? {};
+      const { kind, label, brand, category, panelMappingTemplate, notes, storefrontMockupMode, fulfillmentLayout, forceFlatHarvest } =
+        req.body ?? {};
       const allowed: PlatformCatalogKind[] = ["flat", "aop", "printify", "blocked"];
       if (!allowed.includes(kind)) {
         return res.status(400).json({ error: "kind must be flat, aop, printify, or blocked" });
       }
       if (!label || typeof label !== "string") {
         return res.status(400).json({ error: "label is required" });
+      }
+
+      if (
+        kind === "flat" &&
+        shouldBlockFlatCatalogTag({ name: label, blueprintId, forceFlatHarvest: !!forceFlatHarvest })
+      ) {
+        return res.status(400).json({
+          error:
+            "This product is all-over print (AOP). Tag as AOP, or enable “Force flat harvest” to use flat mockups with a folded print layout.",
+          code: "AOP_NOT_FLAT",
+        });
       }
 
       const row = await upsertPlatformCatalogTag({
@@ -48,6 +62,9 @@ export function registerOperatorCatalogRoutes(
         kind,
         category: category ?? null,
         panelMappingTemplate: kind === "aop" ? panelMappingTemplate ?? null : null,
+        storefrontMockupMode: storefrontMockupMode ?? null,
+        fulfillmentLayout: fulfillmentLayout ?? null,
+        forceFlatHarvest: forceFlatHarvest ?? null,
         notes: notes ?? null,
       });
 

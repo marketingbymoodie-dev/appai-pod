@@ -175,6 +175,12 @@ interface ProductTypeConfig {
   baseMockupImages?: Record<string, any>;
   doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;
+  /** Resolved from layout policy — when false, tote_folded_v1 uses flat Printify mockups instead of PatternCustomizer. */
+  useAopCustomizer?: boolean;
+  storefrontMockupMode?: string | null;
+  fulfillmentLayout?: string | null;
+  effectiveStorefrontMockupMode?: string;
+  effectiveFulfillmentLayout?: string;
   aopTemplateId?: string | null;
   /**
    * Optional published hoodie panel-mapping template name. When set, this
@@ -1475,15 +1481,24 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     selectedFrameColor,
     isApparel,
   ]);
+  const useAopCustomizer =
+    productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint;
+  const toteFoldedLayout = productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1";
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
   const supportsPrintPlacementSelection = !!(
     productTypeConfig?.hasPrintifyMockups &&
-    !productTypeConfig?.isAllOverPrint &&
-    productTypeConfig?.doubleSidedPrint
+    !useAopCustomizer &&
+    (productTypeConfig?.doubleSidedPrint || toteFoldedLayout)
   );
 
-  // Stable references for PatternCustomizer props — prevents the SVG-loading useEffect from
+  useEffect(() => {
+    if (toteFoldedLayout && supportsPrintPlacementSelection && printPlacement !== "both") {
+      setPrintPlacement("both");
+    }
+  }, [toteFoldedLayout, supportsPrintPlacementSelection, printPlacement]);
+
+  // Stable references for PatternCustomizer props
   // re-firing on every parent render (e.g. polling intervals) due to new object/function refs.
   const patternFetchFn = useCallback(
     (url: string, options?: RequestInit) => safeFetch(url, options, 60000),
@@ -1624,6 +1639,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
       isAllOverPrint: dc.isAllOverPrint || false,
+      useAopCustomizer: dc.useAopCustomizer,
+      storefrontMockupMode: dc.storefrontMockupMode ?? null,
+      fulfillmentLayout: dc.fulfillmentLayout ?? null,
+      effectiveStorefrontMockupMode: dc.effectiveStorefrontMockupMode,
+      effectiveFulfillmentLayout: dc.effectiveFulfillmentLayout,
       aopTemplateId: dc.aopTemplateId ?? null,
       panelMappingTemplate: dc.panelMappingTemplate ?? null,
       onTheFlyTier: dc.onTheFlyTier ?? null,
@@ -1969,6 +1989,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
             isAllOverPrint: designerConfig.isAllOverPrint || false,
+            useAopCustomizer: designerConfig.useAopCustomizer,
+            storefrontMockupMode: designerConfig.storefrontMockupMode ?? null,
+            fulfillmentLayout: designerConfig.fulfillmentLayout ?? null,
+            effectiveStorefrontMockupMode: designerConfig.effectiveStorefrontMockupMode,
+            effectiveFulfillmentLayout: designerConfig.effectiveFulfillmentLayout,
             aopTemplateId: designerConfig.aopTemplateId ?? null,
             panelMappingTemplate: designerConfig.panelMappingTemplate ?? null,
             onTheFlyTier: designerConfig.onTheFlyTier ?? null,
@@ -2259,11 +2284,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     if (mockups?.length && mockupsMatchProduct) {
       const absMockups = mockups.map(toAbsoluteImageUrl);
       // Restore aopPatternUrl so the ATC button is not blocked by the
-      // "productTypeConfig.isAllOverPrint && !aopPatternUrl" guard for saved AOP
+      // "useAopCustomizer && !aopPatternUrl" guard for saved AOP
       // designs. The design URL is the same value set by onApply when applying fresh.
       // Non-AOP products ignore this because their button condition checks isAllOverPrint first.
       if (absUrl) setAopPatternUrl(absUrl);
-      const durableMockups = productTypeConfig?.isAllOverPrint
+      const durableMockups = useAopCustomizer
         ? absMockups.filter((url: string) => !isTemporaryPrintifyMockupUrl(url))
         : absMockups;
 
@@ -2330,7 +2355,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // Do not silently replace saved AOP artwork on re-edit. Pattern/placement previews
     // must use the original motif; bg removal remains an explicit processing step.
     const shouldAutoRemoveBg =
-      !productTypeConfig?.isAllOverPrint &&
+      !useAopCustomizer &&
       productTypeConfig?.designerType === "apparel" &&
       !productTypeConfig?.flatCalibration;
     if (shouldAutoRemoveBg && !bgRemovedLoadedDesignsRef.current.has(designId)) {
@@ -2945,7 +2970,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       // server uses it to fill any blueprint placeholder the client doesn't
       // render — e.g. inner hood / collar yoke / placket trim on zip hoodies
       // — so those regions don't show the default white garment template.
-      const aopBgColor = productTypeConfig?.isAllOverPrint
+      const aopBgColor = useAopCustomizer
         ? (() => {
             const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
             return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
@@ -2953,7 +2978,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               : undefined;
           })()
         : undefined;
-      const mockupPrintPlacement = productTypeConfig?.isAllOverPrint
+      const mockupPrintPlacement = useAopCustomizer
         ? undefined
         : supportsPrintPlacementSelection
           ? (printPlacementOverride ?? printPlacement)
@@ -3172,7 +3197,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         }
       }
     }
-  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, productTypeConfig?.isAllOverPrint, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
+  }, [isShopify, isStorefront, shopDomain, sessionToken, sendMockupsToParent, runtimeMode, printPlacement, supportsPrintPlacementSelection, useAopCustomizer, aopPlacementSettings?.bgColor, aopPatternSettings?.bgColor]);
 
   // Reset mockupFailed when a new design image becomes available so the
   // useEffect hooks below can trigger a fresh mockup attempt.
@@ -3196,7 +3221,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       !mockupLoading &&
       !mockupFailed
     ) {
-      if (productTypeConfig.isAllOverPrint) {
+      if (useAopCustomizer) {
         console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
         setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
         setAopPatternUrl(null);
@@ -3234,7 +3259,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       mockupFailed
     ) return;
 
-    if (productTypeConfig.isAllOverPrint) {
+    if (useAopCustomizer) {
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
       setAopPatternUrl(null);
@@ -3408,7 +3433,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     // AOP panel rasters are colour-specific because transparent mockup pixels
     // are flattened to the selected garment colour. Regenerate on colour change
     // instead of caching mismatched background-colour mockups.
-    if (productTypeConfig?.isAllOverPrint) {
+    if (useAopCustomizer) {
       console.log('[Mockups] Background prefetch skipped — AOP panel rasters are color-specific');
       return;
     }
@@ -3442,7 +3467,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         if (mockupColorCacheRef.current[prefetchKey]) continue;
 
         try {
-          const aopPanels = productTypeConfig?.isAllOverPrint
+          const aopPanels = useAopCustomizer
             ? (lastAopPanelUrlsRef.current ?? undefined)
             : undefined;
           const payload: Record<string, unknown> = {
@@ -3927,7 +3952,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
         willFetch: shouldFetchMockups,
       });
       if (shouldFetchMockups) {
-        if (productTypeConfig?.isAllOverPrint) {
+        if (useAopCustomizer) {
           // AOP: show pattern customizer step first
           setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
           setAopPatternUrl(null);
@@ -4291,7 +4316,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
       if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
-        if (productTypeConfig.isAllOverPrint) {
+        if (useAopCustomizer) {
           setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
           setAopPatternUrl(null);
           setShowPatternStep(true);
@@ -6484,7 +6509,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             <Button
               onClick={() => {
                 if (atcMockupsStaleBlocks) {
-                  if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                  if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                     if (generatedDesign?.imageUrl) {
                       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                       setShowPatternStep(true);
@@ -6508,16 +6533,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       transform.scale,
                       transform.x,
                       transform.y,
-                      productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                      useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                       aopPlacementSettings?.mirrorMode,
-                      productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                      useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                     );
                   }
                 } else {
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
@@ -6543,7 +6568,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   <RefreshCcw className="w-5 h-5 mr-2" />
                   <span className="shimmer-text-white">Refresh Mockups to Continue</span>
                 </>
-              ) : productTypeConfig?.isAllOverPrint && !aopPatternUrl ? (
+              ) : useAopCustomizer && !aopPatternUrl ? (
                 <span className="shimmer-text-white">Apply Pattern to Continue</span>
               ) : (
                 <>
@@ -7357,7 +7382,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       <Button
                         onClick={() => {
                           if (atcMockupsStaleBlocks) {
-                            if (productTypeConfig?.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                               if (generatedDesign?.imageUrl) {
                                 setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                                 setShowPatternStep(true);
@@ -7382,16 +7407,16 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                                 transform.scale,
                                 transform.x,
                                 transform.y,
-                                productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                                useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                                 aopPlacementSettings?.mirrorMode,
-                                productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                                useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                               );
                             }
                           } else {
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (productTypeConfig?.isAllOverPrint && !aopPatternUrl)}
+                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || (useAopCustomizer && !aopPatternUrl)}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
@@ -7417,7 +7442,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
                           </>
-                        ) : productTypeConfig?.isAllOverPrint && !aopPatternUrl ? (
+                        ) : useAopCustomizer && !aopPatternUrl ? (
                           <>
                             <span className="shimmer-text-white">Apply Pattern to Continue</span>
                           </>
@@ -7693,7 +7718,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                             onValueChange={(value) => {
                               const nextPlacement = value as "front" | "back" | "both";
                               setPrintPlacement(nextPlacement);
-                              if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || productTypeConfig.isAllOverPrint) {
+                              if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
                                 return;
                               }
                               const flatOnTheFly = !!(
@@ -8213,7 +8238,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   const isGeneratingArtwork = generateMutation.isPending;
                   // mockupTriggered bridges the gap between isPending=false and mockupLoading=true
                   const isGeneratingMockups = isStorefront && (mockupLoading || mockupTriggered) && !getPreferredMockupUrl();
-                  const isAopProduct = !!(productTypeConfig?.isAllOverPrint);
+                  const isAopProduct = !!(useAopCustomizer);
                   // isAopReapplying: AOP product is regenerating mockups after a pattern re-apply.
                   // Unlike the first apply, getPreferredMockupUrl() returns the OLD mockup URL so
                   // isGeneratingMockups is false — but we still need to show the blue shimmer.
@@ -8361,7 +8386,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               );
             })()}
 
-            {generatedDesign?.imageUrl && !productTypeConfig?.isAllOverPrint && !flatPlacerEligible && (
+            {generatedDesign?.imageUrl && !useAopCustomizer && !flatPlacerEligible && (
               <ZoomControls
                 transform={transform}
                 onTransformChange={setTransform}
@@ -8375,7 +8400,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                         size="sm"
                         onClick={() => {
                           if (generatedDesign?.imageUrl && productTypeConfig) {
-                            if (productTypeConfig.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                               setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                               setShowPatternStep(true);
                               return;
@@ -8397,9 +8422,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                               transform.scale,
                               transform.x,
                               transform.y,
-                              productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                              useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                               aopPlacementSettings?.mirrorMode,
-                              productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                              useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                             );
                           }
                         }}
@@ -8489,7 +8514,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             )}
 
             {/* AOP-only bottom bar: Edit Pattern + Share — hidden while pattern overlay is open (same actions live under Apply). */}
-            {generatedDesign?.imageUrl && productTypeConfig?.isAllOverPrint && !showPatternStep && (
+            {generatedDesign?.imageUrl && useAopCustomizer && !showPatternStep && (
               <div className="flex items-center justify-between pt-2 border-t gap-2">
                 <Button
                   variant="outline"
@@ -8549,7 +8574,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                     className="text-xs text-destructive underline shrink-0"
                     onClick={() => {
                       if (generatedDesign?.imageUrl && productTypeConfig) {
-                        if (productTypeConfig.isAllOverPrint && !lastAopPanelUrlsRef.current?.length) {
+                        if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
                           setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
                           setShowPatternStep(true);
                           return;
@@ -8566,9 +8591,9 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                           transform.scale,
                           50,
                           50,
-                          productTypeConfig.isAllOverPrint && aopPatternUrl ? aopPatternUrl : undefined,
+                          useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
                           aopPlacementSettings?.mirrorMode,
-                          productTypeConfig.isAllOverPrint ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
+                          useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
                         );
                       }
                     }}

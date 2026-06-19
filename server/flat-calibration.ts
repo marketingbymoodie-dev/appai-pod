@@ -28,6 +28,8 @@ import {
   deleteFlatCalibrationAssetsByPrefix,
   deleteFlatCalibrationProductAssets,
 } from "./supabaseFlatCalibration";
+import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
+import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -129,6 +131,9 @@ export type FlatCalibrationManifest = {
   /** Manual layer alignment from the flat calibrator admin tool. */
   calibratorGeometry?: FlatCalibratorGeometry;
   generatedAt: string;
+  /** Set by platform canonical harvest for admin UI feedback. */
+  harvestStatus?: FlatCalibrationStatus;
+  harvestError?: string | null;
 };
 
 export type HarvestResult = {
@@ -1712,6 +1717,8 @@ export type HarvestOptions = {
   wipeExisting?: boolean;
   /** Supabase prefix (default products/{productTypeId}). Use canonical/{blueprintId}/v{n} for platform library. */
   storageKey?: string;
+  /** Platform catalog override — harvest despite (AOP) in Printify title. */
+  forceFlatHarvest?: boolean;
 };
 
 /**
@@ -1736,6 +1743,25 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     representativeGeometry: true,
     generatedAt: new Date().toISOString(),
   };
+
+  if (
+    detectPrintifyAllOverPrint({ name, blueprintId }) &&
+    !shouldAllowFlatHarvest({
+      name,
+      blueprintId,
+      isAllOverPrint: true,
+      forceFlatHarvest: opts.forceFlatHarvest,
+    })
+  ) {
+    const error =
+      "All-over print (AOP) products use the AOP panel pipeline, not flat harvest. Tag as AOP in Operator Catalog.";
+    return {
+      tier: "reject",
+      status: "unsupported",
+      manifest: { ...baseManifest, harvestStatus: "unsupported", harvestError: error },
+      error,
+    };
+  }
 
   if (!isSupabaseFlatCalibrationConfigured()) {
     return { tier: "reject", status: "failed", manifest: baseManifest, error: "Supabase flat-calibration bucket not configured" };

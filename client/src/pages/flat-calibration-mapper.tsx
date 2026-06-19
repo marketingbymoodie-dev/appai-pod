@@ -67,6 +67,8 @@ type CalibratorState = {
   name: string;
   category?: string;
   harvestComplete?: boolean;
+  harvestOutcome?: "none" | "ready" | "unsupported" | "failed";
+  harvestError?: string;
   modelPickerLabel?: "phone" | "variant" | null;
   edgeWrap?: boolean;
   models: ModelAssets[];
@@ -263,8 +265,18 @@ export default function FlatCalibrationMapperPage() {
       });
     } else if (data?.harvestComplete && harvestPhase === "idle") {
       setHarvestPhase("complete");
+    } else if (
+      harvestPhase === "running" &&
+      (data?.harvestOutcome === "failed" || data?.harvestOutcome === "unsupported")
+    ) {
+      setHarvestPhase("idle");
+      toast({
+        title: data.harvestOutcome === "unsupported" ? "Not a flat product" : "Harvest failed",
+        description: data.harvestError || "Flat calibration assets could not be harvested.",
+        variant: "destructive",
+      });
     }
-  }, [data?.harvestComplete, harvestPhase, toast]);
+  }, [data?.harvestComplete, data?.harvestOutcome, data?.harvestError, harvestPhase, toast]);
 
   useEffect(() => {
     if (models.length > 0 && !selectedModelId) {
@@ -619,6 +631,18 @@ export default function FlatCalibrationMapperPage() {
             </Button>
           </div>
         </div>
+
+        {(data?.harvestOutcome === "failed" || data?.harvestOutcome === "unsupported") && data.harvestError && (
+          <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            {data.harvestError}
+            {/\(AOP\)/i.test(data.name ?? "") && (
+              <>
+                {" "}
+                Re-tag this blueprint as <strong>AOP</strong> in Operator Catalog.
+              </>
+            )}
+          </p>
+        )}
 
         {isLoading ? (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">

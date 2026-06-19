@@ -34,6 +34,8 @@ import {
   resolveFlatCalibrationAssetUrl,
   uploadToFlatCalibrationBucket,
 } from "../supabaseFlatCalibration";
+import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
+import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
 
 type StorageLike = {
   getProductTypes(): Promise<any[]>;
@@ -308,6 +310,32 @@ function isHarvestComplete(manifest: Awaited<ReturnType<typeof loadCanonicalMani
   );
 }
 
+export type HarvestOutcome = "none" | "ready" | "unsupported" | "failed";
+
+function resolveHarvestOutcome(manifest: Awaited<ReturnType<typeof loadCanonicalManifest>>): {
+  outcome: HarvestOutcome;
+  error?: string;
+} {
+  if (!manifest?.generatedAt) return { outcome: "none" };
+  if (isHarvestComplete(manifest)) return { outcome: "ready" };
+  const err = typeof manifest.harvestError === "string" ? manifest.harvestError : undefined;
+  if (manifest.tier === "reject" || manifest.harvestStatus === "unsupported") {
+    return {
+      outcome: "unsupported",
+      error:
+        err ||
+        "Product is not suitable for flat on-the-fly mockups (wrapped/3D or AOP). Tag as AOP instead.",
+    };
+  }
+  if (manifest.views && Object.keys(manifest.views).length > 0) {
+    return {
+      outcome: "failed",
+      error: err || "Registration completed but blank garment photos could not be harvested.",
+    };
+  }
+  return { outcome: "failed", error: err || "Harvest did not produce usable calibration assets." };
+}
+
 async function assetUrlsForStorage(
   storageKey: string,
   modelId: string,
@@ -380,9 +408,12 @@ export function registerPlatformCalibrationRoutes(
       entries.map(async (e) => {
         const manifest =
           e.kind === "flat" ? await loadCanonicalManifest(e.blueprintId, DEFAULT_CANONICAL_VERSION) : null;
+        const harvest = manifest ? resolveHarvestOutcome(manifest) : { outcome: "none" as const };
         return {
           ...e,
           harvestComplete: e.kind === "flat" ? isHarvestComplete(manifest) : false,
+          harvestOutcome: e.kind === "flat" ? harvest.outcome : undefined,
+          harvestError: e.kind === "flat" ? harvest.error : undefined,
           publish: await getCanonicalPublishState(e.blueprintId),
         };
       }),
@@ -418,6 +449,7 @@ export function registerPlatformCalibrationRoutes(
       }
 
       const models = resolveCalibratorModels(entry, manifest, refProduct);
+      const harvest = resolveHarvestOutcome(manifest);
       const modelPickerLabel =
         models.length <= 1
           ? null
@@ -450,6 +482,8 @@ export function registerPlatformCalibrationRoutes(
         category: entry.category,
         edgeWrap: !!manifest?.edgeWrap,
         harvestComplete: isHarvestComplete(manifest),
+        harvestOutcome: harvest.outcome,
+        harvestError: harvest.error,
         modelPickerLabel,
         models: modelPayload,
       });
@@ -467,6 +501,23 @@ export function registerPlatformCalibrationRoutes(
       const entry = await getFlatCanonicalEntry(blueprintId);
       if (!entry || entry.kind !== "flat") {
         return res.status(404).json({ error: "Blueprint not in flat canonical registry" });
+      }
+
+      const catalogEntry = await getPlatformCatalogEntry(blueprintId);
+      if (
+        detectPrintifyAllOverPrint({ name: entry.label, blueprintId }) &&
+        !shouldAllowFlatHarvest({
+          name: entry.label,
+          blueprintId,
+          isAllOverPrint: true,
+          forceFlatHarvest: catalogEntry?.forceFlatHarvest,
+        })
+      ) {
+        return res.status(400).json({
+          error:
+            "This is an all-over print (AOP) product — enable “Force flat harvest” on the catalog tag, or set fulfillment to tote_folded_v1 with flat storefront mockups.",
+          code: "AOP_NOT_FLAT",
+        });
       }
 
       const creds = await resolvePlatformPrintifyCreds(storage, req);
@@ -518,16 +569,29 @@ export function registerPlatformCalibrationRoutes(
             calibratorMode: true,
             wipeExisting: true,
             storageKey,
+            forceFlatHarvest: catalogEntry?.forceFlatHarvest ?? false,
           });
           if (result.manifest) {
             await uploadToFlatCalibrationBucket(
               `${storageKey}/manifest.json`,
-              Buffer.from(JSON.stringify({ ...result.manifest, canonicalVersion: version }, null, 2), "utf-8"),
+              Buffer.from(
+                JSON.stringify(
+                  {
+                    ...result.manifest,
+                    canonicalVersion: version,
+                    harvestStatus: result.status,
+                    harvestError: result.error ?? null,
+                  },
+                  null,
+                  2,
+                ),
+                "utf-8",
+              ),
               "application/json",
             );
           }
           console.log(
-            `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}`,
+            `[platform-canonical] harvest bp ${blueprintId} v${version} -> ${result.status} tier=${result.tier}${result.error ? ` (${result.error})` : ""}`,
           );
         } catch (err) {
           console.error(`[platform-canonical] harvest failed bp ${blueprintId}:`, err);

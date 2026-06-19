@@ -24,6 +24,11 @@ import {
 } from "@/hooks/usePrintifyCatalogFilters";
 import { platformCatalogCategoryLabel } from "@shared/platformCatalogCategories";
 import { PRINTIFY_SHIPPING_REGIONS } from "@shared/printifyShippingRegions";
+import {
+  ADJUSTABLE_TOTE_BLUEPRINT_ID,
+  type FulfillmentLayout,
+  type StorefrontMockupMode,
+} from "@shared/productLayoutPolicy";
 
 type CatalogTag = {
   printifyBlueprintId: number;
@@ -32,6 +37,9 @@ type CatalogTag = {
   kind: "flat" | "aop" | "printify" | "blocked";
   status: "draft" | "published";
   category: string | null;
+  storefrontMockupMode?: string | null;
+  fulfillmentLayout?: string | null;
+  forceFlatHarvest?: boolean | null;
 };
 
 const KIND_LABELS: Record<CatalogTag["kind"], string> = {
@@ -57,6 +65,9 @@ export default function OperatorCatalogPage() {
     kind: CatalogTag["kind"];
   } | null>(null);
   const [dialogCategory, setDialogCategory] = useState("other");
+  const [dialogStorefrontMode, setDialogStorefrontMode] = useState<StorefrontMockupMode>("auto");
+  const [dialogFulfillmentLayout, setDialogFulfillmentLayout] = useState<FulfillmentLayout>("auto");
+  const [dialogForceFlatHarvest, setDialogForceFlatHarvest] = useState(false);
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -112,12 +123,18 @@ export default function OperatorCatalogPage() {
       kind: CatalogTag["kind"];
       bp: PrintifyBlueprintListItem;
       category: string;
+      storefrontMockupMode: StorefrontMockupMode;
+      fulfillmentLayout: FulfillmentLayout;
+      forceFlatHarvest: boolean;
     }) => {
       const res = await apiRequest("PUT", `/api/platform/operator-catalog/${args.blueprintId}/tag`, {
         kind: args.kind,
         label: args.bp.title,
         brand: args.bp.brand,
         category: args.kind === "blocked" ? "other" : args.category,
+        storefrontMockupMode: args.storefrontMockupMode === "auto" ? null : args.storefrontMockupMode,
+        fulfillmentLayout: args.fulfillmentLayout === "auto" ? null : args.fulfillmentLayout,
+        forceFlatHarvest: args.forceFlatHarvest,
       });
       return res.json();
     },
@@ -153,7 +170,19 @@ export default function OperatorCatalogPage() {
 
   const openTagDialog = (bp: PrintifyBlueprintListItem, kind: CatalogTag["kind"]) => {
     const existing = tagById.get(bp.id);
+    const isAdjustableTote = bp.id === ADJUSTABLE_TOTE_BLUEPRINT_ID;
     setDialogCategory(existing?.category ?? "other");
+    setDialogStorefrontMode(
+      (existing?.storefrontMockupMode as StorefrontMockupMode | undefined) ??
+        (isAdjustableTote ? "flat" : "auto"),
+    );
+    setDialogFulfillmentLayout(
+      (existing?.fulfillmentLayout as FulfillmentLayout | undefined) ??
+        (isAdjustableTote ? "tote_folded_v1" : "auto"),
+    );
+    setDialogForceFlatHarvest(
+      existing?.forceFlatHarvest ?? (isAdjustableTote && kind === "flat"),
+    );
     setPendingTag({ bp, kind });
   };
 
@@ -164,6 +193,9 @@ export default function OperatorCatalogPage() {
       kind: pendingTag.kind,
       bp: pendingTag.bp,
       category: dialogCategory,
+      storefrontMockupMode: dialogStorefrontMode,
+      fulfillmentLayout: dialogFulfillmentLayout,
+      forceFlatHarvest: dialogForceFlatHarvest,
     });
   };
 
@@ -374,6 +406,12 @@ export default function OperatorCatalogPage() {
           kind={pendingTag?.kind ?? null}
           category={dialogCategory}
           onCategoryChange={setDialogCategory}
+          storefrontMockupMode={dialogStorefrontMode}
+          onStorefrontMockupModeChange={setDialogStorefrontMode}
+          fulfillmentLayout={dialogFulfillmentLayout}
+          onFulfillmentLayoutChange={setDialogFulfillmentLayout}
+          forceFlatHarvest={dialogForceFlatHarvest}
+          onForceFlatHarvestChange={setDialogForceFlatHarvest}
           onConfirm={confirmTag}
           isPending={tagMutation.isPending}
         />

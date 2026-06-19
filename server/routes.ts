@@ -26,6 +26,12 @@ import {
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
+import {
+  resolveFulfillmentLayout,
+  resolveStorefrontMockupMode,
+  usesAopStorefrontCustomizer,
+  usesToteFoldedFulfillment,
+} from "@shared/productLayoutPolicy";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { syncCreditEntitlementMetafield } from "./credit-entitlements";
@@ -5497,6 +5503,26 @@ ${textEdgeRestrictions}
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
         panelMappingTemplate: (productType as any).panelMappingTemplate || null,
+        storefrontMockupMode: (productType as any).storefrontMockupMode || null,
+        fulfillmentLayout: (productType as any).fulfillmentLayout || null,
+        effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        }),
+        effectiveFulfillmentLayout: resolveFulfillmentLayout({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        }),
+        useAopCustomizer: usesAopStorefrontCustomizer({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
+        }),
         onTheFlyTier: (productType as any).onTheFlyTier || null,
         flatCalibration: parseFlatCalibrationManifest((productType as any).flatCalibration),
         placeholderPositions: typeof productType.placeholderPositions === "string"
@@ -5783,6 +5809,26 @@ ${textEdgeRestrictions}
       isAllOverPrint: productTypeToUse.isAllOverPrint || false,
       aopTemplateId: productTypeToUse.aopTemplateId || null,
       panelMappingTemplate: (productTypeToUse as any).panelMappingTemplate || null,
+      storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode || null,
+      fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout || null,
+      effectiveStorefrontMockupMode: resolveStorefrontMockupMode({
+        isAllOverPrint: productTypeToUse.isAllOverPrint,
+        storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
+        fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      }),
+      effectiveFulfillmentLayout: resolveFulfillmentLayout({
+        isAllOverPrint: productTypeToUse.isAllOverPrint,
+        storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
+        fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      }),
+      useAopCustomizer: usesAopStorefrontCustomizer({
+        isAllOverPrint: productTypeToUse.isAllOverPrint,
+        storefrontMockupMode: (productTypeToUse as any).storefrontMockupMode,
+        fulfillmentLayout: (productTypeToUse as any).fulfillmentLayout,
+        printifyBlueprintId: productTypeToUse.printifyBlueprintId,
+      }),
       onTheFlyTier: (productTypeToUse as any).onTheFlyTier || null,
       flatCalibration: parseFlatCalibrationManifest((productTypeToUse as any).flatCalibration),
       placeholderPositions: typeof productTypeToUse.placeholderPositions === "string"
@@ -7995,16 +8041,34 @@ ${textEdgeRestrictions}
 
       // ========== GENERATE MOCKUP ==========
       const resolvedDoubleSided = resolveDoubleSided(productType);
-      const effectivePrintPlacement = !productType.isAllOverPrint
+      const toteFolded = usesToteFoldedFulfillment({
+        isAllOverPrint: productType.isAllOverPrint,
+        storefrontMockupMode: (productType as any).storefrontMockupMode,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+        printifyBlueprintId: productType.printifyBlueprintId,
+      });
+      const useAopMockups = usesAopStorefrontCustomizer({
+        isAllOverPrint: productType.isAllOverPrint,
+        storefrontMockupMode: (productType as any).storefrontMockupMode,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+        printifyBlueprintId: productType.printifyBlueprintId,
+      });
+      const effectivePrintPlacement = !useAopMockups
         ? (printPlacement === "front" || printPlacement === "back" || printPlacement === "both"
           ? printPlacement
-          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided ? "both" : "front")))
+          : (typeof printOnBack === "boolean" ? (printOnBack ? "both" : "front") : (resolvedDoubleSided || toteFolded ? "both" : "front")))
         : undefined;
-      const effectiveDoubleSided = productType.isAllOverPrint
-        ? resolvedDoubleSided
-        : effectivePrintPlacement === "both";
+      const effectiveDoubleSided = toteFolded
+        ? true
+        : useAopMockups
+          ? resolvedDoubleSided
+          : effectivePrintPlacement === "both";
       const resolvedWrapAround =
-        effectivePrintPlacement === "both" ? resolveWrapAround(productType) : false;
+        toteFolded
+          ? false
+          : effectivePrintPlacement === "both"
+            ? resolveWrapAround(productType)
+            : false;
       console.log(`[Storefront Mockup] [${correlationId}] resolveDoubleSided=${resolvedDoubleSided}, effectiveDoubleSided=${effectiveDoubleSided}, resolveWrapAround=${resolvedWrapAround}, productType.doubleSidedPrint=${productType.doubleSidedPrint}, productType.designerType=${productType.designerType}, productType.placeholderPositions=${productType.placeholderPositions}`);
       const { jobId, cached } = await enqueueMockupJob({
         blueprintId,
@@ -8020,7 +8084,7 @@ ${textEdgeRestrictions}
         printPlacement: effectivePrintPlacement,
         wrapAround: resolvedWrapAround,
         wrapDirection: resolvedWrapAround ? resolveWrapDirection(productType) : undefined,
-        aopPositions: productType.isAllOverPrint && productType.placeholderPositions
+        aopPositions: useAopMockups && productType.placeholderPositions
           ? JSON.parse(productType.placeholderPositions as string)
           : undefined,
         mirrorLegs: !!mirrorLegs,
@@ -13177,7 +13241,7 @@ ${textEdgeRestrictions}
       // Apparel (t-shirts, hoodies, etc.) always defaults to front-only print.
       // Having a "back" placeholder does NOT mean we should print on the back by default.
       // Only non-apparel products (pillows, tote bags, etc.) should be auto-flagged as double-sided.
-      const doubleSidedPrint = designerType !== "apparel" && (
+      const doubleSidedPrintBase = designerType !== "apparel" && (
         hasBackPlaceholder ||
         decodedCombined.includes("double sided") ||
         decodedCombined.includes("double-sided") ||
@@ -13186,8 +13250,12 @@ ${textEdgeRestrictions}
         decodedCombined.includes("both sides")
       );
 
-
-
+      const catalogStorefrontMode = (catalogEntry as any).storefrontMockupMode ?? null;
+      const catalogFulfillmentLayout =
+        (catalogEntry as any).fulfillmentLayout ??
+        (blueprintIdNum === 1300 ? "tote_folded_v1" : null);
+      const toteFoldedImport = catalogFulfillmentLayout === "tote_folded_v1";
+      const doubleSidedPrint = toteFoldedImport ? true : doubleSidedPrintBase;
       // Build the persisted placeholder positions list (all positions with their dimensions)
       const placeholderPositions = positionKeys.map(pos => ({
         position: pos,
@@ -13238,9 +13306,20 @@ ${textEdgeRestrictions}
         flatCalibrationStatus: initialFlatStatus,
         panelMappingTemplate:
           catalogEntry.kind === "aop" ? catalogEntry.panelMappingTemplate ?? null : null,
+        storefrontMockupMode: catalogStorefrontMode,
+        fulfillmentLayout: catalogFulfillmentLayout,
         isActive: true,
         sortOrder: existingTypes.length,
       });
+
+      if (toteFoldedImport) {
+        await storage.updateProductType(productType.id, {
+          doubleSidedPrint: true,
+          flatCalibrationStatus: "unsupported",
+          storefrontMockupMode: catalogStorefrontMode || "flat",
+          fulfillmentLayout: "tote_folded_v1",
+        });
+      }
 
       // Seed shared canonical calibration (instant — no per-merchant harvest).
       if (catalogEntry.kind === "flat" && canonicalFlatMeta) {
@@ -13346,9 +13425,17 @@ ${textEdgeRestrictions}
         return res.status(400).json({ error: "Printify credentials not configured for this merchant" });
       }
       if (productType.onTheFlyTier !== "flat" && productType.onTheFlyTier !== "mesh") {
-        return res.status(400).json({
-          error: `This product is not a flat/mesh on-the-fly product (tier=${productType.onTheFlyTier ?? "none"}). Calibrate it first.`,
+        const toteFolded = usesToteFoldedFulfillment({
+          isAllOverPrint: productType.isAllOverPrint,
+          storefrontMockupMode: (productType as any).storefrontMockupMode,
+          fulfillmentLayout: (productType as any).fulfillmentLayout,
+          printifyBlueprintId: productType.printifyBlueprintId,
         });
+        if (!toteFolded) {
+          return res.status(400).json({
+            error: `This product is not a flat/mesh on-the-fly product (tier=${productType.onTheFlyTier ?? "none"}). Calibrate it first.`,
+          });
+        }
       }
 
       const designId = typeof req.body?.designId === "string" ? req.body.designId : null;
@@ -13360,37 +13447,35 @@ ${textEdgeRestrictions}
       }
 
       if (result.status === "failed") {
-        return res.status(502).json({
-          error: result.error || "Printify rejected the test order",
-          skippedReasons: result.skippedReasons,
-          designId: result.designId,
-        });
+        return res.status(502).json({ error: result.error || "Printify rejected order", ...result });
       }
       if (result.status === "skipped") {
-        return res.status(400).json({
-          error: "Could not build a print file for this design (no eligible/enabled view).",
-          skippedReasons: result.skippedReasons,
-          designId: result.designId,
-        });
+        return res.status(400).json({ error: result.skippedReasons.join("; ") || "No eligible lines", ...result });
       }
 
-      const printifyOrderUrl = result.printifyOrderId
-        ? `https://printify.com/app/orders/${merchant.printifyShopId}/${result.printifyOrderId}`
-        : null;
+      const toteFolded = usesToteFoldedFulfillment({
+        isAllOverPrint: productType.isAllOverPrint,
+        storefrontMockupMode: (productType as any).storefrontMockupMode,
+        fulfillmentLayout: (productType as any).fulfillmentLayout,
+        printifyBlueprintId: productType.printifyBlueprintId,
+      });
+
       return res.json({
         success: true,
         draft: true,
-        sentToProduction: false,
-        message: "Created a DRAFT Printify order (not sent to production, nothing produced or charged). Open it in Printify to verify the print file matches the design.",
+        message: toteFolded
+          ? "Created DRAFT Printify order with tote_folded_v1 print file (2650×5250). Open Printify to confirm the folded layout."
+          : "Created DRAFT Printify order. Open Printify to verify the print file matches the on-screen design.",
         designId: result.designId,
         printifyOrderId: result.printifyOrderId,
-        printifyOrderUrl,
         printFileUrls: result.printFileUrls,
-        eligibleLines: result.eligibleLines,
+        printifyOrderUrl: result.printifyOrderId
+          ? `https://printify.com/app/orders/${merchant.printifyShopId}/${result.printifyOrderId}`
+          : undefined,
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error creating test Printify order:", error);
-      res.status(500).json({ error: error?.message || "Failed to create test order" });
+      res.status(500).json({ error: "Failed to create test order" });
     }
   });
 

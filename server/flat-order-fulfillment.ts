@@ -55,6 +55,10 @@ import {
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { usesToteFoldedFulfillment } from "@shared/productLayoutPolicy";
+import { buildToteFoldedPrintPngFromUrl } from "./toteFoldedPrintFile";
+import { uploadToFlatCalibrationBucket } from "./supabaseFlatCalibration";
+import type { ToteFoldedPlacement } from "@shared/toteFoldedLayout";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -144,8 +148,21 @@ export type ResolvedFlatDesign = {
   colorId: string;
 };
 
+export type ResolvedToteFoldedDesign = {
+  designId: string;
+  shop: string;
+  job: GenerationJob;
+  productType: ProductType;
+  merchant: Merchant;
+  artworkUrl: string;
+  sizeId: string;
+  colorId: string;
+  placement: ToteFoldedPlacement;
+};
+
 export type ResolveResult =
-  | { ok: true; design: ResolvedFlatDesign }
+  | { ok: true; kind: "flat"; design: ResolvedFlatDesign }
+  | { ok: true; kind: "tote_folded"; design: ResolvedToteFoldedDesign }
   | { ok: false; skip: true; reason: string }
   | { ok: false; skip: false; reason: string };
 
@@ -234,11 +251,56 @@ export async function resolveDesignForOrderLine(
     return { ok: false, skip: true, reason: `design ${designId} has no productTypeId` };
   }
 
-  // 3) productTypeId → product_types (must be an eligible flat/mesh on-the-fly product)
+  // 3) productTypeId → product_types (flat/mesh on-the-fly or tote_folded_v1)
   const productType = await storage.getProductType(productTypeId);
   if (!productType) {
     return { ok: false, skip: true, reason: `product type ${productTypeId} not found` };
   }
+
+  const toteFolded = usesToteFoldedFulfillment({
+    isAllOverPrint: productType.isAllOverPrint,
+    storefrontMockupMode: (productType as any).storefrontMockupMode,
+    fulfillmentLayout: (productType as any).fulfillmentLayout,
+    printifyBlueprintId: productType.printifyBlueprintId,
+  });
+
+  if (toteFolded) {
+    if (!productType.merchantId) {
+      return { ok: false, skip: false, reason: `product type ${productTypeId} has no merchant` };
+    }
+    const merchant = await storage.getMerchant(productType.merchantId);
+    if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
+      return { ok: false, skip: false, reason: `merchant for product type ${productTypeId} missing Printify credentials` };
+    }
+
+    const dsScale = Number(designState?.scale ?? 100);
+    const dsX = Number(designState?.x ?? 50);
+    const dsY = Number(designState?.y ?? 50);
+    const placement: ToteFoldedPlacement = {
+      scale: Math.max(0.05, Math.min(4, dsScale / 100)),
+      offsetX: (dsX - 50) / 50,
+      offsetY: (dsY - 50) / 50,
+    };
+    const sizeId = String(line.properties["Size"] || job.size || "default");
+    const colorId = String(line.properties["Color"] || job.frameColor || "default");
+
+    return {
+      ok: true,
+      kind: "tote_folded",
+      design: {
+        designId,
+        shop: resolvedShop,
+        job,
+        productType,
+        merchant,
+        artworkUrl,
+        sizeId,
+        colorId,
+        placement,
+      },
+    };
+  }
+
   const tier = productType.onTheFlyTier;
   if (tier !== "flat" && tier !== "mesh") {
     return { ok: false, skip: true, reason: `product type ${productTypeId} tier=${tier ?? "none"} not flat/mesh` };
@@ -275,6 +337,7 @@ export async function resolveDesignForOrderLine(
 
   return {
     ok: true,
+    kind: "flat",
     design: {
       designId,
       shop: resolvedShop,
@@ -374,6 +437,28 @@ async function buildPrintAreasForDesign(
     throw new Error("no enabled views with print dimensions to bake");
   }
   return { printAreas, urls };
+}
+
+async function buildToteFoldedPrintAreasForDesign(
+  design: ResolvedToteFoldedDesign,
+): Promise<{ printAreas: Record<string, PrintAreaImage[]>; urls: Record<string, string> }> {
+  let artworkUrl = design.artworkUrl;
+  if (artworkUrl.startsWith("/")) {
+    const base = process.env.PUBLIC_APP_URL || process.env.APP_URL || "";
+    artworkUrl = `${base.replace(/\/$/, "")}${artworkUrl}`;
+  }
+  const foldedPng = await buildToteFoldedPrintPngFromUrl(artworkUrl, design.placement);
+  const path = `tote-folded-orders/${design.productType.id}/${design.designId}-${Date.now()}.png`;
+  const url = await uploadToFlatCalibrationBucket(path, foldedPng, "image/png");
+  if (!url) {
+    throw new Error(
+      "Supabase flat-calibration bucket not configured — cannot host the folded tote print file for Printify",
+    );
+  }
+  return {
+    printAreas: { front: [{ src: url, scale: 1, x: 0.5, y: 0.5, angle: 0 }] },
+    urls: { front: url },
+  };
 }
 
 // ── Idempotency ──────────────────────────────────────────────────────────────────
@@ -515,22 +600,27 @@ export async function submitFlatOrderToPrintify(
       skippedReasons.push(`line ${line.lineId}: ${resolved.reason}`);
       continue;
     }
-    const design = resolved.design;
-    const target = resolvePrintifyTarget(design.productType, design.sizeId, design.colorId);
+
+    const productType = resolved.design.productType;
+    const designId = resolved.design.designId;
+    const merchant = resolved.design.merchant;
+    const target = resolvePrintifyTarget(productType, resolved.design.sizeId, resolved.design.colorId);
     if (!target) {
-      skippedReasons.push(`line ${line.lineId}: no Printify variant for ${design.sizeId}:${design.colorId}`);
+      skippedReasons.push(`line ${line.lineId}: no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`);
       continue;
     }
-    // All eligible lines for one order must share Printify credentials.
-    printifyShopId = String(design.merchant.printifyShopId);
-    printifyToken = String(design.merchant.printifyApiToken);
-    firstDesignId = firstDesignId ?? design.designId;
-    firstProductTypeId = firstProductTypeId ?? design.productType.id;
-    resolvedShop = design.shop || resolvedShop;
+    printifyShopId = String(merchant.printifyShopId);
+    printifyToken = String(merchant.printifyApiToken);
+    firstDesignId = firstDesignId ?? designId;
+    firstProductTypeId = firstProductTypeId ?? productType.id;
+    resolvedShop = resolved.design.shop || resolvedShop;
 
     let built: { printAreas: Record<string, PrintAreaImage[]>; urls: Record<string, string> };
     try {
-      built = await buildPrintAreasForDesign(design);
+      built =
+        resolved.kind === "tote_folded"
+          ? await buildToteFoldedPrintAreasForDesign(resolved.design)
+          : await buildPrintAreasForDesign(resolved.design);
     } catch (e: any) {
       skippedReasons.push(`line ${line.lineId}: bake failed ${e?.message || e}`);
       continue;
@@ -541,7 +631,7 @@ export async function submitFlatOrderToPrintify(
       blueprint_id: target.blueprintId,
       variant_id: target.printifyVariantId,
       quantity: line.quantity,
-      external_id: `${shopifyOrderId || "test"}:${line.lineId || design.designId}`,
+      external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
       print_areas: built.printAreas,
     });
   }
@@ -645,6 +735,22 @@ export async function submitFlatOrderToPrintify(
  * test-order endpoint when no explicit designId is supplied.
  */
 export async function findLatestFlatDesignJobId(productTypeId: number): Promise<string | null> {
+  const toteProduct = await storage.getProductType(productTypeId);
+  const toteFolded =
+    toteProduct &&
+    usesToteFoldedFulfillment({
+      isAllOverPrint: toteProduct.isAllOverPrint,
+      storefrontMockupMode: (toteProduct as any).storefrontMockupMode,
+      fulfillmentLayout: (toteProduct as any).fulfillmentLayout,
+      printifyBlueprintId: toteProduct.printifyBlueprintId,
+    });
+
+  if (toteFolded) {
+    const jobs = await storage.getGenerationJobsByProductType(productTypeId);
+    const job = jobs.find((j) => j.status === "complete" && j.designImageUrl) ?? jobs[0];
+    return job?.id ?? null;
+  }
+
   const result = await pool.query<{ id: string }>(
     `SELECT id
        FROM generation_jobs

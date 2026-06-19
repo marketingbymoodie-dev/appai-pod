@@ -134,6 +134,9 @@ export async function upsertPlatformCatalogTag(args: {
   kind: PlatformCatalogKind;
   category?: string | null;
   panelMappingTemplate?: string | null;
+  storefrontMockupMode?: string | null;
+  fulfillmentLayout?: string | null;
+  forceFlatHarvest?: boolean | null;
   notes?: string | null;
 }): Promise<PlatformCatalogEntry> {
   const status: PlatformCatalogStatus = args.kind === "printify" ? "published" : "draft";
@@ -151,6 +154,10 @@ export async function upsertPlatformCatalogTag(args: {
         category: args.category ?? null,
         status: args.kind === "printify" ? "published" : existing.status === "published" && args.kind === existing.kind ? "published" : status,
         panelMappingTemplate: panelTemplate,
+        storefrontMockupMode: args.storefrontMockupMode ?? existing.storefrontMockupMode ?? null,
+        fulfillmentLayout: args.fulfillmentLayout ?? existing.fulfillmentLayout ?? null,
+        forceFlatHarvest:
+          args.forceFlatHarvest != null ? args.forceFlatHarvest : existing.forceFlatHarvest ?? false,
         notes: args.notes ?? existing.notes,
         updatedAt: new Date(),
       })
@@ -170,6 +177,9 @@ export async function upsertPlatformCatalogTag(args: {
       category: args.category ?? null,
       status,
       panelMappingTemplate: panelTemplate,
+      storefrontMockupMode: args.storefrontMockupMode ?? null,
+      fulfillmentLayout: args.fulfillmentLayout ?? null,
+      forceFlatHarvest: args.forceFlatHarvest ?? false,
       notes: args.notes ?? null,
     })
     .returning();

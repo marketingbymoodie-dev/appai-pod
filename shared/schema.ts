@@ -440,6 +440,10 @@ export const productTypes = pgTable("product_types", {
    * Supabase `flat-calibration` bucket (see server/supabaseFlatCalibration.ts).
    */
   flatCalibration: text("flat_calibration").default("{}"),
+  /** Override storefront UX: auto | flat | aop | printify */
+  storefrontMockupMode: text("storefront_mockup_mode"),
+  /** Override order print-file layout: auto | standard | flat | aop | tote_folded_v1 */
+  fulfillmentLayout: text("fulfillment_layout"),
   colorOptionName: text("color_option_name"), // Actual option name from Printify blueprint (e.g. "Material", "Fabric", "Color")
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -961,6 +965,12 @@ export const platformCatalogBlueprints = pgTable("platform_catalog_blueprints", 
   /** draft until operator publishes calibration; printify tags publish immediately */
   status: text("status").notNull().default("draft"),
   panelMappingTemplate: text("panel_mapping_template"),
+  /** auto | flat | aop | printify — how merchants preview in the editor */
+  storefrontMockupMode: text("storefront_mockup_mode"),
+  /** auto | standard | flat | aop | tote_folded_v1 — how print files are built */
+  fulfillmentLayout: text("fulfillment_layout"),
+  /** When true, allow flat catalog tag/harvest despite (AOP) in the Printify title */
+  forceFlatHarvest: boolean("force_flat_harvest").notNull().default(false),
   notes: text("notes"),
   taggedAt: timestamp("tagged_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

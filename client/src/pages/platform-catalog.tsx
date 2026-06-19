@@ -43,10 +43,12 @@ type CatalogProduct = {
   kind: "flat" | "aop";
   panelMappingTemplate?: string;
   harvestComplete?: boolean;
+  harvestOutcome?: "none" | "ready" | "unsupported" | "failed";
+  harvestError?: string;
   publish: PublishState;
 };
 
-type HarvestPhase = "idle" | "running" | "complete";
+type HarvestPhase = "idle" | "running" | "complete" | "failed";
 
 export default function PlatformCatalogPage() {
   const { toast } = useToast();
@@ -82,6 +84,8 @@ export default function PlatformCatalogPage() {
         if (p.kind !== "flat") continue;
         if (p.harvestComplete) {
           next[p.blueprintId] = "complete";
+        } else if (p.harvestOutcome === "failed" || p.harvestOutcome === "unsupported") {
+          next[p.blueprintId] = "failed";
         } else if (prev[p.blueprintId] !== "running") {
           next[p.blueprintId] = "idle";
         }
@@ -99,6 +103,16 @@ export default function PlatformCatalogPage() {
         toast({
           title: "Harvest complete",
           description: `${p.label} is ready — open Flat calibrator, then Publish.`,
+        });
+      } else if (
+        prev === "running" &&
+        phase === "failed" &&
+        (p.harvestOutcome === "failed" || p.harvestOutcome === "unsupported")
+      ) {
+        toast({
+          title: p.harvestOutcome === "unsupported" ? "Not a flat product" : "Harvest failed",
+          description: p.harvestError || `${p.label} could not be harvested for flat mockups.`,
+          variant: "destructive",
         });
       }
       prevHarvestPhaseRef.current[p.blueprintId] = phase;
@@ -253,9 +267,15 @@ export default function PlatformCatalogPage() {
           <ul className="space-y-4">
             {filteredProducts.map((p) => {
               const harvestPhase =
-                harvestPhaseById[p.blueprintId] ?? (p.harvestComplete ? "complete" : "idle");
+                harvestPhaseById[p.blueprintId] ??
+                (p.harvestComplete
+                  ? "complete"
+                  : p.harvestOutcome === "failed" || p.harvestOutcome === "unsupported"
+                    ? "failed"
+                    : "idle");
               const isHarvesting = harvestPhase === "running";
               const isHarvested = harvestPhase === "complete" || !!p.harvestComplete;
+              const harvestFailed = harvestPhase === "failed";
 
               return (
               <li key={p.blueprintId} className="rounded-lg border p-4">
@@ -309,6 +329,11 @@ export default function PlatformCatalogPage() {
                             <Check className="mr-1 h-3 w-3" />
                             Harvested
                           </>
+                        ) : harvestFailed ? (
+                          <>
+                            <RefreshCw className="mr-1 h-3 w-3" />
+                            Retry harvest
+                          </>
                         ) : (
                           <>
                             <RefreshCw className="mr-1 h-3 w-3" />
@@ -331,6 +356,9 @@ export default function PlatformCatalogPage() {
                           <Upload className="mr-1 h-3 w-3" />
                           Publish for merchants
                         </Button>
+                      )}
+                      {harvestFailed && p.harvestError && (
+                        <p className="w-full text-xs text-destructive">{p.harvestError}</p>
                       )}
                     </>
                   )}

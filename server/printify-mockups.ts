@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import pRetry from "p-retry";
 import crypto from "crypto";
+import { buildToteFoldedPrintPng } from "./toteFoldedPrintFile";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const MAX_RETRIES = 3;
@@ -72,6 +73,8 @@ export interface MockupRequest {
   internalProductTags?: string[];
   onPrintifyProductPayload?: (payload: unknown) => void;
   onPrintifyProductCreated?: (productId: string) => void;
+  /** When true, build 2650×5250 folded print canvas before upload (fulfillment only). */
+  toteFoldedFulfillment?: boolean;
 }
 
 export interface MockupImage {
@@ -715,6 +718,7 @@ export async function generatePrintifyMockup(
     doubleSided = false,
     printPlacement,
     wrapAround = false,
+    toteFoldedFulfillment = false,
   } = request;
 
   const imageUrl =
@@ -734,8 +738,32 @@ export async function generatePrintifyMockup(
   try {
     const isAop = !!(request.aopPositions && request.aopPositions.length > 0);
     let uploadUrl: string | Buffer = imageUrl;
+    let toteFoldedPrintPlacement: "front" | "back" | "both" | undefined;
 
-    if (wrapAround && !isAop) {
+    if (toteFoldedFulfillment && !isAop) {
+      try {
+        let originalBuffer: Buffer;
+        if (isDataUrl(imageUrl)) {
+          originalBuffer = Buffer.from(extractBase64FromDataUrl(imageUrl)!, "base64");
+        } else if (typeof imageUrl === "string") {
+          const fetchRes = await fetch(imageUrl);
+          originalBuffer = Buffer.from(await fetchRes.arrayBuffer());
+        } else {
+          originalBuffer = imageUrl as Buffer;
+        }
+        if (originalBuffer.length > 0) {
+          uploadUrl = await buildToteFoldedPrintPng(originalBuffer, {
+            scale,
+            offsetX: x,
+            offsetY: y,
+          });
+          toteFoldedPrintPlacement = "front";
+          console.log("[Printify Mockup] Built tote_folded_v1 fulfillment canvas (2650×5250)");
+        }
+      } catch (foldErr) {
+        console.warn("[Printify Mockup] tote_folded_v1 build failed:", (foldErr as Error).message);
+      }
+    } else if (wrapAround && !isAop) {
       const direction = request.wrapDirection || "horizontal";
       try {
         let originalBuffer: Buffer;
@@ -1034,6 +1062,9 @@ export async function generatePrintifyMockup(
 
     let effectivePrintPlacement = printPlacement ?? (doubleSided ? "both" : "front");
     let wrapSingleFace: "front" | "back" | undefined;
+    if (toteFoldedPrintPlacement) {
+      effectivePrintPlacement = toteFoldedPrintPlacement;
+    }
     if (!isAop) {
       const discovered = await getBlueprintVariantPlaceholders(
         blueprintId,
@@ -1096,8 +1127,12 @@ export async function generatePrintifyMockup(
       scale,
       x,
       y,
-      doubleSided,
-      effectiveAopPositions && effectiveAopPositions.length > 0 ? undefined : effectivePrintPlacement,
+      toteFoldedPrintPlacement ? false : doubleSided,
+      effectiveAopPositions && effectiveAopPositions.length > 0
+        ? undefined
+        : toteFoldedPrintPlacement
+          ? toteFoldedPrintPlacement
+          : effectivePrintPlacement,
       effectiveAopPositions,
       undefined,
       panelImageIds,

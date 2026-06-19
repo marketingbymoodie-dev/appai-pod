@@ -21,6 +21,13 @@ import SizeChartTable from "@/components/SizeChartTable";
 import { getSizeChartByBlueprintId } from "@/lib/printifySizeCharts";
 import type { ProductType, Merchant } from "@shared/schema";
 import { AOP_TEMPLATE_ADMIN_OPTIONS, AOP_TEMPLATE_SELECT_AUTO } from "@/components/designer/aopTemplates/registry";
+import {
+  FULFILLMENT_LAYOUT_LABELS,
+  STOREFRONT_MOCKUP_MODE_LABELS,
+  usesToteFoldedFulfillment,
+  type FulfillmentLayout,
+  type StorefrontMockupMode,
+} from "@shared/productLayoutPolicy";
 import PrintifyCatalogLink from "@/components/catalog/PrintifyCatalogLink";
 import ShippingLocationBadges from "@/components/catalog/ShippingLocationBadges";
 import { usePrintifyCatalogFilters } from "@/hooks/usePrintifyCatalogFilters";
@@ -50,6 +57,25 @@ function getColorOptionLabel(colors: VariantOption[]): string {
     phoneModelPatterns.some((p) => p.test((c.name || "").trim()))
   );
   return isPhoneModel ? "Models" : "Colors";
+}
+
+const LAYOUT_MODE_AUTO = "auto";
+
+function productUsesToteFolded(pt: ProductType): boolean {
+  return usesToteFoldedFulfillment({
+    isAllOverPrint: pt.isAllOverPrint,
+    storefrontMockupMode: (pt as any).storefrontMockupMode,
+    fulfillmentLayout: (pt as any).fulfillmentLayout,
+    printifyBlueprintId: pt.printifyBlueprintId,
+  });
+}
+
+function productSupportsTestPrintifyOrder(pt: ProductType): boolean {
+  return (
+    pt.onTheFlyTier === "flat" ||
+    pt.onTheFlyTier === "mesh" ||
+    productUsesToteFolded(pt)
+  );
 }
 
 interface PrintifyBlueprint {
@@ -111,6 +137,7 @@ export default function AdminProducts() {
   const [refreshVariantsMutatingId, setRefreshVariantsMutatingId] = useState<number | null>(null);
   const [refreshColorsMutatingId, setRefreshColorsMutatingId] = useState<number | null>(null);
   const [aopTemplateMutatingId, setAopTemplateMutatingId] = useState<number | null>(null);
+  const [layoutPolicyMutatingId, setLayoutPolicyMutatingId] = useState<number | null>(null);
   const [testOrderMutatingId, setTestOrderMutatingId] = useState<number | null>(null);
   const [calibrateMutatingId, setCalibrateMutatingId] = useState<number | null>(null);
   const [resyncPricesTarget, setResyncPricesTarget] = useState<ProductType | null>(null);
@@ -406,7 +433,30 @@ export default function AdminProducts() {
     onSettled: () => setAopTemplateMutatingId(null),
   });
 
-  // Send a DRAFT test order to Printify so the merchant can verify the baked
+  const updateLayoutPolicyMutation = useMutation({
+    mutationFn: async (data: {
+      id: number;
+      storefrontMockupMode: StorefrontMockupMode | null;
+      fulfillmentLayout: FulfillmentLayout | null;
+    }) => {
+      setLayoutPolicyMutatingId(data.id);
+      const response = await apiRequest("PATCH", `/api/admin/product-types/${data.id}`, {
+        storefrontMockupMode: data.storefrontMockupMode,
+        fulfillmentLayout: data.fulfillmentLayout,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      toast({ title: "Layout policy updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update layout policy", description: error.message, variant: "destructive" });
+    },
+    onSettled: () => setLayoutPolicyMutatingId(null),
+  });
+
+  // Send a DRAFT test order to Printify
   // print file matches the on-screen design before going live. Never produces
   // or charges — it creates a draft Printify order only.
   const testPrintifyOrderMutation = useMutation({
@@ -782,6 +832,78 @@ export default function AdminProducts() {
                         All-Over Print (AOP)
                       </Label>
                     </div>
+                    {(pt.isAllOverPrint || productUsesToteFolded(pt)) && (
+                      <div className="mt-3 space-y-2 rounded-md border p-3">
+                        <p className="text-xs font-medium text-muted-foreground">Layout overrides</p>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Storefront mockups</Label>
+                          <Select
+                            value={(pt as any).storefrontMockupMode || LAYOUT_MODE_AUTO}
+                            onValueChange={(v) =>
+                              updateLayoutPolicyMutation.mutate({
+                                id: pt.id,
+                                storefrontMockupMode: v === LAYOUT_MODE_AUTO ? null : (v as StorefrontMockupMode),
+                                fulfillmentLayout:
+                                  ((pt as any).fulfillmentLayout as FulfillmentLayout | null) ?? null,
+                              })
+                            }
+                            disabled={layoutPolicyMutatingId === pt.id}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={LAYOUT_MODE_AUTO}>
+                                {STOREFRONT_MOCKUP_MODE_LABELS.auto}
+                              </SelectItem>
+                              {(Object.keys(STOREFRONT_MOCKUP_MODE_LABELS) as StorefrontMockupMode[])
+                                .filter((k) => k !== "auto")
+                                .map((k) => (
+                                  <SelectItem key={k} value={k}>
+                                    {STOREFRONT_MOCKUP_MODE_LABELS[k]}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Fulfillment print file</Label>
+                          <Select
+                            value={(pt as any).fulfillmentLayout || LAYOUT_MODE_AUTO}
+                            onValueChange={(v) =>
+                              updateLayoutPolicyMutation.mutate({
+                                id: pt.id,
+                                storefrontMockupMode:
+                                  ((pt as any).storefrontMockupMode as StorefrontMockupMode | null) ?? null,
+                                fulfillmentLayout: v === LAYOUT_MODE_AUTO ? null : (v as FulfillmentLayout),
+                              })
+                            }
+                            disabled={layoutPolicyMutatingId === pt.id}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value={LAYOUT_MODE_AUTO}>
+                                {FULFILLMENT_LAYOUT_LABELS.auto}
+                              </SelectItem>
+                              {(Object.keys(FULFILLMENT_LAYOUT_LABELS) as FulfillmentLayout[])
+                                .filter((k) => k !== "auto")
+                                .map((k) => (
+                                  <SelectItem key={k} value={k}>
+                                    {FULFILLMENT_LAYOUT_LABELS[k]}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {productUsesToteFolded(pt) && (
+                          <p className="text-xs text-muted-foreground">
+                            Folded tote: flat front/back mockups, 2650×5250 print file at order time.
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {pt.isAllOverPrint && (
                       <div className="mt-3 space-y-1">
                         <Label className="text-xs text-muted-foreground">AOP layout template</Label>
@@ -949,7 +1071,7 @@ export default function AdminProducts() {
                           )}
                         </Button>
                       )}
-                      {showOperatorCalibrationTools && (pt.onTheFlyTier === "flat" || pt.onTheFlyTier === "mesh") && (
+                      {showOperatorCalibrationTools && productSupportsTestPrintifyOrder(pt) && (
                         <Button
                           variant="outline"
                           size="sm"
