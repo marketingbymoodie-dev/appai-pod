@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   composeToteFoldedCanvas,
+  normalizeToteFoldedPanelDims,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
@@ -80,5 +81,10 @@ describe("productLayoutPolicy", () => {
         printifyBlueprintId: ADJUSTABLE_TOTE_BLUEPRINT_ID,
       }),
     ).toBe(true);
+  });
+
+  it("normalizes full folded canvas to panel dims", () => {
+    expect(normalizeToteFoldedPanelDims(2650, 5250)).toEqual({ width: 2650, height: 2625 });
+    expect(normalizeToteFoldedPanelDims(2650, 2625)).toEqual({ width: 2650, height: 2625 });
   });
 });

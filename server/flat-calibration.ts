@@ -29,13 +29,155 @@ import {
   deleteFlatCalibrationProductAssets,
 } from "./supabaseFlatCalibration";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
-import { shouldAllowFlatHarvest, shouldForceFlatTierDespiteProbe } from "@shared/productLayoutPolicy";
+import { normalizeToteFoldedPanelDims } from "@shared/toteFoldedLayout";
+import {
+  shouldAllowFlatHarvest,
+  shouldForceFlatTierDespiteProbe,
+} from "@shared/productLayoutPolicy";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 60_000;
 const WANTED_VIEWS = ["front", "back"] as const;
 type ViewName = (typeof WANTED_VIEWS)[number];
+
+type PrintPlaceholder = { position: string; width: number; height: number };
+
+type HarvestViewLayout = {
+  manifestViews: ViewName[];
+  placeholderDims: Map<ViewName, { width: number; height: number }>;
+  printAreaPlaceholder: PrintPlaceholder;
+  singlePrintSlot: boolean;
+};
+
+function listVariantPrintPlaceholders(variant: any): PrintPlaceholder[] {
+  const out: PrintPlaceholder[] = [];
+  for (const ph of variant?.placeholders || []) {
+    const w = Number(ph.width);
+    const h = Number(ph.height);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) continue;
+    out.push({ position: String(ph.position || "default"), width: w, height: h });
+  }
+  return out;
+}
+
+function pickPrimaryPrintPlaceholder(list: PrintPlaceholder[]): PrintPlaceholder | null {
+  if (list.length === 0) return null;
+  return (
+    list.find((p) => p.position === "front") ||
+    list.find((p) => p.position === "back") ||
+    list.find((p) => p.position === "default") ||
+    list[0]
+  );
+}
+
+function resolveHarvestViewLayout(
+  variants: any[],
+  opts: Pick<HarvestOptions, "forceFlatHarvest" | "fulfillmentLayout">,
+  blueprintId: number,
+): HarvestViewLayout | { error: string } {
+  const catalogPlaceholders = listVariantPrintPlaceholders(variants[0]);
+  const placeholderDims = new Map<ViewName, { width: number; height: number }>();
+  for (const ph of catalogPlaceholders) {
+    if (WANTED_VIEWS.includes(ph.position as ViewName)) {
+      placeholderDims.set(ph.position as ViewName, { width: ph.width, height: ph.height });
+    }
+  }
+  const manifestViews = WANTED_VIEWS.filter((v) => placeholderDims.has(v));
+  if (manifestViews.length > 0) {
+    return {
+      manifestViews: [...manifestViews],
+      placeholderDims,
+      printAreaPlaceholder: pickPrimaryPrintPlaceholder(catalogPlaceholders)!,
+      singlePrintSlot: false,
+    };
+  }
+
+  const primary = pickPrimaryPrintPlaceholder(catalogPlaceholders);
+  if (!primary) {
+    return { error: "no print placeholders on catalog variant" };
+  }
+
+  const toteFolded = shouldForceFlatTierDespiteProbe({
+    forceFlatHarvest: opts.forceFlatHarvest,
+    fulfillmentLayout: opts.fulfillmentLayout,
+    printifyBlueprintId: blueprintId,
+  });
+  if (!toteFolded) {
+    const positions = catalogPlaceholders.map((p) => p.position).join(", ") || "(none)";
+    return { error: `no front/back print placeholders (catalog positions: ${positions})` };
+  }
+
+  const panelDims = normalizeToteFoldedPanelDims(primary.width, primary.height);
+  const dimsMap = new Map<ViewName, { width: number; height: number }>();
+  dimsMap.set("front", panelDims);
+  dimsMap.set("back", panelDims);
+  console.log(
+    `[flat-calibration] bp ${blueprintId}: tote_folded single print slot "${primary.position}" (${primary.width}×${primary.height}) → panel ${panelDims.width}×${panelDims.height} for front+back mockups`,
+  );
+  return {
+    manifestViews: ["front", "back"],
+    placeholderDims: dimsMap,
+    printAreaPlaceholder: { position: primary.position, ...panelDims },
+    singlePrintSlot: true,
+  };
+}
+
+async function buildSolidPrintPlaceholders(
+  token: string,
+  filePrefix: string,
+  manifestViews: ViewName[],
+  placeholderDims: Map<ViewName, { width: number; height: number }>,
+  printAreaPlaceholder: PrintPlaceholder,
+  singlePrintSlot: boolean,
+  edgeWrap: boolean,
+  solidFn: (w: number, h: number, edgeWrap: boolean) => Promise<Buffer>,
+): Promise<Placeholder[]> {
+  if (singlePrintSlot) {
+    const id = await uploadImage(
+      token,
+      `${filePrefix}.png`,
+      await solidFn(printAreaPlaceholder.width, printAreaPlaceholder.height, edgeWrap),
+    );
+    return [
+      {
+        position: printAreaPlaceholder.position,
+        images: [{ id, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+      },
+    ];
+  }
+  const out: Placeholder[] = [];
+  for (const view of manifestViews) {
+    const dims = placeholderDims.get(view)!;
+    const id = await uploadImage(
+      token,
+      `${filePrefix}-${view}.png`,
+      await solidFn(dims.width, dims.height, edgeWrap),
+    );
+    out.push({ position: view, images: [{ id, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
+  }
+  return out;
+}
+
+function buildTransparentPrintPlaceholders(
+  manifestViews: ViewName[],
+  printAreaPlaceholder: PrintPlaceholder,
+  singlePrintSlot: boolean,
+  transparentId: string,
+): Placeholder[] {
+  if (singlePrintSlot) {
+    return [
+      {
+        position: printAreaPlaceholder.position,
+        images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+      },
+    ];
+  }
+  return manifestViews.map((view) => ({
+    position: view,
+    images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }],
+  }));
+}
 
 // Planarity thresholds (calibrated in scripts/harvest-flat-mockups.ts):
 //   tee 0.00006 -> flat ; cap 0.01077 -> mesh ; tumbler coverage 0.33 -> reject
@@ -1785,14 +1927,16 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
   const variants: any[] = variantsData.variants || [];
   if (variants.length === 0) return { tier: "reject", status: "failed", manifest: baseManifest, error: "no variants from catalog" };
 
-  const placeholderDims = new Map<ViewName, { width: number; height: number }>();
-  for (const ph of variants[0].placeholders || []) {
-    if (WANTED_VIEWS.includes(String(ph.position) as ViewName)) placeholderDims.set(ph.position as ViewName, { width: ph.width, height: ph.height });
+  const viewLayout = resolveHarvestViewLayout(variants, opts, blueprintId);
+  if ("error" in viewLayout) {
+    return {
+      tier: "reject",
+      status: "unsupported",
+      manifest: baseManifest,
+      error: viewLayout.error,
+    };
   }
-  const availableViews = WANTED_VIEWS.filter((v) => placeholderDims.has(v));
-  if (availableViews.length === 0) {
-    return { tier: "reject", status: "unsupported", manifest: baseManifest, error: "no front/back print placeholders" };
-  }
+  const { manifestViews, placeholderDims, printAreaPlaceholder, singlePrintSlot } = viewLayout;
 
   const representativeVariantId = variants[0].id;
   const createdProductIds: string[] = [];
@@ -1808,9 +1952,19 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const calibratorModels: FlatCalibratorGeometry["models"] = {};
     const probes: Partial<Record<ViewName, ProbeResult>> = {};
     // ── 0. PROBE each view -> per-view tier + mesh nodes ──────────────────────
-    for (const view of availableViews) {
+    for (const view of manifestViews) {
+      if (singlePrintSlot && view !== "front") continue;
       try {
-        probes[view] = await probeView(token, shopId, blueprintId, providerId, representativeVariantId, placeholderDims.get(view)!, view, createdProductIds);
+        probes[view] = await probeView(
+          token,
+          shopId,
+          blueprintId,
+          providerId,
+          representativeVariantId,
+          placeholderDims.get(view)!,
+          view,
+          createdProductIds,
+        );
       } catch (e) {
         console.warn(`[flat-calibration] probe failed for ${name}/${view}:`, (e as Error).message);
       }
@@ -1844,19 +1998,23 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
 
     // ── 1. REGISTRATION pass (all views, one temp product) -> masks ───────────
-    const regPlaceholders: Placeholder[] = [];
-    for (const view of availableViews) {
-      const dims = placeholderDims.get(view)!;
-      const id = await uploadImage(token, `reg-${view}.png`, await magentaPng(dims.width, dims.height, edgeWrapProduct));
-      regPlaceholders.push({ position: view, images: [{ id, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
-    }
+    const regPlaceholders = await buildSolidPrintPlaceholders(
+      token,
+      "reg",
+      manifestViews,
+      placeholderDims,
+      printAreaPlaceholder,
+      singlePrintSlot,
+      edgeWrapProduct,
+      magentaPng,
+    );
     const reg = await createTempProduct(token, shopId, blueprintId, providerId, representativeVariantId, regPlaceholders);
     createdProductIds.push(reg.productId);
     const regImages = await pollMockups(token, shopId, reg.productId, reg.images);
     const maskByView: Partial<Record<ViewName, MagentaAnalysis>> = {};
     const regImageByView: Partial<Record<ViewName, Buffer>> = {};
     const maskPngByView: Partial<Record<ViewName, Buffer>> = {};
-    for (const view of availableViews) {
+    for (const view of manifestViews) {
       const match = pickView(regImages, view);
       if (!match) continue;
       const buf = await downloadBuffer(match.url);
@@ -1891,17 +2049,21 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
 
     // ── 2. SHADING pass (#808080) -> shading transfer + tonal-range decision ──
-    const grayPlaceholders: Placeholder[] = [];
-    for (const view of availableViews) {
-      const dims = placeholderDims.get(view)!;
-      const id = await uploadImage(token, `gray-${view}.png`, await grayPng(dims.width, dims.height, edgeWrapProduct));
-      grayPlaceholders.push({ position: view, images: [{ id, x: 0.5, y: 0.5, scale: 1, angle: 0 }] });
-    }
+    const grayPlaceholders = await buildSolidPrintPlaceholders(
+      token,
+      "gray",
+      manifestViews,
+      placeholderDims,
+      printAreaPlaceholder,
+      singlePrintSlot,
+      edgeWrapProduct,
+      grayPng,
+    );
     const gray = await createTempProduct(token, shopId, blueprintId, providerId, representativeVariantId, grayPlaceholders);
     createdProductIds.push(gray.productId);
     const grayImages = await pollMockups(token, shopId, gray.productId, gray.images);
     const shadingImageByView: Partial<Record<ViewName, Buffer>> = {};
-    for (const view of availableViews) {
+    for (const view of manifestViews) {
       const vc = baseManifest.views[view];
       const match = pickView(grayImages, view);
       if (!vc || !match) continue;
@@ -1959,7 +2121,12 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     }
     const transparentId = await uploadImage(token, "blank.png", await transparentPng());
     for (const color of colors) {
-      const placeholders: Placeholder[] = availableViews.map((view) => ({ position: view, images: [{ id: transparentId, x: 0.5, y: 0.5, scale: 1, angle: 0 }] }));
+      const placeholders = buildTransparentPrintPlaceholders(
+        manifestViews,
+        printAreaPlaceholder,
+        singlePrintSlot,
+        transparentId,
+      );
       const blank = await createTempProduct(token, shopId, blueprintId, providerId, color.variantId, placeholders);
       createdProductIds.push(blank.productId);
       const blankImages = await pollMockups(token, shopId, blank.productId, blank.images);
@@ -1986,7 +2153,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           storageKey,
           color,
           safe,
-          availableViews,
+          availableViews: manifestViews,
           variantPlaceholderDims: variantDims,
           sharedViewCalib: baseManifest.views,
           edgeWrap: edgeWrapProduct,
@@ -1998,7 +2165,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           baseManifest.geometryByBlank[color.id] = perBlankGeo;
           baseManifest.representativeGeometry = false;
           // Warn about views that were expected but returned no mask
-          for (const view of availableViews) {
+          for (const view of manifestViews) {
             const g = perBlankGeo[view];
             if (g && !g.maskUrl) {
               harvestWarnings.push(`${color.id}/${view}: geometry harvested but no mask (magenta not detected)`);
@@ -2010,7 +2177,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       }
 
       if (calibratorMode && !perBlank) {
-        for (const view of availableViews) {
+        for (const view of manifestViews) {
           const paths = calibratorLayerPaths(storageKey, safe, view);
           const pink = regImageByView[view];
           const maskPng = maskPngByView[view];
@@ -2022,7 +2189,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       }
 
       const perView: Partial<Record<ViewName, string>> = {};
-      for (const view of availableViews) {
+      for (const view of manifestViews) {
         const match = pickView(blankImages, view);
         if (!match) continue;
         let buf = await downloadBuffer(match.url);
@@ -2052,7 +2219,7 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       }
       if (calibratorMode) {
         if (!calibratorModels[color.id]) calibratorModels[color.id] = {};
-        for (const view of availableViews) {
+        for (const view of manifestViews) {
           calibratorModels[color.id]![view] = defaultCalibratorModelEntry();
         }
       }

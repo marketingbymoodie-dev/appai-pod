@@ -13,6 +13,17 @@ export const TOTE_FOLDED_PANEL_HEIGHT = 2625;
 export const TOTE_FOLDED_CANVAS_WIDTH = TOTE_FOLDED_PANEL_WIDTH;
 export const TOTE_FOLDED_CANVAS_HEIGHT = TOTE_FOLDED_PANEL_HEIGHT * 2;
 
+/** Map full folded canvas dims to single-face panel dims for flat mockup harvest. */
+export function normalizeToteFoldedPanelDims(
+  width: number,
+  height: number,
+): { width: number; height: number } {
+  if (width === TOTE_FOLDED_CANVAS_WIDTH && height === TOTE_FOLDED_CANVAS_HEIGHT) {
+    return { width: TOTE_FOLDED_PANEL_WIDTH, height: TOTE_FOLDED_PANEL_HEIGHT };
+  }
+  return { width, height };
+}
+
 export type ToteFoldedPlacement = {
   scale?: number;
   offsetX?: number;
