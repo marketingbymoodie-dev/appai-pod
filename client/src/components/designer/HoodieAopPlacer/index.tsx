@@ -9,6 +9,10 @@ import {
   Eye,
   EyeOff,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import {
   defaultDesignGroups,
@@ -39,7 +43,8 @@ import { safeFetch } from "@/lib/safeFetch";
  *   4. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
  *   5. Artwork upload (Replace / Upload artwork)
  *   6. Scale slider (drives the active group)
- *   7. Reset
+ *   7. Fine position nudge (↑←→↓)
+ *   8. Reset
  *
  * View row notes:
  *   - `Front` and `Back` switch the canvas view.
@@ -187,6 +192,8 @@ const FIXED_PALETTE: PaletteSwatch[] = [
 
 const SCALE_MIN = 0.2;
 const SCALE_MAX = 2.5;
+/** Canvas nudge step in CSS pixels (converted to mockup-pixel placement offset). */
+const NUDGE_SCREEN_PX = 4;
 const TILE_SIZE_MIN = 0.5;
 const TILE_SIZE_MAX = 8;
 
@@ -657,6 +664,31 @@ export default function HoodieAopPlacer({
     [],
   );
 
+  const nudgePlacement = useCallback(
+    (axis: "x" | "y", direction: 1 | -1) => {
+      if (!state) return;
+      const canvas = canvasRef.current;
+      const mockupEl = mockups[state.view];
+      if (!canvas || !mockupEl) return;
+      const cr = canvas.getBoundingClientRect();
+      const mW = mockupEl.naturalWidth || mockupEl.width;
+      const mH = mockupEl.naturalHeight || mockupEl.height;
+      const deltaMock =
+        axis === "x"
+          ? (NUDGE_SCREEN_PX / Math.max(1, cr.width)) * mW * direction
+          : (NUDGE_SCREEN_PX / Math.max(1, cr.height)) * mH * direction;
+      const cur =
+        state.placements[state.activeGroupId]?.[state.view] ??
+        DEFAULT_ARTWORK_PLACEMENT;
+      updatePlacement(state.activeGroupId, state.view, {
+        ...cur,
+        offsetX: cur.offsetX + (axis === "x" ? deltaMock : 0),
+        offsetY: cur.offsetY + (axis === "y" ? deltaMock : 0),
+      });
+    },
+    [state, mockups, updatePlacement],
+  );
+
   const handleArtworkUpload = (file: File) => {
     const url = URL.createObjectURL(file);
     setState((prev) => {
@@ -1087,6 +1119,48 @@ export default function HoodieAopPlacer({
                 <> • linked with {state.activeGroupId === "hood" ? "front body" : "hood"}</>
               )}
             </div>
+            {artworkImg && !!state.enabled[state.activeGroupId] && (
+              <div className="mt-3">
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Fine position
+                </div>
+                <div className="flex flex-col items-center gap-1">
+                  <NudgeButton
+                    label="Nudge up"
+                    direction={-1}
+                    onPress={(dir) => nudgePlacement("y", dir)}
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </NudgeButton>
+                  <div className="flex items-center gap-1">
+                    <NudgeButton
+                      label="Nudge left"
+                      direction={-1}
+                      onPress={(dir) => nudgePlacement("x", dir)}
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </NudgeButton>
+                    <NudgeButton
+                      label="Nudge right"
+                      direction={1}
+                      onPress={(dir) => nudgePlacement("x", dir)}
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </NudgeButton>
+                  </div>
+                  <NudgeButton
+                    label="Nudge down"
+                    direction={1}
+                    onPress={(dir) => nudgePlacement("y", dir)}
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </NudgeButton>
+                </div>
+                <p className="mt-1 text-[10px] text-muted-foreground leading-snug">
+                  Drag the artwork box to move freely. Right-click a nudge arrow for the opposite direction.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -1216,6 +1290,38 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       {children}
     </div>
+  );
+}
+
+function NudgeButton({
+  children,
+  label,
+  direction,
+  onPress,
+}: {
+  children: React.ReactNode;
+  label: string;
+  direction: 1 | -1;
+  onPress: (direction: 1 | -1) => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={`${label} (right-click: opposite)`}
+      className="inline-flex h-7 w-7 items-center justify-center rounded border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+      onClick={(e) => {
+        e.stopPropagation();
+        onPress(direction);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onPress((-direction) as 1 | -1);
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
