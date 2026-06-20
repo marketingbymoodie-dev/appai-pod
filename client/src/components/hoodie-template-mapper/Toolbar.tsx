@@ -28,6 +28,8 @@ import {
   type SaveTemplatePublishResult,
 } from "./api";
 import AopPreviewModal from "./AopPreviewModal";
+import FreshStartDialog from "./FreshStartDialog";
+import { clearAutosave } from "./lib/autosave";
 
 type Props = {
   onOpenLoadDialog: () => void;
@@ -105,6 +107,7 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
   const backInputRef = useRef<HTMLInputElement | null>(null);
 
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [freshStartOpen, setFreshStartOpen] = useState(false);
 
   // Per-view layer counts for the Preview button's enabled state. We don't
   // want users opening the modal on a totally empty template — that's just
@@ -341,13 +344,13 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
           size="sm"
           variant="ghost"
           className="h-8 gap-1 text-xs"
-          onClick={() => actions.resetTemplate()}
+          onClick={() => setFreshStartOpen(true)}
           disabled={busy}
-          title="New template"
-          data-testid="hoodie-new"
+          title="Blank template with a new slug (won't overwrite saved files)"
+          data-testid="hoodie-fresh-start"
         >
           <Plus className="h-3.5 w-3.5" />
-          New
+          Fresh start
         </Button>
         <Button
           size="sm"
@@ -406,6 +409,18 @@ export default function Toolbar({ onOpenLoadDialog }: Props) {
       </div>
 
       <AopPreviewModal open={previewOpen} onOpenChange={setPreviewOpen} />
+      <FreshStartDialog
+        open={freshStartOpen}
+        onOpenChange={setFreshStartOpen}
+        onConfirm={(template) => {
+          actions.loadTemplate(template);
+          clearAutosave();
+          toast({
+            title: "Fresh template started",
+            description: `${template.name} (bp ${template.blueprintId}) — upload mockups, map panels, then Save.`,
+          });
+        }}
+      />
     </div>
   );
 }

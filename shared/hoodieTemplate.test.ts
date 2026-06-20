@@ -2,12 +2,51 @@ import { describe, expect, it } from "vitest";
 import {
   PULOVER_HOODIE_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  createFreshAopTemplate,
+  defaultHoodieTypeForBlueprint,
   defaultPulloverDesignGroups,
   designGroupsForBlueprint,
   drawMockupImageInCanvas,
+  isValidAopTemplateSlug,
   mockupDrawRect,
   panelsEligibleForView,
 } from "./hoodieTemplate";
+
+describe("createFreshAopTemplate", () => {
+  it("builds blank views and blueprint-specific design groups", () => {
+    const t = createFreshAopTemplate({
+      name: "sweatshirt-aop-L",
+      blueprintId: 449,
+    });
+    expect(t.name).toBe("sweatshirt-aop-L");
+    expect(t.views.front.layers).toHaveLength(0);
+    expect(t.views.back.layers).toHaveLength(0);
+    expect(t.productTypeId).toBeNull();
+    expect(t.hoodieType).toBe("aop-bp-449");
+    expect(t.designGroups.length).toBeGreaterThan(0);
+  });
+
+  it("uses pullover defaults for bp 450", () => {
+    const t = createFreshAopTemplate({ name: "pullover-hoodie-aop-L", blueprintId: 450 });
+    expect(t.hoodieType).toBe("pullover-hoodie-aop");
+    expect(t.designGroups.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+  });
+});
+
+describe("isValidAopTemplateSlug", () => {
+  it("accepts admin slugs", () => {
+    expect(isValidAopTemplateSlug("pullover-hoodie-aop-L")).toBe(true);
+    expect(isValidAopTemplateSlug("bad slug")).toBe(false);
+  });
+});
+
+describe("defaultHoodieTypeForBlueprint", () => {
+  it("maps known blueprints", () => {
+    expect(defaultHoodieTypeForBlueprint(450)).toBe("pullover-hoodie-aop");
+    expect(defaultHoodieTypeForBlueprint(451)).toBe("zip-hoodie-aop");
+    expect(defaultHoodieTypeForBlueprint(1604)).toBe("aop-bp-1604");
+  });
+});
 
 describe("pullover hoodie panel keys (bp 450)", () => {
   it("offers full front panel, not zip L/R split", () => {

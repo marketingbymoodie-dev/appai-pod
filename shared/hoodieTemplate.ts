@@ -741,26 +741,59 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
   };
 }
 
-export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplate {
+/** Matches `SAFE_NAME_RE` in `server/routes/hoodie-template-mapper.ts`. */
+export const AOP_TEMPLATE_SLUG_RE = /^[a-zA-Z0-9_\-]{1,64}$/;
+
+export function isValidAopTemplateSlug(name: string): boolean {
+  return AOP_TEMPLATE_SLUG_RE.test(name);
+}
+
+export function defaultHoodieTypeForBlueprint(blueprintId: number): string {
+  if (isPulloverHoodieBlueprint(blueprintId)) return "pullover-hoodie-aop";
+  if (isZipHoodieBlueprint(blueprintId)) return "zip-hoodie-aop";
+  return `aop-bp-${blueprintId}`;
+}
+
+/** Blank template for a new AOP product — no masks, no mockups, blueprint-aware panel groups. */
+export function createFreshAopTemplate(args: {
+  name: string;
+  label?: string;
+  blueprintId: number;
+  productTypeId?: number | null;
+  hoodieType?: string;
+  size?: string | null;
+}): HoodieTemplate {
   const now = new Date().toISOString();
-  return {
+  const blueprintId = args.blueprintId;
+  return normalizeHoodieTemplate({
     version: HOODIE_TEMPLATE_VERSION,
-    name,
-    label: label ?? name,
-    hoodieType: "zip-hoodie-aop",
-    productTypeId: 20,
-    blueprintId: 451,
-    size: "L",
+    name: args.name,
+    label: args.label ?? args.name,
+    hoodieType: args.hoodieType ?? defaultHoodieTypeForBlueprint(blueprintId),
+    productTypeId: args.productTypeId ?? null,
+    blueprintId,
+    size: args.size ?? "L",
     meta: { createdAt: now, updatedAt: now },
     views: {
       front: { ...EMPTY_HOODIE_VIEW },
       back: { ...EMPTY_HOODIE_VIEW },
     },
     globalExclusions: [],
-    designGroups: defaultDesignGroups(),
+    designGroups: designGroupsForBlueprint(blueprintId),
     tileSettings: { ...DEFAULT_TILE_SETTINGS },
     realWorldCalibration: { ...DEFAULT_REAL_WORLD_CALIBRATION },
-  };
+  });
+}
+
+/** Legacy default — zip hoodie L. Prefer {@link createFreshAopTemplate} for new products. */
+export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplate {
+  return createFreshAopTemplate({
+    name,
+    label,
+    blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    hoodieType: "zip-hoodie-aop",
+    productTypeId: 20,
+  });
 }
 
 /**

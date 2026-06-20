@@ -804,8 +804,14 @@ export default function AdminProducts() {
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <CardTitle className="text-base">{pt.name}</CardTitle>
-                        <CardDescription className="text-xs mt-1">
-                          Blueprint: {pt.printifyBlueprintId || "Custom"}
+                        <CardDescription className="text-xs mt-1 space-y-0.5">
+                          <div>
+                            Product ID:{" "}
+                            <span className="font-mono font-medium text-foreground" data-testid={`product-id-${pt.id}`}>
+                              {pt.id}
+                            </span>
+                          </div>
+                          <div>Blueprint: {pt.printifyBlueprintId || "Custom"}</div>
                         </CardDescription>
                       </div>
                       <Badge variant="outline" className="text-xs">
