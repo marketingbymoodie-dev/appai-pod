@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Image as KonvaImage, Layer, Transformer } from "react-konva";
 import Konva from "konva";
 import type { MockupAsset } from "@shared/hoodieTemplate";
+import { commitKonvaUniformImageTransform, konvaImageTopLeftPosition } from "./konvaImageTransform";
 
 /**
  * Base garment mockup layer — draggable/resizable when unlocked so admins can
@@ -39,6 +40,15 @@ export default function MockupBaseLayer({ mockup, image, panLocked = false, onCh
   const y = mockup.y ?? 0;
   const scale = mockup.scale ?? 1;
 
+  useEffect(() => {
+    const node = imageRef.current;
+    if (!node) return;
+    node.offsetX(0);
+    node.offsetY(0);
+    node.scaleX(1);
+    node.scaleY(1);
+  }, [x, y, scale, mockup.width, mockup.height, image]);
+
   return (
     <Layer listening={interactive}>
       <KonvaImage
@@ -46,6 +56,8 @@ export default function MockupBaseLayer({ mockup, image, panLocked = false, onCh
         image={image}
         x={x}
         y={y}
+        offsetX={0}
+        offsetY={0}
         width={mockup.width * scale}
         height={mockup.height * scale}
         draggable={interactive}
@@ -59,18 +71,14 @@ export default function MockupBaseLayer({ mockup, image, panLocked = false, onCh
           if (stage) stage.container().style.cursor = "default";
         }}
         onDragEnd={(e) => {
-          onChange({ x: e.target.x(), y: e.target.y(), scale });
+          const node = e.target as Konva.Image;
+          const pos = konvaImageTopLeftPosition(node);
+          onChange({ x: pos.x, y: pos.y, scale });
         }}
         onTransformEnd={(e) => {
           const node = e.target as Konva.Image;
-          const newScaleX = node.scaleX();
-          const newScaleY = node.scaleY();
-          const newScale = scale * ((newScaleX + newScaleY) / 2);
-          node.scaleX(1);
-          node.scaleY(1);
-          node.width(mockup.width * newScale);
-          node.height(mockup.height * newScale);
-          onChange({ x: node.x(), y: node.y(), scale: newScale });
+          const next = commitKonvaUniformImageTransform(node, mockup.width);
+          onChange(next);
         }}
       />
       {interactive && (

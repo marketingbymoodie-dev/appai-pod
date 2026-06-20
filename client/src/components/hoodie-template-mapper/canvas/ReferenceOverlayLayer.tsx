@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Image as KonvaImage, Layer, Transformer } from "react-konva";
 import Konva from "konva";
 import type { ReferenceOverlayAsset } from "@shared/hoodieTemplate";
+import { commitKonvaUniformImageTransform, konvaImageTopLeftPosition } from "./konvaImageTransform";
 
 /**
  * Reference-overlay rendering layer.
@@ -54,6 +55,15 @@ export default function ReferenceOverlayLayer({ overlay, image, panLocked = fals
   const scale = overlay.scale ?? 1;
   const renderOpacity = overlay.visible ? overlay.opacity : 0;
 
+  useEffect(() => {
+    const node = imageRef.current;
+    if (!node) return;
+    node.offsetX(0);
+    node.offsetY(0);
+    node.scaleX(1);
+    node.scaleY(1);
+  }, [x, y, scale, overlay.width, overlay.height, image]);
+
   return (
     <Layer listening={interactive}>
       <KonvaImage
@@ -61,6 +71,8 @@ export default function ReferenceOverlayLayer({ overlay, image, panLocked = fals
         image={image}
         x={x}
         y={y}
+        offsetX={0}
+        offsetY={0}
         width={overlay.width * scale}
         height={overlay.height * scale}
         opacity={renderOpacity}
@@ -76,23 +88,14 @@ export default function ReferenceOverlayLayer({ overlay, image, panLocked = fals
           if (stage) stage.container().style.cursor = "default";
         }}
         onDragEnd={(e) => {
-          onChange({ x: e.target.x(), y: e.target.y(), scale });
+          const node = e.target as Konva.Image;
+          const pos = konvaImageTopLeftPosition(node);
+          onChange({ x: pos.x, y: pos.y, scale });
         }}
         onTransformEnd={(e) => {
           const node = e.target as Konva.Image;
-          // Konva's Transformer applies scaleX/scaleY on the node. Convert
-          // that into our uniform `scale` and reset the node's local scale
-          // so successive transforms don't compound.
-          const newScaleX = node.scaleX();
-          const newScaleY = node.scaleY();
-          const newScale = scale * ((newScaleX + newScaleY) / 2);
-          node.scaleX(1);
-          node.scaleY(1);
-          // Apply the new width/height so the visual matches the schema
-          // before the parent re-renders.
-          node.width(overlay.width * newScale);
-          node.height(overlay.height * newScale);
-          onChange({ x: node.x(), y: node.y(), scale: newScale });
+          const next = commitKonvaUniformImageTransform(node, overlay.width);
+          onChange(next);
         }}
       />
       {interactive && (
