@@ -15,7 +15,7 @@ import type {
   HoodieView,
   TileSettings,
 } from "@shared/hoodieTemplate";
-import { defaultDesignGroups } from "@shared/hoodieTemplate";
+import { designGroupsForBlueprint } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
   computeGroupRects,
@@ -137,8 +137,8 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // Resolved (read-only) helpers — read template defaults whenever an
   // override is missing.
   const designGroups: DesignGroup[] = useMemo(
-    () => template.designGroups ?? defaultDesignGroups(),
-    [template.designGroups],
+    () => template.designGroups ?? designGroupsForBlueprint(template.blueprintId),
+    [template.designGroups, template.blueprintId],
   );
   const tileSettings: TileSettings = useMemo(() => {
     if (tileOverride) return tileOverride;
@@ -313,11 +313,9 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     tileOverride !== null ||
     ppiOverride !== null;
 
-  // Background colour painted under the artwork in every print panel
-  // (and ALL of any panel excluded from single-sheet). null = off.
-  // Stored as state-only so the admin can experiment with colours
-  // without dirtying the template.
-  const [backgroundColor, setBackgroundColor] = useState<string | null>(null);
+  // Background colour painted under the artwork in every print panel.
+  // Defaults to white (matches merchant HoodieAopPlacer). null = off.
+  const [backgroundColor, setBackgroundColor] = useState<string | null>("#FFFFFF");
 
   // Artwork pipeline — file → blob URL → HTMLImageElement.
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
@@ -1231,8 +1229,9 @@ function BackgroundColorPicker({
           </div>
           <div className="mt-1 text-[10px] text-slate-500">
             Sits under the artwork inside every print panel — fills transparent regions of
-            your art and any panel excluded from single-sheet. Mockup shading multiplies
-            on top so it looks like dyed fabric.
+            your art and excluded overlay panels (pocket, cuffs, waistband). Mockup shading
+            multiplies on top so it looks like dyed fabric. Shading comes from the base
+            mockup photo — upload a pullover front image without zip traces for a new product.
           </div>
         </>
       )}
@@ -1325,8 +1324,9 @@ function SingleSheetPanelPicker({
         })}
       </ul>
       <div className="mt-1 text-[10px] text-slate-500">
-        Excluded panels still show the background colour (and shading), but no artwork.
-        The design canvas shrinks to the bounding box of the included panels only.
+        Excluded panels keep background colour (and shading) but no artwork. Pocket, cuffs,
+        and waistband still occlude body art underneath. The design canvas shrinks to the
+        bounding box of included panels only.
       </div>
     </div>
   );

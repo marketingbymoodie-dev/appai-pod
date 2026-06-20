@@ -105,6 +105,23 @@ export async function saveTemplate(name: string, template: HoodieTemplate): Prom
   }
 }
 
+export type PublishTemplateResult = {
+  ok: true;
+  publish: SaveTemplatePublishResult;
+};
+
+/** Upload the on-disk template + mockups to Supabase (no JSON body required). */
+export async function publishTemplateToSupabase(name: string): Promise<PublishTemplateResult> {
+  const r = await fetch(`${BASE}/templates/${encodeURIComponent(name)}/publish`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`Failed to publish template "${name}" (${r.status}): ${err.slice(0, 300)}`);
+  }
+  return (await r.json()) as PublishTemplateResult;
+}
+
 export async function deleteTemplate(name: string): Promise<void> {
   const r = await fetch(`${BASE}/templates/${encodeURIComponent(name)}`, { method: "DELETE" });
   if (!r.ok && r.status !== 404) {

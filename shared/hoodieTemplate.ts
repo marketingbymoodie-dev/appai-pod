@@ -29,7 +29,13 @@ export type HoodieView = "front" | "back";
  * Stable canonical panel keys. The admin tool exposes the user-facing
  * subset per view; these keys are the source of truth for the JSON.
  */
+/** Printify blueprint 450 (pullover) — single full front body placeholder. */
+export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
+/** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
+export const ZIP_HOODIE_BLUEPRINT_ID = 451;
+
 export type HoodiePanelKey =
+  | "front"
   | "front_right"
   | "front_left"
   | "front_pocket"
@@ -202,7 +208,66 @@ export type MockupAsset = {
   src: string;
   width: number;
   height: number;
+  /**
+   * Top-left position of the rendered mockup in template pixel space.
+   * Masks stay in the original width×height grid; transform only moves/scales
+   * the blank photo so it can align with reused zip-hoodie panel maps.
+   */
+  x?: number;
+  y?: number;
+  /** Uniform scale applied to (width, height). Defaults to 1. */
+  scale?: number;
+  /** When false, the canvas exposes drag + corner-resize on the base mockup. */
+  transformLocked?: boolean;
 };
+
+/** Resolved draw rect for a mockup blank (template pixel space). */
+export function mockupDrawRect(mockup: MockupAsset): {
+  x: number;
+  y: number;
+  scale: number;
+  renderWidth: number;
+  renderHeight: number;
+} {
+  const scale = mockup.scale ?? 1;
+  return {
+    x: mockup.x ?? 0,
+    y: mockup.y ?? 0,
+    scale,
+    renderWidth: mockup.width * scale,
+    renderHeight: mockup.height * scale,
+  };
+}
+
+/** Draw the base mockup image with any saved transform applied. */
+export function drawMockupImage(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  mockup: MockupAsset,
+): void {
+  const { x, y, renderWidth, renderHeight } = mockupDrawRect(mockup);
+  ctx.drawImage(image, x, y, renderWidth, renderHeight);
+}
+
+/**
+ * Draw a mockup into a fixed-size canvas using the view's saved transform
+ * when present. Used by every hoodie AOP renderer path (base layer and
+ * per-panel shading multiply) so repositioned/scaled blanks never ghost
+ * a second full-canvas copy at (0,0).
+ */
+export function drawMockupImageInCanvas(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  mockup: MockupAsset | null | undefined,
+  width: number,
+  height: number,
+): void {
+  if (mockup) {
+    drawMockupImage(ctx, image, mockup);
+    return;
+  }
+  ctx.drawImage(image, 0, 0, width, height);
+}
 
 export type ReferenceOverlayAsset = {
   src: string;
@@ -468,6 +533,138 @@ export function defaultDesignGroups(): DesignGroup[] {
 }
 
 /**
+ * Design groups for pullover hoodies (Printify bp 450): one continuous
+ * `front` body panel under the kangaroo pocket — no zip L/R split.
+ */
+export function defaultPulloverDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  return [
+    {
+      id: "hood",
+      name: "Hood",
+      panelKeys: ["left_hood", "right_hood"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "front-body",
+      name: "Front body",
+      panelKeys: ["front"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-body",
+      name: "Back body",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "left-sleeve",
+      name: "Left sleeve",
+      panelKeys: ["left_sleeve", "left_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-sleeve",
+      name: "Right sleeve",
+      panelKeys: ["right_sleeve", "right_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "trim",
+      name: "Trim",
+      panelKeys: ["waistband", "front_pocket"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+  void blankPair;
+}
+
+export function isPulloverHoodieBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === PULOVER_HOODIE_BLUEPRINT_ID;
+}
+
+export function isZipHoodieBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === ZIP_HOODIE_BLUEPRINT_ID;
+}
+
+/** Zip-only panel keys (hidden when authoring bp 450 pullover templates). */
+const ZIP_ONLY_FRONT_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "front_left",
+  "front_right",
+  "pocket_left",
+  "pocket_right",
+];
+
+export function designGroupsForBlueprint(blueprintId: number | null | undefined): DesignGroup[] {
+  if (isPulloverHoodieBlueprint(blueprintId)) return defaultPulloverDesignGroups();
+  return defaultDesignGroups();
+}
+
+/**
+ * When switching blueprint in the mapper, refresh group panel lists while
+ * preserving customer placement / enable flags where group ids match.
+ */
+export function mergeDesignGroupsForBlueprintSwitch(
+  blueprintId: number,
+  existing: DesignGroup[] | undefined,
+): DesignGroup[] {
+  const defaults = designGroupsForBlueprint(blueprintId);
+  if (!existing?.length) return defaults;
+  return defaults.map((def) => {
+    const prev = existing.find((g) => g.id === def.id);
+    if (!prev) return def;
+    return {
+      ...def,
+      placement: prev.placement,
+      seamAllowance: prev.seamAllowance,
+      lockedRatio: prev.lockedRatio,
+      enabled: prev.enabled,
+    };
+  });
+}
+
+/**
+ * Panel keys offered in the mapper dropdown for a view, filtered by blueprint.
+ * Pullover (450): `front` + pocket; zip (451): L/R split, no `front`.
+ */
+export function panelsEligibleForView(
+  view: HoodieView,
+  blueprintId: number | null | undefined,
+): readonly HoodiePanelKey[] {
+  const all = PANELS_PER_VIEW[view];
+  if (view !== "front") return all;
+  if (isPulloverHoodieBlueprint(blueprintId)) {
+    return all.filter((k) => !ZIP_ONLY_FRONT_PANEL_KEYS.includes(k));
+  }
+  if (isZipHoodieBlueprint(blueprintId)) {
+    return all.filter((k) => k !== "front");
+  }
+  return all;
+}
+
+/**
  * Look up which design group a given panel belongs to. Returns null
  * for unmatched panels — the renderer treats those as "ungrouped"
  * and falls back to the legacy single-design-rect behaviour.
@@ -501,7 +698,8 @@ export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
  * preserved — defaults only fill genuinely-undefined fields.
  */
 export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
-  let designGroups = template.designGroups ?? defaultDesignGroups();
+  let designGroups =
+    template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
   // Migrate legacy single-Sleeves group → Left/Right sleeve groups.
   // Older templates persisted before this split contained one group
   // covering all four sleeve+cuff panels, which made the design rect
@@ -571,6 +769,7 @@ export function emptyHoodieTemplate(name: string, label?: string): HoodieTemplat
  */
 export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
   front: [
+    "front",
     "front_right",
     "front_left",
     "front_pocket",
@@ -597,6 +796,7 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
 } as const;
 
 export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
+  front: "Front (full body)",
   front_right: "Front Right",
   front_left: "Front Left",
   front_pocket: "Front Pocket (legacy)",
@@ -630,6 +830,7 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
  */
 export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   back: 10,
+  front: 20,
   front_left: 20,
   front_right: 20,
   left_sleeve: 30,

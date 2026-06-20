@@ -46,6 +46,7 @@ import type {
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
+  drawMockupImageInCanvas,
   findGroupForPanel,
   layerRenderPriority,
   SEAM_PAIR_PANELS,
@@ -242,6 +243,39 @@ export type AopPreviewParams = {
  */
 export function isLayerInSingleSheet(layer: MaskLayer): boolean {
   return layer.includeInSingleSheet !== false;
+}
+
+/** Default fabric fill when no explicit garment colour is set (matches HoodieAopPlacer). */
+export const DEFAULT_GARMENT_BACKGROUND = "#FFFFFF";
+
+/**
+ * Panels that physically sit on top of body art. When excluded from
+ * single-sheet (skipArtwork), they still occlude layers below — pocket
+ * hides chest art, cuffs hide sleeve ends, etc.
+ */
+const OVERLAY_OCCLUDER_PANEL_KEYS = new Set<HoodiePanelKey>([
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+  "left_cuff",
+  "right_cuff",
+  "waistband",
+]);
+
+function panelFabricFillColor(
+  layer: MaskLayer,
+  skipArtwork: boolean,
+  backgroundColor: string | null | undefined,
+): string | null {
+  if (backgroundColor) return backgroundColor;
+  if (
+    skipArtwork &&
+    layer.panelKey &&
+    OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey)
+  ) {
+    return DEFAULT_GARMENT_BACKGROUND;
+  }
+  return null;
 }
 
 export type DesignRectInfo = {
@@ -514,6 +548,7 @@ export function computeDesignRect(
  * desaturated grey so the user can see they're missing a panelKey.
  */
 const PANEL_COLORS: Record<HoodiePanelKey | "unassigned", string> = {
+  front: "#6366f1",         // indigo — full pullover front body
   front_right: "#fb7185",   // rose
   front_left: "#f97316",    // orange
   front_pocket: "#eab308",  // yellow (legacy single-pocket)
@@ -1139,11 +1174,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
   if (ctx.canvas.width !== W) ctx.canvas.width = W;
   if (ctx.canvas.height !== H) ctx.canvas.height = H;
 
-  // Step 1: Mockup base.
-  ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(mockup, 0, 0, W, H);
-
   const viewState = template.views[view];
+
+  // Step 1: Mockup base (optional x/y/scale alignment).
+  ctx.clearRect(0, 0, W, H);
+  const viewMockupAsset = viewState?.mockup ?? null;
+  drawMockupImageInCanvas(ctx, mockup, viewMockupAsset, W, H);
+
   if (!viewState) return;
 
   const visible = viewState.layers.filter((l) => l.visible);
@@ -1254,17 +1291,6 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     pctx.clip();
     pctx.globalAlpha = layer.opacity;
 
-    // Background colour fill — sits UNDER the artwork inside each
-    // panel's polygon, so transparent regions of the artwork (and
-    // panels intentionally excluded from single-sheet via
-    // includeInSingleSheet === false) show as dyed fabric instead of
-    // showing the original mockup pixels. Skipped in solid-colors
-    // mode because that mode owns the colour scheme.
-    if (backgroundColor && !useColors) {
-      pctx.fillStyle = backgroundColor;
-      pctx.fillRect(0, 0, W, H);
-    }
-
     // Whether this panel actually receives artwork. When false, the
     // panel keeps just the background colour (or stays empty if no
     // bg) — exactly the "exclude sleeves from the design" use case.
@@ -1293,6 +1319,16 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       panelMutedByCustomer ||
       (mode === "single-sheet" && (!inSingleSheet || !groupEnabled)) ||
       (mode === "tile" && !groupEnabled);
+
+    // Background colour fill — sits UNDER the artwork inside each
+    // panel's polygon. Explicit `backgroundColor` fills every panel;
+    // overlay panels (pocket, cuffs, waistband) auto-fill white when
+    // excluded so body art does not bleed through the pocket zone.
+    const fabricFill = panelFabricFillColor(layer, skipArtwork, backgroundColor);
+    if (fabricFill && !useColors) {
+      pctx.fillStyle = fabricFill;
+      pctx.fillRect(0, 0, W, H);
+    }
 
     // Source resolution priority — match user mental model:
     //   1. solid-colors mode → debug fill, ignore artwork.
@@ -1540,14 +1576,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       );
     }
 
-    // Shading multiply: bake the original mockup's fabric shadows over
-    // the warped artwork so the AOP looks like real cloth, not a flat
-    // decal. Skipped in solid-colors mode (debug). Still inside the
-    // polygon clip so other panels are untouched.
+    // Shading multiply: bake the mockup's fabric shadows over the warped
+    // artwork. Must use the same x/y/scale as step 1 — a full-canvas
+    // draw at (0,0) ghosts a second hoodie when the blank was repositioned.
     if (applyShading && !useColors) {
       pctx.save();
       pctx.globalCompositeOperation = "multiply";
-      pctx.drawImage(mockup, 0, 0, W, H);
+      drawMockupImageInCanvas(pctx, mockup, viewMockupAsset, W, H);
       pctx.restore();
     }
 

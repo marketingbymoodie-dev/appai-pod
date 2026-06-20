@@ -42,6 +42,7 @@ export type PublishedHoodieTemplate = {
  */
 const PUBLIC_TEMPLATE_NAMES = new Set<string>([
   "unisex-zip-hoodie-aop-L",
+  "unisex-pullover-hoodie-aop-L",
 ]);
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -84,6 +85,7 @@ async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
  */
 const DEV_LOCAL_NAME: Record<string, string> = {
   "unisex-zip-hoodie-aop-L": "zip-hoodie-aop-L",
+  "unisex-pullover-hoodie-aop-L": "pullover-hoodie-aop-L",
 };
 
 function resolveLocalAdminCandidates(publicName: string): string[] {

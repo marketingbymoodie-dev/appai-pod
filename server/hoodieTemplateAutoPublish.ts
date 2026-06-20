@@ -38,6 +38,7 @@ import { invalidateHoodieTemplateCache } from "./hoodieTemplateStore";
  */
 const ADMIN_TO_PUBLIC_NAME: Record<string, string> = {
   "zip-hoodie-aop-L": "unisex-zip-hoodie-aop-L",
+  "pullover-hoodie-aop-L": "unisex-pullover-hoodie-aop-L",
 };
 
 const ROOT = process.cwd();
@@ -82,6 +83,42 @@ function writePublishedState(state: PublishedState): void {
       }`,
     );
   }
+}
+
+/**
+ * Resolve a mockup PNG on disk for publish. Prefers `{admin|public}-{view}.png`,
+ * then falls back to whatever file the template JSON references (e.g. reusing
+ * `zip-hoodie-aop-L-back.png` for a pullover fork).
+ */
+export function resolveLocalMockupPathForPublish(
+  adminName: string,
+  publicName: string,
+  view: "front" | "back",
+  template: { views?: Record<string, { mockup?: { src?: string | null } | null }> },
+): string | null {
+  const candidates = [
+    path.join(MOCKUPS_DIR, `${adminName}-${view}.png`),
+    path.join(MOCKUPS_DIR, `${publicName}-${view}.png`),
+  ];
+  const named = candidates.find((p) => fs.existsSync(p));
+  if (named) return named;
+
+  const src = template.views?.[view]?.mockup?.src;
+  if (!src || typeof src !== "string") return null;
+
+  // Dev mapper URL: /api/dev/hoodie-mapper/mockups/zip-hoodie-aop-L-back.png
+  const devMatch = src.match(/\/mockups\/([^?#]+)/);
+  if (devMatch?.[1]) {
+    const fromDev = path.join(MOCKUPS_DIR, decodeURIComponent(devMatch[1]));
+    if (fs.existsSync(fromDev)) return fromDev;
+  }
+
+  // Absolute or relative filesystem path (rare).
+  if (src.startsWith("/") || /^[A-Za-z]:[\\/]/.test(src)) {
+    if (fs.existsSync(src)) return src;
+  }
+
+  return null;
 }
 
 export function sanitiseTemplateForPublish(t: any, publicName: string): any {
@@ -171,13 +208,7 @@ export async function autoPublishHoodieTemplate(
     const newMockupUrls: { front?: string; back?: string } = {};
 
     for (const view of ["front", "back"] as const) {
-      // Look for the mockup under either the admin name or the public name —
-      // matches the publish script's behaviour for re-uploads.
-      const candidates = [
-        path.join(MOCKUPS_DIR, `${adminName}-${view}.png`),
-        path.join(MOCKUPS_DIR, `${publicName}-${view}.png`),
-      ];
-      const found = candidates.find((p) => fs.existsSync(p));
+      const found = resolveLocalMockupPathForPublish(adminName, publicName, view, tpl);
       if (!found) continue;
 
       const stat = fs.statSync(found);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Image as KonvaImage, Layer, Line, Rect, Stage } from "react-konva";
+import { Layer, Line, Rect, Stage } from "react-konva";
 import Konva from "konva";
 import {
   DEFAULT_MAGNETIC_RADIUS,
@@ -23,6 +23,7 @@ import MeshWarpRender from "./MeshWarpRender";
 import PenToolOverlay from "./PenToolOverlay";
 import AnchorHandlesOverlay from "./AnchorHandlesOverlay";
 import ReferenceOverlayLayer from "./ReferenceOverlayLayer";
+import MockupBaseLayer from "./MockupBaseLayer";
 import type { Pt } from "@shared/hoodieTemplate";
 
 /**
@@ -656,10 +657,13 @@ export default function HoodieCanvas({ width: widthProp, height: heightProp }: P
           />
         )}
 
-        {mockupImage && mockupWidth > 0 && mockupHeight > 0 && (
-          <Layer listening={false}>
-            <KonvaImage image={mockupImage} x={0} y={0} width={mockupWidth} height={mockupHeight} />
-          </Layer>
+        {mockupImage && mockupWidth > 0 && mockupHeight > 0 && mockup && (
+          <MockupBaseLayer
+            mockup={mockup}
+            image={mockupImage}
+            panLocked={isPanning}
+            onChange={(patch) => actions.patchMockup(view, patch)}
+          />
         )}
 
         {/* Saved mask layers + anchor handles + pen draft.

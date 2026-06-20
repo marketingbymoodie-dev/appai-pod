@@ -15,7 +15,7 @@ import {
   mockupDeltaFromScreenNudge,
 } from "@/components/designer/placementNudge";
 import {
-  defaultDesignGroups,
+  designGroupsForBlueprint,
   type DesignGroup,
   type HoodieTemplate,
   type HoodieView,
@@ -214,7 +214,7 @@ function buildInitialState(
   template: HoodieTemplate,
   saved?: Partial<HoodieAopPlacerState> | null,
 ): HoodieAopPlacerState {
-  const groups = template.designGroups ?? defaultDesignGroups();
+  const groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
   for (const g of groups) {
@@ -844,7 +844,8 @@ export default function HoodieAopPlacer({
   }
 
   // ---------- Derived UI state ----------
-  const groups: DesignGroup[] = data.template.designGroups ?? defaultDesignGroups();
+  const groups: DesignGroup[] =
+    data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
   const activeGroup = groups.find((g) => g.id === state.activeGroupId);
   const mockup = mockups[state.view];
   const placement =
