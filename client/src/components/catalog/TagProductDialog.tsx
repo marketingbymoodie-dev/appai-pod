@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -47,6 +48,8 @@ type Props = {
   onFulfillmentLayoutChange: (value: FulfillmentLayout) => void;
   forceFlatHarvest: boolean;
   onForceFlatHarvestChange: (value: boolean) => void;
+  panelMappingTemplate: string;
+  onPanelMappingTemplateChange: (value: string) => void;
   onConfirm: () => void;
   isPending?: boolean;
 };
@@ -64,6 +67,8 @@ export default function TagProductDialog({
   onFulfillmentLayoutChange,
   forceFlatHarvest,
   onForceFlatHarvestChange,
+  panelMappingTemplate,
+  onPanelMappingTemplateChange,
   onConfirm,
   isPending,
 }: Props) {
@@ -110,6 +115,21 @@ export default function TagProductDialog({
 
           {(kind === "flat" || kind === "aop") && (
             <>
+              {kind === "aop" && (
+                <div className="space-y-2">
+                  <Label htmlFor="tag-panel-template">Panel template (optional)</Label>
+                  <Input
+                    id="tag-panel-template"
+                    value={panelMappingTemplate}
+                    placeholder="e.g. unisex-pullover-hoodie-aop-L"
+                    onChange={(e) => onPanelMappingTemplateChange(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Public Supabase template name from AOP Panel Mapper. You can also set this when publishing in
+                    Platform Catalog.
+                  </p>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>Storefront mockups</Label>
                 <Select

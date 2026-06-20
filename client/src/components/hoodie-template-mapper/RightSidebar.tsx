@@ -199,9 +199,11 @@ export default function RightSidebar() {
           )}
           <p className="mt-2 text-[10px] leading-snug text-slate-500">
             <span className="text-slate-400">blueprintId</span> = Printify catalog number (450 pullover, 451 zip).{" "}
-            <span className="text-slate-400">productTypeId</span> = optional internal app row from{" "}
-            <span className="text-slate-300">Admin → Products Import</span> after you import/tag the product
-            (zip hoodie is <span className="text-slate-300">20</span>). Leave blank until the pullover exists in your catalog.
+            <span className="text-slate-400">productTypeId</span> = optional note only — merchants are routed by{" "}
+            <span className="text-slate-300">panelMappingTemplate</span> on the platform catalog row (set in{" "}
+            <span className="text-slate-300">Platform Catalog → Publish for merchants</span>), not this field. After
+            you import blueprint {template.blueprintId ?? "?"} under Admin → Products, you can paste the new row id
+            here and Save if you want it recorded in the JSON; leave blank until then.
           </p>
         </Section>
 

@@ -37,6 +37,7 @@ type CatalogTag = {
   kind: "flat" | "aop" | "printify" | "blocked";
   status: "draft" | "published";
   category: string | null;
+  panelMappingTemplate?: string | null;
   storefrontMockupMode?: string | null;
   fulfillmentLayout?: string | null;
   forceFlatHarvest?: boolean | null;
@@ -68,6 +69,7 @@ export default function OperatorCatalogPage() {
   const [dialogStorefrontMode, setDialogStorefrontMode] = useState<StorefrontMockupMode>("auto");
   const [dialogFulfillmentLayout, setDialogFulfillmentLayout] = useState<FulfillmentLayout>("auto");
   const [dialogForceFlatHarvest, setDialogForceFlatHarvest] = useState(false);
+  const [dialogPanelMappingTemplate, setDialogPanelMappingTemplate] = useState("");
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
     queryKey: ["/api/platform/admin/status"],
@@ -126,12 +128,17 @@ export default function OperatorCatalogPage() {
       storefrontMockupMode: StorefrontMockupMode;
       fulfillmentLayout: FulfillmentLayout;
       forceFlatHarvest: boolean;
+      panelMappingTemplate: string;
     }) => {
       const res = await apiRequest("PUT", `/api/platform/operator-catalog/${args.blueprintId}/tag`, {
         kind: args.kind,
         label: args.bp.title,
         brand: args.bp.brand,
         category: args.kind === "blocked" ? "other" : args.category,
+        panelMappingTemplate:
+          args.kind === "aop" && args.panelMappingTemplate.trim()
+            ? args.panelMappingTemplate.trim()
+            : null,
         storefrontMockupMode: args.storefrontMockupMode === "auto" ? null : args.storefrontMockupMode,
         fulfillmentLayout: args.fulfillmentLayout === "auto" ? null : args.fulfillmentLayout,
         forceFlatHarvest: args.forceFlatHarvest,
@@ -183,6 +190,7 @@ export default function OperatorCatalogPage() {
     setDialogForceFlatHarvest(
       existing?.forceFlatHarvest ?? (isAdjustableTote && kind === "flat"),
     );
+    setDialogPanelMappingTemplate(existing?.panelMappingTemplate ?? "");
     setPendingTag({ bp, kind });
   };
 
@@ -196,6 +204,7 @@ export default function OperatorCatalogPage() {
       storefrontMockupMode: dialogStorefrontMode,
       fulfillmentLayout: dialogFulfillmentLayout,
       forceFlatHarvest: dialogForceFlatHarvest,
+      panelMappingTemplate: dialogPanelMappingTemplate,
     });
   };
 
@@ -412,6 +421,8 @@ export default function OperatorCatalogPage() {
           onFulfillmentLayoutChange={setDialogFulfillmentLayout}
           forceFlatHarvest={dialogForceFlatHarvest}
           onForceFlatHarvestChange={setDialogForceFlatHarvest}
+          panelMappingTemplate={dialogPanelMappingTemplate}
+          onPanelMappingTemplateChange={setDialogPanelMappingTemplate}
           onConfirm={confirmTag}
           isPending={tagMutation.isPending}
         />

@@ -105,7 +105,8 @@ export async function listMerchantImportableCatalog(): Promise<PlatformCatalogEn
   return all.filter((e) => {
     if (e.kind === "blocked") return false;
     if (e.kind === "printify") return e.status === "published";
-    if (e.kind === "flat" || e.kind === "aop") return e.status === "published";
+    if (e.kind === "flat") return e.status === "published";
+    if (e.kind === "aop") return e.status === "published" && !!e.panelMappingTemplate;
     return false;
   });
 }
@@ -123,7 +124,8 @@ export async function canMerchantImportEntry(
 ): Promise<boolean> {
   if (!entry || entry.kind === "blocked") return false;
   if (entry.kind === "printify") return entry.status === "published";
-  if (entry.kind === "flat" || entry.kind === "aop") return entry.status === "published";
+  if (entry.kind === "flat") return entry.status === "published";
+  if (entry.kind === "aop") return entry.status === "published" && !!entry.panelMappingTemplate;
   return false;
 }
 
@@ -140,10 +142,13 @@ export async function upsertPlatformCatalogTag(args: {
   notes?: string | null;
 }): Promise<PlatformCatalogEntry> {
   const status: PlatformCatalogStatus = args.kind === "printify" ? "published" : "draft";
-  const panelTemplate =
-    args.kind === "aop" ? args.panelMappingTemplate ?? null : null;
-
   const existing = await getPlatformCatalogEntry(args.printifyBlueprintId);
+  const panelTemplate =
+    args.kind === "aop"
+      ? args.panelMappingTemplate?.trim()
+        ? args.panelMappingTemplate.trim()
+        : existing?.panelMappingTemplate ?? null
+      : null;
   if (existing) {
     const [row] = await db
       .update(platformCatalogBlueprints)
@@ -193,6 +198,34 @@ export async function markPlatformCatalogPublished(
   const [row] = await db
     .update(platformCatalogBlueprints)
     .set({ status: "published", updatedAt: new Date() })
+    .where(eq(platformCatalogBlueprints.printifyBlueprintId, blueprintId))
+    .returning();
+  invalidatePlatformCatalogCache();
+  return row;
+}
+
+/** Link a published Supabase panel template and mark an AOP catalog row live for merchants. */
+export async function publishPlatformAopCatalogEntry(
+  blueprintId: number,
+  panelMappingTemplate: string,
+): Promise<PlatformCatalogEntry> {
+  const normalized = panelMappingTemplate.trim();
+  if (!/^[a-zA-Z0-9_\-]{1,64}$/.test(normalized)) {
+    throw new Error("panelMappingTemplate must be 1–64 alphanumeric characters, dashes, or underscores");
+  }
+
+  const existing = await getPlatformCatalogEntry(blueprintId);
+  if (!existing || existing.kind !== "aop") {
+    throw new Error(`Blueprint ${blueprintId} is not an AOP platform catalog entry`);
+  }
+
+  const [row] = await db
+    .update(platformCatalogBlueprints)
+    .set({
+      panelMappingTemplate: normalized,
+      status: "published",
+      updatedAt: new Date(),
+    })
     .where(eq(platformCatalogBlueprints.printifyBlueprintId, blueprintId))
     .returning();
   invalidatePlatformCatalogCache();

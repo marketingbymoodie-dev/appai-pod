@@ -50,6 +50,12 @@ type CatalogProduct = {
 
 type HarvestPhase = "idle" | "running" | "complete" | "failed";
 
+/** Default Supabase panel template names for known hoodie blueprints. */
+const AOP_TEMPLATE_SUGGESTIONS: Record<number, string> = {
+  450: "unisex-pullover-hoodie-aop-L",
+  451: "unisex-zip-hoodie-aop-L",
+};
+
 export default function PlatformCatalogPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -59,6 +65,7 @@ export default function PlatformCatalogPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | "live" | "draft">("all");
   const [removeTarget, setRemoveTarget] = useState<CatalogProduct | null>(null);
   const [harvestPhaseById, setHarvestPhaseById] = useState<Record<number, HarvestPhase>>({});
+  const [aopTemplateDraft, setAopTemplateDraft] = useState<Record<number, string>>({});
   const prevHarvestPhaseRef = useRef<Record<number, HarvestPhase>>({});
 
   const { data: platformStatus, isLoading: platformLoading } = useQuery<{ isPlatformAdmin: boolean }>({
@@ -75,6 +82,28 @@ export default function PlatformCatalogPage() {
     enabled: !!platformStatus?.isPlatformAdmin,
     refetchInterval: anyHarvesting ? 15_000 : false,
   });
+
+  const { data: aopTemplatesData } = useQuery<{ templates: string[] }>({
+    queryKey: ["/api/platform/canonical/aop-panel-templates"],
+    enabled: !!platformStatus?.isPlatformAdmin,
+  });
+
+  useEffect(() => {
+    if (!data?.products) return;
+    setAopTemplateDraft((prev) => {
+      const next = { ...prev };
+      for (const p of data.products) {
+        if (p.kind !== "aop") continue;
+        if (next[p.blueprintId] != null && next[p.blueprintId] !== "") continue;
+        next[p.blueprintId] =
+          p.panelMappingTemplate ??
+          p.publish.panelMappingTemplate ??
+          AOP_TEMPLATE_SUGGESTIONS[p.blueprintId] ??
+          "";
+      }
+      return next;
+    });
+  }, [data?.products]);
 
   useEffect(() => {
     if (!data?.products) return;
@@ -130,6 +159,25 @@ export default function PlatformCatalogPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/catalog/allowed-blueprints"] });
     },
     onError: (e: Error) => toast({ title: "Publish failed", description: e.message, variant: "destructive" }),
+  });
+
+  const aopPublishMutation = useMutation({
+    mutationFn: async ({ blueprintId, panelMappingTemplate }: { blueprintId: number; panelMappingTemplate: string }) => {
+      const res = await apiRequest("POST", `/api/platform/canonical/${blueprintId}/publish-aop`, {
+        panelMappingTemplate,
+      });
+      return res.json();
+    },
+    onSuccess: (_body, vars) => {
+      toast({
+        title: "Published for merchants",
+        description: `Blueprint ${vars.blueprintId} → ${vars.panelMappingTemplate}. Merchants can import from the catalog.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/canonical/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/catalog/allowed-blueprints"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/operator-catalog/tags"] });
+    },
+    onError: (e: Error) => toast({ title: "AOP publish failed", description: e.message, variant: "destructive" }),
   });
 
   const harvestMutation = useMutation({
@@ -363,9 +411,77 @@ export default function PlatformCatalogPage() {
                     </>
                   )}
                   {p.kind === "aop" && (
-                    <p className="text-xs text-muted-foreground self-center">
-                      AOP uses Hoodie Template Mapper + publish script. Already live when template is on Supabase.
-                    </p>
+                    <div className="flex w-full flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+                      <div className="min-w-[220px] flex-1 space-y-1">
+                        <label
+                          htmlFor={`aop-template-${p.blueprintId}`}
+                          className="text-[11px] font-medium text-muted-foreground"
+                        >
+                          Supabase panel template
+                        </label>
+                        <Input
+                          id={`aop-template-${p.blueprintId}`}
+                          list={`aop-template-options-${p.blueprintId}`}
+                          value={aopTemplateDraft[p.blueprintId] ?? ""}
+                          placeholder="e.g. unisex-pullover-hoodie-aop-L"
+                          className="h-8 text-xs"
+                          onChange={(e) =>
+                            setAopTemplateDraft((prev) => ({ ...prev, [p.blueprintId]: e.target.value }))
+                          }
+                        />
+                        <datalist id={`aop-template-options-${p.blueprintId}`}>
+                          {(aopTemplatesData?.templates ?? []).map((t) => (
+                            <option key={t} value={t} />
+                          ))}
+                        </datalist>
+                        <p className="text-[11px] text-muted-foreground">
+                          1. Map panels in{" "}
+                          <Link href="/admin/hoodie-template-mapper" className="underline hover:text-foreground">
+                            AOP Panel Mapper
+                          </Link>{" "}
+                          → Publish to Supabase. 2. Enter the public template name here → Publish for merchants.
+                        </p>
+                      </div>
+                      <Link href="/admin/hoodie-template-mapper">
+                        <Button size="sm" variant="outline">
+                          AOP Panel Mapper
+                        </Button>
+                      </Link>
+                      {!p.publish.published && (
+                        <Button
+                          size="sm"
+                          disabled={
+                            aopPublishMutation.isPending || !(aopTemplateDraft[p.blueprintId] ?? "").trim()
+                          }
+                          onClick={() =>
+                            aopPublishMutation.mutate({
+                              blueprintId: p.blueprintId,
+                              panelMappingTemplate: (aopTemplateDraft[p.blueprintId] ?? "").trim(),
+                            })
+                          }
+                        >
+                          <Upload className="mr-1 h-3 w-3" />
+                          Publish for merchants
+                        </Button>
+                      )}
+                      {p.publish.published && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={
+                            aopPublishMutation.isPending || !(aopTemplateDraft[p.blueprintId] ?? "").trim()
+                          }
+                          onClick={() =>
+                            aopPublishMutation.mutate({
+                              blueprintId: p.blueprintId,
+                              panelMappingTemplate: (aopTemplateDraft[p.blueprintId] ?? "").trim(),
+                            })
+                          }
+                        >
+                          Update template link
+                        </Button>
+                      )}
+                    </div>
                   )}
                   <Button
                     size="sm"

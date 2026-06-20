@@ -15,8 +15,13 @@ import {
   getPlatformCatalogEntry,
   listMerchantImportableCatalog,
   listPlatformCatalogByKind,
+  publishPlatformAopCatalogEntry,
   type PlatformCatalogEntry,
 } from "../platformCatalogStore";
+import {
+  getPublishedHoodieTemplate,
+  listPublicTemplateNames,
+} from "../hoodieTemplateStore";
 import {
   buildHarvestColorsFromProductType,
   calibratorGeometryPath,
@@ -393,7 +398,7 @@ export function registerPlatformCalibrationRoutes(
         category: e.category ?? "",
         kind: e.kind,
         publish:
-          e.kind === "flat"
+          e.kind === "flat" || e.kind === "aop"
             ? await getCanonicalPublishState(e.printifyBlueprintId)
             : { published: e.status === "published" },
       })),
@@ -625,6 +630,48 @@ export function registerPlatformCalibrationRoutes(
     } catch (e) {
       console.error("[platform-canonical] harvest start failed:", e);
       res.status(500).json({ error: "Failed to start harvest" });
+    }
+  });
+
+  app.get("/api/platform/canonical/aop-panel-templates", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    res.json({ templates: listPublicTemplateNames() });
+  });
+
+  app.post("/api/platform/canonical/:blueprintId/publish-aop", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      const panelMappingTemplate = String(req.body?.panelMappingTemplate ?? "").trim();
+      if (!panelMappingTemplate) {
+        return res.status(400).json({ error: "panelMappingTemplate is required" });
+      }
+
+      const entry = await getFlatCanonicalEntry(blueprintId);
+      if (!entry || entry.kind !== "aop") {
+        return res.status(404).json({ error: "Blueprint not in AOP platform catalog" });
+      }
+
+      try {
+        await getPublishedHoodieTemplate(panelMappingTemplate);
+      } catch (err: any) {
+        return res.status(400).json({
+          error:
+            `Panel template "${panelMappingTemplate}" is not available on Supabase yet. ` +
+            "Open AOP Panel Mapper → Save → Publish first.",
+          detail: err?.message || String(err),
+        });
+      }
+
+      const row = await publishPlatformAopCatalogEntry(blueprintId, panelMappingTemplate);
+      res.json({
+        ok: true,
+        published: await getCanonicalPublishState(blueprintId),
+        tag: row,
+      });
+    } catch (e: any) {
+      console.error("[platform-canonical] AOP publish failed:", e);
+      res.status(500).json({ error: e?.message || "AOP publish failed" });
     }
   });
 

@@ -203,10 +203,10 @@ export default function HoodieTemplateMapperPage() {
         <header className="border-b border-slate-800 bg-slate-900 px-4 py-2">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-base font-semibold tracking-tight">Hoodie Template Mapper</h1>
+              <h1 className="text-base font-semibold tracking-tight">AOP Panel Mapper</h1>
               <p className="text-[11px] text-slate-400">
-                Manual remapping engine. Production panel shapes are the source of truth — masks built here drive
-                customer previews, Printify production exports, and Blender renders (wired in later phases).
+                Mesh-warp panel mapping for all-over-print apparel (hoodies today; same engine for other AOP
+                garments). Masks here drive customer previews and Printify production exports.
               </p>
             </div>
             <div className="text-[11px] text-slate-500">phase 1 · shell + canvas + JSON save/load</div>
