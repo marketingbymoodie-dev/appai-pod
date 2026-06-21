@@ -19,6 +19,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeHoodieTemplate } from "@shared/hoodieTemplate";
 import {
   isSupabaseHoodieTemplatesConfigured,
   publicHoodieTemplateUrl,
@@ -141,15 +142,16 @@ function loadLocalAdminTemplate(publicName: string): PublishedHoodieTemplate | n
     try {
       const raw = JSON.parse(fs.readFileSync(file, "utf-8"));
       const sanitised = sanitiseAdminTemplate(raw, publicName);
+      const template = normalizeHoodieTemplate(sanitised);
       // Local admin saves already point mockup `src` at the dev endpoint
       // (`/api/dev/hoodie-mapper/mockups/...`) so we can pass them through
       // verbatim — they're served by the same dev process.
       return {
         name: publicName,
-        template: sanitised,
+        template,
         mockups: {
-          front: sanitised?.views?.front?.mockup?.src ?? null,
-          back: sanitised?.views?.back?.mockup?.src ?? null,
+          front: template?.views?.front?.mockup?.src ?? null,
+          back: template?.views?.back?.mockup?.src ?? null,
         },
         cachedAt: Date.now(),
       };
@@ -220,7 +222,7 @@ export async function getPublishedHoodieTemplate(
 
     const value: PublishedHoodieTemplate = {
       name,
-      template,
+      template: normalizeHoodieTemplate(template),
       mockups: {
         front: template?.views?.front?.mockup?.src ?? null,
         back: template?.views?.back?.mockup?.src ?? null,

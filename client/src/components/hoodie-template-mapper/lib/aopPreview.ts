@@ -397,7 +397,10 @@ function computeGroupRect(
   seamAllowance: number,
 ): DesignRectInfo | null {
   const visiblePrint = layers.filter((l) => l.visible && !l.isExclusion);
-  const union = totalPrintAabb(visiblePrint, isLayerInSingleSheet);
+  // Per-group rects include every panel in the group so placement handles
+  // match rendered art. `includeInSingleSheet` controls skipArtwork at
+  // render time — not whether the group has a draggable design rect.
+  const union = totalPrintAabb(visiblePrint);
   if (!union) return null;
   const aspect = artwork
     ? (artwork.naturalWidth || artwork.width) /

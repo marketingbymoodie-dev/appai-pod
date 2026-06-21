@@ -23,6 +23,7 @@ import {
 import {
   designGroupsForBlueprint,
   isSweatshirtBlueprint,
+  normalizeHoodieTemplate,
   type DesignGroup,
   type HoodieTemplate,
   type HoodieView,
@@ -393,9 +394,13 @@ export default function HoodieAopPlacer({
         if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
         const j: ApiResponse = await r.json();
         if (cancelled) return;
+        const normalized: ApiResponse = {
+          ...j,
+          template: normalizeHoodieTemplate(j.template),
+        };
         // eslint-disable-next-line no-console
-        console.log("[HoodieAopPlacer] template loaded:", j.name, "groups=", (j.template?.designGroups ?? []).length);
-        setData(j);
+        console.log("[HoodieAopPlacer] template loaded:", normalized.name, "groups=", (normalized.template?.designGroups ?? []).length);
+        setData(normalized);
         setLoading(false);
       } catch (e: unknown) {
         if (cancelled) return;
