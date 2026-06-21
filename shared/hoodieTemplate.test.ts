@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   PULOVER_HOODIE_BLUEPRINT_ID,
+  SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
   createFreshAopTemplate,
   defaultHoodieTypeForBlueprint,
   defaultPulloverDesignGroups,
+  defaultSweatshirtDesignGroups,
   designGroupsForBlueprint,
   drawMockupImageInCanvas,
+  hoodiePanelKeyToPrintifyPosition,
   isValidAopTemplateSlug,
   mockupDrawRect,
   panelsEligibleForView,
@@ -30,6 +33,15 @@ describe("createFreshAopTemplate", () => {
     const t = createFreshAopTemplate({ name: "pullover-hoodie-aop-L", blueprintId: 450 });
     expect(t.hoodieType).toBe("pullover-hoodie-aop");
     expect(t.designGroups.find((g) => g.id === "front-body")?.panelKeys).toEqual(["front"]);
+  });
+
+  it("uses sweatshirt defaults for bp 449", () => {
+    const t = createFreshAopTemplate({ name: "sweatshirt-aop-L", blueprintId: 449 });
+    expect(t.designGroups.find((g) => g.id === "collar")?.panelKeys).toEqual([
+      "collar_front",
+      "collar_back",
+    ]);
+    expect(t.designGroups.find((g) => g.id === "hood")).toBeUndefined();
   });
 });
 
@@ -114,5 +126,43 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     drawMockupImageInCanvas(ctx, {} as CanvasImageSource, asset, 1024, 1024);
 
     expect(calls).toEqual([{ x: 27, y: 19, w: 1024 * 0.94, h: 1024 * 0.94 }]);
+  });
+});
+
+describe("sweatshirt hoodie panel keys (bp 449)", () => {
+  it("offers collar keys and hides hoodie-only panels", () => {
+    const front = panelsEligibleForView("front", SWEATSHIRT_BLUEPRINT_ID);
+    expect(front).toContain("front");
+    expect(front).toContain("collar_front");
+    expect(front).toContain("collar_back");
+    expect(front).not.toContain("left_hood");
+    expect(front).not.toContain("front_left");
+
+    const back = panelsEligibleForView("back", SWEATSHIRT_BLUEPRINT_ID);
+    expect(back).toContain("collar_back");
+    expect(back).not.toContain("collar_front");
+    expect(back).not.toContain("left_hood");
+  });
+
+  it("collar design group lists front + back collar keys", () => {
+    const groups = defaultSweatshirtDesignGroups();
+    expect(groups.find((g) => g.id === "collar")?.panelKeys).toEqual([
+      "collar_front",
+      "collar_back",
+    ]);
+  });
+
+  it("designGroupsForBlueprint picks sweatshirt defaults for 449", () => {
+    const groups = designGroupsForBlueprint(SWEATSHIRT_BLUEPRINT_ID);
+    expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
+  });
+});
+
+describe("hoodiePanelKeyToPrintifyPosition", () => {
+  it("maps cuff and collar keys to Printify placeholder names", () => {
+    expect(hoodiePanelKeyToPrintifyPosition("left_cuff")).toBe("left_cuff_panel");
+    expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("collar");
+    expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("collar");
+    expect(hoodiePanelKeyToPrintifyPosition("front")).toBe("front");
   });
 });

@@ -259,6 +259,8 @@ const OVERLAY_OCCLUDER_PANEL_KEYS = new Set<HoodiePanelKey>([
   "pocket_right",
   "left_cuff",
   "right_cuff",
+  "collar_front",
+  "collar_back",
   "waistband",
 ]);
 
@@ -558,6 +560,8 @@ const PANEL_COLORS: Record<HoodiePanelKey | "unassigned", string> = {
   right_sleeve: "#22c55e",  // green
   left_cuff: "#14b8a6",     // teal
   right_cuff: "#06b6d4",    // cyan
+  collar_front: "#f472b6",  // pink — outer front band
+  collar_back: "#db2777",   // rose — inner back / neck opening
   left_hood: "#3b82f6",     // blue
   right_hood: "#8b5cf6",    // violet
   waistband: "#ec4899",     // pink

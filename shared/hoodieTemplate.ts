@@ -33,6 +33,8 @@ export type HoodieView = "front" | "back";
 export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
+/** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
+export const SWEATSHIRT_BLUEPRINT_ID = 449;
 
 export type HoodiePanelKey =
   | "front"
@@ -45,6 +47,8 @@ export type HoodiePanelKey =
   | "right_sleeve"
   | "left_cuff"
   | "right_cuff"
+  | "collar_front"
+  | "collar_back"
   | "left_hood"
   | "right_hood"
   | "waistband"
@@ -601,12 +605,85 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
   void blankPair;
 }
 
+/**
+ * Design groups for sweatshirt AOP (Printify bp 449): full front/back body,
+ * sleeves + cuffs, collar (front band + neck-hole back strip), waistband trim.
+ */
+export function defaultSweatshirtDesignGroups(): DesignGroup[] {
+  const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
+  const blankPair: Record<HoodieView, GroupPlacement> = {
+    front: { ...blank },
+    back: { ...blank },
+  };
+  return [
+    {
+      id: "front-body",
+      name: "Front body",
+      panelKeys: ["front"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "back-body",
+      name: "Back body",
+      panelKeys: ["back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "left-sleeve",
+      name: "Left sleeve",
+      panelKeys: ["left_sleeve", "left_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "right-sleeve",
+      name: "Right sleeve",
+      panelKeys: ["right_sleeve", "right_cuff"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "collar",
+      name: "Collar",
+      panelKeys: ["collar_front", "collar_back"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+    {
+      id: "trim",
+      name: "Trim",
+      panelKeys: ["waistband"],
+      placement: { front: { ...blank }, back: { ...blank } },
+      seamAllowance: 0,
+      lockedRatio: null,
+      enabled: true,
+    },
+  ];
+  void blankPair;
+}
+
 export function isPulloverHoodieBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === PULOVER_HOODIE_BLUEPRINT_ID;
 }
 
 export function isZipHoodieBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === ZIP_HOODIE_BLUEPRINT_ID;
+}
+
+export function isSweatshirtBlueprint(blueprintId: number | null | undefined): boolean {
+  return blueprintId === SWEATSHIRT_BLUEPRINT_ID;
 }
 
 /** Zip-only panel keys (hidden when authoring bp 450 pullover templates). */
@@ -617,7 +694,19 @@ const ZIP_ONLY_FRONT_PANEL_KEYS: readonly HoodiePanelKey[] = [
   "pocket_right",
 ];
 
+/** Hoodie-only keys hidden when authoring bp 449 sweatshirt templates. */
+const SWEATSHIRT_EXCLUDED_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "front_left",
+  "front_right",
+  "front_pocket",
+  "pocket_left",
+  "pocket_right",
+  "left_hood",
+  "right_hood",
+];
+
 export function designGroupsForBlueprint(blueprintId: number | null | undefined): DesignGroup[] {
+  if (isSweatshirtBlueprint(blueprintId)) return defaultSweatshirtDesignGroups();
   if (isPulloverHoodieBlueprint(blueprintId)) return defaultPulloverDesignGroups();
   return defaultDesignGroups();
 }
@@ -654,6 +743,9 @@ export function panelsEligibleForView(
   blueprintId: number | null | undefined,
 ): readonly HoodiePanelKey[] {
   const all = PANELS_PER_VIEW[view];
+  if (isSweatshirtBlueprint(blueprintId)) {
+    return all.filter((k) => !SWEATSHIRT_EXCLUDED_PANEL_KEYS.includes(k));
+  }
   if (view !== "front") return all;
   if (isPulloverHoodieBlueprint(blueprintId)) {
     return all.filter((k) => !ZIP_ONLY_FRONT_PANEL_KEYS.includes(k));
@@ -662,6 +754,17 @@ export function panelsEligibleForView(
     return all.filter((k) => k !== "front");
   }
   return all;
+}
+
+/**
+ * Map an admin panel key to the Printify placeholder `position` string used
+ * at order time. Most hoodie keys match 1:1; cuffs and collar are exceptions.
+ */
+export function hoodiePanelKeyToPrintifyPosition(panelKey: HoodiePanelKey): string {
+  if (panelKey === "left_cuff") return "left_cuff_panel";
+  if (panelKey === "right_cuff") return "right_cuff_panel";
+  if (panelKey === "collar_front" || panelKey === "collar_back") return "collar";
+  return panelKey;
 }
 
 /**
@@ -815,6 +918,8 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "left_hood",
     "right_hood",
     "waistband",
+    "collar_front",
+    "collar_back",
   ],
   back: [
     "back",
@@ -825,6 +930,7 @@ export const PANELS_PER_VIEW: Record<HoodieView, readonly HoodiePanelKey[]> = {
     "left_hood",
     "right_hood",
     "waistband",
+    "collar_back",
   ],
 } as const;
 
@@ -839,6 +945,8 @@ export const PANEL_DISPLAY_LABEL: Record<HoodiePanelKey, string> = {
   right_sleeve: "Right Sleeve",
   left_cuff: "Left Cuff",
   right_cuff: "Right Cuff",
+  collar_front: "Collar (front band)",
+  collar_back: "Collar (back / neck opening)",
   left_hood: "Left Hood",
   right_hood: "Right Hood",
   waistband: "Waistband",
@@ -872,6 +980,8 @@ export const PANEL_RENDER_ORDER: Record<HoodiePanelKey, number> = {
   right_hood: 40,
   left_cuff: 50,
   right_cuff: 50,
+  collar_back: 52,
+  collar_front: 55,
   waistband: 60,
   front_pocket: 70,
   pocket_left: 70,

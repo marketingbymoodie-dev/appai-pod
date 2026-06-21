@@ -39,6 +39,7 @@ import { invalidateHoodieTemplateCache } from "./hoodieTemplateStore";
 const ADMIN_TO_PUBLIC_NAME: Record<string, string> = {
   "zip-hoodie-aop-L": "unisex-zip-hoodie-aop-L",
   "pullover-hoodie-aop-L": "unisex-pullover-hoodie-aop-L",
+  "sweatshirt-aop-L": "unisex-sweatshirt-aop-L",
 };
 
 const ROOT = process.cwd();
