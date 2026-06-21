@@ -98,12 +98,17 @@ export function FinePositionNudge({
 export function FinePositionNudgeInline({
   onNudge,
   className,
+  label = "Nudge Artwork",
 }: {
   onNudge: (axis: "x" | "y", direction: 1 | -1) => void;
   className?: string;
+  label?: string;
 }) {
   return (
     <div className={className}>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
       <div className="flex items-center justify-center gap-1">
         <NudgeButton label="Nudge left" direction={-1} onPress={(dir) => onNudge("x", dir)}>
           <ChevronLeft className="h-3.5 w-3.5" />

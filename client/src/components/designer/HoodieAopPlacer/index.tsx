@@ -239,6 +239,12 @@ function overlayGroupId(activeGroupId: string): string {
   return isSleevesPart(activeGroupId) ? "left-sleeve" : activeGroupId;
 }
 
+/** Sleeves are one customer control — scale/nudge apply on both mockup views. */
+function viewsForPlacementEdit(activeGroupId: string, currentView: HoodieView): HoodieView[] {
+  if (isSleevesPart(activeGroupId)) return ["front", "back"];
+  return [currentView];
+}
+
 /**
  * Build the customer state from a fetched template + (optional) saved
  * customer state. Inherits the admin's per-group defaults (placement,
@@ -715,16 +721,25 @@ export default function HoodieAopPlacer({
         if (!prev) return prev;
         const ids = resolveEditGroupIds(prev.activeGroupId);
         const primaryId = overlayGroupId(prev.activeGroupId);
+        const views = viewsForPlacementEdit(prev.activeGroupId, view);
         const prevPrimary =
           prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
         let placements = { ...prev.placements };
         for (const id of ids) {
+          const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
+            ...(placements[id] ?? {}),
+          };
+          for (const v of views) {
+            if (v === view) {
+              perView[v] = { ...next };
+            } else if (isSleevesPart(prev.activeGroupId)) {
+              const curV = prev.placements[id]?.[v] ?? DEFAULT_ARTWORK_PLACEMENT;
+              perView[v] = { ...curV, scale: next.scale };
+            }
+          }
           placements = {
             ...placements,
-            [id]: {
-              ...(placements[id] ?? {}),
-              [view]: { ...next },
-            } as Record<HoodieView, ArtworkPlacement>,
+            [id]: perView as Record<HoodieView, ArtworkPlacement>,
           };
         }
         placements = applyLinkedPlacements(
@@ -746,16 +761,21 @@ export default function HoodieAopPlacer({
       if (!prev) return prev;
       const ids = resolveEditGroupIds(prev.activeGroupId);
       const primaryId = overlayGroupId(prev.activeGroupId);
+      const views = viewsForPlacementEdit(prev.activeGroupId, view);
       const cur = prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
       const next: ArtworkPlacement = { ...cur, scale };
       let placements = { ...prev.placements };
       for (const id of ids) {
+        const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
+          ...(placements[id] ?? {}),
+        };
+        for (const v of views) {
+          const curV = prev.placements[id]?.[v] ?? DEFAULT_ARTWORK_PLACEMENT;
+          perView[v] = { ...curV, scale };
+        }
         placements = {
           ...placements,
-          [id]: {
-            ...(placements[id] ?? {}),
-            [view]: { ...next },
-          } as Record<HoodieView, ArtworkPlacement>,
+          [id]: perView as Record<HoodieView, ArtworkPlacement>,
         };
       }
       placements = applyLinkedPlacements(prev, placements, primaryId, view, cur, next);
@@ -800,21 +820,22 @@ export default function HoodieAopPlacer({
     });
   };
 
-  const resetAll = useCallback(() => {
+  const resetActivePart = useCallback(() => {
     if (!data) return;
+    const groups =
+      data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
     setState((prev) => {
       if (!prev) return prev;
-      const fresh = buildInitialState(data.template, null);
-      // Preserve the things customers expect to survive a reset:
-      // their uploaded artwork, BG colour, mode, view, tile settings.
-      return {
-        ...fresh,
-        artworkUrl: prev.artworkUrl,
-        backgroundColor: prev.backgroundColor,
-        mode: prev.mode,
-        view: prev.view,
-        tileSettings: prev.tileSettings,
-      };
+      const ids = resolveEditGroupIds(prev.activeGroupId);
+      const placements = { ...prev.placements };
+      for (const id of ids) {
+        const g = groups.find((x) => x.id === id);
+        placements[id] = {
+          front: { ...(g?.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
+          back: { ...(g?.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+        };
+      }
+      return { ...prev, placements };
     });
   }, [data]);
 
@@ -1324,7 +1345,9 @@ export default function HoodieAopPlacer({
             />
             <div className="mt-1 text-[10px] text-muted-foreground/80">
               Adjusting <span className="text-foreground">{activeGroup?.name ?? state.activeGroupId}</span>
-              {state.hoodLinked && (state.activeGroupId === "hood" || state.activeGroupId === "front-body") && (
+              {hasHoodGroup &&
+                state.hoodLinked &&
+                (state.activeGroupId === "hood" || state.activeGroupId === "front-body") && (
                 <> • linked with {state.activeGroupId === "hood" ? "front body" : "hood"}</>
               )}
               {state.trimLinked && state.trimEnabled && (state.activeGroupId === "trim" || state.activeGroupId === "front-body") && (
@@ -1379,10 +1402,11 @@ export default function HoodieAopPlacer({
           </>
         )}
 
-        {/* Reset */}
+        {/* Reset active part to admin default placement */}
         <button
-          onClick={resetAll}
+          onClick={resetActivePart}
           className="flex w-full items-center justify-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          title="Reset the selected part to its default centred placement"
         >
           <RotateCcw className="h-3 w-3" /> Reset
         </button>
