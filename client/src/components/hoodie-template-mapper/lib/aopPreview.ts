@@ -1308,15 +1308,13 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     //   1. `panelEnabledOverrides[panelKey] === false` — customer-
     //      level toggle (e.g. "cuffs & waistband off"). Always wins.
     //   2. The layer's design group is disabled (group-level toggle).
-    //   3. `isLayerInSingleSheet === false` — admin opted this panel
-    //      out of single-sheet's union bounding box. Only relevant in
-    //      single-sheet mode (in tile mode every panel tiles by
-    //      default — `includeInSingleSheet` is a single-sheet concept,
-    //      not a "this panel is unprintable" flag).
     //
-    // Per-panel-stretch ignores all three (every panel unconditionally
-    // takes the full artwork).
-    const inSingleSheet = isLayerInSingleSheet(layer);
+    // `includeInSingleSheet === false` only opts a panel out of the
+    // legacy whole-garment union — it still warps from its design
+    // group's placement when that group is enabled (sleeves, trim, etc.).
+    //
+    // Per-panel-stretch ignores group/panel toggles (every panel
+    // unconditionally takes the full artwork).
     const layerRect = rectForLayer(layer);
     const groupEnabled = layerRect ? layerRect.enabled : true;
     const panelOverride =
@@ -1326,7 +1324,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
     const panelMutedByCustomer = panelOverride === false;
     const skipArtwork =
       panelMutedByCustomer ||
-      (mode === "single-sheet" && (!inSingleSheet || !groupEnabled)) ||
+      (mode === "single-sheet" && !groupEnabled) ||
       (mode === "tile" && !groupEnabled);
 
     // Background colour fill — sits UNDER the artwork inside each
