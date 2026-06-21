@@ -24,6 +24,7 @@ import {
   designGroupsForBlueprint,
   isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
+  isZipHoodieBlueprint,
   normalizeHoodieTemplate,
   type DesignGroup,
   type HoodiePanelKey,
@@ -33,6 +34,7 @@ import {
 } from "@shared/hoodieTemplate";
 import {
   renderAopPreview,
+  computeGroupRects,
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
@@ -160,9 +162,9 @@ function buildPanelOverrides(
   state: HoodieAopPlacerState,
 ): Partial<Record<string, boolean>> {
   const out: Partial<Record<string, boolean>> = {};
-  if (!state.trimEnabled) {
-    for (const k of TRIM_PANEL_KEYS) out[k] = false;
-  }
+  // Customer placer never prints trim (cuffs / waistband / collar) — always
+  // fill those panels with the garment background colour.
+  for (const k of TRIM_PANEL_KEYS) out[k] = false;
   if (!state.pocketsEnabled) {
     for (const k of POCKET_PANEL_KEYS) out[k] = false;
   }
@@ -255,6 +257,60 @@ function viewsForPlacementEdit(activeGroupId: string, currentView: HoodieView): 
   return [currentView];
 }
 
+/** Per-group enabled defaults for the customer placer (not admin template). */
+function customerGroupEnabledByDefault(
+  groupId: string,
+  blueprintId: number,
+  group: DesignGroup,
+): boolean {
+  if (isSweatshirtBlueprint(blueprintId)) return false;
+  if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
+    if (groupId === "front-body" || groupId === "hood") {
+      return group.enabled !== false;
+    }
+    return false;
+  }
+  return groupId === "back-body" ? false : group.enabled !== false;
+}
+
+function stripGroupPanelKeys(
+  groups: DesignGroup[],
+  groupId: string,
+  keys: readonly string[],
+): DesignGroup[] {
+  const drop = new Set(keys);
+  return groups.map((g) => {
+    if (g.id !== groupId) return g;
+    return { ...g, panelKeys: g.panelKeys.filter((k) => !drop.has(k)) };
+  });
+}
+
+function mockupPointFromClick(
+  e: React.MouseEvent,
+  canvas: HTMLCanvasElement,
+  mockup: HTMLImageElement,
+): { x: number; y: number } {
+  const cr = canvas.getBoundingClientRect();
+  const mW = mockup.naturalWidth || mockup.width;
+  const mH = mockup.naturalHeight || mockup.height;
+  return {
+    x: ((e.clientX - cr.left) / cr.width) * mW,
+    y: ((e.clientY - cr.top) / cr.height) * mH,
+  };
+}
+
+function hitTestEffectiveRect(
+  pt: { x: number; y: number },
+  rect: { x: number; y: number; width: number; height: number },
+): boolean {
+  return (
+    pt.x >= rect.x &&
+    pt.x <= rect.x + rect.width &&
+    pt.y >= rect.y &&
+    pt.y <= rect.y + rect.height
+  );
+}
+
 /**
  * Build the customer state from a fetched template + (optional) saved
  * customer state. Inherits the admin's per-group defaults (placement,
@@ -266,7 +322,9 @@ function buildInitialState(
   saved?: Partial<HoodieAopPlacerState> | null,
 ): HoodieAopPlacerState {
   const groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
-  const isSweatshirt = isSweatshirtBlueprint(template.blueprintId);
+  const isHoodieBp =
+    isZipHoodieBlueprint(template.blueprintId) ||
+    isPulloverHoodieBlueprint(template.blueprintId);
   const placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {};
   const enabled: Record<string, boolean> = {};
   for (const g of groups) {
@@ -274,11 +332,11 @@ function buildInitialState(
       front: { ...(g.placement?.front ?? DEFAULT_ARTWORK_PLACEMENT) },
       back: { ...(g.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
     };
-    if (isSweatshirt) {
-      enabled[g.id] = false;
-    } else {
-      enabled[g.id] = g.id === "back-body" ? false : g.enabled !== false;
-    }
+    enabled[g.id] = customerGroupEnabledByDefault(
+      g.id,
+      template.blueprintId,
+      g,
+    );
   }
   const base: HoodieAopPlacerState = {
     mode: "place",
@@ -287,10 +345,10 @@ function buildInitialState(
     artworkUrl: null,
     placements,
     enabled,
-    trimEnabled: !isSweatshirt,
-    pocketsEnabled: true,
+    trimEnabled: false,
+    pocketsEnabled: isHoodieBp ? false : !isSweatshirtBlueprint(template.blueprintId),
     hoodLinked: true,
-    trimLinked: true,
+    trimLinked: false,
     leftSleeveLinked: true,
     rightSleeveLinked: true,
     backgroundColor: DEFAULT_BG_COLOR,
@@ -303,7 +361,8 @@ function buildInitialState(
     placements: { ...base.placements, ...(saved.placements ?? {}) },
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
     tileSettings: { ...base.tileSettings, ...(saved.tileSettings ?? {}) },
-    trimLinked: saved.trimLinked ?? base.trimLinked,
+    trimEnabled: false,
+    trimLinked: false,
     leftSleeveLinked: saved.leftSleeveLinked ?? base.leftSleeveLinked,
     rightSleeveLinked: saved.rightSleeveLinked ?? base.rightSleeveLinked,
   };
@@ -321,7 +380,6 @@ function propagateLinkedDeltas(
   if (view !== "front") return placements;
   const pairs: Array<[string, string, boolean]> = [
     ["hood", "front-body", state.hoodLinked],
-    ["trim", "front-body", state.trimLinked],
   ];
   let result = placements;
   for (const [a, b, linked] of pairs) {
@@ -348,8 +406,8 @@ function propagateLinkedDeltas(
 
 /**
  * Resolve template + overrides for preview/export. Pullover hoodies merge the
- * hood panels into front-body when linked so one placement spans chest + hood
- * (zip hoodies share front-body placement on the separate hood group).
+ * hood panels into front-body when linked. Zip hoodies keep admin-tuned per-group
+ * placements; hood link only propagates edit deltas, not render-time overrides.
  */
 function buildEffectiveRenderConfig(
   template: HoodieTemplate,
@@ -359,51 +417,38 @@ function buildEffectiveRenderConfig(
   placements: Record<string, Record<HoodieView, ArtworkPlacement>>;
   enabled: Record<string, boolean>;
 } {
-  let t = template;
-  let placements = state.placements;
-  let enabled = state.enabled;
+  const placements = state.placements;
+  let enabled: Record<string, boolean> = { ...state.enabled, trim: false };
 
-  if (!state.hoodLinked) {
-    return { template: t, placements, enabled };
+  let groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
+
+  if (!state.pocketsEnabled) {
+    groups = stripGroupPanelKeys(groups, "front-body", POCKET_PANEL_KEYS);
   }
 
-  const frontPl =
-    placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
-
-  if (isPulloverHoodieBlueprint(template.blueprintId)) {
-    const groups = t.designGroups ?? designGroupsForBlueprint(t.blueprintId);
-    t = {
-      ...t,
-      designGroups: groups.map((g) => {
-        if (g.id === "front-body") {
-          const keys = new Set<HoodiePanelKey>([
-            ...g.panelKeys,
-            "left_hood",
-            "right_hood",
-          ]);
-          return { ...g, panelKeys: [...keys] };
-        }
-        if (g.id === "hood") {
-          return { ...g, panelKeys: [] as HoodiePanelKey[] };
-        }
-        return g;
-      }),
-    };
+  if (state.hoodLinked && isPulloverHoodieBlueprint(template.blueprintId)) {
+    groups = groups.map((g) => {
+      if (g.id === "front-body") {
+        const keys = new Set<HoodiePanelKey>([
+          ...g.panelKeys,
+          "left_hood",
+          "right_hood",
+        ]);
+        return { ...g, panelKeys: [...keys] };
+      }
+      if (g.id === "hood") {
+        return { ...g, panelKeys: [] as HoodiePanelKey[] };
+      }
+      return g;
+    });
     enabled = { ...enabled, hood: false };
-    return { template: t, placements, enabled };
   }
 
-  placements = {
-    ...placements,
-    hood: {
-      ...(placements.hood ?? {}),
-      front: { ...frontPl },
-    } as Record<HoodieView, ArtworkPlacement>,
+  return {
+    template: { ...template, designGroups: groups },
+    placements,
+    enabled,
   };
-  if (enabled["front-body"]) {
-    enabled = { ...enabled, hood: true };
-  }
-  return { template: t, placements, enabled };
 }
 
 /** Overlay handle anchor — sleeves use left-sleeve; linked pullover hood → front-body. */
@@ -766,27 +811,34 @@ export default function HoodieAopPlacer({
     });
   }, []);
 
-  const setTrimEnabled = useCallback((on: boolean) => {
-    setState((prev) => {
-      if (!prev) return prev;
-      const frontPl = prev.placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
-      return {
-        ...prev,
-        trimEnabled: on,
-        enabled: { ...prev.enabled, trim: on },
-        placements:
-          on && prev.trimLinked
-            ? {
-                ...prev.placements,
-                trim: {
-                  ...(prev.placements.trim ?? {}),
-                  front: { ...frontPl },
-                } as Record<HoodieView, ArtworkPlacement>,
-              }
-            : prev.placements,
-      };
-    });
-  }, []);
+  const handleCanvasBackdropClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (state.mode !== "place") return;
+      if (
+        isSleevesPart(state.activeGroupId) &&
+        data &&
+        artworkImg &&
+        mockups[state.view] &&
+        canvasRef.current
+      ) {
+        const mockup = mockups[state.view]!;
+        const effective = buildEffectiveRenderConfig(data.template, state);
+        const pt = mockupPointFromClick(e, canvasRef.current, mockup);
+        const rects = computeGroupRects(effective.template, state.view, artworkImg, {
+          placementOverrides: effective.placements,
+          enabledOverrides: effective.enabled,
+        });
+        const frontRect = rects.get("front-body");
+        if (frontRect?.enabled && hitTestEffectiveRect(pt, frontRect.effective)) {
+          onPartButton("front-body");
+          setOverlayVisible(true);
+          return;
+        }
+      }
+      setOverlayVisible((v) => !v);
+    },
+    [state, data, artworkImg, mockups, onPartButton],
+  );
 
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) => {
@@ -1089,7 +1141,6 @@ export default function HoodieAopPlacer({
   const isSweatshirt = isSweatshirtBlueprint(data.template.blueprintId);
   const hasHoodGroup = !isSweatshirt && groups.some((g) => g.id === "hood");
   const hasCollarGroup = !isSweatshirt && groups.some((g) => g.id === "collar");
-  const hasTrimGroup = groups.some((g) => g.id === "trim");
   const hasSleeves =
     groups.some((g) => g.id === "left-sleeve") &&
     groups.some((g) => g.id === "right-sleeve");
@@ -1139,12 +1190,7 @@ export default function HoodieAopPlacer({
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
-          onClick={() => {
-            // Tap on the canvas backdrop / mockup toggles the bounding box.
-            // The rect itself stops propagation so dragging/resizing works.
-            if (state.mode !== "place") return;
-            setOverlayVisible((v) => !v);
-          }}
+          onClick={handleCanvasBackdropClick}
           data-testid="hoodie-aop-canvas-area"
         >
           <div className="relative max-h-full max-w-full">
@@ -1280,41 +1326,24 @@ export default function HoodieAopPlacer({
           </div>
         )}
 
-        {/* Trim (+ optional Pockets) — both Pattern and Place modes */}
-        {(hasTrimGroup || hasPocketPanels) && (
+        {/* Pockets — Pattern and Place modes */}
+        {hasPocketPanels && (
           <div className="space-y-1.5">
-            {hasTrimGroup && (
-              <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
-                <span
-                  className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
-                  title="Cuffs, waistband, and neck rib — when off they fill with the background colour"
-                >
-                  Trim
-                </span>
-                <PlacerToggle
-                  checked={state.trimEnabled}
-                  onChange={setTrimEnabled}
-                  aria-label="Trim on artwork"
-                />
-              </div>
-            )}
-            {hasPocketPanels && (
-              <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
-                <span
-                  className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
-                  title="Kangaroo pocket and pocket halves — when off they fill with the background colour"
-                >
-                  Pockets
-                </span>
-                <PlacerToggle
-                  checked={state.pocketsEnabled}
-                  onChange={(on) =>
-                    setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
-                  }
-                  aria-label="Pockets on artwork"
-                />
-              </div>
-            )}
+            <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
+              <span
+                className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                title="Kangaroo pocket and pocket halves — when off they fill with the background colour"
+              >
+                Pockets
+              </span>
+              <PlacerToggle
+                checked={state.pocketsEnabled}
+                onChange={(on) =>
+                  setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
+                }
+                aria-label="Pockets on artwork"
+              />
+            </div>
           </div>
         )}
 
@@ -1444,9 +1473,6 @@ export default function HoodieAopPlacer({
                 state.hoodLinked &&
                 (state.activeGroupId === "hood" || state.activeGroupId === "front-body") && (
                 <> • linked with {state.activeGroupId === "hood" ? "front body" : "hood"}</>
-              )}
-              {state.trimLinked && state.trimEnabled && (state.activeGroupId === "trim" || state.activeGroupId === "front-body") && (
-                <> • trim linked to front body</>
               )}
             </div>
           </div>

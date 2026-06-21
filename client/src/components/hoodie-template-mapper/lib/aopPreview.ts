@@ -1593,6 +1593,24 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       pctx.restore();
     }
 
+    // Customer-muted overlay panels (pockets off, etc.) repaint an opaque
+    // garment colour on top so chest art cannot show through after multiply.
+    if (
+      skipArtwork &&
+      panelMutedByCustomer &&
+      backgroundColor &&
+      layer.panelKey &&
+      OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey)
+    ) {
+      pctx.save();
+      pctx.globalCompositeOperation = "source-over";
+      pctx.globalAlpha = 1;
+      pctx.fillStyle = backgroundColor;
+      pathPolygon(pctx, anchors);
+      pctx.fill();
+      pctx.restore();
+    }
+
     pctx.restore();
   }
 
