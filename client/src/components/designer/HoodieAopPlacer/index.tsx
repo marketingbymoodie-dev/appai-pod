@@ -22,9 +22,11 @@ import {
 } from "@/components/designer/placerControlStyles";
 import {
   designGroupsForBlueprint,
+  isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
   normalizeHoodieTemplate,
   type DesignGroup,
+  type HoodiePanelKey,
   type HoodieTemplate,
   type HoodieView,
   type TileSettings,
@@ -230,14 +232,21 @@ function isSleevesPart(id: string): boolean {
   return id === SLEEVES_PART_ID;
 }
 
-function resolveEditGroupIds(activeGroupId: string): string[] {
+function resolveEditGroupIds(
+  activeGroupId: string,
+  template?: HoodieTemplate,
+  hoodLinked?: boolean,
+): string[] {
   if (isSleevesPart(activeGroupId)) return [...SLEEVE_GROUP_IDS];
+  if (
+    hoodLinked &&
+    template &&
+    isPulloverHoodieBlueprint(template.blueprintId) &&
+    activeGroupId === "hood"
+  ) {
+    return ["front-body"];
+  }
   return [activeGroupId];
-}
-
-/** Overlay handles attach to one group; sleeves edit both via this anchor. */
-function overlayGroupId(activeGroupId: string): string {
-  return isSleevesPart(activeGroupId) ? "left-sleeve" : activeGroupId;
 }
 
 /** Sleeves are one customer control — scale/nudge apply on both mockup views. */
@@ -335,6 +344,84 @@ function propagateLinkedDeltas(
     };
   }
   return result;
+}
+
+/**
+ * Resolve template + overrides for preview/export. Pullover hoodies merge the
+ * hood panels into front-body when linked so one placement spans chest + hood
+ * (zip hoodies share front-body placement on the separate hood group).
+ */
+function buildEffectiveRenderConfig(
+  template: HoodieTemplate,
+  state: HoodieAopPlacerState,
+): {
+  template: HoodieTemplate;
+  placements: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  enabled: Record<string, boolean>;
+} {
+  let t = template;
+  let placements = state.placements;
+  let enabled = state.enabled;
+
+  if (!state.hoodLinked) {
+    return { template: t, placements, enabled };
+  }
+
+  const frontPl =
+    placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
+
+  if (isPulloverHoodieBlueprint(template.blueprintId)) {
+    const groups = t.designGroups ?? designGroupsForBlueprint(t.blueprintId);
+    t = {
+      ...t,
+      designGroups: groups.map((g) => {
+        if (g.id === "front-body") {
+          const keys = new Set<HoodiePanelKey>([
+            ...g.panelKeys,
+            "left_hood",
+            "right_hood",
+          ]);
+          return { ...g, panelKeys: [...keys] };
+        }
+        if (g.id === "hood") {
+          return { ...g, panelKeys: [] as HoodiePanelKey[] };
+        }
+        return g;
+      }),
+    };
+    enabled = { ...enabled, hood: false };
+    return { template: t, placements, enabled };
+  }
+
+  placements = {
+    ...placements,
+    hood: {
+      ...(placements.hood ?? {}),
+      front: { ...frontPl },
+    } as Record<HoodieView, ArtworkPlacement>,
+  };
+  if (enabled["front-body"]) {
+    enabled = { ...enabled, hood: true };
+  }
+  return { template: t, placements, enabled };
+}
+
+/** Overlay handle anchor — sleeves use left-sleeve; linked pullover hood → front-body. */
+function overlayGroupId(
+  activeGroupId: string,
+  template?: HoodieTemplate,
+  hoodLinked?: boolean,
+): string {
+  if (isSleevesPart(activeGroupId)) return "left-sleeve";
+  if (
+    hoodLinked &&
+    template &&
+    isPulloverHoodieBlueprint(template.blueprintId) &&
+    activeGroupId === "hood"
+  ) {
+    return "front-body";
+  }
+  return activeGroupId;
 }
 
 export default function HoodieAopPlacer({
@@ -575,12 +662,6 @@ export default function HoodieAopPlacer({
   }, [state?.artworkUrl]);
 
   // ---------- Canvas rendering ----------
-  // The renderer reads `state.placements` directly — each group keeps its
-  // own admin-saved placement at all times. The hood-link state only
-  // determines how *future* edits propagate (delta-based, see
-  // `propagateLinkedDelta`), so at render time we don't synthesise any
-  // overrides for "linked". This preserves admin-tuned hood scale /
-  // offset values that are deliberately different from front-body.
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     if (!data || !state) return;
@@ -592,8 +673,9 @@ export default function HoodieAopPlacer({
     canvas.height = mockup.naturalHeight || mockup.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    const effective = buildEffectiveRenderConfig(data.template, state);
     renderAopPreview(ctx, {
-      template: data.template,
+      template: effective.template,
       view: state.view,
       mockup,
       artwork: artworkImg,
@@ -603,12 +685,12 @@ export default function HoodieAopPlacer({
       // Customer placer wants "no artwork = plain hoodie", not the
       // admin debug-colour fill that the renderer defaults to.
       solidColorFallback: false,
-      groupPlacementOverrides: state.placements,
-      groupEnabledOverrides: state.enabled,
+      groupPlacementOverrides: effective.placements,
+      groupEnabledOverrides: effective.enabled,
       panelEnabledOverrides: buildPanelOverrides(state),
       activeGroupId:
         state.mode === "place" && artworkImg
-          ? overlayGroupId(state.activeGroupId)
+          ? overlayGroupId(state.activeGroupId, data.template, state.hoodLinked)
           : null,
       backgroundColor: state.backgroundColor,
       tileSettings: state.tileSettings,
@@ -709,12 +791,12 @@ export default function HoodieAopPlacer({
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) => {
       if (!prev) return prev;
-      const ids = resolveEditGroupIds(groupId);
+      const ids = resolveEditGroupIds(groupId, data?.template, prev.hoodLinked);
       const enabled = { ...prev.enabled };
       for (const id of ids) enabled[id] = on;
       return { ...prev, enabled };
     });
-  }, []);
+  }, [data]);
 
   const setBgColor = useCallback((hex: string) => {
     setState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
@@ -724,8 +806,8 @@ export default function HoodieAopPlacer({
     (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev) return prev;
-        const ids = resolveEditGroupIds(prev.activeGroupId);
-        const primaryId = overlayGroupId(prev.activeGroupId);
+        const ids = resolveEditGroupIds(prev.activeGroupId, data?.template, prev.hoodLinked);
+        const primaryId = overlayGroupId(prev.activeGroupId, data?.template, prev.hoodLinked);
         const views = viewsForPlacementEdit(prev.activeGroupId, view);
         const prevPrimary =
           prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
@@ -758,14 +840,14 @@ export default function HoodieAopPlacer({
         return { ...prev, placements };
       });
     },
-    [],
+    [data],
   );
 
   const setActiveScale = useCallback((view: HoodieView, scale: number) => {
     setState((prev) => {
       if (!prev) return prev;
-      const ids = resolveEditGroupIds(prev.activeGroupId);
-      const primaryId = overlayGroupId(prev.activeGroupId);
+      const ids = resolveEditGroupIds(prev.activeGroupId, data?.template, prev.hoodLinked);
+      const primaryId = overlayGroupId(prev.activeGroupId, data?.template, prev.hoodLinked);
       const views = viewsForPlacementEdit(prev.activeGroupId, view);
       const cur = prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
       const next: ArtworkPlacement = { ...cur, scale };
@@ -786,11 +868,11 @@ export default function HoodieAopPlacer({
       placements = applyLinkedPlacements(prev, placements, primaryId, view, cur, next);
       return { ...prev, placements };
     });
-  }, []);
+  }, [data]);
 
   const nudgePlacement = useCallback(
     (axis: "x" | "y", direction: 1 | -1) => {
-      if (!state) return;
+      if (!state || !data) return;
       const canvas = canvasRef.current;
       const mockupEl = mockups[state.view];
       if (!canvas || !mockupEl) return;
@@ -798,7 +880,11 @@ export default function HoodieAopPlacer({
       const mW = mockupEl.naturalWidth || mockupEl.width;
       const mH = mockupEl.naturalHeight || mockupEl.height;
       const deltaMock = mockupDeltaFromScreenNudge(axis, direction, cr, mW, mH);
-      const editId = overlayGroupId(state.activeGroupId);
+      const editId = overlayGroupId(
+        state.activeGroupId,
+        data.template,
+        state.hoodLinked,
+      );
       const cur =
         state.placements[editId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
       updateActiveGroupPlacement(state.view, {
@@ -807,7 +893,7 @@ export default function HoodieAopPlacer({
         offsetY: cur.offsetY + (axis === "y" ? deltaMock : 0),
       });
     },
-    [state, mockups, updateActiveGroupPlacement],
+    [state, data, mockups, updateActiveGroupPlacement],
   );
 
   const handleArtworkUpload = (file: File) => {
@@ -831,7 +917,7 @@ export default function HoodieAopPlacer({
       data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
     setState((prev) => {
       if (!prev) return prev;
-      const ids = resolveEditGroupIds(prev.activeGroupId);
+      const ids = resolveEditGroupIds(prev.activeGroupId, data.template, prev.hoodLinked);
       const placements = { ...prev.placements };
       for (const id of ids) {
         const g = groups.find((x) => x.id === id);
@@ -873,11 +959,9 @@ export default function HoodieAopPlacer({
       c.height = mockup.naturalHeight || mockup.height;
       const ctx = c.getContext("2d");
       if (!ctx) return null;
-      // Each group keeps its own admin-tuned placement (hood-link only
-      // affects how *future* edits propagate); pass `state.placements`
-      // through verbatim so export matches the live preview pixel-for-pixel.
+      const effective = buildEffectiveRenderConfig(data.template, state);
       renderAopPreview(ctx, {
-        template: data.template,
+        template: effective.template,
         view: v,
         mockup,
         artwork: artworkImg,
@@ -885,8 +969,8 @@ export default function HoodieAopPlacer({
         showExclusions: true,
         applyShading: true,
         solidColorFallback: false,
-        groupPlacementOverrides: state.placements,
-        groupEnabledOverrides: state.enabled,
+        groupPlacementOverrides: effective.placements,
+        groupEnabledOverrides: effective.enabled,
         panelEnabledOverrides: buildPanelOverrides(state),
         backgroundColor: state.backgroundColor,
         tileSettings: state.tileSettings,
@@ -973,16 +1057,22 @@ export default function HoodieAopPlacer({
   // ---------- Derived UI state ----------
   const groups: DesignGroup[] =
     data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
-  const editGroupId = overlayGroupId(state.activeGroupId);
+  const effectiveRender = buildEffectiveRenderConfig(data.template, state);
+  const editGroupId = overlayGroupId(
+    state.activeGroupId,
+    data.template,
+    state.hoodLinked,
+  );
   const activeGroup = isSleevesPart(state.activeGroupId)
     ? { id: SLEEVES_PART_ID, name: "Sleeves" }
     : groups.find((g) => g.id === state.activeGroupId);
   const mockup = mockups[state.view];
   const placement =
-    state.placements[editGroupId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+    effectiveRender.placements[editGroupId]?.[state.view] ??
+    DEFAULT_ARTWORK_PLACEMENT;
   const activePartEnabled = isSleevesPart(state.activeGroupId)
     ? !!state.enabled["left-sleeve"]
-    : !!state.enabled[state.activeGroupId];
+    : !!effectiveRender.enabled[editGroupId];
   const showOverlay =
     !!mockup &&
     !!artworkImg &&
@@ -1066,14 +1156,14 @@ export default function HoodieAopPlacer({
             {showOverlay && overlayVisible && mockup && artworkImg && (
               <DesignRectHandlesOverlay
                 canvasRef={canvasRef}
-                template={data.template}
+                template={effectiveRender.template}
                 view={state.view}
                 mockup={mockup}
                 artwork={artworkImg}
                 groupId={editGroupId}
                 placement={placement}
-                placementOverrides={state.placements}
-                enabledOverrides={state.enabled}
+                placementOverrides={effectiveRender.placements}
+                enabledOverrides={effectiveRender.enabled}
                 snapMode={snapMode}
                 onChange={(next) => updateActiveGroupPlacement(state.view, next)}
               />
