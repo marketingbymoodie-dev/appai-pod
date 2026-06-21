@@ -484,6 +484,7 @@ export function ProductMockup({
       if (useContainBlank) {
         return (
           <img
+            key={blankImageUrl}
             src={blankImageUrl}
             alt="Product blank"
             className="absolute inset-0 w-full h-full object-contain"
@@ -496,6 +497,7 @@ export function ProductMockup({
       const blankScale = isLandscape ? "scale(1.1)" : undefined;
       return (
         <img
+          key={blankImageUrl}
           src={blankImageUrl}
           alt="Product blank"
           className="absolute inset-0 w-full h-full object-cover"

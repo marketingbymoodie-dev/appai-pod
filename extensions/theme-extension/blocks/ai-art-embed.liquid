@@ -1295,6 +1295,24 @@
         studioContainer.style.height = newH + 'px';
         return;
       }
+      // ===== SCROLL TO PREVIEW (hard refresh landing) =====
+      if (data.type === 'ai-art-studio:scroll-to-preview') {
+        var embedRoot = document.getElementById('ai-art-studio-auto-embed')
+          || document.querySelector('.ai-art-studio-block')
+          || (studioContainer && studioContainer.closest('.ai-art-studio-embed'))
+          || studioContainer;
+        if (embedRoot) {
+          try {
+            embedRoot.scrollIntoView({ block: 'start', behavior: 'auto' });
+          } catch(e) {}
+          try {
+            var _landEl = document.scrollingElement || document.documentElement;
+            var _rect = embedRoot.getBoundingClientRect();
+            _landEl.scrollTop = Math.max(0, _landEl.scrollTop + _rect.top - 16);
+          } catch(e) {}
+        }
+        return;
+      }
       // ===== WHEEL FORWARDING =====
       // The iframe forwards wheel events so the parent page can scroll when
       // the mouse is over the iframe but not inside an open dropdown.

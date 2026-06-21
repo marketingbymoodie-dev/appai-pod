@@ -161,6 +161,17 @@
         container.style.height = data.height + 'px';
       }
 
+      if (data.type === 'ai-art-studio:scroll-to-preview') {
+        try {
+          container.scrollIntoView({ block: 'start', behavior: 'auto' });
+        } catch (e) {}
+        try {
+          var landEl = document.scrollingElement || document.documentElement;
+          var rect = container.getBoundingClientRect();
+          landEl.scrollTop = Math.max(0, landEl.scrollTop + rect.top - 16);
+        } catch (e) {}
+      }
+
       // Handle mockup updates from the AI generator
       if (data.type === 'AI_ART_STUDIO_MOCKUPS') {
         var mockupUrls = data.mockupUrls;

@@ -48,6 +48,32 @@ After **deploy-worthy** fixes (not docs-only): `npm run build` → commit → me
 
 ---
 
+## Storefront embed (`embed-design.tsx` + theme extension)
+
+### Hard refresh must land on the preview box
+
+On Shopify customizer pages the iframe auto-resizes to full content height. Browsers often restore parent scroll near the **footer** after reload, so customers miss the product mockup.
+
+**Invariant:** after config loads, scroll the **preview / image box** into view — not the page bottom.
+
+| Layer | Behaviour |
+|-------|-----------|
+| **Iframe** (`embed-design.tsx`) | `history.scrollRestoration = 'manual'`; scroll iframe to top; `previewLandingRef` on `container-mockup`; postMessage `ai-art-studio:scroll-to-preview` (retries at 0 / 400 / 1200 ms for resize settle). |
+| **Theme** (`ai-art-embed.liquid`) | Handle `ai-art-studio:scroll-to-preview`: `scrollIntoView` on embed root + set parent `scrollTop` so embed top is ~16px below viewport top. |
+
+Do not remove this without re-testing hard refresh on a long customizer page (mobile + desktop).
+
+### Catalog placeholder carousel (Primary / View 2 / View 3)
+
+Before the customer generates artwork, `catalogPreviewImages` drives the blank mockup carousel.
+
+- Build from **`baseMockupImages.available`** blueprint entries first (distinct Printify catalog shots), then `primary` / `front` / `lifestyle` / `gallery` / `custom`.
+- **Dedupe by URL pathname** (ignore query strings) — do not show View 2 / View 3 when they are the same image as Primary.
+- Hide carousel UI unless `catalogPreviewImages.length > 1` after dedupe.
+- `ProductMockup` blank `<img>` uses `key={blankImageUrl}` so index changes always repaint.
+
+---
+
 ## Phone cases (flat calibration) — active problem area
 
 ### What Printify expects

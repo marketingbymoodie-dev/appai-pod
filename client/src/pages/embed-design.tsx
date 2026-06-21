@@ -1174,6 +1174,29 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     }, delayMs);
   }, []);
 
+  /** Product preview box — scroll landing target on hard refresh (storefront iframe). */
+  const previewLandingRef = useRef<HTMLDivElement | null>(null);
+  const initialLandingScrollDoneRef = useRef(false);
+
+  const scrollPreviewLanding = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    } catch {
+      /* ignore */
+    }
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    requestAnimationFrame(() => {
+      const target = previewLandingRef.current ?? artworkColumnRef.current;
+      target?.scrollIntoView({ block: 'start', behavior: 'auto' });
+      try {
+        window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
+      } catch {
+        /* cross-origin parent */
+      }
+    });
+  }, []);
+
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
@@ -1496,23 +1519,66 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const catalogPreviewImages = useMemo(() => {
     const imgs = productTypeConfig?.baseMockupImages;
     if (!imgs) return [] as string[];
-    const primary = imgs.primary || imgs.front || null;
-    const gallery = Array.isArray(imgs.gallery) ? imgs.gallery.filter(Boolean) : [];
+
     const seen = new Set<string>();
     const out: string[] = [];
-    for (const url of [primary, ...gallery]) {
-      if (url && !seen.has(url)) {
-        seen.add(url);
-        out.push(url);
+    const urlKey = (url: string) => {
+      try {
+        const u = new URL(url, 'https://example.com');
+        return `${u.origin}${u.pathname}`.toLowerCase();
+      } catch {
+        return url.split(/[?#]/)[0].toLowerCase();
       }
+    };
+    const add = (url: string | null | undefined) => {
+      if (!url || typeof url !== 'string') return;
+      const key = urlKey(url);
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(url);
+    };
+
+    // Prefer distinct Printify blueprint catalog shots when stored on import.
+    const available = Array.isArray((imgs as { available?: Array<{ url?: string; source?: string }> }).available)
+      ? (imgs as { available?: Array<{ url?: string; source?: string }> }).available!
+      : [];
+    for (const entry of available) {
+      if (entry?.source === 'blueprint' && entry.url) add(entry.url);
       if (out.length >= 5) break;
     }
-    return out;
+
+    const primary = imgs.primary || imgs.front || null;
+    add(primary);
+    add(imgs.lifestyle);
+    add(imgs.front);
+    for (const url of Array.isArray(imgs.gallery) ? imgs.gallery : []) add(url);
+    for (const url of Array.isArray((imgs as { custom?: string[] }).custom)
+      ? (imgs as { custom?: string[] }).custom!
+      : []) {
+      add(url);
+    }
+    return out.slice(0, 5);
   }, [productTypeConfig?.baseMockupImages]);
 
   useEffect(() => {
     setCatalogPreviewIndex(0);
   }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
+
+  // Storefront / theme iframe: land on the product preview box after hard refresh.
+  // The parent page often restores scroll at the footer once the iframe auto-resizes.
+  useEffect(() => {
+    if (!isStorefront && !isEmbedded) return;
+    if (configLoading || !productTypeConfig) return;
+    if (initialLandingScrollDoneRef.current) return;
+    initialLandingScrollDoneRef.current = true;
+    scrollPreviewLanding();
+    const t1 = window.setTimeout(scrollPreviewLanding, 400);
+    const t2 = window.setTimeout(scrollPreviewLanding, 1200);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [isStorefront, isEmbedded, configLoading, productTypeConfig, scrollPreviewLanding]);
 
   useEffect(() => {
     if (toteFoldedLayout && supportsPrintPlacementSelection && printPlacement !== "both") {
@@ -8254,6 +8320,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
             ) : (<>
             {/* Main interactive canvas - full size, always visible for editing */}
             <div
+              ref={previewLandingRef}
               className="w-full rounded-md overflow-hidden relative"
               style={{
                 aspectRatio: (() => {
