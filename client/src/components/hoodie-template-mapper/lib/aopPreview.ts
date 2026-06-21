@@ -218,6 +218,8 @@ export type AopPreviewParams = {
    * to its polygon) — same as a disabled group, but at panel
    * granularity so customers can toggle e.g. "cuffs & waistband
    * blank" or "pockets blank" without touching admin design groups.
+   * Sweatshirt trim (cuffs, waistband, neck rib) is muted via
+   * `HoodieAopPlacer` `TRIM_PANEL_KEYS` + `panelEnabledOverrides`.
    * Omit a key to leave its group-level decision untouched.
    */
   panelEnabledOverrides?: Partial<Record<string, boolean>>;

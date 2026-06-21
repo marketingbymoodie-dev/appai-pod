@@ -612,7 +612,7 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
 
 /**
  * Design groups for sweatshirt AOP (Printify bp 449): full front/back body,
- * sleeves + cuffs, collar (front band + neck-hole back strip), waistband trim.
+ * sleeves (no cuffs — cuffs live in trim), trim (cuffs + waistband + neck rib).
  */
 export function defaultSweatshirtDesignGroups(): DesignGroup[] {
   const blank: GroupPlacement = { ...DEFAULT_GROUP_PLACEMENT };
@@ -642,7 +642,7 @@ export function defaultSweatshirtDesignGroups(): DesignGroup[] {
     {
       id: "left-sleeve",
       name: "Left sleeve",
-      panelKeys: ["left_sleeve", "left_cuff"],
+      panelKeys: ["left_sleeve"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -651,16 +651,7 @@ export function defaultSweatshirtDesignGroups(): DesignGroup[] {
     {
       id: "right-sleeve",
       name: "Right sleeve",
-      panelKeys: ["right_sleeve", "right_cuff"],
-      placement: { front: { ...blank }, back: { ...blank } },
-      seamAllowance: 0,
-      lockedRatio: null,
-      enabled: true,
-    },
-    {
-      id: "collar",
-      name: "Collar",
-      panelKeys: ["collar_front", "collar_back"],
+      panelKeys: ["right_sleeve"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -669,7 +660,7 @@ export function defaultSweatshirtDesignGroups(): DesignGroup[] {
     {
       id: "trim",
       name: "Trim",
-      panelKeys: ["waistband"],
+      panelKeys: ["waistband", "left_cuff", "right_cuff", "collar_front", "collar_back"],
       placement: { front: { ...blank }, back: { ...blank } },
       seamAllowance: 0,
       lockedRatio: null,
@@ -677,6 +668,59 @@ export function defaultSweatshirtDesignGroups(): DesignGroup[] {
     },
   ];
   void blankPair;
+}
+
+/** Sweatshirt trim panel keys — cuffs, waistband, and neck rib. */
+export const SWEATSHIRT_TRIM_PANEL_KEYS: readonly HoodiePanelKey[] = [
+  "waistband",
+  "left_cuff",
+  "right_cuff",
+  "collar_front",
+  "collar_back",
+];
+
+/**
+ * Normalize design groups for bp 449: strip hood, merge collar into trim,
+ * split cuffs out of sleeve groups. Preserves admin placement on matching ids.
+ */
+export function migrateSweatshirtDesignGroups(groups: DesignGroup[]): DesignGroup[] {
+  const defaults = defaultSweatshirtDesignGroups();
+  const withoutHood = groups.filter((g) => g.id !== "hood");
+  const collar = withoutHood.find((g) => g.id === "collar");
+  const filtered = withoutHood.filter((g) => g.id !== "collar");
+
+  const byId = new Map<string, DesignGroup>();
+  for (const g of filtered) {
+    let panelKeys = [...g.panelKeys];
+    if (g.id === "left-sleeve") {
+      panelKeys = panelKeys.filter((k) => k !== "left_cuff");
+      if (!panelKeys.includes("left_sleeve")) panelKeys = ["left_sleeve"];
+    } else if (g.id === "right-sleeve") {
+      panelKeys = panelKeys.filter((k) => k !== "right_cuff");
+      if (!panelKeys.includes("right_sleeve")) panelKeys = ["right_sleeve"];
+    } else if (g.id === "trim") {
+      const merged = new Set<HoodiePanelKey>([
+        ...panelKeys,
+        ...SWEATSHIRT_TRIM_PANEL_KEYS,
+        ...(collar?.panelKeys ?? []),
+      ]);
+      panelKeys = SWEATSHIRT_TRIM_PANEL_KEYS.filter((k) => merged.has(k));
+      if (panelKeys.length === 0) panelKeys = [...SWEATSHIRT_TRIM_PANEL_KEYS];
+    }
+    byId.set(g.id, { ...g, panelKeys });
+  }
+
+  return defaults.map((def) => {
+    const prev = byId.get(def.id);
+    if (!prev) return def;
+    return {
+      ...def,
+      placement: prev.placement,
+      seamAllowance: prev.seamAllowance,
+      lockedRatio: prev.lockedRatio,
+      enabled: prev.enabled,
+    };
+  });
 }
 
 export function isPulloverHoodieBlueprint(blueprintId: number | null | undefined): boolean {
@@ -828,17 +872,20 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
           ...legacy,
           id: "left-sleeve",
           name: "Left sleeve",
-          panelKeys: ["left_sleeve", "left_cuff"],
+          panelKeys: ["left_sleeve"],
         },
         {
           ...legacy,
           id: "right-sleeve",
           name: "Right sleeve",
-          panelKeys: ["right_sleeve", "right_cuff"],
+          panelKeys: ["right_sleeve"],
         },
         ...designGroups.slice(legacyIdx + 1),
       ];
     }
+  }
+  if (isSweatshirtBlueprint(template.blueprintId)) {
+    designGroups = migrateSweatshirtDesignGroups(designGroups);
   }
   return {
     ...template,

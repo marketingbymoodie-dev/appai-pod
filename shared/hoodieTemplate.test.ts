@@ -13,8 +13,11 @@ import {
   hoodiePanelKeyToPrintifyPosition,
   isValidAopTemplateSlug,
   MAX_MESH_COLS,
+  migrateSweatshirtDesignGroups,
   mockupDrawRect,
+  normalizeHoodieTemplate,
   panelsEligibleForView,
+  SWEATSHIRT_TRIM_PANEL_KEYS,
 } from "./hoodieTemplate";
 
 describe("createFreshAopTemplate", () => {
@@ -39,11 +42,12 @@ describe("createFreshAopTemplate", () => {
 
   it("uses sweatshirt defaults for bp 449", () => {
     const t = createFreshAopTemplate({ name: "sweatshirt-aop-L", blueprintId: 449 });
-    expect(t.designGroups.find((g) => g.id === "collar")?.panelKeys).toEqual([
-      "collar_front",
-      "collar_back",
+    expect(t.designGroups.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      ...SWEATSHIRT_TRIM_PANEL_KEYS,
     ]);
+    expect(t.designGroups.find((g) => g.id === "left-sleeve")?.panelKeys).toEqual(["left_sleeve"]);
     expect(t.designGroups.find((g) => g.id === "hood")).toBeUndefined();
+    expect(t.designGroups.find((g) => g.id === "collar")).toBeUndefined();
   });
 });
 
@@ -146,17 +150,71 @@ describe("sweatshirt hoodie panel keys (bp 449)", () => {
     expect(back).not.toContain("left_hood");
   });
 
-  it("collar design group lists front + back collar keys", () => {
+  it("trim group includes cuffs, waistband, and neck rib", () => {
     const groups = defaultSweatshirtDesignGroups();
-    expect(groups.find((g) => g.id === "collar")?.panelKeys).toEqual([
-      "collar_front",
-      "collar_back",
+    expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      ...SWEATSHIRT_TRIM_PANEL_KEYS,
     ]);
+    expect(groups.find((g) => g.id === "left-sleeve")?.panelKeys).toEqual(["left_sleeve"]);
+    expect(groups.find((g) => g.id === "right-sleeve")?.panelKeys).toEqual(["right_sleeve"]);
+    expect(groups.find((g) => g.id === "collar")).toBeUndefined();
   });
 
   it("designGroupsForBlueprint picks sweatshirt defaults for 449", () => {
     const groups = designGroupsForBlueprint(SWEATSHIRT_BLUEPRINT_ID);
-    expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
+    expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      ...SWEATSHIRT_TRIM_PANEL_KEYS,
+    ]);
+  });
+
+  it("migrateSweatshirtDesignGroups strips hood and merges collar into trim", () => {
+    const migrated = migrateSweatshirtDesignGroups([
+      ...defaultSweatshirtDesignGroups(),
+      {
+        id: "hood",
+        name: "Hood",
+        panelKeys: ["left_hood", "right_hood"],
+        placement: { front: { scale: 1, offsetX: 0, offsetY: 0 }, back: { scale: 1, offsetX: 0, offsetY: 0 } },
+        seamAllowance: 0,
+        lockedRatio: null,
+        enabled: true,
+      },
+      {
+        id: "collar",
+        name: "Collar",
+        panelKeys: ["collar_front", "collar_back"],
+        placement: { front: { scale: 1, offsetX: 0, offsetY: 0 }, back: { scale: 1, offsetX: 0, offsetY: 0 } },
+        seamAllowance: 0,
+        lockedRatio: null,
+        enabled: true,
+      },
+    ]);
+    expect(migrated.find((g) => g.id === "hood")).toBeUndefined();
+    expect(migrated.find((g) => g.id === "collar")).toBeUndefined();
+    expect(migrated.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      ...SWEATSHIRT_TRIM_PANEL_KEYS,
+    ]);
+  });
+
+  it("normalizeHoodieTemplate migrates stale bp 449 templates on load", () => {
+    const raw = createFreshAopTemplate({ name: "sweatshirt-aop-L", blueprintId: 449 });
+    raw.designGroups = [
+      ...raw.designGroups!,
+      {
+        id: "hood",
+        name: "Hood",
+        panelKeys: ["left_hood", "right_hood"],
+        placement: { front: { scale: 1, offsetX: 0, offsetY: 0 }, back: { scale: 1, offsetX: 0, offsetY: 0 } },
+        seamAllowance: 0,
+        lockedRatio: null,
+        enabled: true,
+      },
+    ];
+    const normalized = normalizeHoodieTemplate(raw);
+    expect(normalized.designGroups?.find((g) => g.id === "hood")).toBeUndefined();
+    expect(normalized.designGroups?.find((g) => g.id === "trim")?.panelKeys).toEqual([
+      ...SWEATSHIRT_TRIM_PANEL_KEYS,
+    ]);
   });
 });
 
