@@ -25,6 +25,7 @@ import {
   FinePositionNudge,
   PLACEMENT_NUDGE_SCREEN_PX,
 } from "@/components/designer/placementNudge";
+import { placerSegmentClass } from "@/components/designer/placerControlStyles";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -3783,11 +3784,7 @@ export function PatternCustomizer({
                   }
                   setMode(m);
                 }}
-                className={`flex-1 py-2 text-xs font-medium rounded-md border transition-colors ${
-                  mode === m
-                    ? "bg-foreground text-background border-foreground"
-                    : "bg-background border-border text-muted-foreground hover:border-foreground/50"
-                }`}
+                className={`flex-1 py-2 text-xs font-medium rounded-md border ${placerSegmentClass(mode === m)}`}
               >
                 {m === "pattern" ? "Pattern" : "Place on Item"}
               </button>
@@ -3820,11 +3817,7 @@ export function PatternCustomizer({
                         key={view}
                         type="button"
                         onClick={() => setActiveHoodieView(view)}
-                        className={`flex-1 px-2 py-1.5 text-xs rounded-md capitalize border transition-colors ${
-                          activeView === view
-                            ? "bg-foreground text-background border-foreground"
-                            : "bg-background border-border text-muted-foreground hover:border-foreground/40"
-                        }`}
+                        className={`flex-1 px-2 py-1.5 text-xs rounded-md capitalize border ${placerSegmentClass(activeView === view)}`}
                       >
                         {view}
                       </button>
@@ -3857,11 +3850,12 @@ export function PatternCustomizer({
                     <button
                       type="button"
                       onClick={() => setApplyAllover((v) => !v)}
-                      className={`mt-5 h-9 shrink-0 rounded-md border-2 px-3 text-xs font-medium transition-colors ${
+                      className={`mt-5 h-9 shrink-0 rounded-md border-2 px-3 text-xs font-medium ${placerSegmentClass(
+                        applyAllover,
                         applyAllover
-                          ? "bg-foreground text-background border-foreground"
-                          : "bg-background text-muted-foreground border-foreground/60 hover:border-foreground/80"
-                      }`}
+                          ? ""
+                          : "border-foreground/60 hover:border-foreground/80",
+                      )}`}
                     >
                       <span className={applyAllover ? "" : "strike-diagonal"}>Apply Allover</span>
                     </button>
@@ -4051,11 +4045,7 @@ export function PatternCustomizer({
                         key={view}
                         type="button"
                         onClick={() => setActiveHoodieView(view)}
-                        className={`flex-1 px-2 py-1.5 text-xs rounded-md capitalize border transition-colors ${
-                          activeView === view
-                            ? "bg-foreground text-background border-foreground"
-                            : "bg-background border-border text-muted-foreground hover:border-foreground/40"
-                        }`}
+                        className={`flex-1 px-2 py-1.5 text-xs rounded-md capitalize border ${placerSegmentClass(activeView === view)}`}
                       >
                         {view}
                       </button>
@@ -4221,11 +4211,7 @@ export function PatternCustomizer({
                   key={p.position}
                   type="button"
                   onClick={() => setActivePanel(p.position)}
-                  className={`px-2.5 py-1 text-[11px] rounded-md border transition-colors ${
-                    activePanel === p.position
-                      ? "border-foreground bg-foreground text-background"
-                      : "border-border text-muted-foreground hover:border-foreground/40"
-                  }`}
+                  className={`px-2.5 py-1 text-[11px] rounded-md border ${placerSegmentClass(activePanel === p.position)}`}
                 >
                   {p.position.replace(/_/g, " ")}
                 </button>

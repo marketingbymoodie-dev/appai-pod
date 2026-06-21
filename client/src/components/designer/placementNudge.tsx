@@ -93,3 +93,31 @@ export function FinePositionNudge({
     </div>
   );
 }
+
+/** Compact row of nudge arrows — sits directly under the mockup preview. */
+export function FinePositionNudgeInline({
+  onNudge,
+  className,
+}: {
+  onNudge: (axis: "x" | "y", direction: 1 | -1) => void;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <div className="flex items-center justify-center gap-1">
+        <NudgeButton label="Nudge left" direction={-1} onPress={(dir) => onNudge("x", dir)}>
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </NudgeButton>
+        <NudgeButton label="Nudge up" direction={-1} onPress={(dir) => onNudge("y", dir)}>
+          <ChevronUp className="h-3.5 w-3.5" />
+        </NudgeButton>
+        <NudgeButton label="Nudge down" direction={1} onPress={(dir) => onNudge("y", dir)}>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </NudgeButton>
+        <NudgeButton label="Nudge right" direction={1} onPress={(dir) => onNudge("x", dir)}>
+          <ChevronRight className="h-3.5 w-3.5" />
+        </NudgeButton>
+      </div>
+    </div>
+  );
+}

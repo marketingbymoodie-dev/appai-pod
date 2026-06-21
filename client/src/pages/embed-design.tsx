@@ -5783,9 +5783,40 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
   // In fixed-height mobile-native mode, first let the iframe try to scroll itself;
   // if the wheel delta is swallowed, hand it off to the Shopify page.
+  // Skip forwarding when the pointer is over a nested scrollable panel (e.g. placer
+  // controls column) so the inner panel can scroll with the mouse wheel.
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
     let fallbackRaf = 0;
+
+    const findScrollableAncestor = (el: Element | null): Element | null => {
+      let node = el;
+      while (node && node !== document.documentElement) {
+        const style = window.getComputedStyle(node);
+        const oy = style.overflowY;
+        const ox = style.overflowX;
+        const scrollableY =
+          (oy === "auto" || oy === "scroll") && node.scrollHeight > node.clientHeight + 1;
+        const scrollableX =
+          (ox === "auto" || ox === "scroll") && node.scrollWidth > node.clientWidth + 1;
+        if (scrollableY || scrollableX) return node;
+        node = node.parentElement;
+      }
+      return null;
+    };
+
+    const canScrollInDirection = (el: Element, e: WheelEvent): boolean => {
+      const atTop = el.scrollTop <= 0;
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      const atLeft = el.scrollLeft <= 0;
+      const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+      if (e.deltaY < 0 && !atTop) return true;
+      if (e.deltaY > 0 && !atBottom) return true;
+      if (e.deltaX < 0 && !atLeft) return true;
+      if (e.deltaX > 0 && !atRight) return true;
+      return false;
+    };
+
     const postWheelToParent = (e: WheelEvent) => {
       window.parent.postMessage({
         type: 'ai-art-studio:wheel',
@@ -5796,6 +5827,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       }, '*');
     };
     const handleWheel = (e: WheelEvent) => {
+      const scrollParent = findScrollableAncestor(e.target as Element | null);
+      if (scrollParent && canScrollInDirection(scrollParent, e)) {
+        return;
+      }
+
       // Check if a Radix dropdown/popover is currently open
       const isRadixOpen = !!document.querySelector(
         '[data-radix-select-content],[data-radix-popper-content-wrapper],[data-radix-dropdown-menu-content],[data-radix-popover-content]'

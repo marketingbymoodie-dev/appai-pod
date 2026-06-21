@@ -11,9 +11,15 @@ import {
   Check,
 } from "lucide-react";
 import {
-  FinePositionNudge,
+  FinePositionNudgeInline,
   mockupDeltaFromScreenNudge,
 } from "@/components/designer/placementNudge";
+import {
+  SLEEVES_PART_ID,
+  placerSegmentClass,
+  placerSegmentGridClass,
+  PlacerToggle,
+} from "@/components/designer/placerControlStyles";
 import {
   designGroupsForBlueprint,
   isSweatshirtBlueprint,
@@ -217,6 +223,22 @@ const TILE_PATTERN_OPTIONS: Array<{
   { id: "half-drop", label: "Offset" },
 ];
 
+const SLEEVE_GROUP_IDS = ["left-sleeve", "right-sleeve"] as const;
+
+function isSleevesPart(id: string): boolean {
+  return id === SLEEVES_PART_ID;
+}
+
+function resolveEditGroupIds(activeGroupId: string): string[] {
+  if (isSleevesPart(activeGroupId)) return [...SLEEVE_GROUP_IDS];
+  return [activeGroupId];
+}
+
+/** Overlay handles attach to one group; sleeves edit both via this anchor. */
+function overlayGroupId(activeGroupId: string): string {
+  return isSleevesPart(activeGroupId) ? "left-sleeve" : activeGroupId;
+}
+
 /**
  * Build the customer state from a fetched template + (optional) saved
  * customer state. Inherits the admin's per-group defaults (placement,
@@ -237,7 +259,7 @@ function buildInitialState(
       back: { ...(g.placement?.back ?? DEFAULT_ARTWORK_PLACEMENT) },
     };
     if (isSweatshirt) {
-      enabled[g.id] = g.id === "front-body";
+      enabled[g.id] = false;
     } else {
       enabled[g.id] = g.id === "back-body" ? false : g.enabled !== false;
     }
@@ -284,8 +306,6 @@ function propagateLinkedDeltas(
   const pairs: Array<[string, string, boolean]> = [
     ["hood", "front-body", state.hoodLinked],
     ["trim", "front-body", state.trimLinked],
-    ["left-sleeve", "front-body", state.leftSleeveLinked],
-    ["right-sleeve", "front-body", state.rightSleeveLinked],
   ];
   let result = placements;
   for (const [a, b, linked] of pairs) {
@@ -575,7 +595,10 @@ export default function HoodieAopPlacer({
       groupPlacementOverrides: state.placements,
       groupEnabledOverrides: state.enabled,
       panelEnabledOverrides: buildPanelOverrides(state),
-      activeGroupId: state.mode === "place" && artworkImg ? state.activeGroupId : null,
+      activeGroupId:
+        state.mode === "place" && artworkImg
+          ? overlayGroupId(state.activeGroupId)
+          : null,
       backgroundColor: state.backgroundColor,
       tileSettings: state.tileSettings,
       pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
@@ -584,35 +607,16 @@ export default function HoodieAopPlacer({
 
   // ---------- Helpers ----------
 
-  function applyLinkedPlacements(
+  const applyLinkedPlacements = (
     placerState: HoodieAopPlacerState,
     placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
     sourceId: string,
     view: HoodieView,
     prevSource: ArtworkPlacement,
     nextSource: ArtworkPlacement,
-  ): Record<string, Record<HoodieView, ArtworkPlacement>> {
+  ): Record<string, Record<HoodieView, ArtworkPlacement>> => {
     return propagateLinkedDeltas(placerState, placements, sourceId, view, prevSource, nextSource);
-  }
-
-  const updatePlacement = useCallback(
-    (groupId: string, view: HoodieView, next: ArtworkPlacement) => {
-      setState((prev) => {
-        if (!prev) return prev;
-        const prevForGroup = prev.placements[groupId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
-        let placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {
-          ...prev.placements,
-          [groupId]: {
-            ...(prev.placements[groupId] ?? {}),
-            [view]: next,
-          } as Record<HoodieView, ArtworkPlacement>,
-        };
-        placements = applyLinkedPlacements(prev, placements, groupId, view, prevForGroup, next);
-        return { ...prev, placements };
-      });
-    },
-    [],
-  );
+  };
 
   const setMode = useCallback((mode: "place" | "pattern") => {
     setState((prev) => (prev ? { ...prev, mode } : prev));
@@ -628,6 +632,9 @@ export default function HoodieAopPlacer({
   const setView = useCallback((view: HoodieView) => {
     setState((prev) => {
       if (!prev) return prev;
+      if (prev.activeGroupId === SLEEVES_PART_ID) {
+        return { ...prev, view };
+      }
       const activeGroupId = view === "back" ? "back-body" : "front-body";
       return { ...prev, view, activeGroupId };
     });
@@ -655,20 +662,12 @@ export default function HoodieAopPlacer({
     });
   }, []);
 
-  const onSleeveButton = useCallback((sleeveId: "left-sleeve" | "right-sleeve") => {
-    setState((prev) => {
-      if (!prev) return prev;
-      const linkKey = sleeveId === "left-sleeve" ? "leftSleeveLinked" : "rightSleeveLinked";
-      if (prev.activeGroupId !== sleeveId) {
-        return { ...prev, view: "front", activeGroupId: sleeveId };
-      }
-      return { ...prev, [linkKey]: !prev[linkKey] };
-    });
-  }, []);
-
   const onPartButton = useCallback((groupId: string) => {
     setState((prev) => {
       if (!prev) return prev;
+      if (groupId === SLEEVES_PART_ID) {
+        return { ...prev, view: "front", activeGroupId: SLEEVES_PART_ID };
+      }
       const view: HoodieView = groupId === "back-body" ? "back" : "front";
       return { ...prev, view, activeGroupId: groupId };
     });
@@ -699,32 +698,10 @@ export default function HoodieAopPlacer({
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) => {
       if (!prev) return prev;
-      let placements = prev.placements;
-      if (on && groupId === "left-sleeve" && prev.leftSleeveLinked) {
-        const frontPl = prev.placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
-        placements = {
-          ...placements,
-          "left-sleeve": {
-            ...(placements["left-sleeve"] ?? {}),
-            front: { ...frontPl },
-          } as Record<HoodieView, ArtworkPlacement>,
-        };
-      }
-      if (on && groupId === "right-sleeve" && prev.rightSleeveLinked) {
-        const frontPl = prev.placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
-        placements = {
-          ...placements,
-          "right-sleeve": {
-            ...(placements["right-sleeve"] ?? {}),
-            front: { ...frontPl },
-          } as Record<HoodieView, ArtworkPlacement>,
-        };
-      }
-      return {
-        ...prev,
-        enabled: { ...prev.enabled, [groupId]: on },
-        placements,
-      };
+      const ids = resolveEditGroupIds(groupId);
+      const enabled = { ...prev.enabled };
+      for (const id of ids) enabled[id] = on;
+      return { ...prev, enabled };
     });
   }, []);
 
@@ -732,25 +709,59 @@ export default function HoodieAopPlacer({
     setState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
   }, []);
 
-  const setActiveScale = useCallback(
-    (groupId: string, view: HoodieView, scale: number) => {
+  const updateActiveGroupPlacement = useCallback(
+    (view: HoodieView, next: ArtworkPlacement) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cur = prev.placements[groupId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
-        const next: ArtworkPlacement = { ...cur, scale };
-        let placements: Record<string, Record<HoodieView, ArtworkPlacement>> = {
-          ...prev.placements,
-          [groupId]: {
-            ...(prev.placements[groupId] ?? {}),
-            [view]: next,
-          } as Record<HoodieView, ArtworkPlacement>,
-        };
-        placements = applyLinkedPlacements(prev, placements, groupId, view, cur, next);
+        const ids = resolveEditGroupIds(prev.activeGroupId);
+        const primaryId = overlayGroupId(prev.activeGroupId);
+        const prevPrimary =
+          prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+        let placements = { ...prev.placements };
+        for (const id of ids) {
+          placements = {
+            ...placements,
+            [id]: {
+              ...(placements[id] ?? {}),
+              [view]: { ...next },
+            } as Record<HoodieView, ArtworkPlacement>,
+          };
+        }
+        placements = applyLinkedPlacements(
+          prev,
+          placements,
+          primaryId,
+          view,
+          prevPrimary,
+          next,
+        );
         return { ...prev, placements };
       });
     },
     [],
   );
+
+  const setActiveScale = useCallback((view: HoodieView, scale: number) => {
+    setState((prev) => {
+      if (!prev) return prev;
+      const ids = resolveEditGroupIds(prev.activeGroupId);
+      const primaryId = overlayGroupId(prev.activeGroupId);
+      const cur = prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
+      const next: ArtworkPlacement = { ...cur, scale };
+      let placements = { ...prev.placements };
+      for (const id of ids) {
+        placements = {
+          ...placements,
+          [id]: {
+            ...(placements[id] ?? {}),
+            [view]: { ...next },
+          } as Record<HoodieView, ArtworkPlacement>,
+        };
+      }
+      placements = applyLinkedPlacements(prev, placements, primaryId, view, cur, next);
+      return { ...prev, placements };
+    });
+  }, []);
 
   const nudgePlacement = useCallback(
     (axis: "x" | "y", direction: 1 | -1) => {
@@ -762,16 +773,16 @@ export default function HoodieAopPlacer({
       const mW = mockupEl.naturalWidth || mockupEl.width;
       const mH = mockupEl.naturalHeight || mockupEl.height;
       const deltaMock = mockupDeltaFromScreenNudge(axis, direction, cr, mW, mH);
+      const editId = overlayGroupId(state.activeGroupId);
       const cur =
-        state.placements[state.activeGroupId]?.[state.view] ??
-        DEFAULT_ARTWORK_PLACEMENT;
-      updatePlacement(state.activeGroupId, state.view, {
+        state.placements[editId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+      updateActiveGroupPlacement(state.view, {
         ...cur,
         offsetX: cur.offsetX + (axis === "x" ? deltaMock : 0),
         offsetY: cur.offsetY + (axis === "y" ? deltaMock : 0),
       });
     },
-    [state, mockups, updatePlacement],
+    [state, mockups, updateActiveGroupPlacement],
   );
 
   const handleArtworkUpload = (file: File) => {
@@ -936,15 +947,21 @@ export default function HoodieAopPlacer({
   // ---------- Derived UI state ----------
   const groups: DesignGroup[] =
     data.template.designGroups ?? designGroupsForBlueprint(data.template.blueprintId);
-  const activeGroup = groups.find((g) => g.id === state.activeGroupId);
+  const editGroupId = overlayGroupId(state.activeGroupId);
+  const activeGroup = isSleevesPart(state.activeGroupId)
+    ? { id: SLEEVES_PART_ID, name: "Sleeves" }
+    : groups.find((g) => g.id === state.activeGroupId);
   const mockup = mockups[state.view];
   const placement =
-    state.placements[state.activeGroupId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+    state.placements[editGroupId]?.[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
+  const activePartEnabled = isSleevesPart(state.activeGroupId)
+    ? !!state.enabled["left-sleeve"]
+    : !!state.enabled[state.activeGroupId];
   const showOverlay =
     !!mockup &&
     !!artworkImg &&
     state.mode === "place" &&
-    !!state.enabled[state.activeGroupId] &&
+    activePartEnabled &&
     // Hood handles only render on front view (back hood inherits via the
     // flat-panel bridge, no draggable equivalent).
     !(state.view === "back" && state.activeGroupId === "hood");
@@ -957,8 +974,9 @@ export default function HoodieAopPlacer({
   const hasHoodGroup = !isSweatshirt && groups.some((g) => g.id === "hood");
   const hasCollarGroup = !isSweatshirt && groups.some((g) => g.id === "collar");
   const hasTrimGroup = groups.some((g) => g.id === "trim");
-  const hasLeftSleeve = groups.some((g) => g.id === "left-sleeve");
-  const hasRightSleeve = groups.some((g) => g.id === "right-sleeve");
+  const hasSleeves =
+    groups.some((g) => g.id === "left-sleeve") &&
+    groups.some((g) => g.id === "right-sleeve");
   const hasPocketPanels =
     !isSweatshirt &&
     groups.some((g) =>
@@ -975,31 +993,23 @@ export default function HoodieAopPlacer({
   const bodyViewActive =
     state.activeGroupId !== "hood" &&
     state.activeGroupId !== "collar" &&
-    state.activeGroupId !== "left-sleeve" &&
-    state.activeGroupId !== "right-sleeve";
+    state.activeGroupId !== SLEEVES_PART_ID;
 
   const hoodSelected = state.activeGroupId === "hood";
-  const leftSleeveSelected = state.activeGroupId === "left-sleeve";
-  const rightSleeveSelected = state.activeGroupId === "right-sleeve";
   const hoodTooltip = state.hoodLinked
     ? hoodSelected
       ? "Hood linked to front — click again to unlink"
       : "Hood is linked to the front body. Click to edit independently."
     : "Hood unlinked — click again to relink to front body.";
-  const leftSleeveTooltip = state.leftSleeveLinked
-    ? leftSleeveSelected
-      ? "Left sleeve linked to front — click again to unlink"
-      : "Left sleeve is linked to the front body. Click to edit independently."
-    : "Left sleeve unlinked — click again to relink to front body.";
-  const rightSleeveTooltip = state.rightSleeveLinked
-    ? rightSleeveSelected
-      ? "Right sleeve linked to front — click again to unlink"
-      : "Right sleeve is linked to the front body. Click to edit independently."
-    : "Right sleeve unlinked — click again to relink to front body.";
 
-  const placePartGroups = groups.filter((g) =>
-    ["front-body", "back-body", "left-sleeve", "right-sleeve"].includes(g.id),
-  );
+  const placePartGroups: Array<{ id: string; name: string }> = [];
+  for (const id of ["front-body", "back-body"] as const) {
+    const g = groups.find((x) => x.id === id);
+    if (g) placePartGroups.push({ id: g.id, name: g.name });
+  }
+  if (hasSleeves) {
+    placePartGroups.push({ id: SLEEVES_PART_ID, name: "Sleeves" });
+  }
 
   // Six swatches: 4 from artwork, plus black + white.
   const swatches: PaletteSwatch[] = [
@@ -1034,14 +1044,12 @@ export default function HoodieAopPlacer({
                 view={state.view}
                 mockup={mockup}
                 artwork={artworkImg}
-                groupId={state.activeGroupId}
+                groupId={editGroupId}
                 placement={placement}
                 placementOverrides={state.placements}
                 enabledOverrides={state.enabled}
                 snapMode={snapMode}
-                onChange={(next) =>
-                  updatePlacement(state.activeGroupId, state.view, next)
-                }
+                onChange={(next) => updateActiveGroupPlacement(state.view, next)}
               />
             )}
             {!artworkImg && !artworkLoading && (
@@ -1056,21 +1064,23 @@ export default function HoodieAopPlacer({
             )}
           </div>
         </div>
+        {state.mode === "place" && artworkImg && activePartEnabled && (
+          <FinePositionNudgeInline
+            className="border-t border-border bg-card px-3 py-2"
+            onNudge={nudgePlacement}
+          />
+        )}
       </div>
 
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}
-      <div className="w-full shrink-0 space-y-4 lg:w-80">
+      <div className="w-full shrink-0 space-y-4 overflow-y-auto overscroll-contain lg:max-h-[min(88vh,960px)] lg:w-80">
         {/* Pattern / Place segmented toggle */}
         <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
           {(["pattern", "place"] as const).map((m) => (
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`px-3 py-2 text-xs font-semibold transition ${
-                state.mode === m
-                  ? "bg-primary text-primary-foreground"
-                  : "text-card-foreground hover:bg-muted"
-              }`}
+              className={`px-3 py-2 text-xs font-semibold ${placerSegmentGridClass(state.mode === m)}`}
             >
               {m === "pattern" ? "Pattern" : "Place on item"}
             </button>
@@ -1088,11 +1098,9 @@ export default function HoodieAopPlacer({
                 key={v}
                 onClick={() => setView(v)}
                 aria-pressed={state.view === v && bodyViewActive}
-                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                  state.view === v && bodyViewActive
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-card-foreground hover:bg-muted border border-border"
-                }`}
+                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  state.view === v && bodyViewActive,
+                )}`}
               >
                 {v === "front" ? "Front" : "Back"}
               </button>
@@ -1103,11 +1111,9 @@ export default function HoodieAopPlacer({
                 title={hoodTooltip}
                 aria-label={hoodTooltip}
                 aria-pressed={hoodSelected}
-                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
-                  hoodSelected
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-card-foreground hover:bg-muted border border-border"
-                }`}
+                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  hoodSelected,
+                )}`}
               >
                 {state.hoodLinked ? (
                   <Link2 className="h-3 w-3" />
@@ -1121,11 +1127,9 @@ export default function HoodieAopPlacer({
               <button
                 onClick={() => onPartButton("collar")}
                 aria-pressed={state.activeGroupId === "collar"}
-                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                  state.activeGroupId === "collar"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-card-foreground hover:bg-muted border border-border"
-                }`}
+                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  state.activeGroupId === "collar",
+                )}`}
               >
                 Collar
               </button>
@@ -1143,54 +1147,20 @@ export default function HoodieAopPlacer({
               Part
             </div>
             <div className="flex flex-wrap gap-1">
-              {placePartGroups.map((g) => {
-                if (g.id === "left-sleeve" || g.id === "right-sleeve") {
-                  const selected =
-                    g.id === "left-sleeve" ? leftSleeveSelected : rightSleeveSelected;
-                  const linked =
-                    g.id === "left-sleeve" ? state.leftSleeveLinked : state.rightSleeveLinked;
-                  const tooltip =
-                    g.id === "left-sleeve" ? leftSleeveTooltip : rightSleeveTooltip;
-                  return (
-                    <button
-                      key={g.id}
-                      type="button"
-                      onClick={() => onSleeveButton(g.id as "left-sleeve" | "right-sleeve")}
-                      title={tooltip}
-                      aria-pressed={selected}
-                      className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
-                        selected
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-card text-card-foreground hover:bg-muted border border-border"
-                      }`}
-                    >
-                      {linked ? <Link2 className="h-3 w-3" /> : <Link2Off className="h-3 w-3" />}
-                      {g.name}
-                    </button>
-                  );
-                }
-                return (
-                  <button
-                    key={g.id}
-                    type="button"
-                    onClick={() => onPartButton(g.id)}
-                    aria-pressed={state.activeGroupId === g.id}
-                    className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                      state.activeGroupId === g.id
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-card text-card-foreground hover:bg-muted border border-border"
-                    }`}
-                  >
-                    {g.name}
-                  </button>
-                );
-              })}
+              {placePartGroups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => onPartButton(g.id)}
+                  aria-pressed={state.activeGroupId === g.id}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                    state.activeGroupId === g.id,
+                  )}`}
+                >
+                  {g.name}
+                </button>
+              ))}
             </div>
-            {(leftSleeveSelected || rightSleeveSelected) && (
-              <div className="mt-1 text-[10px] text-muted-foreground">
-                {leftSleeveSelected ? leftSleeveTooltip : rightSleeveTooltip}
-              </div>
-            )}
           </div>
         )}
 
@@ -1205,7 +1175,11 @@ export default function HoodieAopPlacer({
                 >
                   Trim
                 </span>
-                <Toggle checked={state.trimEnabled} onChange={setTrimEnabled} />
+                <PlacerToggle
+                  checked={state.trimEnabled}
+                  onChange={setTrimEnabled}
+                  aria-label="Trim on artwork"
+                />
               </div>
             )}
             {hasPocketPanels && (
@@ -1216,11 +1190,12 @@ export default function HoodieAopPlacer({
                 >
                   Pockets
                 </span>
-                <Toggle
+                <PlacerToggle
                   checked={state.pocketsEnabled}
                   onChange={(on) =>
                     setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
                   }
+                  aria-label="Pockets on artwork"
                 />
               </div>
             )}
@@ -1233,9 +1208,10 @@ export default function HoodieAopPlacer({
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Artwork enabled
             </span>
-            <Toggle
-              checked={!!state.enabled[state.activeGroupId]}
+            <PlacerToggle
+              checked={activePartEnabled}
               onChange={(on) => setEnabled(state.activeGroupId, on)}
+              aria-label="Artwork enabled"
             />
           </div>
         )}
@@ -1340,7 +1316,7 @@ export default function HoodieAopPlacer({
               step={0.01}
               value={placement.scale}
               onChange={(e) =>
-                setActiveScale(state.activeGroupId, state.view, Number(e.target.value))
+                setActiveScale(state.view, Number(e.target.value))
               }
               className="w-full"
               style={{ accentColor: "hsl(var(--primary))" }}
@@ -1354,19 +1330,7 @@ export default function HoodieAopPlacer({
               {state.trimLinked && state.trimEnabled && (state.activeGroupId === "trim" || state.activeGroupId === "front-body") && (
                 <> • trim linked to front body</>
               )}
-              {state.leftSleeveLinked && state.enabled["left-sleeve"] && (state.activeGroupId === "left-sleeve" || state.activeGroupId === "front-body") && (
-                <> • left sleeve linked</>
-              )}
-              {state.rightSleeveLinked && state.enabled["right-sleeve"] && (state.activeGroupId === "right-sleeve" || state.activeGroupId === "front-body") && (
-                <> • right sleeve linked</>
-              )}
             </div>
-            {artworkImg && !!state.enabled[state.activeGroupId] && (
-              <FinePositionNudge
-                className="mt-3"
-                onNudge={nudgePlacement}
-              />
-            )}
           </div>
         )}
 
@@ -1403,11 +1367,9 @@ export default function HoodieAopPlacer({
                   <button
                     key={opt.id}
                     onClick={() => setTileSettings({ pattern: opt.id })}
-                    className={`px-2 py-1.5 text-xs font-semibold transition ${
-                      state.tileSettings.pattern === opt.id
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-card text-card-foreground hover:bg-muted"
-                    }`}
+                    className={`px-2 py-1.5 text-xs font-semibold ${placerSegmentGridClass(
+                      state.tileSettings.pattern === opt.id,
+                    )}`}
                   >
                     {opt.label}
                   </button>
@@ -1460,29 +1422,5 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </div>
       {children}
     </div>
-  );
-}
-
-/**
- * Minimal switch primitive — keeps the placer self-contained without dragging
- * in shadcn's Switch (which we'd prefer to wire later through the embed shell
- * once we have full theming context).
- */
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (on: boolean) => void }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
-        checked ? "bg-primary" : "bg-muted-foreground/30"
-      }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-          checked ? "translate-x-4" : "translate-x-0.5"
-        }`}
-      />
-    </button>
   );
 }
