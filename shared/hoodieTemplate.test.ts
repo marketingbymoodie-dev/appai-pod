@@ -4,6 +4,7 @@ import {
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
   createFreshAopTemplate,
+  createDefaultMesh,
   defaultHoodieTypeForBlueprint,
   defaultPulloverDesignGroups,
   defaultSweatshirtDesignGroups,
@@ -11,6 +12,7 @@ import {
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
   isValidAopTemplateSlug,
+  MAX_MESH_COLS,
   mockupDrawRect,
   panelsEligibleForView,
 } from "./hoodieTemplate";
@@ -164,5 +166,15 @@ describe("hoodiePanelKeyToPrintifyPosition", () => {
     expect(hoodiePanelKeyToPrintifyPosition("collar_front")).toBe("collar");
     expect(hoodiePanelKeyToPrintifyPosition("collar_back")).toBe("collar");
     expect(hoodiePanelKeyToPrintifyPosition("front")).toBe("front");
+  });
+});
+
+describe("mesh grid limits", () => {
+  it("allows up to 24 columns for wide collar strips", () => {
+    expect(MAX_MESH_COLS).toBe(24);
+    const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 10 }, 24, 3);
+    expect(mesh.cols).toBe(24);
+    expect(mesh.rows).toBe(3);
+    expect(mesh.targetPoints).toHaveLength(72);
   });
 });

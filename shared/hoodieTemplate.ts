@@ -109,10 +109,15 @@ export type MeshSourceRotation = number;
  *
  * Length invariant: `targetPoints.length === cols * rows`.
  */
+/** Max mesh columns (mapper slider + engine clamp). Wide panels e.g. collar strips. */
+export const MAX_MESH_COLS = 24;
+/** Max mesh rows (mapper slider + engine clamp). */
+export const MAX_MESH_ROWS = 16;
+
 export type MeshGrid = {
-  /** 2..16 — number of columns in the control grid. */
+  /** 2..{@link MAX_MESH_COLS} — number of columns in the control grid. */
   cols: number;
-  /** 2..16 — number of rows. */
+  /** 2..{@link MAX_MESH_ROWS} — number of rows. */
   rows: number;
   /**
    * Sub-region of the source artwork the mesh samples. `null` means use
@@ -1003,8 +1008,8 @@ export function createDefaultMesh(
   rows = 4,
   sourceRect: SourceRect | null = null,
 ): MeshGrid {
-  const safeCols = Math.max(2, Math.min(16, Math.floor(cols)));
-  const safeRows = Math.max(2, Math.min(16, Math.floor(rows)));
+  const safeCols = Math.max(2, Math.min(MAX_MESH_COLS, Math.floor(cols)));
+  const safeRows = Math.max(2, Math.min(MAX_MESH_ROWS, Math.floor(rows)));
   const targetPoints: Pt[] = [];
   for (let r = 0; r < safeRows; r += 1) {
     const v = r / (safeRows - 1);
@@ -1033,8 +1038,8 @@ export function resizeMesh(
   newRows: number,
   fallbackBounds: { x: number; y: number; width: number; height: number },
 ): MeshGrid {
-  const safeCols = Math.max(2, Math.min(16, Math.floor(newCols)));
-  const safeRows = Math.max(2, Math.min(16, Math.floor(newRows)));
+  const safeCols = Math.max(2, Math.min(MAX_MESH_COLS, Math.floor(newCols)));
+  const safeRows = Math.max(2, Math.min(MAX_MESH_ROWS, Math.floor(newRows)));
   const old = mesh.targetPoints;
   if (
     old.length !== mesh.cols * mesh.rows ||

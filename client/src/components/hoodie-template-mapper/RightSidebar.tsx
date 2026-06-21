@@ -22,6 +22,8 @@ import {
   FlipVertical,
 } from "lucide-react";
 import {
+  MAX_MESH_COLS,
+  MAX_MESH_ROWS,
   PANEL_DISPLAY_LABEL,
   panelsEligibleForView,
   PULOVER_HOODIE_BLUEPRINT_ID,
@@ -778,7 +780,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
               <Slider
                 value={[mesh.cols]}
                 min={2}
-                max={12}
+                max={MAX_MESH_COLS}
                 step={1}
                 onValueChange={([v]) => actions.resizeLayerMesh(layer.id, v, mesh.rows)}
               />
@@ -787,7 +789,7 @@ function MeshWarpSection({ layer }: { layer: MaskLayer }) {
               <Slider
                 value={[mesh.rows]}
                 min={2}
-                max={12}
+                max={MAX_MESH_ROWS}
                 step={1}
                 onValueChange={([v]) => actions.resizeLayerMesh(layer.id, mesh.cols, v)}
               />
