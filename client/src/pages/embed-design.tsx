@@ -1369,6 +1369,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
   const [mockupError, setMockupError] = useState<string | null>(null);
   const [mockupFailed, setMockupFailed] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
+  const [catalogPreviewIndex, setCatalogPreviewIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
 
   // AOP (All-Over-Print) pattern step state
@@ -1491,6 +1492,27 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
     !useAopCustomizer &&
     (productTypeConfig?.doubleSidedPrint || toteFoldedLayout)
   );
+
+  const catalogPreviewImages = useMemo(() => {
+    const imgs = productTypeConfig?.baseMockupImages;
+    if (!imgs) return [] as string[];
+    const primary = imgs.primary || imgs.front || null;
+    const gallery = Array.isArray(imgs.gallery) ? imgs.gallery.filter(Boolean) : [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const url of [primary, ...gallery]) {
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        out.push(url);
+      }
+      if (out.length >= 5) break;
+    }
+    return out;
+  }, [productTypeConfig?.baseMockupImages]);
+
+  useEffect(() => {
+    setCatalogPreviewIndex(0);
+  }, [productTypeConfig?.id, catalogPreviewImages.join("|")]);
 
   useEffect(() => {
     if (toteFoldedLayout && supportsPrintPlacementSelection && printPlacement !== "both") {
@@ -8293,9 +8315,8 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={
-                        productTypeConfig?.baseMockupImages?.primary ||
-                        productTypeConfig?.baseMockupImages?.front ||
-                        productTypeConfig?.baseMockupImages?.gallery?.[0] ||
+                        catalogPreviewImages[catalogPreviewIndex] ||
+                        catalogPreviewImages[0] ||
                         null
                       }
                       aspectRatio={productTypeConfig?.aspectRatio}
@@ -8304,6 +8325,34 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                   );
                 })()}
               </div>
+
+              {/* Catalog placeholder carousel — before customer generates artwork */}
+              {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous placeholder"
+                    onClick={() =>
+                      setCatalogPreviewIndex((i) =>
+                        (i - 1 + catalogPreviewImages.length) % catalogPreviewImages.length,
+                      )
+                    }
+                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Next placeholder"
+                    onClick={() =>
+                      setCatalogPreviewIndex((i) => (i + 1) % catalogPreviewImages.length)
+                    }
+                    className="absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-8 h-8 rounded-full bg-black/30 hover:bg-black/60 text-white transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
 
               {/* Left/right arrow navigation — only when mockups are available */}
               {isStorefront && generatedDesign?.imageUrl && (() => {
@@ -8343,6 +8392,38 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                 </div>
               )}
             </div>
+
+            {/* Catalog placeholder indicators — before artwork exists */}
+            {isStorefront && !generatedDesign?.imageUrl && catalogPreviewImages.length > 1 && (
+              <div className="flex justify-center gap-3 mt-1">
+                {catalogPreviewImages.map((_, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setCatalogPreviewIndex(idx)}
+                    aria-label={`Placeholder image ${idx + 1}`}
+                    className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                      catalogPreviewIndex === idx ? "opacity-100" : "opacity-40 hover:opacity-70"
+                    }`}
+                  >
+                    <span
+                      className={`rounded-full transition-all duration-200 ${
+                        catalogPreviewIndex === idx
+                          ? "w-4 h-2 bg-foreground"
+                          : "w-2 h-2 bg-foreground/60"
+                      }`}
+                    />
+                    <span
+                      className={`text-[10px] leading-tight font-medium ${
+                        catalogPreviewIndex === idx ? "text-foreground" : "text-muted-foreground"
+                      }`}
+                    >
+                      {idx === 0 ? "Primary" : `View ${idx + 1}`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {/* Carousel indicators with labels — directly under image */}
             {(isShopify || isStorefront) && productTypeConfig?.hasPrintifyMockups && generatedDesign?.imageUrl && (() => {

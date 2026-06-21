@@ -12323,8 +12323,8 @@ ${textEdgeRestrictions}
     const detectedFront = byPosition("front") || firstUrl;
     const front = primaryUrl || detectedFront;
     const lifestyle = available.find((img) => img.source === "blueprint" && img.url !== front)?.url || available.find((img) => img.url !== front)?.url;
-    const uniqueGallery = Array.from(new Set((galleryUrls || []).filter(Boolean))).slice(0, 3);
-    const uniqueCustom = Array.from(new Set((customUrls || []).filter(Boolean))).slice(0, 3);
+    const uniqueGallery = Array.from(new Set((galleryUrls || []).filter(Boolean))).slice(0, 4);
+    const uniqueCustom = Array.from(new Set((customUrls || []).filter(Boolean))).slice(0, 4);
     return {
       ...(front ? { front } : {}),
       ...(lifestyle ? { lifestyle } : {}),
@@ -15400,13 +15400,14 @@ ${textEdgeRestrictions}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, baseMockupImages: incomingBaseMockupImages } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
       baseProductId?: string;
       productTypeId?: number;
       variantPrices?: Record<string, string>;
+      baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
     };
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
@@ -15609,7 +15610,8 @@ ${textEdgeRestrictions}
     const matchedType = productTypes.find(
       (pt: any) => String(pt.shopifyProductId) === String(variant.product_id)
     );
-    const resolvedProductTypeId: number | null = matchedType?.id ?? null;
+    const resolvedProductTypeId: number | null =
+      matchedType?.id ?? incomingProductTypeId ?? ptForSync?.id ?? null;
 
     // ── Write variant prices to Shopify ──────────────────────────────────────
     if (variantPrices && typeof variantPrices === "object") {
@@ -15819,6 +15821,36 @@ ${textEdgeRestrictions}
       status: initialStatus,
     });
 
+    if (incomingBaseMockupImages && resolvedProductTypeId) {
+      const linkedPt = await storage.getProductType(resolvedProductTypeId);
+      if (linkedPt) {
+        const currentImages = typeof linkedPt.baseMockupImages === "string"
+          ? JSON.parse(linkedPt.baseMockupImages || "{}")
+          : linkedPt.baseMockupImages || {};
+        const gallery = Array.isArray(incomingBaseMockupImages.gallery)
+          ? incomingBaseMockupImages.gallery.map(String).filter(Boolean).slice(0, 4)
+          : (currentImages.gallery || []);
+        const primary =
+          typeof incomingBaseMockupImages.primary === "string" && incomingBaseMockupImages.primary
+            ? incomingBaseMockupImages.primary
+            : currentImages.primary;
+        const custom = Array.isArray(incomingBaseMockupImages.custom)
+          ? incomingBaseMockupImages.custom.map(String).filter(Boolean).slice(0, 4)
+          : (currentImages.custom || []);
+        const available = Array.isArray(currentImages.available) ? currentImages.available : [];
+        await storage.updateProductType(resolvedProductTypeId, {
+          baseMockupImages: JSON.stringify({
+            ...currentImages,
+            primary,
+            front: primary || currentImages.front,
+            gallery,
+            custom,
+            available,
+          }),
+        });
+      }
+    }
+
     // ── Add navigation menu link (only if active) ──────────────────────────────
     let navWarning: string | null = null;
     if (initialStatus === "active") {
@@ -15942,8 +15974,8 @@ ${textEdgeRestrictions}
         : linkedProductType.baseMockupImages || {};
       const incomingImages = req.body.baseMockupImages || {};
       const available = Array.isArray(currentImages.available) ? currentImages.available : [];
-      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 3) : (currentImages.custom || []);
-      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 3) : (currentImages.gallery || []);
+      const custom = Array.isArray(incomingImages.custom) ? incomingImages.custom.map(String).filter(Boolean).slice(0, 4) : (currentImages.custom || []);
+      const gallery = Array.isArray(incomingImages.gallery) ? incomingImages.gallery.map(String).filter(Boolean).slice(0, 4) : (currentImages.gallery || []);
       const primary = typeof incomingImages.primary === "string" && incomingImages.primary ? incomingImages.primary : currentImages.primary;
       const nextImages = {
         ...currentImages,

@@ -630,6 +630,13 @@ export default function HoodieAopPlacer({
     });
   }, []);
 
+  const onCollarButton = useCallback(() => {
+    setState((prev) => {
+      if (!prev) return prev;
+      return { ...prev, view: "front", activeGroupId: "collar" };
+    });
+  }, []);
+
   const setEnabled = useCallback((groupId: string, on: boolean) => {
     setState((prev) =>
       prev ? { ...prev, enabled: { ...prev.enabled, [groupId]: on } } : prev,
@@ -859,11 +866,25 @@ export default function HoodieAopPlacer({
     // flat-panel bridge, no draggable equivalent).
     !(state.view === "back" && state.activeGroupId === "hood");
   const snapMode: "seam" | "x" | "y" | "both" | "none" =
-    state.activeGroupId === "back-body" ? "both" : "seam";
+    state.activeGroupId === "back-body" || state.activeGroupId === "collar"
+      ? "both"
+      : "seam";
+
+  const hasHoodGroup = groups.some((g) => g.id === "hood");
+  const hasCollarGroup = groups.some((g) => g.id === "collar");
+  const hasPocketPanels = groups.some((g) =>
+    g.panelKeys.some((k) => (POCKET_PANEL_KEYS as readonly string[]).includes(k)),
+  );
+  const viewButtonCount = 2 + (hasHoodGroup ? 1 : 0) + (hasCollarGroup ? 1 : 0);
+  const viewGridClass =
+    viewButtonCount >= 4 ? "grid-cols-4" : viewButtonCount === 3 ? "grid-cols-3" : "grid-cols-2";
+  const bodyViewActive =
+    state.activeGroupId !== "hood" && state.activeGroupId !== "collar";
 
   // Hood button: clicking the active hood group toggles link state. While
   // hood is active and unlinked, the customer can drag/scale it freely.
   const hoodSelected = state.activeGroupId === "hood";
+  const collarSelected = state.activeGroupId === "collar";
   const hoodTooltip = state.hoodLinked
     ? hoodSelected
       ? "Hood linked to front — click again to unlink"
@@ -946,19 +967,19 @@ export default function HoodieAopPlacer({
           ))}
         </div>
 
-        {/* View row: Front / Back / Hood (Hood is link toggle) */}
+        {/* View row: Front / Back / optional Hood or Collar group */}
         <div>
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             View
           </div>
-          <div className="grid grid-cols-3 gap-1">
+          <div className={`grid ${viewGridClass} gap-1`}>
             {(["front", "back"] as HoodieView[]).map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
-                aria-pressed={state.view === v && state.activeGroupId !== "hood"}
+                aria-pressed={state.view === v && bodyViewActive}
                 className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                  state.view === v && state.activeGroupId !== "hood"
+                  state.view === v && bodyViewActive
                     ? "bg-primary text-primary-foreground"
                     : "bg-card text-card-foreground hover:bg-muted border border-border"
                 }`}
@@ -966,24 +987,39 @@ export default function HoodieAopPlacer({
                 {v === "front" ? "Front" : "Back"}
               </button>
             ))}
-            <button
-              onClick={onHoodButton}
-              title={hoodTooltip}
-              aria-label={hoodTooltip}
-              aria-pressed={hoodSelected}
-              className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
-                hoodSelected
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-card text-card-foreground hover:bg-muted border border-border"
-              }`}
-            >
-              {state.hoodLinked ? (
-                <Link2 className="h-3 w-3" />
-              ) : (
-                <Link2Off className="h-3 w-3" />
-              )}
-              Hood
-            </button>
+            {hasHoodGroup && (
+              <button
+                onClick={onHoodButton}
+                title={hoodTooltip}
+                aria-label={hoodTooltip}
+                aria-pressed={hoodSelected}
+                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition ${
+                  hoodSelected
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-card-foreground hover:bg-muted border border-border"
+                }`}
+              >
+                {state.hoodLinked ? (
+                  <Link2 className="h-3 w-3" />
+                ) : (
+                  <Link2Off className="h-3 w-3" />
+                )}
+                Hood
+              </button>
+            )}
+            {hasCollarGroup && (
+              <button
+                onClick={onCollarButton}
+                aria-pressed={collarSelected}
+                className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
+                  collarSelected
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-card text-card-foreground hover:bg-muted border border-border"
+                }`}
+              >
+                Collar
+              </button>
+            )}
           </div>
           {hoodSelected && (
             <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
@@ -1190,20 +1226,22 @@ export default function HoodieAopPlacer({
                 }
               />
             </div>
-            <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
-              <span
-                className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
-                title="Kangaroo pocket and pocket halves — when off they fill with the background colour"
-              >
-                Pockets
-              </span>
-              <Toggle
-                checked={state.pocketsEnabled}
-                onChange={(on) =>
-                  setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
-                }
-              />
-            </div>
+            {hasPocketPanels && (
+              <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
+                <span
+                  className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                  title="Kangaroo pocket and pocket halves — when off they fill with the background colour"
+                >
+                  Pockets
+                </span>
+                <Toggle
+                  checked={state.pocketsEnabled}
+                  onChange={(on) =>
+                    setState((prev) => (prev ? { ...prev, pocketsEnabled: on } : prev))
+                  }
+                />
+              </div>
+            )}
           </div>
         )}
 

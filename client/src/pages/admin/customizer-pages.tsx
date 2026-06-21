@@ -120,6 +120,28 @@ async function uploadPlaceholderFile(file: File): Promise<string> {
   return objectPath?.startsWith("/") ? `${window.location.origin}${objectPath}` : objectPath;
 }
 
+const MAX_GALLERY_PLACEHOLDERS = 4;
+
+type PlaceholderImageOption = { url: string; label: string; position?: string; source?: string };
+
+function buildAvailablePlaceholderImages(
+  images: Blank["baseMockupImages"] | undefined,
+  customUrl?: string,
+): PlaceholderImageOption[] {
+  const imgs = images || {};
+  return [
+    imgs.primary ? { url: imgs.primary, label: "Current primary image", source: "current" } : null,
+    imgs.front ? { url: imgs.front, label: "Front placeholder", position: "front", source: "stored" } : null,
+    imgs.lifestyle ? { url: imgs.lifestyle, label: "Lifestyle placeholder", position: "lifestyle", source: "stored" } : null,
+    ...(imgs.gallery || []).map((url, index) => ({ url, label: `Gallery image ${index + 1}`, source: "gallery" })),
+    ...(imgs.available || []),
+    ...(imgs.custom || []).map((url) => ({ url, label: "Custom image", source: "custom" })),
+    customUrl ? { url: customUrl, label: "Uploaded custom image", source: "custom" } : null,
+  ]
+    .filter((img): img is PlaceholderImageOption => !!img?.url)
+    .filter((img, index, arr) => arr.findIndex((x) => x.url === img.url) === index);
+}
+
 const PLAN_DISPLAY: Record<string, string> = {
   trial: "Trial",
   starter: "Starter",
@@ -150,6 +172,9 @@ export default function AdminCustomizerPages() {
   const [formTitle, setFormTitle] = useState("");
   const [formHandle, setFormHandle] = useState("");
   const [formProductId, setFormProductId] = useState("");
+  const [formPrimaryPlaceholder, setFormPrimaryPlaceholder] = useState("");
+  const [formGalleryPlaceholders, setFormGalleryPlaceholders] = useState<Set<string>>(new Set());
+  const [formCustomPlaceholder, setFormCustomPlaceholder] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
   const [titleTouched, setTitleTouched] = useState(false);
 
@@ -222,7 +247,7 @@ export default function AdminCustomizerPages() {
     const images = editBlank.baseMockupImages || {};
     setEditDescription(plainTextFromHtml(editBlank.description));
     setEditPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
-    setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, 3)));
+    setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
   }, [editTarget?.id, editBlank?.productTypeId]);
 
@@ -235,6 +260,7 @@ export default function AdminCustomizerPages() {
       baseProductId?: string;
       productTypeId?: number;
       variantPrices: Record<string, string>;
+      baseMockupImages?: { primary: string; gallery: string[]; custom?: string[] };
     }) => {
       const res = await apiRequest("POST", "/api/appai/customizer-pages", body);
       return res.json();
@@ -262,7 +288,7 @@ export default function AdminCustomizerPages() {
       const custom = [
         ...(editBlank?.baseMockupImages?.custom || []),
         editCustomPlaceholder.trim(),
-      ].filter(Boolean).slice(0, 3);
+      ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS);
       const res = await apiRequest("PATCH", `/api/appai/customizer-pages/${editTarget.id}`, {
         description: editDescription,
         baseMockupImages: {
@@ -306,7 +332,19 @@ export default function AdminCustomizerPages() {
       const next = new Set(prev);
       if (next.has(url)) {
         next.delete(url);
-      } else if (next.size < 3) {
+      } else if (next.size < MAX_GALLERY_PLACEHOLDERS) {
+        next.add(url);
+      }
+      return next;
+    });
+  }
+
+  function toggleFormGalleryPlaceholder(url: string) {
+    setFormGalleryPlaceholders((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) {
+        next.delete(url);
+      } else if (next.size < MAX_GALLERY_PLACEHOLDERS) {
         next.add(url);
       }
       return next;
@@ -326,7 +364,30 @@ export default function AdminCustomizerPages() {
       const url = await uploadPlaceholderFile(file);
       setEditCustomPlaceholder(url);
       setEditPrimaryPlaceholder(url);
-      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, 3)));
+      setEditGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, MAX_GALLERY_PLACEHOLDERS)));
+      toast({ title: "Placeholder uploaded", description: "The uploaded image is selected as the primary placeholder." });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err?.message || "Could not upload placeholder image.", variant: "destructive" });
+    } finally {
+      setUploadingPlaceholder(false);
+      event.target.value = "";
+    }
+  }
+
+  async function handleFormPlaceholderUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(file.type)) {
+      toast({ title: "Unsupported image", description: "Upload a PNG, JPG, or WebP image.", variant: "destructive" });
+      event.target.value = "";
+      return;
+    }
+    setUploadingPlaceholder(true);
+    try {
+      const url = await uploadPlaceholderFile(file);
+      setFormCustomPlaceholder(url);
+      setFormPrimaryPlaceholder(url);
+      setFormGalleryPlaceholders((prev) => new Set([...Array.from(prev), url].slice(0, MAX_GALLERY_PLACEHOLDERS)));
       toast({ title: "Placeholder uploaded", description: "The uploaded image is selected as the primary placeholder." });
     } catch (err: any) {
       toast({ title: "Upload failed", description: err?.message || "Could not upload placeholder image.", variant: "destructive" });
@@ -340,6 +401,9 @@ export default function AdminCustomizerPages() {
     setFormTitle("");
     setFormHandle("");
     setFormProductId("");
+    setFormPrimaryPlaceholder("");
+    setFormGalleryPlaceholders(new Set());
+    setFormCustomPlaceholder("");
     setHandleTouched(false);
     setTitleTouched(false);
     setFormStep(1);
@@ -528,6 +592,14 @@ export default function AdminCustomizerPages() {
     if (!handleTouched) setFormHandle(slugify(simplified));
   }, [selectedBlank?.title, titleTouched]);
 
+  useEffect(() => {
+    if (!selectedBlank) return;
+    const images = selectedBlank.baseMockupImages || {};
+    setFormPrimaryPlaceholder(images.primary || images.front || images.gallery?.[0] || "");
+    setFormGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
+    setFormCustomPlaceholder("");
+  }, [selectedBlank?.productTypeId, formProductId]);
+
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
@@ -575,6 +647,14 @@ export default function AdminCustomizerPages() {
       baseProductId: isSync ? undefined : formProductId,
       productTypeId: isSync ? selectedBlank?.productTypeId : undefined,
       variantPrices,
+      baseMockupImages: {
+        primary: formPrimaryPlaceholder,
+        gallery: Array.from(formGalleryPlaceholders),
+        custom: [
+          ...(selectedBlank?.baseMockupImages?.custom || []),
+          formCustomPlaceholder.trim(),
+        ].filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS),
+      },
     });
   }
 
@@ -665,7 +745,10 @@ export default function AdminCustomizerPages() {
                     <div>
                       <Label>Product</Label>
                       {blanksLoading ? (
-                        <Skeleton className="h-10 w-full mt-1" />
+                        <div className="mt-1 flex h-10 items-center gap-2 rounded-md border border-input bg-muted/30 px-3">
+                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                          <span className="text-sm text-muted-foreground">Loading Products…</span>
+                        </div>
                       ) : (blanksData?.blanks ?? []).length === 0 ? (
                         <p className="text-sm text-destructive mt-1">
                           No products found. Import products from Printify first.
@@ -727,6 +810,101 @@ export default function AdminCustomizerPages() {
                         Storefront URL: /pages/{formHandle || "..."}
                       </p>
                     </div>
+
+                    {selectedBlank && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label>Placeholder Images</Label>
+                          <span className="text-xs text-muted-foreground">
+                            Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images
+                          </span>
+                        </div>
+                        {(() => {
+                          const available = buildAvailablePlaceholderImages(
+                            selectedBlank.baseMockupImages,
+                            formCustomPlaceholder || undefined,
+                          );
+                          if (available.length === 0) {
+                            return (
+                              <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                                No placeholder images yet. Upload one below, or refresh images from the Products admin page.
+                              </p>
+                            );
+                          }
+                          return (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2 max-h-56 overflow-y-auto">
+                              {available.map((img, index) => {
+                                const isPrimary = formPrimaryPlaceholder === img.url;
+                                const isGallery = formGalleryPlaceholders.has(img.url);
+                                return (
+                                  <div
+                                    key={`${img.url}-${index}`}
+                                    className={`relative rounded-md border p-2 space-y-2 ${isPrimary ? "ring-2 ring-primary" : ""}`}
+                                  >
+                                    {isPrimary && (
+                                      <span className="absolute right-2 top-2 rounded bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground shadow">
+                                        Primary
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      className="block w-full overflow-hidden rounded bg-muted"
+                                      onClick={() => setFormPrimaryPlaceholder(img.url)}
+                                    >
+                                      <img src={img.url} alt={img.label} className="h-24 w-full object-cover" />
+                                    </button>
+                                    <p className="truncate text-xs font-medium">{img.label}</p>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant={isPrimary ? "default" : "outline"}
+                                        className="h-7 px-2 text-xs"
+                                        onClick={() => setFormPrimaryPlaceholder(img.url)}
+                                      >
+                                        Primary
+                                      </Button>
+                                      <label className="flex items-center gap-1 text-xs">
+                                        <input
+                                          type="checkbox"
+                                          checked={isGallery}
+                                          disabled={!isGallery && formGalleryPlaceholders.size >= MAX_GALLERY_PLACEHOLDERS}
+                                          onChange={() => toggleFormGalleryPlaceholder(img.url)}
+                                        />
+                                        Gallery
+                                      </label>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp"
+                            className="hidden"
+                            id="create-placeholder-upload"
+                            onChange={handleFormPlaceholderUpload}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => document.getElementById("create-placeholder-upload")?.click()}
+                            disabled={uploadingPlaceholder}
+                          >
+                            {uploadingPlaceholder ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Upload className="h-4 w-4 mr-2" />
+                            )}
+                            Upload Custom Image
+                          </Button>
+                        </div>
+                      </div>
+                    )}
 
                     <Button
                       className="w-full mt-2"
@@ -1460,20 +1638,13 @@ export default function AdminCustomizerPages() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>Placeholder Images</Label>
-                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to 3 gallery images</span>
+                  <span className="text-xs text-muted-foreground">Choose 1 primary and up to {MAX_GALLERY_PLACEHOLDERS} gallery images</span>
                 </div>
                 {(() => {
-                  const images = editBlank.baseMockupImages || {};
-                  const available = [
-                    images.primary ? { url: images.primary, label: "Current primary image", source: "current" } : null,
-                    images.front ? { url: images.front, label: "Front placeholder", position: "front", source: "stored" } : null,
-                    images.lifestyle ? { url: images.lifestyle, label: "Lifestyle placeholder", position: "lifestyle", source: "stored" } : null,
-                    ...(images.gallery || []).map((url, index) => ({ url, label: `Current gallery image ${index + 1}`, source: "gallery" })),
-                    ...(images.available || []),
-                    ...(images.custom || []).map((url) => ({ url, label: "Custom image", source: "custom" })),
-                    editCustomPlaceholder ? { url: editCustomPlaceholder, label: "Uploaded custom image", source: "custom" } : null,
-                  ].filter((img): img is { url: string; label: string; position?: string; source?: string } => !!img?.url)
-                    .filter((img, index, arr) => arr.findIndex((x) => x.url === img.url) === index);
+                  const available = buildAvailablePlaceholderImages(
+                    editBlank.baseMockupImages,
+                    editCustomPlaceholder || undefined,
+                  );
                   if (available.length === 0) {
                     return (
                       <p className="rounded-md border p-3 text-sm text-muted-foreground">
@@ -1515,7 +1686,7 @@ export default function AdminCustomizerPages() {
                                 <input
                                   type="checkbox"
                                   checked={isGallery}
-                                  disabled={!isGallery && editGalleryPlaceholders.size >= 3}
+                                  disabled={!isGallery && editGalleryPlaceholders.size >= MAX_GALLERY_PLACEHOLDERS}
                                   onChange={() => toggleEditGalleryPlaceholder(img.url)}
                                 />
                                 Gallery
