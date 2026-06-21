@@ -282,6 +282,30 @@ function panelFabricFillColor(
   return null;
 }
 
+/**
+ * Bake mockup fabric folds into the panel. When the customer picks a garment
+ * colour, `luminosity` keeps hue/sat on the fill/artwork while borrowing
+ * shadow depth from the photo — straight `multiply` collapses to a flat
+ * swatch on mid/dark dyes.
+ */
+function applyMockupFabricShading(
+  pctx: CanvasRenderingContext2D,
+  mockup: CanvasImageSource,
+  viewMockupAsset: Parameters<typeof drawMockupImageInCanvas>[2],
+  width: number,
+  height: number,
+  backgroundColor: string | null | undefined,
+): void {
+  pctx.save();
+  if (backgroundColor) {
+    pctx.globalCompositeOperation = "luminosity";
+  } else {
+    pctx.globalCompositeOperation = "multiply";
+  }
+  drawMockupImageInCanvas(pctx, mockup, viewMockupAsset, width, height);
+  pctx.restore();
+}
+
 export type DesignRectInfo = {
   /** Union AABB of single-sheet-participating panels. */
   union: { x: number; y: number; width: number; height: number };
@@ -1327,6 +1351,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       (mode === "single-sheet" && !groupEnabled) ||
       (mode === "tile" && !groupEnabled);
 
+    // Overlay panels (pocket, cuffs, waistband) sit above body/sleeve art in
+    // the same print canvas — clear the clip before fill so muted panels
+    // fully occlude artwork drawn earlier in the loop.
+    if (
+      skipArtwork &&
+      panelMutedByCustomer &&
+      backgroundColor &&
+      layer.panelKey &&
+      OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey)
+    ) {
+      pctx.save();
+      pathPolygon(pctx, anchors);
+      pctx.clip();
+      pctx.clearRect(0, 0, W, H);
+      pctx.restore();
+    }
+
     // Background colour fill — sits UNDER the artwork inside each
     // panel's polygon. Explicit `backgroundColor` fills every panel;
     // overlay panels (pocket, cuffs, waistband) auto-fill white when
@@ -1583,32 +1624,16 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       );
     }
 
-    // Shading multiply: bake the mockup's fabric shadows over the warped
-    // artwork. Must use the same x/y/scale as step 1 — a full-canvas
-    // draw at (0,0) ghosts a second hoodie when the blank was repositioned.
+    // Shading: bake mockup fabric folds into the panel fill + artwork.
     if (applyShading && !useColors) {
-      pctx.save();
-      pctx.globalCompositeOperation = "multiply";
-      drawMockupImageInCanvas(pctx, mockup, viewMockupAsset, W, H);
-      pctx.restore();
-    }
-
-    // Customer-muted overlay panels (pockets off, etc.) repaint an opaque
-    // garment colour on top so chest art cannot show through after multiply.
-    if (
-      skipArtwork &&
-      panelMutedByCustomer &&
-      backgroundColor &&
-      layer.panelKey &&
-      OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey)
-    ) {
-      pctx.save();
-      pctx.globalCompositeOperation = "source-over";
-      pctx.globalAlpha = 1;
-      pctx.fillStyle = backgroundColor;
-      pathPolygon(pctx, anchors);
-      pctx.fill();
-      pctx.restore();
+      applyMockupFabricShading(
+        pctx,
+        mockup,
+        viewMockupAsset,
+        W,
+        H,
+        backgroundColor,
+      );
     }
 
     pctx.restore();
