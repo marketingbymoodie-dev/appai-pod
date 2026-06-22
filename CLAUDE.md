@@ -67,7 +67,7 @@ Do not remove this without re-testing hard refresh on a long customizer page (mo
 
 Before the customer generates artwork, `catalogPreviewImages` drives the blank mockup carousel.
 
-- Build from **`baseMockupImages.available`** blueprint entries first (distinct Printify catalog shots), then `primary` / `front` / `lifestyle` / `gallery` / `custom`.
+- Build from merchant **`primary`** / **`gallery`** / **`custom`** only — not `baseMockupImages.available` (admin picker pool).
 - **Dedupe by URL pathname** (ignore query strings) — do not show View 2 / View 3 when they are the same image as Primary.
 - Hide carousel UI unless `catalogPreviewImages.length > 1` after dedupe.
 - `ProductMockup` blank `<img>` uses `key={blankImageUrl}` so index changes always repaint.

@@ -1538,19 +1538,10 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       out.push(url);
     };
 
-    // Prefer distinct Printify blueprint catalog shots when stored on import.
-    const available = Array.isArray((imgs as { available?: Array<{ url?: string; source?: string }> }).available)
-      ? (imgs as { available?: Array<{ url?: string; source?: string }> }).available!
-      : [];
-    for (const entry of available) {
-      if (entry?.source === 'blueprint' && entry.url) add(entry.url);
-      if (out.length >= 5) break;
-    }
-
+    // Merchant-curated placeholders only (Customizer Pages primary + gallery picks).
+    // `available` is the full Printify catalog pool for admin picker — not storefront carousel.
     const primary = imgs.primary || imgs.front || null;
     add(primary);
-    add(imgs.lifestyle);
-    add(imgs.front);
     for (const url of Array.isArray(imgs.gallery) ? imgs.gallery : []) add(url);
     for (const url of Array.isArray((imgs as { custom?: string[] }).custom)
       ? (imgs as { custom?: string[] }).custom!
