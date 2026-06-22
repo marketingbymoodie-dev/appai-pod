@@ -3600,6 +3600,63 @@ ${textEdgeRestrictions}
   }
 
   // Create a draft product in merchant's Shopify store with design studio widget
+  async function deleteShopifyProductBestEffort(
+    shop: string,
+    accessToken: string,
+    productId: string | number | null | undefined,
+  ): Promise<void> {
+    if (!productId) return;
+    try {
+      const resp = await fetch(`https://${shop}/admin/api/2025-10/products/${productId}.json`, {
+        method: "DELETE",
+        headers: { "X-Shopify-Access-Token": accessToken },
+      });
+      if (resp.ok || resp.status === 404) {
+        console.log(`[shopify-cleanup] Deleted product ${productId} from ${shop}`);
+      } else {
+        console.warn(`[shopify-cleanup] Delete product ${productId} returned ${resp.status}`);
+      }
+    } catch (e) {
+      console.warn(`[shopify-cleanup] Delete product ${productId} failed:`, (e as Error).message);
+    }
+  }
+
+  async function deleteProductTypeWithCleanup(productType: any): Promise<void> {
+    const shopDomain = productType.shopifyShopDomain;
+    const shopifyProductId = productType.shopifyProductId;
+
+    if (shopDomain && shopifyProductId) {
+      const installation = await storage.getShopifyInstallationByShop(shopDomain);
+      if (installation?.status === "active" && installation.accessToken) {
+        await deleteShopifyProductBestEffort(shopDomain, installation.accessToken, shopifyProductId);
+      }
+    }
+
+    const linkedPages = await db
+      .select()
+      .from(customizerPages)
+      .where(eq(customizerPages.productTypeId, productType.id));
+
+    for (const page of linkedPages) {
+      const installation = await storage.getShopifyInstallationByShop(page.shop);
+      if (page.shopifyPageId && installation?.status === "active" && installation.accessToken) {
+        await shopifyApiCall(page.shop, installation.accessToken, `pages/${page.shopifyPageId}.json`, {
+          method: "DELETE",
+        }).catch((e: Error) =>
+          console.warn(`[shopify-cleanup] Could not delete Shopify page ${page.shopifyPageId}:`, e.message),
+        );
+      }
+      if (installation?.accessToken) {
+        await removeNavigationLink(page.shop, installation.accessToken, page.handle).catch((e: Error) =>
+          console.warn(`[shopify-cleanup] Could not remove nav link for ${page.handle}:`, e.message),
+        );
+      }
+      await storage.deleteCustomizerPage(page.id);
+    }
+
+    await storage.deleteProductType(productType.id);
+  }
+
   /**
    * Shared helper: create (or re-create) a Shopify product for a given product type.
    * Called directly (no HTTP) so it works inside other route handlers.
@@ -3711,9 +3768,7 @@ ${textEdgeRestrictions}
 
     // Delete existing Shopify product if present (re-publish scenario)
     if (productType.shopifyProductId) {
-      try {
-        await fetch(`https://${shop}/admin/api/2025-10/products/${productType.shopifyProductId}.json`, { method: 'DELETE', headers: { 'X-Shopify-Access-Token': accessToken } });
-      } catch (_) { /* ignore delete errors */ }
+      await deleteShopifyProductBestEffort(shop, accessToken, productType.shopifyProductId);
     }
 
     const shopifyResponse = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
@@ -10040,9 +10095,24 @@ ${textEdgeRestrictions}
 
   app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
-      await storage.deleteProductType(id);
-      res.json({ success: true });
+      const userId = req.user.claims.sub;
+      const productTypeId = parseInt(req.params.id, 10);
+      if (!Number.isFinite(productTypeId)) {
+        return res.status(400).json({ error: "Invalid product type ID" });
+      }
+
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const productType = await storage.getProductType(productTypeId);
+      if (!productType || productType.merchantId !== merchant.id) {
+        return res.status(404).json({ error: "Product type not found" });
+      }
+
+      await deleteProductTypeWithCleanup(productType);
+      res.json({ success: true, message: "Product type deleted" });
     } catch (error) {
       console.error("Error deleting product type:", error);
       res.status(500).json({ error: "Failed to delete product type" });
@@ -12417,9 +12487,11 @@ ${textEdgeRestrictions}
       const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
       const alreadyImported = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintIdNum);
       if (alreadyImported) {
-        return res.status(400).json({ 
-          error: "Blueprint already imported",
-          existingProductType: alreadyImported
+        return res.status(400).json({
+          error: `This product is already in your catalog as "${alreadyImported.name}". Open Products to edit it, or delete it there before importing again.`,
+          code: "BLUEPRINT_ALREADY_IMPORTED",
+          existingProductTypeId: alreadyImported.id,
+          existingProductName: alreadyImported.name,
         });
       }
 
@@ -13517,29 +13589,6 @@ ${textEdgeRestrictions}
   });
 
   // DELETE /api/admin/product-types/:id - Delete a product type
-  app.delete("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
-    try {
-      const userId = req.user.claims.sub;
-      const productTypeId = parseInt(req.params.id);
-
-      const merchant = await storage.getMerchantByUserId(userId);
-      if (!merchant) {
-        return res.status(404).json({ error: "Merchant not found" });
-      }
-
-      const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
-        return res.status(404).json({ error: "Product type not found" });
-      }
-
-      await storage.deleteProductType(productTypeId);
-      res.json({ success: true, message: "Product type deleted" });
-    } catch (error) {
-      console.error("Error deleting product type:", error);
-      res.status(500).json({ error: "Failed to delete product type" });
-    }
-  });
-
   // GET /api/admin/product-types/:id/svg-debug
   // Diagnostic: shows stored panelFlatLayImages, tests CDN accessibility, and fetches
   // the correct flat-lay SVG URLs from the Printify API so the merchant can see what's wrong.
@@ -15472,8 +15521,9 @@ ${textEdgeRestrictions}
             const shopifyVariantCount = shopifyProdCheck.data.product.variants?.length ?? 0;
 
             if (shopifyVariantCount < expectedVariantCount) {
-              // Fewer variants than expected (e.g. after Refresh Variants) — clear and re-create
-              console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Clearing for re-creation.`);
+              // Fewer variants than expected (e.g. after Refresh Variants) — delete and re-create
+              console.log(`[customizer-pages] Product ${ptForSync.shopifyProductId} has ${shopifyVariantCount} Shopify variants but DB expects ${expectedVariantCount}. Deleting for re-creation.`);
+              await deleteShopifyProductBestEffort(shop, installation.accessToken, ptForSync.shopifyProductId);
               await storage.updateProductType(incomingProductTypeId!, {
                 shopifyProductId: null,
                 shopifyProductHandle: null,

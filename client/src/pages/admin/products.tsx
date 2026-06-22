@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -304,7 +304,11 @@ export default function AdminProducts() {
       }
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to import blueprint", description: error.message, variant: "destructive" });
+      toast({
+        title: "Failed to import blueprint",
+        description: parseApiErrorMessage(error.message),
+        variant: "destructive",
+      });
     },
   });
   
@@ -335,7 +339,10 @@ export default function AdminProducts() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
-      toast({ title: "Product type deleted" });
+      toast({
+        title: "Product removed",
+        description: "Removed from your catalog. Linked Shopify product and customizer pages were deleted when possible.",
+      });
     },
   });
 

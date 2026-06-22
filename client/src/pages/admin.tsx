@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { Link } from "wouter";
 import { ArrowLeft, Settings, BarChart3, Save, CheckCircle, AlertCircle, Ticket, Palette, Plus, Trash2, Edit2, Package, Loader2, Download, Search, ExternalLink, CreditCard } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -215,7 +215,11 @@ export default function AdminPage() {
       toast({ title: "Blueprint imported", description: "Product type created from Printify catalog." });
     },
     onError: (error: Error) => {
-      toast({ title: "Failed to import blueprint", description: error.message, variant: "destructive" });
+      toast({
+        title: "Failed to import blueprint",
+        description: parseApiErrorMessage(error.message),
+        variant: "destructive",
+      });
     },
   });
 

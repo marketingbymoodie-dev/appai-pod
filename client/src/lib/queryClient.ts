@@ -40,6 +40,21 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+/** Turn `apiRequest` errors (`"400: {...}"`) into a short user-facing message. */
+export function parseApiErrorMessage(raw: string): string {
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart !== -1) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as { error?: string; message?: string };
+      if (typeof parsed.error === "string" && parsed.error.trim()) return parsed.error;
+      if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message;
+    } catch {
+      /* fall through */
+    }
+  }
+  return raw.replace(/^\d{3}:\s*/, "").trim() || raw;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
