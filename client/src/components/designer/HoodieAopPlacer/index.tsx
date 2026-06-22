@@ -263,6 +263,9 @@ function customerGroupEnabledByDefault(
   blueprintId: number,
   group: DesignGroup,
 ): boolean {
+  if (groupId === "left-sleeve" || groupId === "right-sleeve" || groupId === "trim") {
+    return false;
+  }
   if (isSweatshirtBlueprint(blueprintId)) return false;
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
     if (groupId === "front-body" || groupId === "hood") {
@@ -271,6 +274,41 @@ function customerGroupEnabledByDefault(
     return false;
   }
   return groupId === "back-body" ? false : group.enabled !== false;
+}
+
+/** Sleeves are one customer control — keep L/R placement identical at load. */
+function syncSleevePlacements(
+  placements: Record<string, Record<HoodieView, ArtworkPlacement>>,
+): Record<string, Record<HoodieView, ArtworkPlacement>> {
+  const left = placements["left-sleeve"];
+  if (!left) return placements;
+  const pair: Record<HoodieView, ArtworkPlacement> = {
+    front: { ...(left.front ?? DEFAULT_ARTWORK_PLACEMENT) },
+    back: { ...(left.back ?? DEFAULT_ARTWORK_PLACEMENT) },
+  };
+  return {
+    ...placements,
+    "left-sleeve": pair,
+    "right-sleeve": {
+      front: { ...pair.front },
+      back: { ...pair.back },
+    },
+  };
+}
+
+/**
+ * Merge persisted enabled flags without resurrecting stale sleeve/trim defaults
+ * from older saved designs or admin template `enabled: true`.
+ */
+function mergeSavedCustomerEnabled(
+  base: Record<string, boolean>,
+  saved: Record<string, boolean> | undefined,
+): Record<string, boolean> {
+  const merged = { ...base, ...(saved ?? {}) };
+  merged["left-sleeve"] = false;
+  merged["right-sleeve"] = false;
+  merged["trim"] = false;
+  return merged;
 }
 
 function stripGroupPanelKeys(
@@ -343,7 +381,7 @@ function buildInitialState(
     view: "front",
     activeGroupId: "front-body",
     artworkUrl: null,
-    placements,
+    placements: syncSleevePlacements(placements),
     enabled,
     trimEnabled: false,
     pocketsEnabled: isHoodieBp ? false : !isSweatshirtBlueprint(template.blueprintId),
@@ -358,8 +396,11 @@ function buildInitialState(
   return {
     ...base,
     ...saved,
-    placements: { ...base.placements, ...(saved.placements ?? {}) },
-    enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
+    placements: syncSleevePlacements({
+      ...base.placements,
+      ...(saved.placements ?? {}),
+    }),
+    enabled: mergeSavedCustomerEnabled(base.enabled, saved.enabled),
     tileSettings: { ...base.tileSettings, ...(saved.tileSettings ?? {}) },
     trimEnabled: false,
     trimLinked: false,
@@ -846,7 +887,11 @@ export default function HoodieAopPlacer({
       const ids = resolveEditGroupIds(groupId, data?.template, prev.hoodLinked);
       const enabled = { ...prev.enabled };
       for (const id of ids) enabled[id] = on;
-      return { ...prev, enabled };
+      const placements =
+        on && (isSleevesPart(groupId) || ids.some((id) => id === "left-sleeve" || id === "right-sleeve"))
+          ? syncSleevePlacements(prev.placements)
+          : prev.placements;
+      return { ...prev, enabled, placements };
     });
   }, [data]);
 
@@ -904,18 +949,34 @@ export default function HoodieAopPlacer({
       const cur = prev.placements[primaryId]?.[view] ?? DEFAULT_ARTWORK_PLACEMENT;
       const next: ArtworkPlacement = { ...cur, scale };
       let placements = { ...prev.placements };
-      for (const id of ids) {
-        const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
-          ...(placements[id] ?? {}),
+      if (isSleevesPart(prev.activeGroupId)) {
+        const synced: Record<HoodieView, ArtworkPlacement> = {
+          front: { ...next },
+          back: {
+            ...(prev.placements[primaryId]?.back ?? DEFAULT_ARTWORK_PLACEMENT),
+            scale: next.scale,
+          },
         };
-        for (const v of views) {
-          const curV = prev.placements[id]?.[v] ?? DEFAULT_ARTWORK_PLACEMENT;
-          perView[v] = { ...curV, scale };
+        for (const id of ids) {
+          placements[id] = {
+            front: { ...synced.front },
+            back: { ...synced.back },
+          };
         }
-        placements = {
-          ...placements,
-          [id]: perView as Record<HoodieView, ArtworkPlacement>,
-        };
+      } else {
+        for (const id of ids) {
+          const perView: Partial<Record<HoodieView, ArtworkPlacement>> = {
+            ...(placements[id] ?? {}),
+          };
+          for (const v of views) {
+            const curV = prev.placements[id]?.[v] ?? DEFAULT_ARTWORK_PLACEMENT;
+            perView[v] = { ...curV, scale };
+          }
+          placements = {
+            ...placements,
+            [id]: perView as Record<HoodieView, ArtworkPlacement>,
+          };
+        }
       }
       placements = applyLinkedPlacements(prev, placements, primaryId, view, cur, next);
       return { ...prev, placements };
