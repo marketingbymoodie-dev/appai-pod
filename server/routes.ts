@@ -25,6 +25,12 @@ import {
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
+import {
+  computeAspectRatioFromPixelDims,
+  normalizeStandardApparelAspectRatio,
+  pickPrimaryPrintPlaceholderDims,
+  resolveStandardApparelAspectRatioFromPlaceholders,
+} from "@shared/apparelAspectRatio";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
@@ -437,7 +443,6 @@ async function generateThumbnail(buffer: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-// Helper function to calculate generation dimensions from aspect ratio
 const calculateGenDimensions = (aspectRatioStr: string): { genWidth: number; genHeight: number } => {
   const [w, h] = aspectRatioStr.split(":").map(Number);
   if (!w || !h || isNaN(w) || isNaN(h)) {
@@ -470,6 +475,28 @@ const mapToGeminiAspectRatio = (aspectRatioStr: string): string => {
   if (ratio >= 0.55) return "2:3";
   return "9:16";
 };
+
+function resolveGenerationAspectRatio(
+  aspectRatioStr: string,
+  opts: { isApparel?: boolean; isAllOverPrint?: boolean },
+): string {
+  if (opts.isApparel && !opts.isAllOverPrint) {
+    return normalizeStandardApparelAspectRatio(aspectRatioStr);
+  }
+  return aspectRatioStr;
+}
+
+function designerDisplayAspectRatio(productType: {
+  aspectRatio?: string | null;
+  designerType?: string | null;
+  isAllOverPrint?: boolean | null;
+}): string {
+  const stored = productType.aspectRatio || "1:1";
+  if (productType.designerType === "apparel" && !productType.isAllOverPrint) {
+    return normalizeStandardApparelAspectRatio(stored);
+  }
+  return stored;
+}
 
 interface SaveImageResult {
   imageUrl: string;
@@ -2501,7 +2528,7 @@ export async function registerRoutes(
 
       // Now sizeConfig is guaranteed to be defined
       const finalSizeConfig = sizeConfig!;
-      const aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
+      let aspectRatioStr = (finalSizeConfig as any).aspectRatio || "1:1";
       
       // Check if this is an apparel product - either from productType or from style preset category
       // This covers both hardcoded and merchant-created styles via styleCategory
@@ -2514,6 +2541,17 @@ export async function registerRoutes(
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);      // Determine color tier for apparel products
       let colorTier: ColorTier = "light"; // Default to light (dark designs on white background)
+
+      aspectRatioStr = resolveGenerationAspectRatio(aspectRatioStr, { isApparel, isAllOverPrint });
+      if (sizeConfig && (sizeConfig as any).aspectRatio !== aspectRatioStr) {
+        const genDims = calculateGenDimensions(aspectRatioStr);
+        sizeConfig = {
+          ...(sizeConfig as any),
+          aspectRatio: aspectRatioStr,
+          genWidth: genDims.genWidth,
+          genHeight: genDims.genHeight,
+        };
+      }
       
       if (isApparel && frameColor) {
         // Look up the color's hex value from product type's frameColors
@@ -3355,6 +3393,22 @@ RECTANGULAR PRINT AREA:
       }
 
       // Determine aspect ratio and orientation
+      if (productType?.designerType === "apparel" && !productType?.isAllOverPrint) {
+        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, {
+          isApparel: true,
+          isAllOverPrint: false,
+        });
+        if (normalized !== sizeConfig.aspectRatio) {
+          const genDims = calculateGenDimensions(normalized);
+          sizeConfig = {
+            ...sizeConfig,
+            aspectRatio: normalized,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          };
+        }
+      }
+
       const [arW, arH] = sizeConfig.aspectRatio.split(":").map(Number);
       const aspectRatioValue = arW / arH;
       let orientationDescription: string;
@@ -5049,6 +5103,7 @@ ${textEdgeRestrictions}
   function mapVariantsForCatalogResponse(
     variants: any[],
     defaultAvailable = true,
+    productImages?: any[],
   ): Array<{
     id: number | string;
     title: string;
@@ -5057,7 +5112,16 @@ ${textEdgeRestrictions}
     option3: string | null;
     price: string;
     available: boolean;
+    imageSrc?: string | null;
   }> {
+    const resolveImageSrc = (v: any): string | null => {
+      if (v.featured_image?.src) return String(v.featured_image.src);
+      if (v.image_id && productImages?.length) {
+        const img = productImages.find((i: any) => i.id === v.image_id);
+        if (img?.src) return String(img.src);
+      }
+      return null;
+    };
     return variants.map((v: any) => ({
       id: v.id,
       title: v.title,
@@ -5066,6 +5130,7 @@ ${textEdgeRestrictions}
       option3: v.option3 ?? null,
       price: v.price ?? "0.00",
       available: v.available !== undefined ? !!v.available : defaultAvailable,
+      imageSrc: resolveImageSrc(v),
     }));
   }
 
@@ -5215,6 +5280,7 @@ ${textEdgeRestrictions}
         } else {
           const data = await adminResponse.json();
           const variants = data.product?.variants || [];
+          const productImages = data.product?.images || [];
           
           console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
 
@@ -5238,7 +5304,7 @@ ${textEdgeRestrictions}
             }
           }
           return res.json({
-            variants: mapVariantsForCatalogResponse(baseVariants),
+            variants: mapVariantsForCatalogResponse(baseVariants, true, productImages),
           });
         }
       } else {
@@ -5260,12 +5326,13 @@ ${textEdgeRestrictions}
       
       const data = await response.json();
       const variants = data.product?.variants || [];
+      const productImages = data.product?.images || [];
       
       console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
       
       const baseVariants = selectBaseCatalogVariants(variants);
       res.json({
-        variants: mapVariantsForCatalogResponse(baseVariants, false),
+        variants: mapVariantsForCatalogResponse(baseVariants, false, productImages),
       });
     } catch (error) {
       console.error("Error fetching Shopify product variants:", error);
@@ -5493,7 +5560,7 @@ ${textEdgeRestrictions}
         ? JSON.parse(productType.frameColors) 
         : productType.frameColors || [];
 
-      const [aspectW, aspectH] = (productType.aspectRatio || "1:1").split(":").map(Number);
+      const [aspectW, aspectH] = designerDisplayAspectRatio(productType).split(":").map(Number);
       const aspectRatio = aspectW / aspectH;
 
       const maxDimension = 1024;
@@ -5532,7 +5599,7 @@ ${textEdgeRestrictions}
         name: productType.name,
         description: productType.description,
         printifyBlueprintId: productType.printifyBlueprintId,
-        aspectRatio: productType.aspectRatio,
+        aspectRatio: designerDisplayAspectRatio(productType),
         printShape: productType.printShape || "rectangle",
         printAreaWidth: productType.printAreaWidth,
         printAreaHeight: productType.printAreaHeight,
@@ -5840,7 +5907,8 @@ ${textEdgeRestrictions}
       ? allFrameColors.filter((c: any) => savedColorIds.includes(c.id))
       : allFrameColors;
 
-    const [aspectW, aspectH] = (productTypeToUse.aspectRatio || "1:1").split(":").map(Number);
+    const displayAspectRatio = designerDisplayAspectRatio(productTypeToUse);
+    const [aspectW, aspectH] = displayAspectRatio.split(":").map(Number);
     const aspectRatio = aspectW / aspectH;
 
     const maxDimension = 1024;
@@ -5870,7 +5938,7 @@ ${textEdgeRestrictions}
       name: productTypeToUse.name,
       description: productTypeToUse.description,
       printifyBlueprintId: productTypeToUse.printifyBlueprintId,
-      aspectRatio: productTypeToUse.aspectRatio,
+      aspectRatio: displayAspectRatio,
       printShape: productTypeToUse.printShape || "rectangle",
       printAreaWidth: productTypeToUse.printAreaWidth,
       printAreaHeight: productTypeToUse.printAreaHeight,
@@ -7264,6 +7332,18 @@ ${textEdgeRestrictions}
       }
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
+      if (sizeConfig && isApparel && !isAllOverPrint) {
+        const normalized = resolveGenerationAspectRatio(sizeConfig.aspectRatio, { isApparel, isAllOverPrint });
+        if (normalized !== sizeConfig.aspectRatio) {
+          const genDims = calculateGenDimensions(normalized);
+          sizeConfig = {
+            ...sizeConfig,
+            aspectRatio: normalized,
+            genWidth: genDims.genWidth,
+            genHeight: genDims.genHeight,
+          };
+        }
+      }
       // When user provides a description, it becomes the subject; style prefix provides artistic direction.
       // Pattern: "[userDescription], [stylePrefix]" so the AI prioritises the user's intent.
       const userDescSf = (rawUserPrompt || "").trim();
@@ -12943,10 +13023,7 @@ ${textEdgeRestrictions}
               }
             }
           }
-          const primaryDims =
-            variantPlaceholders["front"] ||
-            variantPlaceholders["default"] ||
-            Object.values(variantPlaceholders)[0];
+          const primaryDims = pickPrimaryPrintPlaceholderDims(variantPlaceholders);
           if (primaryDims) {
             const existing = placeholderDimensionsBySize[extractedSizeId];
             // Keep the largest area seen for this size across variants
@@ -13080,27 +13157,13 @@ ${textEdgeRestrictions}
       let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
-      // Compute per-size aspect ratios from per-size placeholder dimensions collected above.
-      // Helper uses the same thresholds as the product-level ratio calculation.
-      const computeAspectRatioFromDims = (w: number, h: number): string => {
-        const gcdFn = (a: number, b: number): number => b === 0 ? a : gcdFn(b, a % b);
-        const divisor = gcdFn(w, h);
-        const sw = w / divisor;
-        const sh = h / divisor;
-        if (sw <= 20 && sh <= 20) return `${sw}:${sh}`;
-        const r = w / h;
-        if (r >= 1.7) return "16:9";
-        if (r >= 1.4) return "3:2";
-        if (r >= 1.2) return "4:3";
-        if (r >= 0.9) return "1:1";
-        if (r >= 0.7) return "3:4";
-        if (r >= 0.6) return "2:3";
-        return "9:16";
-      };
       sizes = sizes.map(s => {
         const dims = placeholderDimensionsBySize[s.id];
         if (dims) {
-          const ar = computeAspectRatioFromDims(dims.width, dims.height);
+          let w = dims.width;
+          let h = dims.height;
+          if (isApparelProduct && w > h) [w, h] = [h, w];
+          const ar = computeAspectRatioFromPixelDims(w, h);
           console.log(`[Import] Per-size aspect ratio: sizeId=${s.id} pxDims=${dims.width}x${dims.height} → ${ar}`);
           return { ...s, aspectRatio: ar };
         }
@@ -13209,13 +13272,7 @@ ${textEdgeRestrictions}
         sizeType = "label";
       }
 
-      // Determine aspect ratio using GCD for accurate ratio
-      const gcd = (a: number, b: number): number => b === 0 ? a : gcd(b, a % b);
-      
-      // Get primary placeholder dimensions - prefer "front", then "default", then first available
-      const primaryPosition = placeholderDimensions["front"] || 
-                              placeholderDimensions["default"] || 
-                              Object.values(placeholderDimensions)[0];
+      const primaryPosition = pickPrimaryPrintPlaceholderDims(placeholderDimensions);
       const printAreaWidthPx = primaryPosition?.width || 0;
       const printAreaHeightPx = primaryPosition?.height || 0;
       
@@ -13226,37 +13283,19 @@ ${textEdgeRestrictions}
       // Start with product-type-appropriate defaults
       let aspectRatio: string;
       if (isApparelProduct) {
-        // Apparel print areas are typically portrait ~2:3
         aspectRatio = "2:3";
       } else if (isPhoneCase) {
-        // Phone cases are tall portrait ~9:16
         aspectRatio = "9:16";
       } else {
-        // Default for other products
         aspectRatio = "3:4";
       }
       
-      // PRIORITY 1: Use print area pixel dimensions from Printify placeholders (most accurate)
-      // This handles wrap-around products like tumblers correctly
+      // PRIORITY 1: Use front/chest print placeholder pixels (never sleeve/neck slots).
       if (printAreaWidthPx > 0 && printAreaHeightPx > 0) {
-        const w = printAreaWidthPx;
-        const h = printAreaHeightPx;
-        const divisor = gcd(w, h);
-        const simplifiedW = w / divisor;
-        const simplifiedH = h / divisor;
-        // Limit simplification to reasonable ratios (avoid things like 2795:2100)
-        if (simplifiedW <= 20 && simplifiedH <= 20) {
-          aspectRatio = `${simplifiedW}:${simplifiedH}`;
+        if (isApparelProduct) {
+          aspectRatio = resolveStandardApparelAspectRatioFromPlaceholders(placeholderDimensions, aspectRatio);
         } else {
-          // For complex ratios, approximate to common aspect ratios
-          const ratio = w / h;
-          if (ratio >= 1.7) aspectRatio = "16:9";
-          else if (ratio >= 1.4) aspectRatio = "3:2";
-          else if (ratio >= 1.2) aspectRatio = "4:3";
-          else if (ratio >= 0.9) aspectRatio = "1:1";
-          else if (ratio >= 0.7) aspectRatio = "3:4";
-          else if (ratio >= 0.6) aspectRatio = "2:3";
-          else aspectRatio = "9:16";
+          aspectRatio = computeAspectRatioFromPixelDims(printAreaWidthPx, printAreaHeightPx);
         }
       }
       // PRIORITY 2: Override with calculated dimensions from size names if no placeholder data
@@ -16728,9 +16767,10 @@ ${textEdgeRestrictions}
           const prodResult = await shopifyApiCall(
             shop,
             installation.accessToken,
-            `products/${page.baseProductId}.json?fields=id,status,published_at,variants`
+            `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`
           );
           const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
+          const productImages: any[] = prodResult.data?.product?.images ?? [];
           let baseVariants = selectBaseCatalogVariants(rawVariants);
           if (baseVariants.length === 0 && page.productTypeId) {
             const pt = await storage.getProductType(page.productTypeId);
@@ -16747,13 +16787,14 @@ ${textEdgeRestrictions}
               }
             }
           }
-          variants = baseVariants.map((v: any) => ({
+          variants = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
             id: String(v.id),
             title: v.title || "",
             price: v.price || "0.00",
             option1: v.option1 ?? undefined,
             option2: v.option2 ?? undefined,
             option3: v.option3 ?? undefined,
+            imageSrc: v.imageSrc ?? undefined,
           }));
 
           // Ensure the product is published to the Online Store channel.

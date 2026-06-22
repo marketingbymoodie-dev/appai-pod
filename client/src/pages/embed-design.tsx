@@ -496,6 +496,7 @@ type VariantCatalogEntry = {
   title?: string;
   option1?: string;
   option2?: string;
+  imageSrc?: string;
 };
 
 /** Normalize size/color tokens for fuzzy matching (red ↔ Red, light_pink ↔ Light Pink). */
@@ -594,14 +595,30 @@ function matchVariantBySizeColor(
 
 function mapServerVariantsToCatalog(
   raw: any[],
-): Array<{ id: string; title: string; price: string; option1?: string; option2?: string }> {
+): Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }> {
   return raw.map((v: any) => ({
     id: String(v.id),
     title: v.title || "",
     price: v.price != null ? String(v.price) : "0.00",
     option1: v.option1,
     option2: v.option2,
+    imageSrc: typeof v.imageSrc === "string" ? v.imageSrc : undefined,
   }));
+}
+
+/** Shopify variant image for the current size + color (color-accurate garment blank). */
+function resolveVariantImageForSelection(
+  catalog: Array<{ id: string; title?: string; option1?: string; option2?: string; imageSrc?: string }>,
+  sizeName: string,
+  frameName: string,
+  hasColors: boolean,
+  frameColorId?: string,
+): string | null {
+  if (catalog.length === 0) return null;
+  const variantId = matchVariantBySizeColor(catalog, sizeName, frameName, hasColors, frameColorId);
+  if (!variantId) return null;
+  const match = catalog.find((v) => String(v.id) === variantId);
+  return match?.imageSrc || null;
 }
 
 /** True when the variant catalog supports size+color matching for the active product. */
@@ -3411,8 +3428,11 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       return;
     }
 
-    const hasMockups = printifyMockups.length > 0 || printifyMockupImages.length > 0;
-    if (!hasMockups || !selectedFrameColor || !selectedSize || mockupLoading) return;
+    if (!generatedDesign?.imageUrl || !selectedFrameColor || !selectedSize || !productTypeConfig?.hasPrintifyMockups) {
+      return;
+    }
+    if (mockupLoading) return;
+
     const cacheKey = mockupCacheKey(selectedSize, selectedFrameColor);
     if (cacheKey === currentMockupColorRef.current) return;
 
@@ -3421,32 +3441,28 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
       setPrintifyMockups(cached.urls);
       setPrintifyMockupImages(cached.images);
       currentMockupColorRef.current = cacheKey;
-      setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
+      setSelectedMockupIndex(1);
       setMockupsStale(false);
       console.log('[Mockups] Swapped to cached mockups for', cacheKey);
-    } else if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-      // No cache for this color — auto-refetch instead of waiting for user to click "Refresh Mockups"
-      console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
-      setMockupError(null);
-      setMockupFailed(false);
-      setPrintifyMockups([]);
-      setPrintifyMockupImages([]);
-      setSelectedMockupIndex(0);
-      setMockupsStale(false);
-      mockupColorCacheRef.current = {};
-      currentMockupColorRef.current = '';
-      fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
-        productTypeConfig.id,
-        selectedSize,
-        selectedFrameColor,
-        transform.scale,
-        transform.x,
-        transform.y
-      );
-    } else {
-      setMockupsStale(true);
+      return;
     }
+
+    console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
+    setMockupError(null);
+    setMockupFailed(false);
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(1);
+    setMockupsStale(false);
+    fetchPrintifyMockups(
+      toAbsoluteImageUrl(generatedDesign.imageUrl),
+      productTypeConfig.id,
+      selectedSize,
+      selectedFrameColor,
+      transform.scale,
+      transform.x,
+      transform.y
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFrameColor]);
 
@@ -3608,8 +3624,33 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
   // Shopify variants with prices delivered from the embed parent via BRIDGE_ACK postMessage.
   // Used to render a variant selector inside the generator on customizer pages.
-  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string }>>([]);
+  const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
+
+  /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
+  const colorAwareBlankUrl = useMemo(() => {
+    if (productTypeConfig?.designerType !== "apparel" || !selectedSize) return null;
+    const catalog = shopifyVariants.length > 0 ? shopifyVariants : variants;
+    if (catalog.length === 0) return null;
+    const sizeName = printSizes.find((s) => s.id === selectedSize)?.name ?? selectedSize;
+    const frameName =
+      frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
+    return resolveVariantImageForSelection(
+      catalog,
+      sizeName,
+      frameName,
+      frameColorObjects.length > 0,
+      selectedFrameColor || undefined,
+    );
+  }, [
+    productTypeConfig?.designerType,
+    selectedSize,
+    selectedFrameColor,
+    shopifyVariants,
+    variants,
+    printSizes,
+    frameColorObjects,
+  ]);
 
   const getPreferredMockupUrl = useCallback((opts?: { cartSafeOnly?: boolean }): string => {
     const pick = (url: string | undefined): string => {
@@ -8415,6 +8456,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={
+                        colorAwareBlankUrl ||
                         catalogPreviewImages[catalogPreviewIndex] ||
                         catalogPreviewImages[0] ||
                         null

@@ -457,17 +457,48 @@ export function ProductMockup({
       const scaleVal = transform.scale / 100;
       const xOffset = transform.x - 50;
       const yOffset = transform.y - 50;
+      const artStyle = {
+        pointerEvents: "none" as const,
+        borderRadius: printShape === "circle" ? "50%" : undefined,
+        transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
+        transformOrigin: "center center",
+      };
+      const showBlankUnderArt = !!blankImageUrl && designerType === "apparel";
+      if (showBlankUnderArt) {
+        const blankScale = isLandscape ? "scale(1.1)" : undefined;
+        return (
+          <>
+            <img
+              key={blankImageUrl}
+              src={blankImageUrl}
+              alt="Product blank"
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{
+                pointerEvents: "none",
+                opacity: 0.92,
+                transform: blankScale,
+                transformOrigin: "center center",
+              }}
+              draggable={false}
+              data-testid="img-blank"
+            />
+            <img
+              src={displayUrl}
+              alt="Generated artwork"
+              className="absolute inset-0 w-full h-full object-contain"
+              style={artStyle}
+              draggable={false}
+              data-testid="img-generated"
+            />
+          </>
+        );
+      }
       return (
         <img
           src={displayUrl}
           alt="Generated artwork"
           className="absolute inset-0 w-full h-full object-contain"
-          style={{
-            pointerEvents: "none",
-            borderRadius: printShape === "circle" ? "50%" : undefined,
-            transform: `scale(${scaleVal}) translate(${xOffset}%, ${yOffset}%)`,
-            transformOrigin: "center center",
-          }}
+          style={artStyle}
           draggable={false}
           data-testid="img-generated"
           onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
