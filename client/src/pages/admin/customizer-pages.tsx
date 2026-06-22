@@ -27,6 +27,7 @@ import {
   ToggleLeft, ToggleRight, AlertTriangle, Wand2, Save, ArrowUpRight, TrendingUp,
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
+import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -603,6 +604,14 @@ export default function AdminCustomizerPages() {
   /** When moving from Step 1 → Step 2, pre-fill prices from Shopify data */
   function advanceToStep2() {
     if (!formTitle.trim() || !formHandle.trim() || !formProductId) return;
+    if (selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      toast({
+        title: "Too many variants for Shopify",
+        description: `This product has ${selectedVariants.length} variants (max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}). Open Products → Edit Variants to reduce sizes or colors.`,
+        variant: "destructive",
+      });
+      return;
+    }
     // If the product has no variants (e.g. not yet on Shopify), skip pricing step
     if (selectedVariants.length === 0) {
       setConfirmedVariants([]);
@@ -777,6 +786,12 @@ export default function AdminCustomizerPages() {
                           This product will be automatically created on your store when you finish setting up this page.
                         </p>
                       ) : null}
+                      {selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT ? (
+                        <p className="text-xs text-destructive mt-1">
+                          {selectedVariants.length} variants — Shopify allows {SHOPIFY_MAX_VARIANTS_PER_PRODUCT} max.
+                          Open Products → Edit Variants to reduce before continuing.
+                        </p>
+                      ) : null}
                     </div>
 
                     <div>
@@ -911,7 +926,12 @@ export default function AdminCustomizerPages() {
 
                     <Button
                       className="w-full mt-3 shrink-0"
-                      disabled={!formTitle.trim() || !formHandle.trim() || !formProductId}
+                      disabled={
+                        !formTitle.trim() ||
+                        !formHandle.trim() ||
+                        !formProductId ||
+                        selectedVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT
+                      }
                       onClick={advanceToStep2}
                     >
                       Next: Set Pricing <ChevronRight className="h-4 w-4 ml-1" />

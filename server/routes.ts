@@ -21,6 +21,8 @@ import {
   normalizeApparelSizeId,
   resolveVariantFromMap,
   variantMapKey,
+  countActiveVariantMapKeys,
+  SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
@@ -13370,6 +13372,21 @@ ${textEdgeRestrictions}
         height: placeholderDimensions[pos].height,
       }));
 
+      const importSizeIds: string[] = Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0
+        ? selectedSizeIds
+        : sizes.map((s: { id: string }) => s.id);
+      const importColorIds: string[] = Array.isArray(selectedColorIds) && selectedColorIds.length > 0
+        ? selectedColorIds
+        : frameColors.map((c: { id: string }) => c.id);
+      const importVariantCount = countActiveVariantMapKeys(variantMap, importSizeIds, importColorIds);
+      if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({
+          error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
+          code: "SHOPIFY_VARIANT_LIMIT",
+          variantCount: importVariantCount,
+        });
+      }
+
       // Create the product type with parsed data
       const initialFlatStatus =
         catalogEntry.kind === "printify"
@@ -15488,6 +15505,21 @@ ${textEdgeRestrictions}
       ptForSync = await storage.getProductType(incomingProductTypeId);
       if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
 
+      const ptVariantMap =
+        typeof ptForSync.variantMap === "string"
+          ? JSON.parse(ptForSync.variantMap || "{}")
+          : ptForSync.variantMap || {};
+      const ptSizeIds: string[] = JSON.parse(ptForSync.selectedSizeIds || "[]");
+      const ptColorIds: string[] = JSON.parse(ptForSync.selectedColorIds || "[]");
+      const activeVariantCount = countActiveVariantMapKeys(ptVariantMap, ptSizeIds, ptColorIds);
+      if (activeVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({
+          error: `This product has ${activeVariantCount} variants but Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Open Products → Edit Variants to reduce sizes or colors before creating a customizer page.`,
+          code: "SHOPIFY_VARIANT_LIMIT",
+          variantCount: activeVariantCount,
+        });
+      }
+
       if (ptForSync.shopifyProductId) {
         // Already sent to Shopify previously — verify the product still exists and has all variants.
         // If the product was deleted from Shopify or has fewer variants than expected (e.g. after
@@ -16352,8 +16384,12 @@ ${textEdgeRestrictions}
         const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
         const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
         const labels: Record<string, string> = {};
+        const activeSizeSet = savedSizeIds.length ? new Set(savedSizeIds) : null;
+        const activeColorSet = savedColorIds.length ? new Set(savedColorIds) : null;
         for (const [key, entry] of Object.entries(storedVm)) {
-          const [sizeId, colorId] = key.split(":");
+          const [sizeId, colorId = "default"] = key.split(":");
+          if (activeSizeSet && !activeSizeSet.has(sizeId)) continue;
+          if (activeColorSet && !activeColorSet.has(colorId)) continue;
           const sizeName = activeSizes.find((s: any) => s.id === sizeId)?.name ?? allSizes.find((s: any) => s.id === sizeId)?.name ?? sizeId;
           const colorName = activeColors.find((c: any) => c.id === colorId)?.name ?? allColors.find((c: any) => c.id === colorId)?.name;
           const vid = String((entry as any).printifyVariantId);

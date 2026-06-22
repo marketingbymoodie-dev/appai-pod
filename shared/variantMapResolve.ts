@@ -140,3 +140,28 @@ export function resolveVariantFromMap(
 
   return null;
 }
+
+export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 100;
+
+/** Count variantMap entries that match the merchant's selected size/color filters. */
+export function countActiveVariantMapKeys(
+  variantMap: VariantMap | Record<string, VariantMapEntry> | null | undefined,
+  selectedSizeIds?: string[] | null,
+  selectedColorIds?: string[] | null,
+): number {
+  if (!variantMap) return 0;
+  const sizeSet = selectedSizeIds?.length
+    ? new Set(selectedSizeIds.map((id) => normalizeSizeId(id)))
+    : null;
+  const colorSet = selectedColorIds?.length
+    ? new Set(selectedColorIds.map((id) => normalizeId(id)))
+    : null;
+  let count = 0;
+  for (const key of Object.keys(variantMap)) {
+    const [sizeId, colorId = "default"] = key.split(":");
+    if (sizeSet && !sizeSet.has(normalizeSizeId(sizeId))) continue;
+    if (colorSet && !colorSet.has(normalizeId(colorId))) continue;
+    count++;
+  }
+  return count;
+}
