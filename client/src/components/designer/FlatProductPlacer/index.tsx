@@ -533,9 +533,9 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         const next: ArtworkPlacement = {
           ...cur,
           offsetX:
-            axis === "x" ? clamp(cur.offsetX + direction * dOff) : cur.offsetX,
+            axis === "x" ? clamp(cur.offsetX + dOff) : cur.offsetX,
           offsetY:
-            axis === "y" ? clamp(cur.offsetY + direction * dOff) : cur.offsetY,
+            axis === "y" ? clamp(cur.offsetY + dOff) : cur.offsetY,
         };
         return { ...prev, placements: { ...prev.placements, [view]: next } };
       });
@@ -634,43 +634,12 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
         <div
           className="relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:aspect-square lg:p-4"
-          onClick={(e) => {
+          onClick={() => {
             if (canvasDragRef.current) {
               canvasDragRef.current = false;
               return;
             }
-            if (!viewEnabled || !artworkImg || !placementRect || !calib) {
-              setOverlayVisible((v) => !v);
-              return;
-            }
-            const canvas = canvasRef.current;
-            if (!canvas) return;
-            const cr = canvas.getBoundingClientRect();
-            const mockupX = ((e.clientX - cr.left) / cr.width) * displayMockupW;
-            const box = flatArtBox(
-              placementRect,
-              placement,
-              artworkImg.naturalWidth,
-              artworkImg.naturalHeight,
-            );
-            const cx = box.x + box.width / 2;
-            nudgePlacement(state.view, "x", mockupX < cx ? -1 : 1);
-          }}
-          onContextMenu={(e) => {
-            if (!viewEnabled || !artworkImg || !placementRect || !calib) return;
-            e.preventDefault();
-            const canvas = canvasRef.current;
-            if (!canvas) return;
-            const cr = canvas.getBoundingClientRect();
-            const mockupX = ((e.clientX - cr.left) / cr.width) * displayMockupW;
-            const box = flatArtBox(
-              placementRect,
-              placement,
-              artworkImg.naturalWidth,
-              artworkImg.naturalHeight,
-            );
-            const cx = box.x + box.width / 2;
-            nudgePlacement(state.view, "x", mockupX < cx ? 1 : -1);
+            setOverlayVisible((v) => !v);
           }}
           data-testid="flat-placer-canvas-area"
         >
@@ -809,7 +778,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             <div className="mt-2">
               <FinePositionNudge
                 onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
-                hint="Tap canvas left/right to nudge horizontally; right-click for the opposite direction. Drag the artwork box to move freely — it snaps to center within 10px."
+                hint="Drag the artwork box to move freely — it snaps to center within 10px. Tap the mockup backdrop to show or hide the bounding box. Right-click a nudge arrow for the opposite direction."
               />
             </div>
           </div>
