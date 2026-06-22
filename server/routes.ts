@@ -72,6 +72,7 @@ import {
 } from "./canonicalFlatCalibration";
 import {
   parseFlatCalibrationManifest,
+  prepareProductTypeForDesigner,
   syncProductTypeFromCanonicalCalibration,
 } from "./syncCanonicalCalibration";
 import {
@@ -6187,17 +6188,20 @@ ${textEdgeRestrictions}
           "getProductType_fast_path"
         );
         if (fastPt) {
+          const productTypeForConfig = await prepareProductTypeForDesigner(fastPt, {
+            allowUnpublishedHarvest: true,
+          });
           const totalMs = Date.now() - startTime;
-          console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${fastPt.name}" ms=${totalMs}`);
+          console.log(`[SF-DESIGNER ${requestId}] ✅ FAST PATH SUCCESS: id=${id} name="${productTypeForConfig!.name}" ms=${totalMs}`);
           if (killSwitchTimeout) clearTimeout(killSwitchTimeout);
           responded = true;
           res.set("Cache-Control", "no-cache, no-store, must-revalidate");
           res.set("Pragma", "no-cache");
           res.set("Expires", "0");
-          const sizeChart = fastPt.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(fastPt.printifyBlueprintId)
+          const sizeChart = productTypeForConfig!.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
             : null;
-          return res.json(buildDesignerConfig(fastPt, id, undefined, sizeChart));
+          return res.json(buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart));
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
       }
@@ -6333,12 +6337,10 @@ ${textEdgeRestrictions}
       const productTypeToUse = resolvedProductType;
       console.log(`[SF-DESIGNER ${requestId}] Using product type: ${productTypeToUse.name} (id=${productTypeToUse.id}, merchantId: ${productTypeToUse.merchantId})`);
 
-      let productTypeForConfig = productTypeToUse;
-      const syncResult = await syncProductTypeFromCanonicalCalibration(productTypeToUse, {
+      let productTypeForConfig = await prepareProductTypeForDesigner(productTypeToUse, {
         allowUnpublishedHarvest: true,
       });
-      if (syncResult.synced && syncResult.productType) {
-        productTypeForConfig = syncResult.productType;
+      if (productTypeForConfig && productTypeForConfig !== productTypeToUse) {
         console.log(`[SF-DESIGNER ${requestId}] Synced canonical flat calibration onto pt ${productTypeForConfig.id}`);
       }
 
@@ -16702,10 +16704,13 @@ ${textEdgeRestrictions}
       try {
         const pt = await storage.getProductType(page.productTypeId);
         if (pt) {
-          const sizeChart = pt.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(pt.printifyBlueprintId)
+          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+            allowUnpublishedHarvest: true,
+          });
+          const sizeChart = ptForDesigner!.printifyBlueprintId
+            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
             : null;
-          designerConfig = buildDesignerConfig(pt, page.productTypeId, undefined, sizeChart);
+          designerConfig = buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, sizeChart);
         }
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);

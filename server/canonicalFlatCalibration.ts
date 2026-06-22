@@ -8,6 +8,15 @@ import {
   type CanonicalPublishedMeta,
 } from "@shared/canonicalProducts";
 import type { FlatCalibrationManifest, FlatTier } from "./flat-calibration";
+import {
+  getPlatformCatalogEntry,
+  markPlatformCatalogPublished,
+} from "./platformCatalogStore";
+import {
+  downloadFlatCalibrationFile,
+  publicFlatCalibrationUrl,
+  uploadToFlatCalibrationBucket,
+} from "./supabaseFlatCalibration";
 
 export const DEFAULT_CANONICAL_VERSION = 1;
 
@@ -63,15 +72,6 @@ export async function resolveCanonicalFlatCalibration(
 
   return { meta: publishedMeta, manifest: null };
 }
-import {
-  getPlatformCatalogEntry,
-  markPlatformCatalogPublished,
-} from "./platformCatalogStore";
-import {
-  downloadFlatCalibrationFile,
-  publicFlatCalibrationUrl,
-  uploadToFlatCalibrationBucket,
-} from "./supabaseFlatCalibration";
 
 export type CanonicalPublishState = CanonicalPublishedMeta & {
   manifestPath: string;

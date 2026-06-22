@@ -40,7 +40,12 @@ export async function syncProductTypeFromCanonicalCalibration(
   const { manifest, meta } = await resolveCanonicalFlatCalibration(productType.printifyBlueprintId, {
     allowUnpublishedHarvest,
   });
-  if (!manifest) return { synced: false };
+  if (!manifest) {
+    console.warn(
+      `[flat-calibration] no usable canonical manifest for pt ${productType.id} bp ${productType.printifyBlueprintId} (allowUnpublished=${allowUnpublishedHarvest})`,
+    );
+    return { synced: false };
+  }
 
   await storage.updateProductType(productType.id, {
     onTheFlyTier: meta?.tier ?? manifest.tier,
@@ -55,4 +60,19 @@ export async function syncProductTypeFromCanonicalCalibration(
     `[flat-calibration] synced canonical calibration onto pt ${productType.id} (${productType.name}) from bp ${productType.printifyBlueprintId}`,
   );
   return { synced: true, productType: updated ?? undefined };
+}
+
+/** Ensure flat catalog products have canonical calibration before building designer config. */
+export async function prepareProductTypeForDesigner(
+  productType: {
+    id: number;
+    name: string;
+    printifyBlueprintId: number | null;
+    flatCalibration?: unknown;
+  } | null | undefined,
+  options?: { allowUnpublishedHarvest?: boolean },
+): Promise<typeof productType> {
+  if (!productType) return productType;
+  const syncResult = await syncProductTypeFromCanonicalCalibration(productType, options);
+  return syncResult.productType ?? productType;
 }
