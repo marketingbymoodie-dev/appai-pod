@@ -712,8 +712,8 @@ export default function AdminCustomizerPages() {
                   Create Page
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-lg flex flex-col" style={{maxHeight: 'min(90vh, 700px)'}}>
-                <DialogHeader>
+              <DialogContent className="max-w-lg flex flex-col max-h-[min(90vh,700px)] overflow-hidden">
+                <DialogHeader className="shrink-0">
                   <DialogTitle>
                     {formStep === 4 ? "Page Created!" : "Create Customizer Page"}
                   </DialogTitle>
@@ -740,7 +740,8 @@ export default function AdminCustomizerPages() {
 
                 {/* ── STEP 1: Page info ── */}
                 {formStep === 1 && (
-                  <div className="space-y-4 pt-2">
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                     {/* Product first */}
                     <div>
                       <Label>Product</Label>
@@ -832,7 +833,7 @@ export default function AdminCustomizerPages() {
                             );
                           }
                           return (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2 max-h-56 overflow-y-auto">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-md border p-2">
                               {available.map((img, index) => {
                                 const isPrimary = formPrimaryPlaceholder === img.url;
                                 const isGallery = formGalleryPlaceholders.has(img.url);
@@ -906,8 +907,10 @@ export default function AdminCustomizerPages() {
                       </div>
                     )}
 
+                    </div>
+
                     <Button
-                      className="w-full mt-2"
+                      className="w-full mt-3 shrink-0"
                       disabled={!formTitle.trim() || !formHandle.trim() || !formProductId}
                       onClick={advanceToStep2}
                     >
@@ -1240,7 +1243,8 @@ export default function AdminCustomizerPages() {
 
                 {/* ── STEP 3: Confirm ── */}
                 {formStep === 3 && (
-                  <div className="space-y-4 pt-2">
+                  <div className="flex flex-col min-h-0 flex-1 pt-2">
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4">
                     <div className="rounded-lg border bg-muted/30 p-4 space-y-2 text-sm">
                       <div className="flex justify-between">
                         <span className="text-muted-foreground">Page title</span>
@@ -1278,7 +1282,8 @@ export default function AdminCustomizerPages() {
                     <p className="text-xs text-muted-foreground">
                       This will create the customizer page on your Online Store.
                     </p>
-                    <div className="flex gap-2">
+                    </div>
+                    <div className="flex gap-2 shrink-0 pt-2">
                       <Button variant="outline" className="flex-1" onClick={() => setFormStep(selectedVariants.length === 0 ? 1 : 2)} disabled={createMutation.isPending}>
                         Back
                       </Button>
