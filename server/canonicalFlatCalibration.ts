@@ -8,6 +8,61 @@ import {
   type CanonicalPublishedMeta,
 } from "@shared/canonicalProducts";
 import type { FlatCalibrationManifest, FlatTier } from "./flat-calibration";
+
+export const DEFAULT_CANONICAL_VERSION = 1;
+
+/** True when a manifest has enough data for on-the-fly storefront mockups. */
+export function isUsableFlatCalibrationManifest(m: FlatCalibrationManifest | null | undefined): boolean {
+  if (!m || (m.tier !== "flat" && m.tier !== "mesh")) return false;
+  if (!m.views || Object.keys(m.views).length === 0) return false;
+  return Object.values(m.blanks || {}).some(
+    (perView: unknown) => !!(perView as { front?: unknown; back?: unknown })?.front ||
+      !!(perView as { front?: unknown; back?: unknown })?.back,
+  );
+}
+
+export type ResolvedCanonicalFlat = {
+  meta: CanonicalPublishedMeta | null;
+  manifest: FlatCalibrationManifest | null;
+};
+
+/**
+ * Load platform canonical calibration for a flat catalog blueprint.
+ * Published meta is preferred; operators may use an unpublished harvest (v1) for pre-launch testing.
+ */
+export async function resolveCanonicalFlatCalibration(
+  blueprintId: number,
+  options?: { allowUnpublishedHarvest?: boolean },
+): Promise<ResolvedCanonicalFlat> {
+  const publishedMeta = await loadCanonicalPublishedMeta(blueprintId);
+  if (publishedMeta) {
+    const manifest = await loadCanonicalManifest(blueprintId, publishedMeta.version);
+    if (isUsableFlatCalibrationManifest(manifest)) {
+      return { meta: publishedMeta, manifest: manifest! };
+    }
+  }
+
+  if (options?.allowUnpublishedHarvest) {
+    for (let version = DEFAULT_CANONICAL_VERSION; version <= DEFAULT_CANONICAL_VERSION + 2; version++) {
+      const manifest = await loadCanonicalManifest(blueprintId, version);
+      if (isUsableFlatCalibrationManifest(manifest)) {
+        return {
+          meta: publishedMeta ?? {
+            blueprintId,
+            version,
+            kind: "flat",
+            label: "",
+            tier: manifest!.tier,
+            publishedAt: "",
+          },
+          manifest: manifest!,
+        };
+      }
+    }
+  }
+
+  return { meta: publishedMeta, manifest: null };
+}
 import {
   getPlatformCatalogEntry,
   markPlatformCatalogPublished,

@@ -57,7 +57,7 @@ import {
 } from "./hoodieTemplateStore";
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
-import { slimPhoneCaseBlueprintId } from "@shared/canonicalProducts";
+import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
 import {
   canMerchantImportEntry,
   canOperatorImportEntry,
@@ -67,10 +67,13 @@ import {
 } from "./platformCatalogStore";
 import { isPlatformAdminRequest } from "./platformAdmin";
 import {
-  loadCanonicalManifest,
-  loadCanonicalPublishedMeta,
   merchantManifestFromCanonical,
+  resolveCanonicalFlatCalibration,
 } from "./canonicalFlatCalibration";
+import {
+  parseFlatCalibrationManifest,
+  syncProductTypeFromCanonicalCalibration,
+} from "./syncCanonicalCalibration";
 import {
   submitFlatTestOrder,
   submitFlatOrderToPrintify,
@@ -173,27 +176,6 @@ function kickoffFlatCalibration(args: {
       await storage.updateProductType(productTypeId, { flatCalibrationStatus: "failed" }).catch(() => {});
     }
   })();
-}
-
-/**
- * Parse the stored flat-calibration manifest for delivery to the storefront.
- * Returns the manifest only for eligible (flat/mesh) products with at least one
- * harvested view; otherwise null (storefront falls back to Printify mockups).
- */
-function parseFlatCalibrationManifest(raw: unknown): any | null {
-  if (!raw || typeof raw !== "string") return null;
-  try {
-    const m = JSON.parse(raw);
-    if (!m || (m.tier !== "flat" && m.tier !== "mesh")) return null;
-    if (!m.views || Object.keys(m.views).length === 0) return null;
-    const hasBlanks = Object.values(m.blanks || {}).some(
-      (perView: any) => !!(perView?.front || perView?.back),
-    );
-    if (!hasBlanks) return null;
-    return m;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -6351,14 +6333,22 @@ ${textEdgeRestrictions}
       const productTypeToUse = resolvedProductType;
       console.log(`[SF-DESIGNER ${requestId}] Using product type: ${productTypeToUse.name} (id=${productTypeToUse.id}, merchantId: ${productTypeToUse.merchantId})`);
 
+      let productTypeForConfig = productTypeToUse;
+      const syncResult = await syncProductTypeFromCanonicalCalibration(productTypeToUse, {
+        allowUnpublishedHarvest: true,
+      });
+      if (syncResult.synced && syncResult.productType) {
+        productTypeForConfig = syncResult.productType;
+        console.log(`[SF-DESIGNER ${requestId}] Synced canonical flat calibration onto pt ${productTypeForConfig.id}`);
+      }
 
       // 5️⃣ BUILD CONFIG using shared helper
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
-      const sizeChart = productTypeToUse.printifyBlueprintId
-        ? await getNormalizedSizeChartWithTimeout(productTypeToUse.printifyBlueprintId)
+      const sizeChart = productTypeForConfig.printifyBlueprintId
+        ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
         : null;
-      const designerConfig = buildDesignerConfig(productTypeToUse, id, resolvedFrom, sizeChart);
+      const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
@@ -12474,10 +12464,15 @@ ${textEdgeRestrictions}
         });
       }
 
-      let canonicalFlatMeta: Awaited<ReturnType<typeof loadCanonicalPublishedMeta>> = null;
-      if (catalogEntry.kind === "flat" && catalogEntry.status === "published") {
-        canonicalFlatMeta = await loadCanonicalPublishedMeta(blueprintIdNum);
-        if (!canonicalFlatMeta && !isOperator) {
+      let canonicalFlatMeta: CanonicalPublishedMeta | null = null;
+      let canonicalManifest: Awaited<ReturnType<typeof resolveCanonicalFlatCalibration>>["manifest"] = null;
+      if (catalogEntry.kind === "flat") {
+        const resolved = await resolveCanonicalFlatCalibration(blueprintIdNum, {
+          allowUnpublishedHarvest: isOperator,
+        });
+        canonicalFlatMeta = resolved.meta;
+        canonicalManifest = resolved.manifest;
+        if (!isOperator && catalogEntry.status === "published" && !canonicalManifest) {
           return res.status(403).json({
             error: "Platform calibration for this product is not published yet.",
             code: "CANONICAL_NOT_PUBLISHED",
@@ -13391,11 +13386,11 @@ ${textEdgeRestrictions}
       const initialFlatStatus =
         catalogEntry.kind === "printify"
           ? "unsupported"
-          : catalogEntry.kind === "flat" && canonicalFlatMeta
+          : catalogEntry.kind === "flat" && canonicalManifest
             ? "ready"
-            : catalogEntry.kind === "aop"
-              ? "unsupported"
-              : isOperator && (catalogEntry.kind === "flat" || catalogEntry.kind === "aop")
+            : catalogEntry.kind === "flat"
+              ? "pending"
+              : catalogEntry.kind === "aop"
                 ? "unsupported"
                 : "pending";
 
@@ -13446,17 +13441,14 @@ ${textEdgeRestrictions}
       }
 
       // Seed shared canonical calibration (instant — no per-merchant harvest).
-      if (catalogEntry.kind === "flat" && canonicalFlatMeta) {
-        const canonicalManifest = await loadCanonicalManifest(blueprintIdNum, canonicalFlatMeta.version);
-        if (canonicalManifest) {
-          await storage.updateProductType(productType.id, {
-            onTheFlyTier: canonicalFlatMeta.tier ?? canonicalManifest.tier,
-            flatCalibrationStatus: "ready",
-            flatCalibration: JSON.stringify(
-              merchantManifestFromCanonical(canonicalManifest, productType.id, productType.name),
-            ),
-          });
-        }
+      if (catalogEntry.kind === "flat" && canonicalManifest) {
+        await storage.updateProductType(productType.id, {
+          onTheFlyTier: canonicalFlatMeta?.tier ?? canonicalManifest.tier,
+          flatCalibrationStatus: "ready",
+          flatCalibration: JSON.stringify(
+            merchantManifestFromCanonical(canonicalManifest, productType.id, productType.name),
+          ),
+        });
       } else if (catalogEntry.kind === "aop" && catalogEntry.panelMappingTemplate && catalogEntry.status === "published") {
         await storage.updateProductType(productType.id, {
           panelMappingTemplate: catalogEntry.panelMappingTemplate,
@@ -13470,12 +13462,12 @@ ${textEdgeRestrictions}
 
       res.json(productType);
 
-      // No per-merchant harvest for catalog-managed products.
+      // No per-merchant harvest for catalog-managed products with shared calibration.
       const skipHarvest =
         catalogEntry.kind === "printify" ||
-        catalogEntry.kind === "flat" ||
         catalogEntry.kind === "aop" ||
-        (isOperator && (catalogEntry.kind === "flat" || catalogEntry.kind === "aop"));
+        (catalogEntry.kind === "flat" && !!canonicalManifest) ||
+        (isOperator && catalogEntry.kind === "aop");
       if (!skipHarvest) {
         kickoffFlatCalibration({
           productTypeId: productType.id,
@@ -13510,6 +13502,18 @@ ${textEdgeRestrictions}
       if (!productType || productType.merchantId !== merchant.id) {
         return res.status(404).json({ error: "Product type not found" });
       }
+
+      const synced = await syncProductTypeFromCanonicalCalibration(productType, {
+        allowUnpublishedHarvest: true,
+      });
+      if (synced.synced) {
+        return res.status(200).json({
+          status: "ready",
+          productTypeId: productType.id,
+          syncedFromCanonical: true,
+        });
+      }
+
       kickoffFlatCalibration({
         productTypeId: productType.id,
         name: productType.name,
