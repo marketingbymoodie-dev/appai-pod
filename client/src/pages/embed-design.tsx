@@ -3838,6 +3838,7 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
 
         while (Date.now() < deadline) {
           await new Promise<void>(r => setTimeout(r, 2000));
+          let status: { status?: string; error?: string; imageUrl?: string; thumbnailUrl?: string } | null = null;
           try {
             const statusRes = await raceTimeout(
               safeFetch(statusUrl, { headers: { "X-Req-Id": reqId } }),
@@ -3851,18 +3852,23 @@ export default function EmbedDesign({ embeddedContext }: EmbedDesignProps = {}) 
               continue;
             }
             consecutiveErrors = 0;
-            const status = await safeJson(statusRes, 'GET /generate/status');
-            console.log('[EmbedDesign] Job status:', status.status, jobId);
-            if (status.status === 'complete') {
-              const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
-              return { ...status, jobId, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
-            }
-            if (status.status === 'failed') throw new Error(status.error || 'Generation failed');
+            status = await safeJson(statusRes, 'GET /generate/status');
           } catch (pollErr: any) {
             consecutiveErrors++;
             console.warn('[EmbedDesign] Poll error:', pollErr.message, `(${consecutiveErrors}/5)`);
             if (consecutiveErrors > 5) throw new Error(`Status polling failed: ${pollErr.message}`);
-            // Keep polling on transient errors
+            // Keep polling on transient network/parse errors only
+            continue;
+          }
+
+          console.log('[EmbedDesign] Job status:', status?.status, jobId);
+          if (status?.status === 'complete') {
+            const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
+            return { ...status, jobId, imageUrl: abs(status.imageUrl), thumbnailUrl: abs(status.thumbnailUrl) };
+          }
+          if (status?.status === 'failed') {
+            console.error('[EmbedDesign] Job failed:', jobId, status.error);
+            throw new Error(status.error || 'Generation failed');
           }
         }
         throw new Error('Generation timed out after 5 minutes');
