@@ -17,6 +17,10 @@ import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
 import {
+  extractPrintifyColorName,
+  looksLikePrintifySize,
+} from "@shared/printifyVariantParse";
+import {
   hasExactVariantMapping,
   normalizeApparelSizeId,
   resolveVariantFromMap,
@@ -12216,29 +12220,8 @@ ${textEdgeRestrictions}
           }
         }
         
-        // Extract color
-        let colorName = "";
-        if (options.color || options.colour || options.Color || options.Colour || options.frame_color) {
-          colorName = options.color || options.colour || options.Color || options.Colour || options.frame_color;
-        } else if (title.includes(" / ") || title.includes("/")) {
-          const hasSeparator = title.includes(" / ");
-          const parts = hasSeparator
-            ? title.split(" / ").map((p: string) => p.trim())
-            : title.split("/").map((p: string) => p.trim());
-          if (parts.length >= 3 && looksLikeSize(parts[0])) {
-            const colorParts = parts.slice(1).filter((p) => !looksLikeSize(p));
-            if (colorParts.length > 0) colorName = colorParts.join(" / ");
-          }
-          if (!colorName) {
-            for (let i = parts.length - 1; i >= 0; i--) {
-              if (!looksLikeSize(parts[i])) {
-                colorName = parts[i];
-                break;
-              }
-            }
-          }
-        }
-        
+        const colorName = extractPrintifyColorName(options, title);
+
         if (colorName && !colorsMap.has(colorName.toLowerCase())) {
           const colorId = slugPrintifyColorId(colorName);
           // Comprehensive color hex lookup - Printify API doesn't provide hex codes
@@ -13033,36 +13016,7 @@ ${textEdgeRestrictions}
           }
         }
 
-        // Try to extract color from title (after the "/" or from options)
-        let colorName = "";
-        // First check options object (normalize various color option names)
-        if (options.color) {
-          colorName = options.color;
-        } else if (options.colour) {
-          colorName = options.colour;
-        } else if (options.frame_color) {
-          colorName = options.frame_color;
-        } else if (options.Color) {
-          colorName = options.Color;
-        } else if (options.Colour) {
-          colorName = options.Colour;
-        } else if (title.includes(" / ") || title.includes("/")) {
-          const hasSeparator = title.includes(" / ");
-          const parts = hasSeparator
-            ? title.split(" / ").map((p: string) => p.trim())
-            : title.split("/").map((p: string) => p.trim());
-          if (parts.length >= 3 && looksLikeSize(parts[0])) {
-            const colorParts = parts.slice(1).filter((p) => !looksLikeSize(p));
-            if (colorParts.length > 0) colorName = colorParts.join(" / ");
-          }
-          if (!colorName) {
-            for (let i = parts.length - 1; i >= 0; i--) {
-              if (looksLikeSize(parts[i])) continue;
-              colorName = parts[i];
-              break;
-            }
-          }
-        }
+        const colorName = extractPrintifyColorName(options, title, blueprintColorOptionName);
 
         // Extract color and track the extractedColorId for this variant
         let extractedColorId = "";
@@ -14071,42 +14025,18 @@ ${textEdgeRestrictions}
           }
         }
 
-        // Extract color - check all possible option keys
-        let colorName = "";
-        const optionKeys = Object.keys(options);
-        // Check various color-related option names
-        for (const key of optionKeys) {
-          const lowerKey = key.toLowerCase();
-          if (lowerKey === 'color' || lowerKey === 'colour' || lowerKey === 'colors' ||
-              lowerKey === 'frame_color' || lowerKey === 'frame color' || lowerKey.includes('color')) {
-            colorName = options[key];
-            break;
-          }
-        }
-
-        // If no color in options, try to extract from title
-        if (!colorName) {
-          const hasSeparator = title.includes(" / ");
-          const parts = hasSeparator
-            ? title.split(" / ").map((p: string) => p.trim())
-            : title.split("/").map((p: string) => p.trim());
-          if (parts.length >= 3 && looksLikeSize(parts[0])) {
-            const colorParts = parts.slice(1).filter((p) => !looksLikeSize(p));
-            if (colorParts.length > 0) colorName = colorParts.join(" / ");
-          }
-          if (!colorName) {
-            for (let i = parts.length - 1; i >= 0; i--) {
-              if (!looksLikeSize(parts[i])) {
-                colorName = parts[i];
-                break;
-              }
-            }
-          }
-        }
+        const colorName = extractPrintifyColorName(
+          options,
+          title,
+          (productType as any).colorOptionName,
+        );
 
         // Log what we found for debugging
         if (variants.indexOf(variant) < 3) {
-          console.log(`[Refresh Variants] Variant "${title}" -> size: "${extractedSizeId}", color: "${colorName}", options:`, optionKeys);
+          console.log(
+            `[Refresh Variants] Variant "${title}" -> size: "${extractedSizeId}", color: "${colorName}", options:`,
+            Object.keys(options),
+          );
         }
 
         let extractedColorId = "";
@@ -14166,6 +14096,9 @@ ${textEdgeRestrictions}
       const existingColorIds: string[] = typeof productType.selectedColorIds === 'string'
         ? JSON.parse(productType.selectedColorIds || '[]')
         : productType.selectedColorIds || [];
+      const previousFrameColors: Array<{ id: string }> = typeof productType.frameColors === 'string'
+        ? JSON.parse(productType.frameColors || '[]')
+        : productType.frameColors || [];
 
       // Keep only IDs that still exist in the refreshed data (remove stale ones).
       const newSizeIdSet = new Set(sizes.map((s: { id: string }) => s.id));
@@ -14173,14 +14106,22 @@ ${textEdgeRestrictions}
       const filteredSizeIds = existingSizeIds.filter((id: string) => newSizeIdSet.has(id));
       const filteredColorIds = existingColorIds.filter((id: string) => newColorIdSet.has(id));
 
-      // Preserve the existing selection as-is after filtering out stale IDs.
-      // Since the import flow always writes explicit IDs, an empty existingColorIds/existingSizeIds
-      // means the merchant intentionally cleared all options — respect that and keep it empty.
-      // Only fall back to "all available" when the product has never been imported at all
-      // (existingSizeIds is empty AND the product has no variantMap entries), which shouldn't
-      // happen in practice but is a safe guard.
-      const finalSizeIds = filteredSizeIds;
-      const finalColorIds = filteredColorIds;
+      // Preserve merchant selections after filtering stale ids. When import failed to parse
+      // colours (frameColors was empty + selectedColorIds []), backfill to all discovered colours.
+      const finalSizeIds =
+        filteredSizeIds.length > 0
+          ? filteredSizeIds
+          : existingSizeIds.length === 0 && sizes.length > 0
+            ? sizes.map((s: { id: string }) => s.id)
+            : filteredSizeIds;
+      const finalColorIds =
+        filteredColorIds.length > 0
+          ? filteredColorIds
+          : existingColorIds.length === 0 &&
+              previousFrameColors.length === 0 &&
+              frameColors.length > 0
+            ? frameColors.map((c: { id: string }) => c.id)
+            : filteredColorIds;
 
       const updated = await storage.updateProductType(productTypeId, {
         sizes: JSON.stringify(sizes),
