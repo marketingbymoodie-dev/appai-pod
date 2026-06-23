@@ -16,12 +16,14 @@ import {
   defaultCalibratorModelEntry,
   harvestFlatCalibration,
   merchantStorageKey,
+  sharedCalibratorLayerPaths,
   type CalibratorModelEntry,
   type FlatCalibratorGeometry,
   type ViewName,
 } from "../flat-calibration";
 import {
   downloadFlatCalibrationFile,
+  publicFlatCalibrationUrl,
   resolveFlatCalibrationAssetUrl,
   uploadToFlatCalibrationBucket,
   deleteFlatCalibrationProductAssets,
@@ -118,11 +120,21 @@ async function assetUrls(
 ) {
   const safe = safeSlug(modelId);
   const paths = calibratorLayerPaths(merchantStorageKey(productTypeId), safe, view);
+  const shared = sharedCalibratorLayerPaths(merchantStorageKey(productTypeId), view);
   const [pink, blank, mask, shading] = await Promise.all([
-    resolveFlatCalibrationAssetUrl(paths.pink, null),
+    resolveFlatCalibrationAssetUrl(
+      paths.pink,
+      publicFlatCalibrationUrl(shared.pink) ?? null,
+    ),
     resolveFlatCalibrationAssetUrl(paths.blank, blankFallbackUrl),
-    resolveFlatCalibrationAssetUrl(paths.mask, baseView?.maskUrl ?? null),
-    resolveFlatCalibrationAssetUrl(paths.shading, baseView?.shadingUrl ?? null),
+    resolveFlatCalibrationAssetUrl(
+      paths.mask,
+      baseView?.maskUrl ?? publicFlatCalibrationUrl(shared.mask) ?? null,
+    ),
+    resolveFlatCalibrationAssetUrl(
+      paths.shading,
+      baseView?.shadingUrl ?? publicFlatCalibrationUrl(shared.shading) ?? null,
+    ),
   ]);
   return {
     modelId,

@@ -28,6 +28,7 @@ import {
   calibratorLayerPaths,
   defaultCalibratorModelEntry,
   harvestFlatCalibration,
+  sharedCalibratorLayerPaths,
   type CalibratorModelEntry,
   type FlatCalibratorGeometry,
   type ViewName,
@@ -36,6 +37,7 @@ import { isPlatformAdminRequest, requirePlatformAdmin } from "../platformAdmin";
 import {
   deleteFlatCalibrationAssetsByPrefix,
   downloadFlatCalibrationFile,
+  publicFlatCalibrationUrl,
   resolveFlatCalibrationAssetUrl,
   uploadToFlatCalibrationBucket,
 } from "../supabaseFlatCalibration";
@@ -324,6 +326,9 @@ function resolveHarvestOutcome(manifest: Awaited<ReturnType<typeof loadCanonical
   if (!manifest?.generatedAt) return { outcome: "none" };
   if (isHarvestComplete(manifest)) return { outcome: "ready" };
   const err = typeof manifest.harvestError === "string" ? manifest.harvestError : undefined;
+  if (manifest.harvestStatus === "failed") {
+    return { outcome: "failed", error: err || "Harvest failed unexpectedly." };
+  }
   if (manifest.tier === "reject" || manifest.harvestStatus === "unsupported") {
     return {
       outcome: "unsupported",
@@ -350,11 +355,21 @@ async function assetUrlsForStorage(
 ) {
   const safe = modelId.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
   const paths = calibratorLayerPaths(storageKey, safe, view);
+  const shared = sharedCalibratorLayerPaths(storageKey, view);
   const [pink, blank, mask, shading] = await Promise.all([
-    resolveFlatCalibrationAssetUrl(paths.pink, null),
+    resolveFlatCalibrationAssetUrl(
+      paths.pink,
+      publicFlatCalibrationUrl(shared.pink) ?? null,
+    ),
     resolveFlatCalibrationAssetUrl(paths.blank, blankFallbackUrl),
-    resolveFlatCalibrationAssetUrl(paths.mask, baseView?.maskUrl ?? null),
-    resolveFlatCalibrationAssetUrl(paths.shading, baseView?.shadingUrl ?? null),
+    resolveFlatCalibrationAssetUrl(
+      paths.mask,
+      baseView?.maskUrl ?? publicFlatCalibrationUrl(shared.mask) ?? null,
+    ),
+    resolveFlatCalibrationAssetUrl(
+      paths.shading,
+      baseView?.shadingUrl ?? publicFlatCalibrationUrl(shared.shading) ?? null,
+    ),
   ]);
   return { pink, blank, mask, shading };
 }

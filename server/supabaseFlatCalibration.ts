@@ -66,9 +66,32 @@ export async function ensureFlatCalibrationBucket(): Promise<void> {
   if (error) throw new Error(`createBucket failed: ${error.message}`);
 }
 
+const UPLOAD_RETRYABLE = /too many connections|connection|timeout|timed out|502|503|429|rate limit|resource exhausted/i;
+const UPLOAD_MAX_ATTEMPTS = 6;
+const UPLOAD_MIN_GAP_MS = 120;
+
+let lastUploadFinishedAt = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableUploadError(message: string): boolean {
+  return UPLOAD_RETRYABLE.test(message);
+}
+
+async function throttleFlatCalibrationUpload(): Promise<void> {
+  const now = Date.now();
+  const waitMs = lastUploadFinishedAt + UPLOAD_MIN_GAP_MS - now;
+  if (waitMs > 0) await sleep(waitMs);
+}
+
 /**
  * Upload a buffer to a path inside the bucket (upsert). Returns the public URL
  * that any storefront can GET without auth.
+ *
+ * Retries with backoff on Supabase connection / rate-limit errors — common when
+ * calibrator harvest uploads dozens of assets in one run.
  */
 export async function uploadToFlatCalibrationBucket(
   filename: string,
@@ -77,12 +100,33 @@ export async function uploadToFlatCalibrationBucket(
 ): Promise<string> {
   const c = client();
   if (!c) throw new Error("Supabase is not configured");
-  const { error } = await c.storage
-    .from(FLAT_CALIBRATION_BUCKET)
-    .upload(filename, data, { contentType, upsert: true });
-  if (error) throw new Error(`upload(${filename}) failed: ${error.message}`);
-  const { data: url } = c.storage.from(FLAT_CALIBRATION_BUCKET).getPublicUrl(filename);
-  return url.publicUrl;
+
+  let lastError = "unknown error";
+  for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt++) {
+    await throttleFlatCalibrationUpload();
+    const { error } = await c.storage
+      .from(FLAT_CALIBRATION_BUCKET)
+      .upload(filename, data, { contentType, upsert: true });
+    lastUploadFinishedAt = Date.now();
+
+    if (!error) {
+      const { data: url } = c.storage.from(FLAT_CALIBRATION_BUCKET).getPublicUrl(filename);
+      return url.publicUrl;
+    }
+
+    lastError = error.message;
+    if (attempt >= UPLOAD_MAX_ATTEMPTS || !isRetryableUploadError(lastError)) {
+      throw new Error(`upload(${filename}) failed: ${lastError}`);
+    }
+
+    const backoffMs = Math.min(30_000, 400 * 2 ** (attempt - 1));
+    console.warn(
+      `[flat-calibration] upload retry ${attempt}/${UPLOAD_MAX_ATTEMPTS} for ${filename} after ${backoffMs}ms: ${lastError}`,
+    );
+    await sleep(backoffMs);
+  }
+
+  throw new Error(`upload(${filename}) failed: ${lastError}`);
 }
 
 /** Public URL builder (no I/O). */

@@ -319,6 +319,16 @@ export function calibratorLayerPaths(storageKey: string, safe: string, view: Vie
   };
 }
 
+/** Shared registration/shading layers for apparel — one upload, all colour variants reuse. */
+export function sharedCalibratorLayerPaths(storageKey: string, view: ViewName) {
+  const suffix = view === "front" ? "" : `-${view}`;
+  return {
+    pink: `${storageKey}/calibrator/_shared-pink${suffix}.jpg`,
+    mask: `${storageKey}/calibrator/_shared-mask${suffix}.png`,
+    shading: `${storageKey}/calibrator/_shared-shading${suffix}.jpg`,
+  };
+}
+
 export function calibratorGeometryPath(storageKey: string): string {
   return `${storageKey}/calibrator/geometry.json`;
 }
@@ -2013,7 +2023,6 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const regImages = await pollMockups(token, shopId, reg.productId, reg.images);
     const maskByView: Partial<Record<ViewName, MagentaAnalysis>> = {};
     const regImageByView: Partial<Record<ViewName, Buffer>> = {};
-    const maskPngByView: Partial<Record<ViewName, Buffer>> = {};
     for (const view of manifestViews) {
       const match = pickView(regImages, view);
       if (!match) continue;
@@ -2025,8 +2034,21 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       let maskUrl: string | null = null;
       if (a.found) {
         const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);
-        if (calibratorMode) maskPngByView[view] = maskPng;
         maskUrl = await uploadToFlatCalibrationBucket(`${storageKey}/mask-${view}.png`, maskPng, "image/png");
+        if (calibratorMode) {
+          await uploadToFlatCalibrationBucket(
+            sharedCalibratorLayerPaths(storageKey, view).mask,
+            maskPng,
+            "image/png",
+          );
+        }
+      }
+      if (calibratorMode && regImageByView[view]) {
+        await uploadToFlatCalibrationBucket(
+          sharedCalibratorLayerPaths(storageKey, view).pink,
+          regImageByView[view]!,
+          "image/jpeg",
+        );
       }
       baseManifest.views[view] = {
         printFileDims: placeholderDims.get(view)!,
@@ -2062,7 +2084,6 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
     const gray = await createTempProduct(token, shopId, blueprintId, providerId, representativeVariantId, grayPlaceholders);
     createdProductIds.push(gray.productId);
     const grayImages = await pollMockups(token, shopId, gray.productId, gray.images);
-    const shadingImageByView: Partial<Record<ViewName, Buffer>> = {};
     for (const view of manifestViews) {
       const vc = baseManifest.views[view];
       const match = pickView(grayImages, view);
@@ -2073,8 +2094,14 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         const cropPx = sideProfileCropPx(vc, mask.width, mask.height);
         if (cropPx) ({ buffer: buf } = await cropImageBuffer(buf, cropPx));
       }
-      if (calibratorMode) shadingImageByView[view] = buf;
       vc.shadingUrl = await uploadToFlatCalibrationBucket(`${storageKey}/shading-${view}.png`, buf, "image/jpeg");
+      if (calibratorMode) {
+        await uploadToFlatCalibrationBucket(
+          sharedCalibratorLayerPaths(storageKey, view).shading,
+          buf,
+          "image/jpeg",
+        );
+      }
       vc.shadingMode = mask ? await shadingModeFromGray(buf, mask) : "blank";
     }
 
@@ -2176,17 +2203,8 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
         }
       }
 
-      if (calibratorMode && !perBlank) {
-        for (const view of manifestViews) {
-          const paths = calibratorLayerPaths(storageKey, safe, view);
-          const pink = regImageByView[view];
-          const maskPng = maskPngByView[view];
-          const shade = shadingImageByView[view];
-          if (pink) await uploadToFlatCalibrationBucket(paths.pink, pink, "image/jpeg");
-          if (maskPng) await uploadToFlatCalibrationBucket(paths.mask, maskPng, "image/png");
-          if (shade) await uploadToFlatCalibrationBucket(paths.shading, shade, "image/jpeg");
-        }
-      }
+      // Apparel calibrator: pink/mask/shading are shared (uploaded once above).
+      // Only the blank garment photo varies per colour — skip 3×N redundant Supabase writes.
 
       const perView: Partial<Record<ViewName, string>> = {};
       for (const view of manifestViews) {
