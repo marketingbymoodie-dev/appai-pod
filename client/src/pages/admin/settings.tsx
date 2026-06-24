@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, apiFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -130,7 +130,7 @@ export default function AdminSettings() {
   };
 
   const handleDetectShop = async () => {
-    if (!printifyToken) {
+    if (!printifyToken.trim()) {
       toast({
         title: "Token required",
         description: "Please enter your Printify API token first.",
@@ -142,26 +142,45 @@ export default function AdminSettings() {
     setDetectShopLoading(true);
     setShopDetectResult(null);
     try {
-      const res = await fetch("/api/printify/detect-shop", {
+      const res = await apiFetch("/api/admin/printify/detect-shop", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: printifyToken }),
       });
       const data = await res.json();
-      setShopDetectResult(data);
-      
-      if (data.shopId) {
-        setPrintifyShopId(data.shopId);
+
+      if (!res.ok) {
+        setShopDetectResult({
+          message: data.error || data.message || "Failed to detect shop",
+          error: true,
+          instructions: data.instructions,
+        });
+        return;
+      }
+
+      if (data.shops?.length === 1) {
+        setPrintifyShopId(String(data.shops[0].id));
         toast({
-          title: "Shop detected",
-          description: `Found shop: ${data.shopName || data.shopId}`,
+          title: "Shop detected!",
+          description: `Found "${data.shops[0].title}" and set as your Shop ID.`,
+        });
+        setShopDetectResult(null);
+      } else if (data.shops?.length > 1) {
+        setShopDetectResult({
+          message: `Found ${data.shops.length} shops. Select the one you want to use.`,
+          shops: data.shops,
+        });
+      } else {
+        setShopDetectResult({
+          message: data.error || data.message || "No shops found",
+          error: true,
+          instructions: data.instructions,
+          shops: data.shops,
         });
       }
-    } catch (error) {
-      toast({
-        title: "Detection failed",
-        description: "Could not connect to Printify API.",
-        variant: "destructive",
+    } catch {
+      setShopDetectResult({
+        message: "Failed to connect to Printify. Please check your connection and try again.",
+        error: true,
       });
     } finally {
       setDetectShopLoading(false);
@@ -224,6 +243,40 @@ export default function AdminSettings() {
                   {detectShopLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Detect"}
                 </Button>
               </div>
+              {shopDetectResult && (
+                <div className={`text-sm p-3 rounded-md ${shopDetectResult.error ? "bg-destructive/10 text-destructive" : "bg-muted"}`}>
+                  <p>{shopDetectResult.message}</p>
+                  {shopDetectResult.shops && shopDetectResult.shops.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {shopDetectResult.shops.map((shop) => (
+                        <Button
+                          key={shop.id}
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            setPrintifyShopId(String(shop.id));
+                            setShopDetectResult(null);
+                            toast({
+                              title: "Shop ID set",
+                              description: `Using "${shop.title}" (ID: ${shop.id})`,
+                            });
+                          }}
+                          className="w-full justify-start"
+                        >
+                          {shop.title} (ID: {shop.id})
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                  {shopDetectResult.instructions && (
+                    <ul className="mt-2 text-xs space-y-1 list-none">
+                      {shopDetectResult.instructions.map((step, i) => (
+                        <li key={i}>{step}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
