@@ -41,18 +41,26 @@ async function throwIfResNotOk(res: Response) {
 }
 
 /** Turn `apiRequest` errors (`"400: {...}"`) into a short user-facing message. */
-export function parseApiErrorMessage(raw: string): string {
-  const jsonStart = raw.indexOf("{");
+export function parseApiErrorMessage(raw: unknown): string {
+  const text =
+    typeof raw === "string"
+      ? raw
+      : raw instanceof Error
+        ? raw.message
+        : raw != null
+          ? String(raw)
+          : "";
+  const jsonStart = text.indexOf("{");
   if (jsonStart !== -1) {
     try {
-      const parsed = JSON.parse(raw.slice(jsonStart)) as { error?: string; message?: string };
+      const parsed = JSON.parse(text.slice(jsonStart)) as { error?: string; message?: string };
       if (typeof parsed.error === "string" && parsed.error.trim()) return parsed.error;
       if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message;
     } catch {
       /* fall through */
     }
   }
-  return raw.replace(/^\d{3}:\s*/, "").trim() || raw;
+  return text.replace(/^\d{3}:\s*/, "").trim() || text || "Something went wrong";
 }
 
 export async function apiRequest(

@@ -487,7 +487,9 @@ export default function AdminCustomizerPages() {
 
   useEffect(() => {
     if (formStep !== 2 || !costsError || !costsFetchError) return;
-    const msg = parseApiErrorMessage(costsFetchError);
+    const msg = parseApiErrorMessage(
+      costsFetchError instanceof Error ? costsFetchError.message : costsFetchError,
+    );
     toast({
       title: "Production costs unavailable",
       description: msg,
