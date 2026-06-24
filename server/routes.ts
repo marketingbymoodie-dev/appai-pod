@@ -14567,8 +14567,9 @@ ${textEdgeRestrictions}
 
     // Printify API rejects temp product creation if variant count exceeds 100.
     // Costs are catalog-level per variant ID, so a subset is sufficient.
-    const VARIANT_CHUNK_SIZE = 50;
+    const VARIANT_CHUNK_SIZE = 10;
     const variantChunk = variantIds.slice(0, VARIANT_CHUNK_SIZE);
+    const hasCosts = (costs: Record<string, number>) => Object.keys(costs).length > 0;
 
     // Strategy 0: read costs from an existing Printify product with the same blueprint + provider (no temp product needed)
     console.log(`[Printify Costs] Strategy 0 — reading costs from existing shop products for blueprint ${blueprintId}`);
@@ -14620,26 +14621,26 @@ ${textEdgeRestrictions}
       console.warn("[Printify Costs] Strategy 0 error:", s0Err);
     }
 
-    // Strategy 1: print_areas with empty images array
-    console.log(`[Printify Costs] Strategy 1 — empty images[] for position "${position}"`);
-    const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
-    diagnostics.push({ strategy: "empty_images", status: s1.status, success: s1.success, error: s1.error });
-    if (s1.success) return { costs: s1.costs, strategyUsed: "empty_images", diagnostics };
-
-    console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
-
-    // Strategy 2: reuse an existing image from the merchant's Printify library
-    console.log("[Printify Costs] Strategy 2 — reuse existing upload from library");
+    // Strategy 1: reuse an existing image from the merchant's Printify library (apparel often requires art)
+    console.log("[Printify Costs] Strategy 1 — reuse existing upload from library");
     const existingId = await getExistingUploadId(apiToken);
     if (existingId) {
-      const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(existingId));
-      diagnostics.push({ strategy: "reuse_existing_upload", status: s2.status, success: s2.success, error: s2.error });
-      if (s2.success) return { costs: s2.costs, strategyUsed: "reuse_existing_upload", diagnostics };
-      console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
+      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(existingId));
+      diagnostics.push({ strategy: "reuse_existing_upload", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
+      if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "reuse_existing_upload", diagnostics };
+      console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
     } else {
       diagnostics.push({ strategy: "reuse_existing_upload", success: false, error: "No existing uploads found in library" });
-      console.warn("[Printify Costs] Strategy 2 skipped — no existing uploads in library");
+      console.warn("[Printify Costs] Strategy 1 skipped — no existing uploads in library");
     }
+
+    // Strategy 2: print_areas with empty images array
+    console.log(`[Printify Costs] Strategy 2 — empty images[] for position "${position}"`);
+    const s2 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, null);
+    diagnostics.push({ strategy: "empty_images", status: s2.status, success: s2.success && hasCosts(s2.costs), error: s2.error });
+    if (s2.success && hasCosts(s2.costs)) return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
+
+    console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
 
     // Strategy 3: upload the stored mockup image URL (Printify CDN)
     const mockupUrl: string | undefined =
@@ -14649,8 +14650,8 @@ ${textEdgeRestrictions}
       const uploadedId = await uploadPublicImageToPrintify(apiToken, mockupUrl);
       if (uploadedId) {
         const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
-        diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success, error: s3a.error });
-        if (s3a.success) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
+        diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
+        if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
         console.warn(`[Printify Costs] Strategy 3a failed (${s3a.status}): ${s3a.error?.slice(0, 200)}`);
       } else {
         diagnostics.push({ strategy: "upload_mockup_url", success: false, error: "Upload of mockup URL failed" });
@@ -14668,12 +14669,37 @@ ${textEdgeRestrictions}
       const uploadedId = await uploadPublicImageToPrintify(apiToken, url);
       if (uploadedId) {
         const s3b = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
-        diagnostics.push({ strategy: `upload_fallback_url:${url}`, status: s3b.status, success: s3b.success, error: s3b.error });
-        if (s3b.success) return { costs: s3b.costs, strategyUsed: `upload_fallback_url`, diagnostics };
+        diagnostics.push({ strategy: `upload_fallback_url:${url}`, status: s3b.status, success: s3b.success && hasCosts(s3b.costs), error: s3b.error });
+        if (s3b.success && hasCosts(s3b.costs)) return { costs: s3b.costs, strategyUsed: `upload_fallback_url`, diagnostics };
         console.warn(`[Printify Costs] Strategy 3b (${url}) failed (${s3b.status}): ${s3b.error?.slice(0, 200)}`);
       } else {
         diagnostics.push({ strategy: `upload_fallback_url:${url}`, success: false, error: "Upload failed" });
       }
+    }
+
+    // Strategy 4: probe one variant at a time (apparel often rejects multi-variant temp products)
+    const probeImageId =
+      existingId ||
+      (mockupUrl ? await uploadPublicImageToPrintify(apiToken, mockupUrl) : null) ||
+      (await uploadPublicImageToPrintify(apiToken, fallbackUrls[0]));
+    if (probeImageId) {
+      console.log(`[Printify Costs] Strategy 4 — single-variant probe (${Math.min(variantIds.length, 20)} variants)`);
+      const probedCosts: Record<string, number> = {};
+      const probeLimit = Math.min(variantIds.length, 20);
+      for (let i = 0; i < probeLimit; i++) {
+        const vid = variantIds[i];
+        const probe = await tryCreateTempProductForCosts(
+          shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
+        );
+        if (probe.success && hasCosts(probe.costs)) {
+          Object.assign(probedCosts, probe.costs);
+        }
+      }
+      if (hasCosts(probedCosts)) {
+        diagnostics.push({ strategy: "single_variant_probe", success: true });
+        return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
+      }
+      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No costs extracted from single-variant probes" });
     }
 
     return { costs: {}, strategyUsed: null, diagnostics };
@@ -14808,7 +14834,31 @@ ${textEdgeRestrictions}
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
-        return res.status(502).json({ error: "Failed to fetch costs from Printify after all strategies", diagnostics });
+        const sizes = JSON.parse(productType.sizes || "[]");
+        const frameColors = JSON.parse(productType.frameColors || "[]");
+        const emptyLabels: Record<string, string> = {};
+        for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
+          if (entry?.printifyVariantId) {
+            const [sizeId, colorId] = key.split(":");
+            const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
+            const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
+            emptyLabels[String(entry.printifyVariantId)] =
+              colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
+          }
+        }
+        const firstError = diagnostics.find((d) => d.error)?.error;
+        return res.json({
+          costs: {},
+          shopifyVariantCosts: {},
+          printifyVariantLabels: emptyLabels,
+          costsByNormalizedLabel: {},
+          cached: false,
+          warning:
+            firstError?.includes("List products failed") || firstError?.includes("403")
+              ? "Printify rejected the cost lookup. Confirm Settings → Shop ID matches your Printify store (the one linked to Shopify)."
+              : "Could not load production costs from Printify. Enter retail prices manually below.",
+          diagnostics,
+        });
       }
 
       console.log(`[Printify Costs] Success via "${strategyUsed}", extracted ${Object.keys(costs).length} costs`);

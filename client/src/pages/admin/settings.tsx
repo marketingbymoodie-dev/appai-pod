@@ -161,7 +161,7 @@ export default function AdminSettings() {
         setPrintifyShopId(String(data.shops[0].id));
         toast({
           title: "Shop detected!",
-          description: `Found "${data.shops[0].title}" and set as your Shop ID.`,
+          description: `Found "${data.shops[0].title}". Click Save Settings at the top to store it.`,
         });
         setShopDetectResult(null);
       } else if (data.shops?.length > 1) {
@@ -200,6 +200,24 @@ export default function AdminSettings() {
 
   return (
     <AdminLayout title="Settings">
+      <div className="sticky top-0 z-10 -mt-2 mb-6 flex flex-wrap items-center justify-between gap-3 border-b bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <p className="text-sm text-muted-foreground">
+          Connect Printify, AI, and Shopify. Save after updating token or shop ID.
+        </p>
+        <Button
+          size="lg"
+          className="gap-2 shrink-0"
+          onClick={handleSave}
+          disabled={updateMerchantMutation.isPending}
+        >
+          {updateMerchantMutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="h-4 w-4" />
+          )}
+          Save Settings
+        </Button>
+      </div>
       <div className="space-y-6">
         <Card>
           <CardHeader>
@@ -258,7 +276,7 @@ export default function AdminSettings() {
                             setShopDetectResult(null);
                             toast({
                               title: "Shop ID set",
-                              description: `Using "${shop.title}" (ID: ${shop.id})`,
+                              description: `Using "${shop.title}" (ID: ${shop.id}). Click Save Settings at the top.`,
                             });
                           }}
                           className="w-full justify-start"
@@ -395,22 +413,6 @@ export default function AdminSettings() {
         </Card>
 
         <BrandingSettingsComponent />
-
-        <div className="flex justify-end pt-4">
-          <Button 
-            size="lg" 
-            className="gap-2" 
-            onClick={handleSave}
-            disabled={updateMerchantMutation.isPending}
-          >
-            {updateMerchantMutation.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4" />
-            )}
-            Save Settings
-          </Button>
-        </div>
       </div>
     </AdminLayout>
   );

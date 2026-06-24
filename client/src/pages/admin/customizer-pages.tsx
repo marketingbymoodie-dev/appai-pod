@@ -475,6 +475,7 @@ export default function AdminCustomizerPages() {
     printifyVariantLabels: Record<string, string>;
     costsByNormalizedLabel?: Record<string, number>;
     cached: boolean;
+    warning?: string;
   }>({
     queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
     queryFn: async () => {
@@ -482,16 +483,17 @@ export default function AdminCustomizerPages() {
       return res.json();
     },
     enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId,
-    retry: 1,
+    retry: false,
   });
 
   useEffect(() => {
     if (formStep !== 2 || !costsError || !costsFetchError) return;
-    const msg = parseApiErrorMessage(
-      costsFetchError instanceof Error ? costsFetchError.message : costsFetchError,
-    );
+    const raw = costsFetchError instanceof Error ? costsFetchError.message : String(costsFetchError);
+    // Inline banner is enough for cost probe failures; only toast missing Printify config.
+    if (!raw.includes("Printify API token and shop ID are required")) return;
+    const msg = parseApiErrorMessage(raw);
     toast({
-      title: "Production costs unavailable",
+      title: "Printify not configured",
       description: msg,
       variant: "destructive",
     });
@@ -1263,7 +1265,8 @@ export default function AdminCustomizerPages() {
                     {!costsLoading && !costsError && selectedBlank?.printifyBlueprintId && !costsAvailable && (
                       <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center gap-2">
                         <span>
-                          No production costs returned for this product. Check Printify is connected in Settings, then refresh costs.
+                          {costsData?.warning ??
+                            "Production costs could not be loaded from Printify. Enter retail prices below — you can still create the page."}
                         </span>
                         <Button
                           type="button"
