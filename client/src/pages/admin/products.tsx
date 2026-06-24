@@ -152,7 +152,7 @@ export default function AdminProducts() {
   const showOperatorCalibrationTools = !!platformStatus?.isPlatformAdmin;
 
   const { data: productTypes, isLoading: productTypesLoading } = useQuery<ProductType[]>({
-    queryKey: ["/api/product-types"],
+    queryKey: ["/api/admin/product-types"],
     refetchInterval: (query) => {
       const pts = query.state.data as ProductType[] | undefined;
       const calibrating = pts?.some(
@@ -277,7 +277,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: async (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       setPrintifyImportOpen(false);
       setProviderSelectionOpen(false);
       setVariantSelectionOpen(false);
@@ -296,7 +296,7 @@ export default function AdminProducts() {
       if (data?.id) {
         try {
           await apiRequest("POST", `/api/admin/product-types/${data.id}/refresh-images`);
-          queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
         } catch (e) {
           // Silent fail for image refresh - product was still imported successfully
           console.log("Auto-image refresh skipped:", e);
@@ -321,7 +321,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       setEditVariantsOpen(false);
       setEditingProduct(null);
       setSelectedSizeIds(new Set());
@@ -338,7 +338,7 @@ export default function AdminProducts() {
       await apiRequest("DELETE", `/api/admin/product-types/${id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Product removed",
         description: "Removed from your catalog. Linked Shopify product and customizer pages were deleted when possible.",
@@ -352,7 +352,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       const hasImages = data.baseMockupImages?.front || data.baseMockupImages?.lifestyle;
       toast({ 
         title: hasImages ? "Images refreshed" : "No images available",
@@ -372,7 +372,7 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       setRefreshColorsMutatingId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Colors refreshed",
         description: data.updatedCount > 0
@@ -394,7 +394,7 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       setRefreshVariantsMutatingId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Variants refreshed",
         description: data.message || `Found ${data.sizes?.length || 0} sizes and ${data.frameColors?.length || 0} colors.`
@@ -415,7 +415,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update AOP flag", description: error.message, variant: "destructive" });
@@ -431,7 +431,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({ title: "AOP template updated" });
     },
     onError: (error: Error) => {
@@ -454,7 +454,7 @@ export default function AdminProducts() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({ title: "Layout policy updated" });
     },
     onError: (error: Error) => {
@@ -508,7 +508,7 @@ export default function AdminProducts() {
           "Harvesting masks and blank photos via Printify (up to 8 colours, not all variants). " +
           "Apparel with front + back usually takes 3–8 min. This page auto-refreshes status.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
     },
     onError: (error: Error) => {
       toast({ title: "Couldn't start calibration", description: error.message, variant: "destructive" });
@@ -531,7 +531,7 @@ export default function AdminProducts() {
     },
     onSuccess: (data) => {
       setShopifyMutatingProductId(null);
-      queryClient.invalidateQueries({ queryKey: ["/api/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
       toast({
         title: "Shopify product refreshed",
         description: "Product description and metafields updated. The correct design studio will now load."

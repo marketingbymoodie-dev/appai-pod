@@ -83,7 +83,9 @@ import {
   listPlatformCatalogByKind,
 } from "./platformCatalogStore";
 import { isPlatformAdminRequest } from "./platformAdmin";
-import { canAdminAccessProductType } from "./adminProductTypeAccess";
+import {
+  adminProductTypeAccessError,
+} from "./adminProductTypeAccess";
 import {
   merchantManifestFromCanonical,
   resolveCanonicalFlatCalibration,
@@ -10126,6 +10128,25 @@ ${textEdgeRestrictions}
   });
 
   // Admin endpoints for product types (requires authentication)
+  app.get("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const userId = req.user.claims.sub;
+      const merchant = await storage.getMerchantByUserId(userId);
+      if (!merchant) {
+        return res.status(404).json({ error: "Merchant not found" });
+      }
+
+      const types = isPlatformAdminRequest(req)
+        ? await storage.getActiveProductTypes()
+        : (await storage.getProductTypesByMerchant(merchant.id)).filter((pt) => pt.isActive);
+
+      res.json(types);
+    } catch (error) {
+      console.error("Error fetching admin product types:", error);
+      res.status(500).json({ error: "Failed to fetch product types" });
+    }
+  });
+
   app.post("/api/admin/product-types", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -10193,8 +10214,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       await deleteProductTypeWithCleanup(productType!);
@@ -13514,8 +13536,9 @@ ${textEdgeRestrictions}
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
       const productType = await storage.getProductType(productTypeId);
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       const synced = await syncProductTypeFromCanonicalCalibration(productType!, {
@@ -13563,8 +13586,9 @@ ${textEdgeRestrictions}
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
       const productType = await storage.getProductType(productTypeId);
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
       if (!merchant.printifyApiToken || !merchant.printifyShopId) {
         return res.status(400).json({ error: "Printify credentials not configured for this merchant" });
@@ -13812,8 +13836,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
@@ -13876,8 +13901,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
@@ -14200,8 +14226,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       // Comprehensive color hex lookup - Printify API doesn't provide hex codes
@@ -15274,8 +15301,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       // Check if we have Printify credentials and blueprint ID
@@ -15424,8 +15452,9 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!canAdminAccessProductType(req, productType, merchant)) {
-        return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
       }
 
       // Check if we have Printify credentials and blueprint ID
@@ -16533,8 +16562,9 @@ ${textEdgeRestrictions}
 
     const productTypeId = parseInt(req.params.id, 10);
     const productType = await storage.getProductType(productTypeId);
-    if (!canAdminAccessProductType(req, productType, merchant)) {
-      return res.status(404).json({ error: "Product type not found" });
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    if (accessErr) {
+      return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
     }
     if (!productType.shopifyProductId) {
       return res.status(400).json({ error: "Product is not on Shopify yet. Send to store first." });
