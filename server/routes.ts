@@ -35,6 +35,7 @@ import {
   pickPrimaryPrintPlaceholderDims,
   resolveStandardApparelAspectRatioFromPlaceholders,
 } from "@shared/apparelAspectRatio";
+import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
@@ -14779,7 +14780,13 @@ ${textEdgeRestrictions}
             cachedShopifyCosts[String(shopifyVid)] = cachedCosts[String(vmEntry.printifyVariantId)];
           }
         }
-        return res.json({ costs: cachedCosts, shopifyVariantCosts: cachedShopifyCosts, printifyVariantLabels: cachedLabels, cached: true });
+        return res.json({
+          costs: cachedCosts,
+          shopifyVariantCosts: cachedShopifyCosts,
+          printifyVariantLabels: cachedLabels,
+          costsByNormalizedLabel: buildCostsByNormalizedLabel(cachedCosts, cachedLabels),
+          cached: true,
+        });
       }
 
       if (currentPrintifyVariantIds.size === 0) {
@@ -14851,7 +14858,15 @@ ${textEdgeRestrictions}
         }
       }
 
-      return res.json({ costs, variantKeyCosts, shopifyVariantCosts, printifyVariantLabels, cached: false, strategyUsed });
+      return res.json({
+        costs,
+        variantKeyCosts,
+        shopifyVariantCosts,
+        printifyVariantLabels,
+        costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
+        cached: false,
+        strategyUsed,
+      });
     } catch (err: any) {
       console.error("[/api/admin/printify/costs]", err);
       return res.status(500).json({ error: "Failed to fetch Printify costs" });

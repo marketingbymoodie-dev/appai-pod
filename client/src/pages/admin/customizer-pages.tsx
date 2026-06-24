@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, parseApiErrorMessage } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -28,6 +28,7 @@ import {
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import AdminLayout from "@/components/admin-layout";
 import ResyncPricesDialog from "@/components/admin/ResyncPricesDialog";
@@ -462,10 +463,17 @@ export default function AdminCustomizerPages() {
   }, [selectedBlank?.variants]);
 
   // Printify costs query -- fetches production costs via temporary product probe
-  const { data: costsData, isLoading: costsLoading } = useQuery<{
+  const {
+    data: costsData,
+    isLoading: costsLoading,
+    isError: costsError,
+    error: costsFetchError,
+    refetch: refetchCosts,
+  } = useQuery<{
     costs: Record<string, number>;
     shopifyVariantCosts: Record<string, number>;
     printifyVariantLabels: Record<string, string>;
+    costsByNormalizedLabel?: Record<string, number>;
     cached: boolean;
   }>({
     queryKey: ["/api/admin/printify/costs", selectedBlank?.productTypeId],
@@ -473,8 +481,19 @@ export default function AdminCustomizerPages() {
       const res = await apiRequest("GET", `/api/admin/printify/costs/${selectedBlank!.productTypeId}`);
       return res.json();
     },
-    enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId && !!selectedBlank?.printifyBlueprintId,
+    enabled: (costsOpen || formStep === 2) && !!selectedBlank?.productTypeId,
+    retry: 1,
   });
+
+  useEffect(() => {
+    if (formStep !== 2 || !costsError || !costsFetchError) return;
+    const msg = parseApiErrorMessage(costsFetchError);
+    toast({
+      title: "Production costs unavailable",
+      description: msg,
+      variant: "destructive",
+    });
+  }, [formStep, costsError, costsFetchError, toast]);
 
   // Mutation: clear all cached costs and refetch for current product
   const clearCostsMutation = useMutation({
@@ -519,6 +538,7 @@ export default function AdminCustomizerPages() {
       costs?: Record<string, number>;
       shopifyVariantCosts?: Record<string, number>;
       printifyVariantLabels?: Record<string, string>;
+      costsByNormalizedLabel?: Record<string, number>;
     },
     labelToCost: Record<string, number>,
   ): number | undefined {
@@ -527,8 +547,11 @@ export default function AdminCustomizerPages() {
       costCents = costs.costs?.[v.id.slice("printify:".length)];
     }
     if (costCents == null) costCents = costs.costs?.[v.id];
+    if (costCents == null && v.title && costs.costsByNormalizedLabel) {
+      costCents = costs.costsByNormalizedLabel[normalizeVariantLabelForCostMatch(v.title)];
+    }
     if (costCents == null && v.title) {
-      const normTitle = v.title.toLowerCase().trim();
+      const normTitle = normalizeVariantLabelForCostMatch(v.title);
       costCents = labelToCost[normTitle];
       if (costCents == null) {
         for (const [label, cost] of Object.entries(labelToCost)) {
@@ -542,9 +565,12 @@ export default function AdminCustomizerPages() {
     return costCents;
   }
 
+  const costsAvailable =
+    !!costsData?.costs && Object.keys(costsData.costs).length > 0;
+
   // Recommended retail prices based on production costs + markup
   const recommendedPrices = useMemo(() => {
-    if (!costsData?.costs || selectedVariants.length === 0) return {};
+    if (!costsAvailable || selectedVariants.length === 0) return {};
     const result: Record<string, string> = {};
     // Build a normalised-label → cost-in-cents lookup from Printify variant labels
     // e.g. { "14x14" → 850, "18x18" → 950, ... }
@@ -553,7 +579,7 @@ export default function AdminCustomizerPages() {
       for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
         const costCents = costsData.costs[printifyVid];
         if (costCents != null) {
-          labelToCost[label.toLowerCase().trim()] = costCents;
+          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
         }
       }
     }
@@ -564,7 +590,7 @@ export default function AdminCustomizerPages() {
       result[v.id] = roundUpTo95(raw).toFixed(2);
     }
     return result;
-  }, [costsData, selectedVariants, markupPercent]);
+  }, [costsAvailable, costsData, selectedVariants, markupPercent]);
 
   // Auto-apply recommended prices to empty price fields whenever costs load or markup changes
   useEffect(() => {
@@ -1214,6 +1240,45 @@ export default function AdminCustomizerPages() {
                         Apply All Suggested
                       </Button>
                     </div>
+
+                    {!selectedBlank?.printifyBlueprintId && (
+                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3">
+                        This product is not linked to Printify (no blueprint). Import it from Printify in Products, or pick a product with production cost data.
+                      </p>
+                    )}
+
+                    {costsError && (
+                      <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
+                        <span>
+                          {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
+                        </span>
+                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
+                          Retry
+                        </Button>
+                      </p>
+                    )}
+
+                    {!costsLoading && !costsError && selectedBlank?.printifyBlueprintId && !costsAvailable && (
+                      <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center gap-2">
+                        <span>
+                          No production costs returned for this product. Check Printify is connected in Settings, then refresh costs.
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8"
+                          onClick={() => {
+                            clearCostsMutation.mutate(undefined, {
+                              onSuccess: () => void refetchCosts(),
+                            });
+                          }}
+                          disabled={clearCostsMutation.isPending}
+                        >
+                          Refresh costs
+                        </Button>
+                      </p>
+                    )}
 
                     <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0" style={{maxHeight: '240px'}}>
                       <p className="text-xs font-semibold shimmer-text">

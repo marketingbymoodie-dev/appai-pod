@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { DollarSign, Loader2, RefreshCw } from "lucide-react";
+import { normalizeVariantLabelForCostMatch } from "@shared/printifyCostLabels";
 
 type BlankVariant = { id: string; title: string; price?: string };
 
@@ -74,6 +75,7 @@ export default function ResyncPricesDialog({
     costs: Record<string, number>;
     shopifyVariantCosts: Record<string, number>;
     printifyVariantLabels: Record<string, string>;
+    costsByNormalizedLabel?: Record<string, number>;
     cached: boolean;
   }>({
     queryKey: ["/api/admin/printify/costs", productTypeId],
@@ -81,24 +83,35 @@ export default function ResyncPricesDialog({
       const res = await apiRequest("GET", `/api/admin/printify/costs/${productTypeId}`);
       return res.json();
     },
-    enabled: open && !!blank?.printifyBlueprintId,
+    enabled: open && !!productTypeId,
   });
 
+  const costsAvailable =
+    !!costsData?.costs && Object.keys(costsData.costs).length > 0;
+
   const recommendedPrices = useMemo(() => {
-    if (!costsData?.costs || variants.length === 0) return {};
+    if (!costsAvailable || variants.length === 0) return {};
     const result: Record<string, string> = {};
     const labelToCost: Record<string, number> = {};
     if (costsData.printifyVariantLabels && costsData.costs) {
       for (const [printifyVid, label] of Object.entries(costsData.printifyVariantLabels)) {
         const costCents = costsData.costs[printifyVid];
-        if (costCents != null) labelToCost[label.toLowerCase().trim()] = costCents;
+        if (costCents != null) {
+          labelToCost[normalizeVariantLabelForCostMatch(label)] = costCents;
+        }
       }
     }
     for (const v of variants) {
       let costCents: number | undefined = costsData.shopifyVariantCosts?.[v.id];
+      if (costCents == null && v.id.startsWith("printify:")) {
+        costCents = costsData.costs?.[v.id.slice("printify:".length)];
+      }
       if (costCents == null) costCents = costsData.costs?.[v.id];
+      if (costCents == null && v.title && costsData.costsByNormalizedLabel) {
+        costCents = costsData.costsByNormalizedLabel[normalizeVariantLabelForCostMatch(v.title)];
+      }
       if (costCents == null && v.title) {
-        const normTitle = v.title.toLowerCase().trim();
+        const normTitle = normalizeVariantLabelForCostMatch(v.title);
         costCents = labelToCost[normTitle];
         if (costCents == null) {
           for (const [label, cost] of Object.entries(labelToCost)) {
@@ -114,7 +127,7 @@ export default function ResyncPricesDialog({
       result[v.id] = (Math.ceil(raw) - 0.05).toFixed(2);
     }
     return result;
-  }, [costsData, variants, markupPercent]);
+  }, [costsAvailable, costsData, variants, markupPercent]);
 
   useEffect(() => {
     if (!open) {
