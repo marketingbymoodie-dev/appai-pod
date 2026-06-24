@@ -58,6 +58,35 @@ export function serializePrintifyCostsCache(costs: Record<string, number>): stri
   return JSON.stringify({ ...costs, _fetchedAt: new Date().toISOString() });
 }
 
+/** Keep only costs for Printify variant IDs in the active variantMap. */
+export function filterCostsToPrintifyVariantIds(
+  costs: Record<string, number>,
+  variantIds: Iterable<number>,
+): Record<string, number> {
+  const idSet = new Set([...variantIds].map(Number).filter((id) => Number.isFinite(id) && id > 0));
+  if (idSet.size === 0) return { ...costs };
+  const filtered: Record<string, number> = {};
+  for (const [key, value] of Object.entries(costs)) {
+    if (idSet.has(Number(key))) filtered[key] = value;
+  }
+  return filtered;
+}
+
+/** True when at least one active variant has a cached production cost. */
+export function cacheCoversVariantIds(
+  costs: Record<string, number>,
+  variantIds: Iterable<number>,
+): boolean {
+  const keys = Object.keys(costs);
+  if (keys.length === 0) return false;
+  const idSet = new Set([...variantIds].map(Number).filter((id) => Number.isFinite(id) && id > 0));
+  if (idSet.size === 0) return true;
+  for (const id of idSet) {
+    if (costs[String(id)] != null) return true;
+  }
+  return false;
+}
+
 export function parsePrintifyCostsCache(raw: string | null | undefined): {
   costs: Record<string, number>;
   fetchedAt: string | null;

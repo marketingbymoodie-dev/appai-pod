@@ -37,8 +37,10 @@ import {
 } from "@shared/apparelAspectRatio";
 import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
 import {
+  cacheCoversVariantIds,
   extractCostsFromCatalogVariants,
   extractCostsFromPrintifyProduct,
+  filterCostsToPrintifyVariantIds,
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
@@ -13403,14 +13405,33 @@ ${textEdgeRestrictions}
         });
       }
 
-      const catalogCostsAtImport = extractCostsFromCatalogVariants(variants);
+      const importPrintifyVariantIds = [
+        ...new Set(
+          Object.values(variantMap)
+            .map((e: any) => Number(e?.printifyVariantId))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ),
+      ];
+      const { costs: resolvedImportCosts, source: importCostsSource } =
+        await resolvePrintifyProductionCosts({
+          merchant,
+          blueprintId: blueprintIdNum,
+          providerId,
+          catalogVariants: variants,
+          printifyVariantIds: importPrintifyVariantIds,
+          baseMockupImages,
+        });
       const printifyCostsAtImport =
-        Object.keys(catalogCostsAtImport).length > 0
-          ? serializePrintifyCostsCache(catalogCostsAtImport)
+        Object.keys(resolvedImportCosts).length > 0
+          ? serializePrintifyCostsCache(resolvedImportCosts)
           : null;
       if (printifyCostsAtImport) {
         console.log(
-          `[Import] Stored ${Object.keys(catalogCostsAtImport).length} production costs from catalog variants`,
+          `[Import] Stored ${Object.keys(resolvedImportCosts).length} production costs via ${importCostsSource}`,
+        );
+      } else {
+        console.warn(
+          `[Import] No production costs resolved for blueprint ${blueprintIdNum} — customizer markup pricing will require manual entry until costs are refreshed`,
         );
       }
 
@@ -14166,9 +14187,31 @@ ${textEdgeRestrictions}
             : filteredColorIds;
 
       const refreshedCatalogCosts = extractCostsFromCatalogVariants(variants);
+      let finalRefreshCosts = refreshedCatalogCosts;
+      if (Object.keys(finalRefreshCosts).length === 0) {
+        const refreshPrintifyVariantIds = [
+          ...new Set(
+            Object.values(variantMap)
+              .map((e: any) => Number(e?.printifyVariantId))
+              .filter((id) => Number.isFinite(id) && id > 0),
+          ),
+        ];
+        const baseMockupImages = typeof productType.baseMockupImages === "string"
+          ? JSON.parse(productType.baseMockupImages || "{}")
+          : (productType.baseMockupImages || {});
+        const { costs: resolvedRefreshCosts } = await resolvePrintifyProductionCosts({
+          merchant,
+          blueprintId: productType.printifyBlueprintId!,
+          providerId: productType.printifyProviderId!,
+          catalogVariants: variants,
+          printifyVariantIds: refreshPrintifyVariantIds,
+          baseMockupImages,
+        });
+        finalRefreshCosts = resolvedRefreshCosts;
+      }
       const refreshedPrintifyCosts =
-        Object.keys(refreshedCatalogCosts).length > 0
-          ? serializePrintifyCostsCache(refreshedCatalogCosts)
+        Object.keys(finalRefreshCosts).length > 0
+          ? serializePrintifyCostsCache(finalRefreshCosts)
           : productType.printifyCosts ?? "{}";
 
       const updated = await storage.updateProductType(productTypeId, {
@@ -14708,6 +14751,73 @@ ${textEdgeRestrictions}
     return null;
   }
 
+  /** Copy cached costs from any platform product type with the same blueprint + provider. */
+  async function findPlatformCostsForBlueprint(
+    blueprintId: number,
+    providerId: number,
+  ): Promise<Record<string, number>> {
+    const allTypes = await storage.getActiveProductTypes();
+    for (const pt of allTypes) {
+      if (Number(pt.printifyBlueprintId) !== Number(blueprintId)) continue;
+      if (Number(pt.printifyProviderId) !== Number(providerId)) continue;
+      const { costs } = parsePrintifyCostsCache(pt.printifyCosts);
+      if (Object.keys(costs).length > 0) return costs;
+    }
+    return {};
+  }
+
+  /**
+   * Resolve Printify production costs for import / refresh / pricing.
+   * Catalog variants.json rarely includes cost fields — waterfall + platform cache fill the gap.
+   */
+  async function resolvePrintifyProductionCosts(args: {
+    merchant: { id: string; printifyApiToken: string; printifyShopId?: string | null };
+    blueprintId: number;
+    providerId: number;
+    catalogVariants: unknown[];
+    printifyVariantIds: number[];
+    baseMockupImages: Record<string, unknown>;
+  }): Promise<{ costs: Record<string, number>; source: string }> {
+    const catalogCosts = extractCostsFromCatalogVariants(args.catalogVariants);
+    if (Object.keys(catalogCosts).length > 0) {
+      return { costs: catalogCosts, source: "catalog_variants" };
+    }
+
+    let shopId = args.merchant.printifyShopId?.trim() ?? "";
+    if (shopId && args.merchant.printifyApiToken) {
+      try {
+        const resolved = await resolvePrintifyShopIdForProducts(args.merchant.printifyApiToken, shopId);
+        shopId = resolved.shopId;
+        if (resolved.corrected) {
+          await storage.updateMerchant(args.merchant.id, { printifyShopId: shopId });
+        }
+      } catch {
+        shopId = args.merchant.printifyShopId?.trim() ?? "";
+      }
+    }
+
+    if (args.printifyVariantIds.length > 0 && args.merchant.printifyApiToken) {
+      const { costs: waterfallCosts, strategyUsed } = await fetchPrintifyCostsWaterfall(
+        shopId,
+        args.merchant.printifyApiToken,
+        args.blueprintId,
+        args.providerId,
+        args.printifyVariantIds,
+        args.baseMockupImages as Record<string, string>,
+      );
+      if (Object.keys(waterfallCosts).length > 0) {
+        return { costs: waterfallCosts, source: strategyUsed ?? "waterfall" };
+      }
+    }
+
+    const platformCosts = await findPlatformCostsForBlueprint(args.blueprintId, args.providerId);
+    if (Object.keys(platformCosts).length > 0) {
+      return { costs: platformCosts, source: "platform_catalog_cache" };
+    }
+
+    return { costs: {}, source: "none" };
+  }
+
   // Core waterfall logic: tries multiple strategies to create a temp product and get costs.
   // Returns { costs, strategyUsed, diagnostics }
   async function fetchPrintifyCostsWaterfall(
@@ -14939,6 +15049,10 @@ ${textEdgeRestrictions}
 
       const productType = await storage.getProductType(productTypeId);
       if (!productType) return res.status(404).json({ error: "Product type not found" });
+      const accessErr = adminProductTypeAccessError(req, productType, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
       if (!productType.printifyBlueprintId || !productType.printifyProviderId) {
         return res.status(400).json({ error: "Product type is missing Printify blueprint or provider info" });
       }
@@ -14949,19 +15063,10 @@ ${textEdgeRestrictions}
         if (entry?.printifyVariantId) currentPrintifyVariantIds.add(Number(entry.printifyVariantId));
       }
 
-      // Check cache first (24h TTL) — skip when cached keys no longer match current variantMap
-      const { costs: cachedCostsOnly, fetchedAt: cacheFetchedAt } = parsePrintifyCostsCache(productType.printifyCosts);
-      const cacheAge = cacheFetchedAt ? Date.now() - new Date(cacheFetchedAt).getTime() : Infinity;
-      const cachedCostKeys = Object.keys(cachedCostsOnly);
-      const cacheMatchesVariants =
-        currentPrintifyVariantIds.size === 0 ||
-        cachedCostKeys.some((k) => currentPrintifyVariantIds.has(Number(k)));
-      if (
-        cacheAge < 24 * 60 * 60 * 1000 &&
-        cachedCostKeys.length > 0 &&
-        cacheMatchesVariants
-      ) {
-        const cachedCosts = cachedCostsOnly;
+      // Use import/refresh cache whenever it covers active variants (no TTL — refresh-variants updates it).
+      const { costs: cachedCostsOnly } = parsePrintifyCostsCache(productType.printifyCosts);
+      if (cacheCoversVariantIds(cachedCostsOnly, currentPrintifyVariantIds)) {
+        const cachedCosts = filterCostsToPrintifyVariantIds(cachedCostsOnly, currentPrintifyVariantIds);
         const svIds = (typeof productType.shopifyVariantIds === "string"
           ? JSON.parse(productType.shopifyVariantIds || "{}")
           : productType.shopifyVariantIds || {}) as Record<string, number>;
@@ -15030,12 +15135,29 @@ ${textEdgeRestrictions}
       }
 
       console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
-      const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
+      let { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
         shopId ?? "",
         apiToken,
         productType.printifyBlueprintId, productType.printifyProviderId,
         printifyVariantIds, baseMockupImages
       );
+
+      if (!strategyUsed || Object.keys(costs).length === 0) {
+        const platformCosts = filterCostsToPrintifyVariantIds(
+          await findPlatformCostsForBlueprint(productType.printifyBlueprintId, productType.printifyProviderId),
+          currentPrintifyVariantIds,
+        );
+        if (Object.keys(platformCosts).length > 0) {
+          console.log(
+            `[Printify Costs] Waterfall failed; serving ${Object.keys(platformCosts).length} costs from platform catalog cache`,
+          );
+          await storage.updateProductType(productTypeId, {
+            printifyCosts: serializePrintifyCostsCache(platformCosts),
+          });
+          costs = platformCosts;
+          strategyUsed = "platform_catalog_cache";
+        }
+      }
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
@@ -15744,7 +15866,10 @@ ${textEdgeRestrictions}
     let ptForSync: any | undefined;
     if (!baseVariantId && !baseProductId && incomingProductTypeId) {
       ptForSync = await storage.getProductType(incomingProductTypeId);
-      if (!ptForSync) return res.status(400).json({ error: `Product type ${incomingProductTypeId} not found` });
+      const accessErr = adminProductTypeAccessError(req, ptForSync, merchant);
+      if (accessErr) {
+        return res.status(accessErr.status).json({ error: accessErr.error, code: accessErr.code });
+      }
 
       const ptVariantMap =
         typeof ptForSync.variantMap === "string"
@@ -16610,7 +16735,11 @@ ${textEdgeRestrictions}
     const shop: string = installation.shopDomain;
 
     try {
-      const productTypes = await storage.getActiveProductTypes();
+      const productTypes = isPlatformAdminRequest(req)
+        ? await storage.getActiveProductTypes()
+        : installation.merchantId
+          ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
+          : [];
 
       // Enrich products that are already on Shopify with live variant data.
       // Products not yet on Shopify are included with needsShopifySync: true.

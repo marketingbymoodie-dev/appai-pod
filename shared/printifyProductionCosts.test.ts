@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  cacheCoversVariantIds,
   extractCostsFromCatalogVariants,
   extractCostsFromPrintifyProduct,
   extractPrintifyVariantCostCents,
+  filterCostsToPrintifyVariantIds,
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "./printifyProductionCosts";
@@ -33,5 +35,16 @@ describe("printifyProductionCosts", () => {
     const { costs, fetchedAt } = parsePrintifyCostsCache(raw);
     expect(costs).toEqual({ "1": 500 });
     expect(fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("filters cached costs to active variant IDs", () => {
+    const filtered = filterCostsToPrintifyVariantIds({ "1": 100, "2": 200, "3": 300 }, [2, 3]);
+    expect(filtered).toEqual({ "2": 200, "3": 300 });
+  });
+
+  it("detects when cache covers active variants", () => {
+    expect(cacheCoversVariantIds({ "10": 500 }, [10, 11])).toBe(true);
+    expect(cacheCoversVariantIds({ "10": 500 }, [20])).toBe(false);
+    expect(cacheCoversVariantIds({}, [10])).toBe(false);
   });
 });
