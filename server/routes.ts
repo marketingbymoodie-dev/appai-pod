@@ -13141,6 +13141,24 @@ ${textEdgeRestrictions}
       let sizes = Array.from(sizesMap.values());
       const frameColors = Array.from(colorsMap.values());
 
+      // Detect apparel before per-size aspect ratio (sizes.map uses isApparelProduct).
+      const lowerName = name.toLowerCase();
+      const lowerDesc = (description || "").toLowerCase();
+      const combined = `${lowerName} ${lowerDesc}`;
+      const matchesWord = (text: string, word: string): boolean => {
+        const regex = new RegExp(`\\b${word}\\b`, 'i');
+        return regex.test(text);
+      };
+      const apparelKeywords = [
+        "shirt", "t-shirt", "tshirt", "hoodie", "sweatshirt", "tank top",
+        "tee", "apparel", "jersey", "jacket", "leggings", "shorts",
+        "dress", "skirt", "polo", "onesie", "bodysuit", "sweater",
+        "pants", "joggers", "romper", "blouse", "cardigan", "vest",
+        "coat", "bikini", "swimsuit", "underwear", "boxers", "briefs",
+        "socks", "apron", "scrubs"
+      ];
+      const isApparelProduct = apparelKeywords.some(kw => matchesWord(combined, kw));
+
       sizes = sizes.map(s => {
         const dims = placeholderDimensionsBySize[s.id];
         if (dims) {
@@ -13208,28 +13226,6 @@ ${textEdgeRestrictions}
       // Detect product type FIRST to determine sizeType
       // This is more reliable than checking dimensions since some dimensional products
       // may not have dimensions in the variant data
-      const lowerName = name.toLowerCase();
-      const lowerDesc = (description || "").toLowerCase();
-      const combined = `${lowerName} ${lowerDesc}`;
-      
-      // Helper function for word boundary matching (prevents "bra" matching "bracelet")
-      const matchesWord = (text: string, word: string): boolean => {
-        const regex = new RegExp(`\\b${word}\\b`, 'i');
-        return regex.test(text);
-      };
-      
-      // Apparel-like products use label sizes (S/M/L/XL)
-      const apparelKeywords = [
-        "shirt", "t-shirt", "tshirt", "hoodie", "sweatshirt", "tank top",
-        "tee", "apparel", "jersey", "jacket", "leggings", "shorts", 
-        "dress", "skirt", "polo", "onesie", "bodysuit", "sweater", 
-        "pants", "joggers", "romper", "blouse", "cardigan", "vest", 
-        "coat", "bikini", "swimsuit", "underwear", "boxers", "briefs", 
-        "socks", "apron", "scrubs"
-      ];
-      const isApparelProduct = apparelKeywords.some(kw => matchesWord(combined, kw));
-      
-      // Known dimensional products that may not have dimension data in variants
       const dimensionalKeywords = [
         "pillow", "cushion", "blanket", "throw", "mug", "cup", "tumbler",
         "poster", "print", "canvas", "frame", "artwork", "wall art",
