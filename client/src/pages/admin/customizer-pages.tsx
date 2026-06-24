@@ -253,7 +253,11 @@ export default function AdminCustomizerPages() {
     setEditCustomPlaceholder("");
   }, [editTarget?.id, editBlank?.productTypeId]);
 
-  const shopDomain = pagesData?.pages?.[0]?.shop ?? "";
+  const shopDomain =
+    createdPageResult?.page?.shop ??
+    pagesData?.pages?.find((p) => p.shop)?.shop ??
+    pagesData?.pages?.[0]?.shop ??
+    "";
 
   const createMutation = useMutation({
     mutationFn: async (body: {

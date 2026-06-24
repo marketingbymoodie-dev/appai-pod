@@ -278,6 +278,7 @@ export default function AdminProducts() {
     },
     onSuccess: async (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       setPrintifyImportOpen(false);
       setProviderSelectionOpen(false);
       setVariantSelectionOpen(false);

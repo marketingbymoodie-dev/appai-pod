@@ -1040,6 +1040,7 @@
           return;
         }
         sendBridgeReady();
+        if (config.inlineDesignerConfig) sendDesignerConfig();
       }, 500);
     });
 
@@ -2025,6 +2026,8 @@
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(config) {
         if (!config) {
+          var staleBoot = document.getElementById('appai-boot');
+          if (staleBoot && staleBoot.parentNode) staleBoot.parentNode.removeChild(staleBoot);
           if (opts.fallbackUrl) {
             window.location.href = opts.fallbackUrl;
             return;
@@ -2053,6 +2056,8 @@
         // handler).  No external DOM is needed here.
       })
       .catch(function(e) {
+        var failedBoot = document.getElementById('appai-boot');
+        if (failedBoot && failedBoot.parentNode) failedBoot.parentNode.removeChild(failedBoot);
         if (opts.fallbackUrl) {
           window.location.href = opts.fallbackUrl;
           return;
