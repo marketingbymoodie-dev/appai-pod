@@ -36,6 +36,12 @@ import {
   resolveStandardApparelAspectRatioFromPlaceholders,
 } from "@shared/apparelAspectRatio";
 import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
+import {
+  extractCostsFromCatalogVariants,
+  extractCostsFromPrintifyProduct,
+  parsePrintifyCostsCache,
+  serializePrintifyCostsCache,
+} from "@shared/printifyProductionCosts";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
@@ -13378,6 +13384,17 @@ ${textEdgeRestrictions}
         });
       }
 
+      const catalogCostsAtImport = extractCostsFromCatalogVariants(variants);
+      const printifyCostsAtImport =
+        Object.keys(catalogCostsAtImport).length > 0
+          ? serializePrintifyCostsCache(catalogCostsAtImport)
+          : null;
+      if (printifyCostsAtImport) {
+        console.log(
+          `[Import] Stored ${Object.keys(catalogCostsAtImport).length} production costs from catalog variants`,
+        );
+      }
+
       // Create the product type with parsed data
       const initialFlatStatus =
         catalogEntry.kind === "printify"
@@ -13425,6 +13442,7 @@ ${textEdgeRestrictions}
         fulfillmentLayout: catalogFulfillmentLayout,
         isActive: true,
         sortOrder: existingTypes.length,
+        ...(printifyCostsAtImport ? { printifyCosts: printifyCostsAtImport } : {}),
       });
 
       if (toteFoldedImport) {
@@ -14124,13 +14142,19 @@ ${textEdgeRestrictions}
             ? frameColors.map((c: { id: string }) => c.id)
             : filteredColorIds;
 
+      const refreshedCatalogCosts = extractCostsFromCatalogVariants(variants);
+      const refreshedPrintifyCosts =
+        Object.keys(refreshedCatalogCosts).length > 0
+          ? serializePrintifyCostsCache(refreshedCatalogCosts)
+          : productType.printifyCosts ?? "{}";
+
       const updated = await storage.updateProductType(productTypeId, {
         sizes: JSON.stringify(sizes),
         frameColors: JSON.stringify(frameColors),
         variantMap: JSON.stringify(variantMap),
         selectedSizeIds: JSON.stringify(finalSizeIds),
         selectedColorIds: JSON.stringify(finalColorIds),
-        printifyCosts: "{}",
+        printifyCosts: refreshedPrintifyCosts,
       });
 
       const allMapKeys = Object.keys(variantMap);
@@ -14472,26 +14496,6 @@ ${textEdgeRestrictions}
     return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
   }
 
-  function extractPrintifyVariantCostCents(variant: any): number | undefined {
-    if (variant?.id == null) return undefined;
-    const raw = variant.cost;
-    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-    if (typeof raw === "string" && raw.trim()) {
-      const n = Number(raw);
-      if (Number.isFinite(n)) return n;
-    }
-    return undefined;
-  }
-
-  function extractCostsFromPrintifyProduct(product: any): Record<string, number> {
-    const costs: Record<string, number> = {};
-    for (const v of product?.variants || []) {
-      const cost = extractPrintifyVariantCostCents(v);
-      if (cost != null) costs[String(v.id)] = cost;
-    }
-    return costs;
-  }
-
   // Helper: fetch the first placeholder position for a blueprint/provider/variant
   async function fetchPlaceholderPosition(
     blueprintId: number,
@@ -14709,7 +14713,53 @@ ${textEdgeRestrictions}
       baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
     const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
 
+    // Strategy catalog: production costs from catalog variants.json (no shop product needed)
+    console.log(`[Printify Costs] Strategy catalog — reading costs from catalog variants for blueprint ${blueprintId}`);
+    try {
+      const catalogResp = await fetch(
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json`,
+        { headers: { Authorization: `Bearer ${apiToken}` } },
+      );
+      if (catalogResp.ok) {
+        const catalogData = await catalogResp.json();
+        const catalogVariants = catalogData.variants || catalogData || [];
+        const catalogCosts = extractCostsFromCatalogVariants(
+          Array.isArray(catalogVariants) ? catalogVariants : [],
+        );
+        if (hasCosts(catalogCosts)) {
+          console.log(`[Printify Costs] Strategy catalog succeeded — ${Object.keys(catalogCosts).length} costs`);
+          diagnostics.push({ strategy: "catalog_variants", success: true });
+          return { costs: catalogCosts, strategyUsed: "catalog_variants", diagnostics };
+        }
+        diagnostics.push({
+          strategy: "catalog_variants",
+          success: false,
+          error: "Catalog variants response had no cost fields",
+        });
+      } else {
+        diagnostics.push({
+          strategy: "catalog_variants",
+          status: catalogResp.status,
+          success: false,
+          error: `Catalog variants API: ${catalogResp.status}`,
+        });
+      }
+    } catch (catalogErr: any) {
+      diagnostics.push({ strategy: "catalog_variants", success: false, error: String(catalogErr) });
+      console.warn("[Printify Costs] Strategy catalog error:", catalogErr);
+    }
+
     // Strategy 0: read costs from an existing Printify product
+    if (!shopId?.trim()) {
+      diagnostics.push({
+        strategy: "read_existing_product",
+        success: false,
+        error: "Printify shop ID not configured — catalog had no cost fields",
+      });
+      console.warn("[Printify Costs] Skipping shop-based strategies — no Printify shop ID");
+      return { costs: {}, strategyUsed: null, diagnostics };
+    }
+
     console.log(`[Printify Costs] Strategy 0 — reading costs from existing shop products for blueprint ${blueprintId}`);
     try {
       let page = 1;
@@ -14856,20 +14906,8 @@ ${textEdgeRestrictions}
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
 
       const apiToken = merchant.printifyApiToken;
-      let shopId = merchant.printifyShopId?.trim();
-      if (!apiToken || !shopId) {
-        return res.status(400).json({ error: "Printify API token and shop ID are required. Configure them in Settings." });
-      }
-
-      try {
-        const resolved = await resolvePrintifyShopIdForProducts(apiToken, shopId);
-        shopId = resolved.shopId;
-        if (resolved.corrected) {
-          await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
-        }
-      } catch (resolveErr: any) {
-        console.error("[Printify Costs] Shop resolution failed:", resolveErr);
-        return res.status(400).json({ error: resolveErr?.message || "Could not resolve Printify shop" });
+      if (!apiToken) {
+        return res.status(400).json({ error: "Printify API token is required. Configure it in Settings." });
       }
 
       const productTypeId = parseInt(req.params.productTypeId, 10);
@@ -14888,10 +14926,9 @@ ${textEdgeRestrictions}
       }
 
       // Check cache first (24h TTL) — skip when cached keys no longer match current variantMap
-      const cachedRaw = JSON.parse(productType.printifyCosts || "{}");
-      const cacheAge = cachedRaw._fetchedAt ? Date.now() - new Date(cachedRaw._fetchedAt).getTime() : Infinity;
-      const { _fetchedAt, ...cachedCostsOnly } = cachedRaw;
-      const cachedCostKeys = Object.keys(cachedCostsOnly).filter((k) => k !== "_fetchedAt");
+      const { costs: cachedCostsOnly, fetchedAt: cacheFetchedAt } = parsePrintifyCostsCache(productType.printifyCosts);
+      const cacheAge = cacheFetchedAt ? Date.now() - new Date(cacheFetchedAt).getTime() : Infinity;
+      const cachedCostKeys = Object.keys(cachedCostsOnly);
       const cacheMatchesVariants =
         currentPrintifyVariantIds.size === 0 ||
         cachedCostKeys.some((k) => currentPrintifyVariantIds.has(Number(k)));
@@ -14954,9 +14991,24 @@ ${textEdgeRestrictions}
         ? JSON.parse(productType.baseMockupImages || "{}")
         : (productType.baseMockupImages || {});
 
-      console.log(`[Printify Costs] Starting waterfall for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
+      let shopId = merchant.printifyShopId?.trim() ?? "";
+      if (shopId) {
+        try {
+          const resolved = await resolvePrintifyShopIdForProducts(apiToken, shopId);
+          shopId = resolved.shopId;
+          if (resolved.corrected) {
+            await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
+          }
+        } catch (resolveErr: any) {
+          console.warn("[Printify Costs] Shop resolution failed (catalog lookup may still succeed):", resolveErr);
+          shopId = merchant.printifyShopId?.trim() ?? "";
+        }
+      }
+
+      console.log(`[Printify Costs] Starting lookup for blueprint ${productType.printifyBlueprintId}, ${printifyVariantIds.length} variants`);
       const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
-        shopId, apiToken,
+        shopId ?? "",
+        apiToken,
         productType.printifyBlueprintId, productType.printifyProviderId,
         printifyVariantIds, baseMockupImages
       );
@@ -14974,7 +15026,9 @@ ${textEdgeRestrictions}
       console.log(`[Printify Costs] Success via "${strategyUsed}", extracted ${Object.keys(costs).length} costs`);
 
       // Cache costs on the product type
-      await storage.updateProductType(productTypeId, { printifyCosts: JSON.stringify({ ...costs, _fetchedAt: new Date().toISOString() }) });
+      await storage.updateProductType(productTypeId, {
+        printifyCosts: serializePrintifyCostsCache(costs),
+      });
 
       // Build variant-key → cost mapping
       const variantKeyCosts: Record<string, number> = {};
