@@ -83,6 +83,7 @@ import {
   listPlatformCatalogByKind,
 } from "./platformCatalogStore";
 import { isPlatformAdminRequest } from "./platformAdmin";
+import { canAdminAccessProductType } from "./adminProductTypeAccess";
 import {
   merchantManifestFromCanonical,
   resolveCanonicalFlatCalibration,
@@ -10192,11 +10193,11 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
-      await deleteProductTypeWithCleanup(productType);
+      await deleteProductTypeWithCleanup(productType!);
       res.json({ success: true, message: "Product type deleted" });
     } catch (error) {
       console.error("Error deleting product type:", error);
@@ -13513,11 +13514,11 @@ ${textEdgeRestrictions}
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
-      const synced = await syncProductTypeFromCanonicalCalibration(productType, {
+      const synced = await syncProductTypeFromCanonicalCalibration(productType!, {
         allowUnpublishedHarvest: true,
       });
       if (synced.synced) {
@@ -13562,7 +13563,7 @@ ${textEdgeRestrictions}
       const merchant = await storage.getMerchantByUserId(userId);
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
       if (!merchant.printifyApiToken || !merchant.printifyShopId) {
@@ -13811,7 +13812,7 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
@@ -13875,7 +13876,7 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
@@ -14199,7 +14200,7 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(productTypeId);
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
@@ -15273,7 +15274,7 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
@@ -15423,7 +15424,7 @@ ${textEdgeRestrictions}
       }
 
       const productType = await storage.getProductType(parseInt(productTypeId));
-      if (!productType || productType.merchantId !== merchant.id) {
+      if (!canAdminAccessProductType(req, productType, merchant)) {
         return res.status(404).json({ error: "Product type not found" });
       }
 
@@ -16532,7 +16533,7 @@ ${textEdgeRestrictions}
 
     const productTypeId = parseInt(req.params.id, 10);
     const productType = await storage.getProductType(productTypeId);
-    if (!productType || productType.merchantId !== merchant.id) {
+    if (!canAdminAccessProductType(req, productType, merchant)) {
       return res.status(404).json({ error: "Product type not found" });
     }
     if (!productType.shopifyProductId) {
