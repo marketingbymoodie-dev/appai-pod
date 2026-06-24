@@ -488,12 +488,11 @@ export default function AdminCustomizerPages() {
 
   useEffect(() => {
     if (formStep !== 2 || !costsError || !costsFetchError) return;
-    const raw = costsFetchError instanceof Error ? costsFetchError.message : String(costsFetchError);
-    // Inline banner is enough for cost probe failures; only toast missing Printify config.
-    if (!raw.includes("Printify API token and shop ID are required")) return;
-    const msg = parseApiErrorMessage(raw);
+    const msg = parseApiErrorMessage(
+      costsFetchError instanceof Error ? costsFetchError.message : costsFetchError,
+    );
     toast({
-      title: "Printify not configured",
+      title: "Production costs unavailable",
       description: msg,
       variant: "destructive",
     });
@@ -1255,6 +1254,7 @@ export default function AdminCustomizerPages() {
                       <p className="text-sm text-destructive rounded-md border border-destructive/30 bg-destructive/5 p-3 flex flex-wrap items-center gap-2">
                         <span>
                           {parseApiErrorMessage((costsFetchError as Error)?.message ?? "Could not load Printify production costs.")}
+                          {" "}Click Refresh costs or wait a moment — lookup can take up to a minute for apparel with many variants.
                         </span>
                         <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => void refetchCosts()}>
                           Retry
@@ -1265,8 +1265,7 @@ export default function AdminCustomizerPages() {
                     {!costsLoading && !costsError && selectedBlank?.printifyBlueprintId && !costsAvailable && (
                       <p className="text-sm text-amber-800 rounded-md border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center gap-2">
                         <span>
-                          {costsData?.warning ??
-                            "Production costs could not be loaded from Printify. Enter retail prices below — you can still create the page."}
+                          Loading production costs from Printify… If this persists, open Printify Costs or click Refresh costs.
                         </span>
                         <Button
                           type="button"

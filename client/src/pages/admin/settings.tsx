@@ -26,7 +26,7 @@ export default function AdminSettings() {
   const [printifyToken, setPrintifyToken] = useState("");
   const [printifyShopId, setPrintifyShopId] = useState("");
   const [detectShopLoading, setDetectShopLoading] = useState(false);
-  const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string }[]; instructions?: string[] } | null>(null);
+  const [shopDetectResult, setShopDetectResult] = useState<{ message: string; error?: boolean; shops?: { id: string; title: string; recommended?: boolean }[]; instructions?: string[] } | null>(null);
   const [useBuiltIn, setUseBuiltIn] = useState(true);
   const [customToken, setCustomToken] = useState("");
 
@@ -165,8 +165,16 @@ export default function AdminSettings() {
         });
         setShopDetectResult(null);
       } else if (data.shops?.length > 1) {
+        const recommended = data.shops.find((s: { recommended?: boolean }) => s.recommended);
+        if (recommended) {
+          setPrintifyShopId(String(recommended.id));
+          toast({
+            title: "Shopify store selected",
+            description: `Using recommended shop "${recommended.title}". Click Save Settings at the top.`,
+          });
+        }
         setShopDetectResult({
-          message: `Found ${data.shops.length} shops. Select the one you want to use.`,
+          message: data.message || `Found ${data.shops.length} shops. Select the one you want to use.`,
           shops: data.shops,
         });
       } else {
@@ -269,7 +277,7 @@ export default function AdminSettings() {
                       {shopDetectResult.shops.map((shop) => (
                         <Button
                           key={shop.id}
-                          variant="secondary"
+                          variant={shop.recommended ? "default" : "secondary"}
                           size="sm"
                           onClick={() => {
                             setPrintifyShopId(String(shop.id));
@@ -281,7 +289,7 @@ export default function AdminSettings() {
                           }}
                           className="w-full justify-start"
                         >
-                          {shop.title} (ID: {shop.id})
+                          {shop.title} (ID: {shop.id}){shop.recommended ? " — Shopify linked" : ""}
                         </Button>
                       ))}
                     </div>

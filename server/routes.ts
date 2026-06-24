@@ -14311,11 +14311,21 @@ ${textEdgeRestrictions}
         });
       }
 
+      const mappedShops = shops.map((shop: any) => ({
+        id: String(shop.id),
+        title: shop.title || `Shop ${shop.id}`,
+        sales_channel: shop.sales_channel,
+        recommended: String(shop.sales_channel || "").toLowerCase().includes("shopify"),
+      }));
+
       res.json({
-        shops: shops.map((shop: any) => ({
-          id: String(shop.id),
-          title: shop.title || `Shop ${shop.id}`,
-        })),
+        shops: mappedShops,
+        message:
+          mappedShops.length === 1
+            ? "Found your shop! Click to use this Shop ID."
+            : mappedShops.filter((s) => s.recommended).length === 1
+              ? "Found multiple shops — the Shopify-linked store is marked recommended."
+              : `Found ${mappedShops.length} shops. Select the one linked to your Shopify store.`,
       });
     } catch (error) {
       console.error("Error detecting Printify shop:", error);
@@ -14398,6 +14408,90 @@ ${textEdgeRestrictions}
 
   // ── Printify Cost & Shipping Endpoints ──────────────────────────────────────
 
+  /** 1×1 PNG — guaranteed upload for cost probes when URL uploads fail. */
+  const COST_PROBE_PNG_BASE64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  type PrintifyShopSummary = { id: string; title: string; sales_channel?: string };
+
+  async function listPrintifyShops(apiToken: string): Promise<PrintifyShopSummary[]> {
+    const resp = await fetch("https://api.printify.com/v1/shops.json", {
+      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const shops = Array.isArray(data) ? data : (data.data || []);
+    return shops.map((s: any) => ({
+      id: String(s.id),
+      title: s.title || `Shop ${s.id}`,
+      sales_channel: s.sales_channel,
+    }));
+  }
+
+  async function testPrintifyShopProductsAccess(apiToken: string, shopId: string): Promise<boolean> {
+    const resp = await fetch(
+      `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=1`,
+      { headers: { Authorization: `Bearer ${apiToken}` } },
+    );
+    return resp.ok;
+  }
+
+  /** Shipping uses catalog-only APIs; production costs need a shop the token can write products to. */
+  async function resolvePrintifyShopIdForProducts(
+    apiToken: string,
+    preferredShopId: string | null | undefined,
+  ): Promise<{ shopId: string; corrected: boolean }> {
+    const trimmed = preferredShopId?.trim();
+    if (trimmed && (await testPrintifyShopProductsAccess(apiToken, trimmed))) {
+      return { shopId: trimmed, corrected: false };
+    }
+
+    const shops = await listPrintifyShops(apiToken);
+    if (shops.length === 0) {
+      throw new Error("No Printify shops found for this API token");
+    }
+
+    const shopifyLinked = shops.filter((s) =>
+      String(s.sales_channel || "").toLowerCase().includes("shopify"),
+    );
+    const candidates = [...shopifyLinked, ...shops.filter((s) => !shopifyLinked.includes(s))];
+
+    for (const shop of candidates) {
+      if (await testPrintifyShopProductsAccess(apiToken, shop.id)) {
+        const corrected = shop.id !== trimmed;
+        if (corrected) {
+          console.log(
+            `[Printify Costs] Auto-corrected shop ID ${trimmed ?? "(empty)"} → ${shop.id} (${shop.title}, ${shop.sales_channel ?? "unknown channel"})`,
+          );
+        }
+        return { shopId: shop.id, corrected };
+      }
+    }
+
+    // Fall back to first shop — product create may still work even if list probe failed
+    return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
+  }
+
+  function extractPrintifyVariantCostCents(variant: any): number | undefined {
+    if (variant?.id == null) return undefined;
+    const raw = variant.cost;
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw === "string" && raw.trim()) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return n;
+    }
+    return undefined;
+  }
+
+  function extractCostsFromPrintifyProduct(product: any): Record<string, number> {
+    const costs: Record<string, number> = {};
+    for (const v of product?.variants || []) {
+      const cost = extractPrintifyVariantCostCents(v);
+      if (cost != null) costs[String(v.id)] = cost;
+    }
+    return costs;
+  }
+
   // Helper: fetch the first placeholder position for a blueprint/provider/variant
   async function fetchPlaceholderPosition(
     blueprintId: number,
@@ -14437,22 +14531,27 @@ ${textEdgeRestrictions}
     placeholderPosition: string,
     imageSpec: { id: string; x: number; y: number; scale: number; angle: number } | null
   ): Promise<{ success: boolean; costs: Record<string, number>; tempProductId?: string; status?: number; error?: string }> {
+    // Apparel/DTG almost always prints on "front"; catalog placeholder names vary.
+    const printPosition = imageSpec ? "front" : placeholderPosition;
     const body: any = {
       title: `_cost_probe_${Date.now()}`,
       description: "Temporary product for cost lookup - will be deleted immediately",
       blueprint_id: blueprintId,
       print_provider_id: providerId,
-      variants: variantIds.map(id => ({ id, price: 100, is_enabled: true })),
+      variants: variantIds.map((id) => ({ id, price: 2499, is_enabled: true })),
       print_areas: [{
         variant_ids: variantIds,
-        placeholders: [{ position: placeholderPosition, images: imageSpec ? [imageSpec] : [] }],
+        placeholders: [{ position: printPosition, images: imageSpec ? [imageSpec] : [] }],
       }],
     };
-    const createResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const createResp = await fetch(
+      `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
     const status = createResp.status;
     if (!createResp.ok) {
       const errorText = await createResp.text();
@@ -14460,28 +14559,19 @@ ${textEdgeRestrictions}
     }
     const product = await createResp.json();
     const tempProductId: string = product.id;
-    let costs: Record<string, number> = {};
-    for (const v of (product.variants || [])) {
-      if (v.id && typeof v.cost === "number") {
-        costs[String(v.id)] = v.cost;
-      }
-    }
+    let costs = extractCostsFromPrintifyProduct(product);
 
     // Some blueprints don't include v.cost in the creation response.
-    // If costs are empty, fetch the product again to get fully populated variant data.
     if (Object.keys(costs).length === 0) {
       console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
       try {
-        const fetchResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
-          headers: { Authorization: `Bearer ${apiToken}` },
-        });
+        const fetchResp = await fetch(
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        );
         if (fetchResp.ok) {
           const fetchedProduct = await fetchResp.json();
-          for (const v of (fetchedProduct.variants || [])) {
-            if (v.id && typeof v.cost === "number") {
-              costs[String(v.id)] = v.cost;
-            }
-          }
+          costs = extractCostsFromPrintifyProduct(fetchedProduct);
           console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
         } else {
           console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
@@ -14493,10 +14583,13 @@ ${textEdgeRestrictions}
 
     // Clean up immediately
     try {
-      await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${tempProductId}.json`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${apiToken}` },
-      });
+      await fetch(
+        `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${apiToken}` },
+        },
+      );
       console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
     } catch (delErr) {
       console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
@@ -14546,7 +14639,48 @@ ${textEdgeRestrictions}
     return null;
   }
 
-  // Core waterfall logic: tries three strategies to create a temp product and get costs.
+  /** Guaranteed probe artwork: library → mockup URL → embedded 1×1 PNG base64. */
+  async function ensureCostProbeImageId(
+    apiToken: string,
+    mockupUrl?: string,
+  ): Promise<string | null> {
+    const existing = await getExistingUploadId(apiToken);
+    if (existing) return existing;
+    if (mockupUrl) {
+      const fromMockup = await uploadPublicImageToPrintify(apiToken, mockupUrl);
+      if (fromMockup) return fromMockup;
+    }
+    const fallbackUrls = [
+      "https://images.printify.com/mockup/5d39b411749d0a000f30e0f4/45740/2x2-white.jpg",
+      "https://placehold.co/1200x1200/png",
+    ];
+    for (const url of fallbackUrls) {
+      const id = await uploadPublicImageToPrintify(apiToken, url);
+      if (id) return id;
+    }
+    try {
+      const resp = await fetch("https://api.printify.com/v1/uploads/images.json", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ file_name: "cost-probe.png", contents: COST_PROBE_PNG_BASE64 }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.id) {
+          console.log(`[Printify Costs] Uploaded base64 probe image id=${data.id}`);
+          return String(data.id);
+        }
+      } else {
+        const errText = await resp.text();
+        console.warn(`[Printify Costs] Base64 probe upload failed (${resp.status}): ${errText.slice(0, 200)}`);
+      }
+    } catch (e) {
+      console.warn("[Printify Costs] Base64 probe upload error:", e);
+    }
+    return null;
+  }
+
+  // Core waterfall logic: tries multiple strategies to create a temp product and get costs.
   // Returns { costs, strategyUsed, diagnostics }
   async function fetchPrintifyCostsWaterfall(
     shopId: string,
@@ -14569,17 +14703,22 @@ ${textEdgeRestrictions}
     // Costs are catalog-level per variant ID, so a subset is sufficient.
     const VARIANT_CHUNK_SIZE = 10;
     const variantChunk = variantIds.slice(0, VARIANT_CHUNK_SIZE);
+    const bulkVariantIds = variantIds.slice(0, 100);
     const hasCosts = (costs: Record<string, number>) => Object.keys(costs).length > 0;
+    const mockupUrl: string | undefined =
+      baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
+    const probeImageId = await ensureCostProbeImageId(apiToken, mockupUrl);
 
-    // Strategy 0: read costs from an existing Printify product with the same blueprint + provider (no temp product needed)
+    // Strategy 0: read costs from an existing Printify product
     console.log(`[Printify Costs] Strategy 0 — reading costs from existing shop products for blueprint ${blueprintId}`);
     try {
       let page = 1;
       let found = false;
       while (page <= 5) {
-        const listResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products.json?limit=100&page=${page}`, {
-          headers: { Authorization: `Bearer ${apiToken}` },
-        });
+        const listResp = await fetch(
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=100&page=${page}`,
+          { headers: { Authorization: `Bearer ${apiToken}` } },
+        );
         if (!listResp.ok) {
           diagnostics.push({ strategy: "read_existing_product", status: listResp.status, success: false, error: `List products failed: ${listResp.status}` });
           break;
@@ -14588,20 +14727,15 @@ ${textEdgeRestrictions}
         const products: any[] = listData.data || listData || [];
         if (products.length === 0) break;
         for (const p of products) {
-          if (p.blueprint_id === blueprintId && p.print_provider_id === providerId) {
-            // Fetch full product to get variant costs
-            const fullResp = await fetch(`https://api.printify.com/v1/shops/${shopId}/products/${p.id}.json`, {
-              headers: { Authorization: `Bearer ${apiToken}` },
-            });
+          if (Number(p.blueprint_id) === Number(blueprintId) && Number(p.print_provider_id) === Number(providerId)) {
+            const fullResp = await fetch(
+              `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${p.id}.json`,
+              { headers: { Authorization: `Bearer ${apiToken}` } },
+            );
             if (!fullResp.ok) continue;
             const fullProduct = await fullResp.json();
-            const costs: Record<string, number> = {};
-            for (const v of (fullProduct.variants || [])) {
-              if (v.id && typeof v.cost === "number") {
-                costs[String(v.id)] = v.cost;
-              }
-            }
-            if (Object.keys(costs).length > 0) {
+            const costs = extractCostsFromPrintifyProduct(fullProduct);
+            if (hasCosts(costs)) {
               console.log(`[Printify Costs] Strategy 0 succeeded — found ${Object.keys(costs).length} costs from existing product ${p.id}`);
               diagnostics.push({ strategy: "read_existing_product", success: true });
               found = true;
@@ -14621,17 +14755,28 @@ ${textEdgeRestrictions}
       console.warn("[Printify Costs] Strategy 0 error:", s0Err);
     }
 
-    // Strategy 1: reuse an existing image from the merchant's Printify library (apparel often requires art)
-    console.log("[Printify Costs] Strategy 1 — reuse existing upload from library");
-    const existingId = await getExistingUploadId(apiToken);
-    if (existingId) {
-      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(existingId));
-      diagnostics.push({ strategy: "reuse_existing_upload", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
-      if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "reuse_existing_upload", diagnostics };
-      console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
+    if (probeImageId) {
+      // Strategy A: all variants in one temp product (up to Printify's 100-variant limit)
+      console.log(`[Printify Costs] Strategy A — bulk ${bulkVariantIds.length} variants with probe image`);
+      const sBulk = await tryCreateTempProductForCosts(
+        shopId, apiToken, blueprintId, providerId, bulkVariantIds, position, imageSpec(probeImageId),
+      );
+      diagnostics.push({ strategy: "bulk_with_image", status: sBulk.status, success: sBulk.success && hasCosts(sBulk.costs), error: sBulk.error });
+      if (sBulk.success && hasCosts(sBulk.costs)) {
+        return { costs: sBulk.costs, strategyUsed: "bulk_with_image", diagnostics };
+      }
+      console.warn(`[Printify Costs] Strategy A failed (${sBulk.status}): ${sBulk.error?.slice(0, 200)}`);
     } else {
-      diagnostics.push({ strategy: "reuse_existing_upload", success: false, error: "No existing uploads found in library" });
-      console.warn("[Printify Costs] Strategy 1 skipped — no existing uploads in library");
+      diagnostics.push({ strategy: "bulk_with_image", success: false, error: "Could not upload probe artwork to Printify" });
+    }
+
+    // Strategy 1: smaller chunk with probe image
+    if (probeImageId) {
+      console.log("[Printify Costs] Strategy 1 — chunk with probe image");
+      const s1 = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      diagnostics.push({ strategy: "chunk_with_image", status: s1.status, success: s1.success && hasCosts(s1.costs), error: s1.error });
+      if (s1.success && hasCosts(s1.costs)) return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
+      console.warn(`[Printify Costs] Strategy 1 failed (${s1.status}): ${s1.error?.slice(0, 200)}`);
     }
 
     // Strategy 2: print_areas with empty images array
@@ -14642,64 +14787,37 @@ ${textEdgeRestrictions}
 
     console.warn(`[Printify Costs] Strategy 2 failed (${s2.status}): ${s2.error?.slice(0, 200)}`);
 
-    // Strategy 3: upload the stored mockup image URL (Printify CDN)
-    const mockupUrl: string | undefined =
-      baseMockupImages.primary || baseMockupImages.front || baseMockupImages.gallery?.[0] || baseMockupImages.lifestyle || (Object.values(baseMockupImages).find((v) => typeof v === "string") as string | undefined);
-    if (mockupUrl) {
-      console.log(`[Printify Costs] Strategy 3a — upload product mockup URL: ${mockupUrl.slice(0, 80)}`);
-      const uploadedId = await uploadPublicImageToPrintify(apiToken, mockupUrl);
-      if (uploadedId) {
-        const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
-        diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
-        if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
-        console.warn(`[Printify Costs] Strategy 3a failed (${s3a.status}): ${s3a.error?.slice(0, 200)}`);
-      } else {
-        diagnostics.push({ strategy: "upload_mockup_url", success: false, error: "Upload of mockup URL failed" });
-      }
+    // Strategy 3: upload the stored mockup image URL (Printify CDN) — if different from probe source
+    if (mockupUrl && probeImageId) {
+      console.log(`[Printify Costs] Strategy 3a — mockup URL chunk: ${mockupUrl.slice(0, 80)}`);
+      const s3a = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(probeImageId));
+      diagnostics.push({ strategy: "upload_mockup_url", status: s3a.status, success: s3a.success && hasCosts(s3a.costs), error: s3a.error });
+      if (s3a.success && hasCosts(s3a.costs)) return { costs: s3a.costs, strategyUsed: "upload_mockup_url", diagnostics };
     }
 
-    // Strategy 3b: upload a known-good public placeholder image
-    const fallbackUrls = [
-      "https://images.printify.com/mockup/5d39b411749d0a000f30e0f4/45740/2x2-white.jpg",
-      "https://via.assets.so/img.jpg?w=1200&h=1200&tc=white&bg=999999",
-      "https://placehold.co/1200x1200/png",
-    ];
-    for (const url of fallbackUrls) {
-      console.log(`[Printify Costs] Strategy 3b — upload fallback public URL: ${url}`);
-      const uploadedId = await uploadPublicImageToPrintify(apiToken, url);
-      if (uploadedId) {
-        const s3b = await tryCreateTempProductForCosts(shopId, apiToken, blueprintId, providerId, variantChunk, position, imageSpec(uploadedId));
-        diagnostics.push({ strategy: `upload_fallback_url:${url}`, status: s3b.status, success: s3b.success && hasCosts(s3b.costs), error: s3b.error });
-        if (s3b.success && hasCosts(s3b.costs)) return { costs: s3b.costs, strategyUsed: `upload_fallback_url`, diagnostics };
-        console.warn(`[Printify Costs] Strategy 3b (${url}) failed (${s3b.status}): ${s3b.error?.slice(0, 200)}`);
-      } else {
-        diagnostics.push({ strategy: `upload_fallback_url:${url}`, success: false, error: "Upload failed" });
-      }
-    }
-
-    // Strategy 4: probe one variant at a time (apparel often rejects multi-variant temp products)
-    const probeImageId =
-      existingId ||
-      (mockupUrl ? await uploadPublicImageToPrintify(apiToken, mockupUrl) : null) ||
-      (await uploadPublicImageToPrintify(apiToken, fallbackUrls[0]));
+    // Strategy 4: parallel single-variant probe for every variant ID
     if (probeImageId) {
-      console.log(`[Printify Costs] Strategy 4 — single-variant probe (${Math.min(variantIds.length, 20)} variants)`);
+      console.log(`[Printify Costs] Strategy 4 — parallel single-variant probe (${variantIds.length} variants)`);
       const probedCosts: Record<string, number> = {};
-      const probeLimit = Math.min(variantIds.length, 20);
-      for (let i = 0; i < probeLimit; i++) {
-        const vid = variantIds[i];
-        const probe = await tryCreateTempProductForCosts(
-          shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
-        );
-        if (probe.success && hasCosts(probe.costs)) {
-          Object.assign(probedCosts, probe.costs);
-        }
+      const BATCH = 8;
+      for (let i = 0; i < variantIds.length; i += BATCH) {
+        const batch = variantIds.slice(i, i + BATCH);
+        await Promise.all(batch.map(async (vid) => {
+          const probe = await tryCreateTempProductForCosts(
+            shopId, apiToken, blueprintId, providerId, [vid], position, imageSpec(probeImageId),
+          );
+          if (probe.success && hasCosts(probe.costs)) {
+            Object.assign(probedCosts, probe.costs);
+          }
+        }));
       }
       if (hasCosts(probedCosts)) {
         diagnostics.push({ strategy: "single_variant_probe", success: true });
         return { costs: probedCosts, strategyUsed: "single_variant_probe", diagnostics };
       }
       diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No costs extracted from single-variant probes" });
+    } else {
+      diagnostics.push({ strategy: "single_variant_probe", success: false, error: "No probe artwork available" });
     }
 
     return { costs: {}, strategyUsed: null, diagnostics };
@@ -14738,9 +14856,20 @@ ${textEdgeRestrictions}
       if (!merchant) return res.status(404).json({ error: "Merchant not found" });
 
       const apiToken = merchant.printifyApiToken;
-      const shopId = merchant.printifyShopId;
+      let shopId = merchant.printifyShopId?.trim();
       if (!apiToken || !shopId) {
         return res.status(400).json({ error: "Printify API token and shop ID are required. Configure them in Settings." });
+      }
+
+      try {
+        const resolved = await resolvePrintifyShopIdForProducts(apiToken, shopId);
+        shopId = resolved.shopId;
+        if (resolved.corrected) {
+          await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
+        }
+      } catch (resolveErr: any) {
+        console.error("[Printify Costs] Shop resolution failed:", resolveErr);
+        return res.status(400).json({ error: resolveErr?.message || "Could not resolve Printify shop" });
       }
 
       const productTypeId = parseInt(req.params.productTypeId, 10);
@@ -14834,29 +14963,10 @@ ${textEdgeRestrictions}
 
       if (!strategyUsed || Object.keys(costs).length === 0) {
         console.error(`[Printify Costs] All strategies failed. Diagnostics:`, JSON.stringify(diagnostics));
-        const sizes = JSON.parse(productType.sizes || "[]");
-        const frameColors = JSON.parse(productType.frameColors || "[]");
-        const emptyLabels: Record<string, string> = {};
-        for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
-          if (entry?.printifyVariantId) {
-            const [sizeId, colorId] = key.split(":");
-            const sizeName = sizes.find((s: any) => String(s.id) === sizeId)?.name ?? sizeId;
-            const colorName = frameColors.find((c: any) => String(c.id) === colorId)?.name;
-            emptyLabels[String(entry.printifyVariantId)] =
-              colorName && colorId !== "default" ? `${sizeName} / ${colorName}` : sizeName;
-          }
-        }
-        const firstError = diagnostics.find((d) => d.error)?.error;
-        return res.json({
-          costs: {},
-          shopifyVariantCosts: {},
-          printifyVariantLabels: emptyLabels,
-          costsByNormalizedLabel: {},
-          cached: false,
-          warning:
-            firstError?.includes("List products failed") || firstError?.includes("403")
-              ? "Printify rejected the cost lookup. Confirm Settings → Shop ID matches your Printify store (the one linked to Shopify)."
-              : "Could not load production costs from Printify. Enter retail prices manually below.",
+        const lastErr = diagnostics.find((d) => d.error)?.error?.slice(0, 300);
+        return res.status(502).json({
+          error: "Failed to fetch production costs from Printify",
+          message: lastErr || "All cost lookup strategies failed. Check Railway logs for diagnostics.",
           diagnostics,
         });
       }
