@@ -53,6 +53,8 @@ export function isAllowedCentralAuthOrigin(origin: string): boolean {
     }
     if (hostname === "localhost" || hostname === "127.0.0.1") return true;
     if (hostname.endsWith(".railway.app")) return true;
+    // Custom app domain (e.g. aiartstudio.app) — not *.myshopify.com
+    if (hostname === "aiartstudio.app" || hostname.endsWith(".aiartstudio.app")) return true;
     return false;
   } catch {
     return false;
